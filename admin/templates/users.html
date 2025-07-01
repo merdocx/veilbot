@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block page_title %}Пользователи и рефералы{% endblock %}
+
+{% block content %}
+<style>
+#users-table td:first-child, #users-table th:first-child {
+    text-align: left;
+}
+</style>
+<div class="table-container">
+    <table class="table" id="users-table">
+        <thead>
+            <tr>
+                <th>User ID</th>
+                <th>Число рефералов</th>
+            </tr>
+            <tr>
+                <th><input type="text" id="filter-user-id" placeholder="Фильтр по User ID" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th><input type="text" id="filter-referrals" placeholder="Фильтр по числу рефералов" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+            </tr>
+        </thead>
+        <tbody id="users-tbody">
+            {% for user in users %}
+            <tr>
+                <td>{{ user.user_id }}</td>
+                <td>{{ user.referral_count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<!-- Пагинация -->
+<div id="pagination" style="display: flex; justify-content: center; align-items: center; margin: 1.5rem 0; gap: 0.5rem;"></div>
+<script>
+// Фильтрация таблицы по input
+const userIdInput = document.getElementById('filter-user-id');
+const referralsInput = document.getElementById('filter-referrals');
+const table = document.getElementById('users-table');
+const tbody = document.getElementById('users-tbody');
+const rows = Array.from(tbody.rows);
+const pageSize = 10;
+let currentPage = 1;
+let filteredRows = rows.slice();
+
+function filterTable() {
+    const userIdValue = userIdInput.value.trim().toLowerCase();
+    const referralsValue = referralsInput.value.trim().toLowerCase();
+    filteredRows = rows.filter(row => {
+        const userId = row.cells[0].textContent.toLowerCase();
+        const referrals = row.cells[1].textContent.toLowerCase();
+        const userIdMatch = userId.includes(userIdValue);
+        const referralsMatch = referrals.includes(referralsValue);
+        return userIdMatch && referralsMatch;
+    });
+    currentPage = 1;
+    renderPage();
+    renderPagination();
+}
+userIdInput.addEventListener('input', filterTable);
+referralsInput.addEventListener('input', filterTable);
+
+function renderPage() {
+    tbody.innerHTML = '';
+    const start = (currentPage - 1) * pageSize;
+    const end = start + pageSize;
+    filteredRows.slice(start, end).forEach(row => tbody.appendChild(row));
+}
+
+function renderPagination() {
+    const pagination = document.getElementById('pagination');
+    pagination.innerHTML = '';
+    const pageCount = Math.ceil(filteredRows.length / pageSize);
+    if (pageCount <= 1) return;
+    for (let i = 1; i <= pageCount; i++) {
+        const btn = document.createElement('button');
+        btn.textContent = i;
+        btn.className = 'btn btn-sm' + (i === currentPage ? ' btn-primary' : ' btn-secondary');
+        btn.style.margin = '0 2px';
+        btn.onclick = () => {
+            currentPage = i;
+            renderPage();
+            renderPagination();
+        };
+        pagination.appendChild(btn);
+    }
+}
+
+// Инициализация при загрузке
+renderPage();
+renderPagination();
+</script>
+{% endblock %} 

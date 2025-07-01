@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+
+{% block page_title %}Выданные ключи{% endblock %}
+
+{% block content %}
+<!-- Keys Table -->
+<div class="table-container">
+    <table class="table keys-table">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Ключ</th>
+      <th>Тариф</th>
+      <th>Email</th>
+      <th>Сервер</th>
+      <th>Создан</th>
+      <th>Истекает</th>
+      <th>Статус</th>
+      <th></th>
+    </tr>
+    <tr>
+      <th><input type="text" id="filter-id" placeholder="Фильтр по ID" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+      <th><input type="text" id="filter-key" placeholder="Фильтр по ключу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+      <th><input type="text" id="filter-tariff" placeholder="Фильтр по тарифу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+      <th><input type="text" id="filter-email" placeholder="Фильтр по email" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+      <th><input type="text" id="filter-server" placeholder="Фильтр по серверу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+      <th><input type="text" id="filter-created" placeholder="Фильтр по созданию" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+      <th><input type="text" id="filter-expiry" placeholder="Фильтр по истечению" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+      <th><input type="text" id="filter-status" placeholder="Фильтр по статусу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="keys-tbody">
+    {% for k in keys %}
+    <tr>
+      <td>{{ k[0] }}</td>
+                <td>
+                    <code class="code">{{ k[2] }}</code>
+                </td>
+                <td>
+                    {% if k[7] %}
+                        <span class="badge badge-primary">{{ k[7] }}</span>
+                    {% else %}
+                        <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if k[6] %}
+                        <span class="email">{{ k[6] }}</span>
+                    {% else %}
+                        <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge badge-info">{{ k[5] }}</span>
+                </td>
+      <td>{{ k[3]|timestamp }}</td>
+      <td>{{ k[4]|timestamp }}</td>
+      <td>
+                    {% if k[4] > current_time %}
+                        <span class="badge badge-success">Активен</span>
+                    {% else %}
+                        <span class="badge badge-danger">Истек</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <a href="/keys/delete/{{ k[0] }}" class="btn btn-danger btn-sm" 
+                       onclick="return confirm('Удалить ключ?')">
+                        <span class="material-icons">delete</span>
+                    </a>
+                    <button class="btn btn-primary btn-sm" data-key-id="{{ k[0] }}" data-expiry="{{ k[4]|my_datetime_local }}" onclick="openEditModalFromBtn(this)" type="button" title="Редактировать срок действия">
+                        <span class="material-icons">edit</span>
+                    </button>
+                </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<!-- Пагинация -->
+<div id="pagination" style="display: flex; justify-content: center; align-items: center; margin: 1.5rem 0; gap: 0.5rem;"></div>
+
+<!-- Модальное окно для редактирования срока действия ключа -->
+<div id="editModal" class="modal" style="display:none; position:fixed; z-index:10000; left:0; top:0; width:100vw; height:100vh; background:rgba(0,0,0,0.3); align-items:center; justify-content:center;">
+  <div class="modal-content" style="background:#fff; padding:2rem; border-radius:12px; min-width:320px; max-width:90vw; box-shadow:0 8px 32px rgba(0,0,0,0.2); position:relative;">
+    <button onclick="closeEditModal()" style="position:absolute; right:1rem; top:1rem; background:none; border:none; font-size:1.5rem; cursor:pointer;">&times;</button>
+    <h2 style="margin-bottom:1rem;">Редактировать срок действия</h2>
+    <form id="editExpiryForm" onsubmit="return submitEditExpiry(event)">
+      <input type="hidden" name="key_id" id="editKeyId">
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label for="editExpiry">Новая дата истечения</label>
+        <input type="datetime-local" name="expiry_at" id="editExpiry" class="form-input" required>
+      </div>
+      <div id="editError" style="color:#b91c1c; margin-bottom:1rem; display:none;"></div>
+      <div style="display:flex; gap:1rem;">
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+        <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Отмена</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const filters = [
+  document.getElementById('filter-id'),
+  document.getElementById('filter-key'),
+  document.getElementById('filter-tariff'),
+  document.getElementById('filter-email'),
+  document.getElementById('filter-server'),
+  document.getElementById('filter-created'),
+  document.getElementById('filter-expiry'),
+  document.getElementById('filter-status')
+];
+const table = document.querySelector('.keys-table');
+const tbody = document.getElementById('keys-tbody');
+const rows = Array.from(tbody.rows);
+const pageSize = 10;
+let currentPage = 1;
+let filteredRows = rows.slice();
+
+function filterKeysTable() {
+  filteredRows = rows.filter(row => {
+    for (let i = 0; i < filters.length; i++) {
+      const filterValue = filters[i].value.trim().toLowerCase();
+      let cellText = row.cells[i].textContent.toLowerCase();
+      if (!cellText.includes(filterValue)) {
+        return false;
+      }
+    }
+    return true;
+  });
+  currentPage = 1;
+  renderPage();
+  renderPagination();
+}
+filters.forEach(input => input.addEventListener('input', filterKeysTable));
+
+function renderPage() {
+  tbody.innerHTML = '';
+  const start = (currentPage - 1) * pageSize;
+  const end = start + pageSize;
+  filteredRows.slice(start, end).forEach(row => tbody.appendChild(row));
+}
+
+function renderPagination() {
+  const pagination = document.getElementById('pagination');
+  pagination.innerHTML = '';
+  const pageCount = Math.ceil(filteredRows.length / pageSize);
+  if (pageCount <= 1) return;
+  for (let i = 1; i <= pageCount; i++) {
+    const btn = document.createElement('button');
+    btn.textContent = i;
+    btn.className = 'btn btn-sm' + (i === currentPage ? ' btn-primary' : ' btn-secondary');
+    btn.style.margin = '0 2px';
+    btn.onclick = () => {
+      currentPage = i;
+      renderPage();
+      renderPagination();
+    };
+    pagination.appendChild(btn);
+  }
+}
+
+// Инициализация при загрузке
+renderPage();
+renderPagination();
+
+function openEditModal(keyId, expiry) {
+  document.getElementById('editKeyId').value = keyId;
+  document.getElementById('editExpiry').value = expiry;
+  document.getElementById('editError').style.display = 'none';
+  document.getElementById('editModal').style.display = 'flex';
+}
+function closeEditModal() {
+  document.getElementById('editModal').style.display = 'none';
+}
+async function submitEditExpiry(e) {
+  e.preventDefault();
+  const keyId = document.getElementById('editKeyId').value;
+  const expiry = document.getElementById('editExpiry').value;
+  const errorDiv = document.getElementById('editError');
+  errorDiv.style.display = 'none';
+  try {
+    const resp = await fetch(`/api/keys/${keyId}/expiry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiry_at: expiry })
+    });
+    if (resp.ok) {
+      location.reload();
+    } else {
+      const data = await resp.json();
+      errorDiv.textContent = data.error || 'Ошибка сохранения';
+      errorDiv.style.display = 'block';
+    }
+  } catch (err) {
+    errorDiv.textContent = 'Ошибка сети';
+    errorDiv.style.display = 'block';
+  }
+  return false;
+}
+
+function openEditModalFromBtn(btn) {
+  openEditModal(btn.dataset.keyId, btn.dataset.expiry);
+}
+</script>
+
+{% if not keys %}
+<div class="card">
+    <div class="card-content" style="text-align: center; padding: 3rem;">
+        <span class="material-icons" style="font-size: 4rem; color: #cbd5e1; margin-bottom: 1rem;">key_off</span>
+        <h3 style="color: #64748b; margin-bottom: 0.5rem;">Нет выданных ключей</h3>
+        <p style="color: #94a3b8;">Ключи появятся здесь после их создания пользователями</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

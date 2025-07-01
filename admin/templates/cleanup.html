@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block page_title %}Очистка истекших ключей{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Результаты очистки</h2>
+    </div>
+    <div class="card-content">
+        {% if error %}
+        <div style="background: #fee2e2; border: 1px solid #fecaca; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; color: #dc2626;">
+                <span class="material-icons">error</span>
+                <strong>Ошибка очистки</strong>
+            </div>
+            <p style="color: #dc2626; margin: 0.5rem 0 0 0;">
+                {{ error }}
+            </p>
+        </div>
+        {% endif %}
+        
+        {% if errors %}
+        <div style="background: #fef3c7; border: 1px solid #fde68a; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; color: #92400e;">
+                <span class="material-icons">warning</span>
+                <strong>Предупреждения</strong>
+            </div>
+            <ul style="color: #92400e; margin: 0.5rem 0 0 0; padding-left: 1.5rem;">
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon orange">
+                        <span class="material-icons">search</span>
+                    </div>
+                    <div>
+                        <div class="stat-value">{{ expired_count }}</div>
+                        <div class="stat-label">Найдено истекших</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon green">
+                        <span class="material-icons">dns</span>
+                    </div>
+                    <div>
+                        <div class="stat-value">{{ deleted_from_outline }}</div>
+                        <div class="stat-label">Удалено из серверов</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon blue">
+                        <span class="material-icons">storage</span>
+                    </div>
+                    <div>
+                        <div class="stat-value">{{ deleted_count }}</div>
+                        <div class="stat-label">Удалено из БД</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        {% if deleted_count > 0 %}
+        <div style="background: #dcfce7; border: 1px solid #bbf7d0; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; color: #166534;">
+                <span class="material-icons">check_circle</span>
+                <strong>Очистка завершена успешно!</strong>
+            </div>
+            <p style="color: #166534; margin: 0.5rem 0 0 0;">
+                Удалено {{ deleted_count }} истекших ключей из системы.
+            </p>
+        </div>
+        {% else %}
+        <div style="background: #fef3c7; border: 1px solid #fde68a; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; color: #92400e;">
+                <span class="material-icons">info</span>
+                <strong>Нет истекших ключей</strong>
+            </div>
+            <p style="color: #92400e; margin: 0.5rem 0 0 0;">
+                Все ключи в системе активны и не требуют очистки.
+            </p>
+        </div>
+        {% endif %}
+    </div>
+    
+    <div class="card-actions">
+        <form method="post" action="/cleanup" style="display: inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-warning" onclick="return confirm('Выполнить очистку истекших ключей?')">
+                <span class="material-icons">cleaning_services</span>
+                Выполнить очистку
+            </button>
+        </form>
+        <a href="/dashboard" class="btn btn-primary">
+            <span class="material-icons">dashboard</span>
+            Вернуться к панели
+        </a>
+        <a href="/keys" class="btn btn-success">
+            <span class="material-icons">visibility</span>
+            Просмотреть ключи
+        </a>
+    </div>
+</div>
+{% endblock %} 

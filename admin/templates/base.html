@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VeilBot Admin</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="material-icons">vpn_key</span>
+                    <span class="logo-text">VeilBot</span>
+                </div>
+            </div>
+            
+            <ul class="nav-menu">
+                <li class="nav-item">
+                    <a href="/dashboard" class="nav-link">
+                        <span class="material-icons">dashboard</span>
+                        <span>Панель</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/keys" class="nav-link">
+                        <span class="material-icons">key</span>
+                        <span>Ключи</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/servers" class="nav-link">
+                        <span class="material-icons">dns</span>
+                        <span>Серверы</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/tariffs" class="nav-link">
+                        <span class="material-icons">payment</span>
+                        <span>Тарифы</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/cleanup" class="nav-link">
+                        <span class="material-icons">cleaning_services</span>
+                        <span>Очистка</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/users" class="nav-link">
+                        <span class="material-icons">group</span>
+                        <span>Пользователи</span>
+                    </a>
+                </li>
+            </ul>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-bar">
+                <div class="top-bar-content">
+                    <h1 class="page-title">{% block page_title %}Админ панель{% endblock %}</h1>
+                    <div class="top-bar-actions">
+                        <a href="/logout" class="logout-btn">
+                            <span class="material-icons">logout</span>
+                            <span>Выйти</span>
+                        </a>
+                    </div>
+                </div>
+            </header>
+
+            <div class="content-wrapper">
+    {% block content %}{% endblock %}
+            </div>
+  </main>
+    </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+    <script>
+        // Initialize Materialize components
+        document.addEventListener('DOMContentLoaded', function() {
+            M.AutoInit();
+            
+            // Highlight current page in navigation
+            const currentPath = window.location.pathname;
+            const navLinks = document.querySelectorAll('.nav-link');
+            navLinks.forEach(link => {
+                if (link.getAttribute('href') === currentPath) {
+                    link.classList.add('active');
+                }
+            });
+        });
+    </script>
+</body>
+</html>

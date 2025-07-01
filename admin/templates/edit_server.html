@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block page_title %}Редактировать сервер{% endblock %}
+
+{% block content %}
+<div class="form-container">
+    <div class="card-header">
+        <h2 class="card-title">Редактировать сервер</h2>
+    </div>
+    
+    <form method="post" action="/servers/edit/{{ server.id }}">
+        <div class="form-grid">
+            <div class="form-group">
+                <label class="form-label">Название сервера</label>
+                <input type="text" name="name" class="form-input" required 
+                       value="{{ server.name }}" placeholder="Введите название">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">API URL</label>
+                <input type="url" name="api_url" class="form-input" required 
+                       value="{{ server.api_url }}" placeholder="https://server.com:port/api">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">SHA256 сертификата</label>
+                <input type="text" name="cert_sha256" class="form-input" required 
+                       value="{{ server.cert_sha256 }}" placeholder="XX:XX:XX:XX:XX:XX:XX:XX">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Максимум ключей</label>
+                <input type="number" name="max_keys" class="form-input" required 
+                       value="{{ server.max_keys }}" placeholder="100" min="1">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Страна</label>
+                <input type="text" name="country" class="form-input" value="{{ server.country }}" placeholder="Введите страну">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-checkbox">
+                    <input type="checkbox" name="active" {% if server.active %}checked{% endif %}>
+                    <span>Активен</span>
+                </label>
+            </div>
+        </div>
+        
+        <div class="card-actions">
+            <a href="/servers" class="btn btn-warning">
+                <span class="material-icons">cancel</span>
+                Отмена
+            </a>
+            <button type="submit" class="btn btn-primary">
+                <span class="material-icons">save</span>
+                Сохранить изменения
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %} 

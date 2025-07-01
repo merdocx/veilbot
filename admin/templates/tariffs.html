@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block page_title %}Тарифы{% endblock %}
+
+{% block content %}
+<div class="tariffs-page">
+    <!-- Tariffs Table -->
+    <div class="table-container">
+        <table class="table tariffs-table">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Название</th>
+                    <th>Длительность</th>
+      <th>Цена (₽)</th>
+                    <th>Действия</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in tariffs %}
+    <tr>
+      <td>{{ t[0] }}</td>
+                    <td><strong>{{ t[1] }}</strong></td>
+                    <td>
+                        {% set duration = t[2] %}
+                        {% if duration >= 86400 %}
+                            <span class="badge badge-info">{{ (duration // 86400) }} дн.</span>
+                        {% elif duration >= 3600 %}
+                            <span class="badge badge-info">{{ (duration // 3600) }} ч.</span>
+                        {% else %}
+                            <span class="badge badge-info">{{ (duration // 60) }} мин.</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if t[3] == 0 %}
+                            <span class="badge badge-success">Бесплатно</span>
+                        {% else %}
+                            <span class="badge badge-warning">{{ t[3] }} ₽</span>
+                        {% endif %}
+                    </td>
+      <td>
+                        <div class="btn-group">
+                            <a href="/tariffs/edit/{{ t[0] }}" class="btn btn-primary btn-sm" title="Редактировать">
+                                <span class="material-icons">edit</span>
+                            </a>
+                            <a href="/delete_tariff/{{ t[0] }}" class="btn btn-danger btn-sm" 
+                               onclick="return confirm('Удалить тариф?')" title="Удалить">
+                                <span class="material-icons">delete</span>
+                            </a>
+                        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+    </div>
+
+    <!-- Add Tariff Form -->
+    <div class="form-container">
+        <div class="card-header">
+            <h2 class="card-title">Добавить новый тариф</h2>
+        </div>
+        <form method="post" action="/add_tariff">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label class="form-label">Название тарифа</label>
+                    <input type="text" name="name" class="form-input" required placeholder="Например: 1 день">
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">Длительность (в секундах)</label>
+                    <input type="number" name="duration_sec" class="form-input" required placeholder="86400" min="1">
+                    <small style="color: #64748b; font-size: 0.75rem;">
+                        86400 = 1 день, 3600 = 1 час, 60 = 1 минута
+                    </small>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">Цена (₽)</label>
+                    <input type="number" name="price_rub" class="form-input" required placeholder="0" min="0">
+                    <small style="color: #64748b; font-size: 0.75rem;">
+                        0 = бесплатный тариф
+                    </small>
+                </div>
+            </div>
+            
+            <div class="card-actions">
+                <button type="submit" class="btn btn-primary">
+                    <span class="material-icons">add</span>
+                    Добавить тариф
+                </button>
+            </div>
+        </form>
+    </div>
+  </div>
+{% endblock %}
