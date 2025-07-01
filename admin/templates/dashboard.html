@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block page_title %}Панель управления{% endblock %}
+
+{% block content %}
+<!-- Stats Overview -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon blue">
+                <span class="material-icons">key</span>
+            </div>
+            <div>
+                <div class="stat-value">{{ active_keys }}</div>
+                <div class="stat-label">Активные ключи</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon green">
+                <span class="material-icons">payment</span>
+            </div>
+            <div>
+                <div class="stat-value">{{ tariff_count }}</div>
+                <div class="stat-label">Тарифы</div>
+            </div>
+    </div>
+  </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon purple">
+                <span class="material-icons">dns</span>
+            </div>
+            <div>
+                <div class="stat-value">{{ server_count }}</div>
+                <div class="stat-label">Серверы</div>
+            </div>
+        </div>
+    </div>
+  </div>
+
+<!-- Quick Actions -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Быстрые действия</h2>
+    </div>
+    <div class="card-content">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+            <a href="/cleanup" class="btn btn-warning" style="justify-content: center;">
+                <span class="material-icons">cleaning_services</span>
+                Очистить истекшие ключи
+            </a>
+            <a href="/keys" class="btn btn-primary" style="justify-content: center;">
+                <span class="material-icons">visibility</span>
+                Просмотреть ключи
+            </a>
+            <a href="/servers" class="btn btn-success" style="justify-content: center;">
+                <span class="material-icons">add</span>
+                Добавить сервер
+            </a>
+            <a href="/tariffs" class="btn btn-primary" style="justify-content: center;">
+                <span class="material-icons">add_circle</span>
+                Добавить тариф
+            </a>
+    </div>
+  </div>
+</div>
+{% endblock %}
