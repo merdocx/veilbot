@@ -2,6 +2,7 @@ import asyncio
 import time
 import sqlite3
 import re
+import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from config import TELEGRAM_BOT_TOKEN
@@ -153,10 +154,26 @@ async def back_to_main(message: types.Message):
         del user_states[user_id]
     await message.answer("Главное меню:", reply_markup=main_menu)
 
+# --- Обработчик кнопки 'Пригласить друга' (теперь выше всех универсальных) ---
+@dp.message_handler(lambda m: m.text == "Получить месяц бесплатно")
+async def handle_invite_friend(message: types.Message):
+    print(f"[DEBUG] handle_invite_friend called: user_id={message.from_user.id}")
+    user_id = message.from_user.id
+    bot_username = (await bot.get_me()).username
+    invite_link = f"https://t.me/{bot_username}?start={user_id}"
+    await bot.send_message(
+        message.chat.id,
+        f"Пригласите друга по этой ссылке:\n{invite_link}\n\nЕсли друг купит доступ, вы получите месяц бесплатно!",
+        reply_markup=main_menu
+    )
+
 # Handle email input
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_email")
 async def handle_email_input(message: types.Message):
     if message.text == "Получить месяц бесплатно":
+        user_id = message.from_user.id
+        user_states.pop(user_id, None)
+        await handle_invite_friend(message)
         return
     user_id = message.from_user.id
     email = message.text.strip()
@@ -173,6 +190,9 @@ async def handle_email_input(message: types.Message):
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_country")
 async def handle_country_selection(message: types.Message):
     if message.text == "Получить месяц бесплатно":
+        user_id = message.from_user.id
+        user_states.pop(user_id, None)
+        await handle_invite_friend(message)
         return
     user_id = message.from_user.id
     country = message.text.strip()
@@ -186,6 +206,9 @@ async def handle_country_selection(message: types.Message):
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_tariff" and "—" in m.text and any(w in m.text for w in ["₽", "бесплатно"]))
 async def handle_tariff_selection_with_country(message: types.Message):
     if message.text == "Получить месяц бесплатно":
+        user_id = message.from_user.id
+        user_states.pop(user_id, None)
+        await handle_invite_friend(message)
         return
     user_id = message.from_user.id
     label = message.text.strip()
@@ -238,9 +261,26 @@ async def handle_free_tariff(cursor, message, user_id, tariff, country=None):
         await create_new_key_flow(cursor, message, user_id, tariff, None, country)
 
 def check_free_tariff_limit(cursor, user_id):
-    since = int(time.time()) - 86400
-    cursor.execute("SELECT COUNT(*) FROM keys WHERE user_id = ? AND created_at > ?", (user_id, since))
-    return cursor.fetchone()[0] > 0
+    # Найти последний бесплатный ключ пользователя
+    cursor.execute("""
+        SELECT expiry_at, created_at FROM keys k
+        JOIN tariffs t ON k.tariff_id = t.id
+        WHERE k.user_id = ? AND t.price_rub = 0
+        ORDER BY k.expiry_at DESC LIMIT 1
+    """, (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        return False
+    expiry_at, created_at = row
+    now = int(time.time())
+    # Если ключ ещё активен — нельзя
+    if expiry_at > now:
+        return True
+    # Если с момента истечения прошло менее 24 часов — нельзя
+    if now - expiry_at < 86400:
+        return True
+    # Иначе можно
+    return False
 
 def extend_existing_key(cursor, existing_key, duration):
     new_expiry = existing_key[1] + duration
@@ -436,6 +476,11 @@ async def notify_expiring_keys():
                 elif original_duration > one_hour and remaining_time <= one_hour and notified < 2:
                     message = f"⏳ Ваш ключ истечет через 1 час:\n`{access_url}`\nПродлите доступ:"
                     new_notified = 2
+                # 10 minutes notification (универсально для всех ключей)
+                elif remaining_time > 0 and remaining_time <= 600 and notified < 4:
+                    minutes_remaining = (remaining_time % 3600) // 60
+                    message = f"⏳ Ваш ключ истечет через {minutes_remaining} мин.\n`{access_url}`\nПродлите доступ:"
+                    new_notified = 4
                 # 10% notification
                 elif remaining_time > 0 and remaining_time <= ten_percent_threshold and notified < 1:
                     hours_remaining = remaining_time // 3600
@@ -507,24 +552,58 @@ def get_country_menu(countries):
     menu.add(KeyboardButton("🔙 Назад"))
     return menu
 
-# --- Обработчик кнопки 'Пригласить друга' (перемещён выше универсальных) ---
-@dp.message_handler(lambda m: m.text == "Получить месяц бесплатно")
-async def handle_invite_friend(message: types.Message):
-    print(f"[DEBUG] handle_invite_friend called: user_id={message.from_user.id}")
-    user_id = message.from_user.id
-    bot_username = (await bot.get_me()).username
-    invite_link = f"https://t.me/{bot_username}?start={user_id}"
-    await bot.send_message(
-        message.chat.id,
-        f"Пригласите друга по этой ссылке:\n{invite_link}\n\nЕсли друг купит доступ, вы получите месяц бесплатно!",
-        reply_markup=main_menu,
-        parse_mode=None
-    )
+async def process_pending_paid_payments():
+    while True:
+        try:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.execute('''
+                    SELECT id, user_id, tariff_id, email FROM payments
+                    WHERE status="paid" AND user_id NOT IN (SELECT user_id FROM keys)
+                ''')
+                payments = cursor.fetchall()
+                for payment_id, user_id, tariff_id, email in payments:
+                    # Получаем тариф
+                    cursor.execute('SELECT name, duration_sec FROM tariffs WHERE id=?', (tariff_id,))
+                    tariff_row = cursor.fetchone()
+                    if not tariff_row:
+                        logging.error(f"[AUTO-ISSUE] Не найден тариф id={tariff_id} для user_id={user_id}")
+                        continue
+                    tariff = {'id': tariff_id, 'name': tariff_row[0], 'duration_sec': tariff_row[1]}
+                    # Выбираем сервер с местами
+                    server = select_available_server(cursor)
+                    if not server:
+                        logging.error(f"[AUTO-ISSUE] Нет доступных серверов для user_id={user_id}, тариф={tariff}")
+                        continue
+                    # Создаём ключ
+                    try:
+                        key = await asyncio.get_event_loop().run_in_executor(None, create_key, server['api_url'], server['cert_sha256'])
+                    except Exception as e:
+                        logging.error(f"[AUTO-ISSUE] Ошибка при создании ключа для user_id={user_id}: {e}")
+                        continue
+                    if not key:
+                        logging.error(f"[AUTO-ISSUE] Не удалось создать ключ для user_id={user_id}, тариф={tariff}")
+                        continue
+                    now = int(time.time())
+                    expiry = now + tariff['duration_sec']
+                    cursor.execute(
+                        "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (server['id'], user_id, key["accessUrl"], expiry, key["id"], now, email, tariff_id)
+                    )
+                    # Можно уведомить пользователя через бота, если нужно
+                    try:
+                        await bot.send_message(user_id, format_key_message(key["accessUrl"]), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    except Exception as e:
+                        logging.error(f"[AUTO-ISSUE] Не удалось отправить ключ user_id={user_id}: {e}")
+        except Exception as e:
+            logging.error(f"[AUTO-ISSUE] Общая ошибка фоновой задачи: {e}")
+        await asyncio.sleep(300)
 
 if __name__ == "__main__":
     from aiogram import executor
     init_db()
     loop = asyncio.get_event_loop()
+    # Запуск фоновой задачи автоматической выдачи ключей
+    loop.create_task(process_pending_paid_payments())
     loop.create_task(auto_delete_expired_keys())
     loop.create_task(notify_expiring_keys())
     loop.create_task(check_key_availability())
