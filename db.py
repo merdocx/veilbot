@@ -113,6 +113,17 @@ def migrate_add_country_to_servers():
         print("Поле country уже существует в таблице servers.")
     conn.close()
 
+def migrate_add_revoked_to_payments():
+    conn = sqlite3.connect("vpn.db")
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE payments ADD COLUMN revoked INTEGER DEFAULT 0")
+        conn.commit()
+        print("Поле revoked успешно добавлено в таблицу payments.")
+    except sqlite3.OperationalError:
+        print("Поле revoked уже существует в таблице payments.")
+    conn.close()
+
 if __name__ == "__main__":
     init_db()
     migrate_add_key_id()
@@ -120,4 +131,5 @@ if __name__ == "__main__":
     migrate_add_payment_email()
     migrate_add_tariff_id_to_keys()
     migrate_add_country_to_servers()
+    migrate_add_revoked_to_payments()
 

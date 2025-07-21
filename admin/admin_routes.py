@@ -513,7 +513,15 @@ async def delete_key_route(request: Request, key_id: int):
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Получаем user_id удаляемого ключа
+    c.execute("SELECT user_id FROM keys WHERE id = ?", (key_id,))
+    row = c.fetchone()
+    user_id = row[0] if row else None
+    # Удаляем ключ
     c.execute("DELETE FROM keys WHERE id = ?", (key_id,))
+    # Если ключ был куплен, помечаем платеж как revoked
+    if user_id:
+        c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
     conn.commit()
     conn.close()
 
