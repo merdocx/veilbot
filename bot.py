@@ -579,7 +579,7 @@ async def process_pending_paid_payments():
             with get_db_cursor(commit=True) as cursor:
                 cursor.execute('''
                     SELECT id, user_id, tariff_id, email FROM payments
-                    WHERE status="paid" AND user_id NOT IN (SELECT user_id FROM keys)
+                    WHERE status="paid" AND revoked = 0 AND user_id NOT IN (SELECT user_id FROM keys)
                 ''')
                 payments = cursor.fetchall()
                 for payment_id, user_id, tariff_id, email in payments:
