@@ -519,9 +519,12 @@ async def delete_key_route(request: Request, key_id: int):
     user_id = row[0] if row else None
     # Удаляем ключ
     c.execute("DELETE FROM keys WHERE id = ?", (key_id,))
-    # Если ключ был куплен, помечаем платеж как revoked
+    # Проверяем, остались ли у пользователя ещё активные ключи
     if user_id:
-        c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
+        c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
+        count = c.fetchone()[0]
+        if count == 0:
+            c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
     conn.commit()
     conn.close()
 
