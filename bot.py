@@ -33,10 +33,17 @@ user_states = {}  # user_id -> {"state": ..., ...}
 # Notification state for key availability
 low_key_notified = False
 
+# Добавляем кнопку 'Помощь' в главное меню
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 main_menu.add(KeyboardButton("Купить доступ"))
 main_menu.add(KeyboardButton("Мои ключи"))
 main_menu.add(KeyboardButton("Получить месяц бесплатно"))
+main_menu.add(KeyboardButton("Помощь"))
+
+# Клавиатура для помощи
+help_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+help_keyboard.add(KeyboardButton("Не помогло - перевыпустить ключ"))
+help_keyboard.add(KeyboardButton("🔙 Назад"))
 
 cancel_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
 cancel_keyboard.add(KeyboardButton("🔙 Отмена"))
@@ -252,11 +259,22 @@ async def handle_free_tariff(cursor, message, user_id, tariff, country=None):
         await message.answer("Вы уже активировали бесплатный тариф за последние 24 часа.", reply_markup=main_menu)
         return
     now = int(time.time())
-    cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ?", (user_id, now))
+    # Проверяем наличие активного ключа и его тип
+    cursor.execute("""
+        SELECT k.id, k.expiry_at, t.price_rub
+        FROM keys k
+        JOIN tariffs t ON k.tariff_id = t.id
+        WHERE k.user_id = ? AND k.expiry_at > ?
+        ORDER BY k.expiry_at DESC LIMIT 1
+    """, (user_id, now))
     existing_key = cursor.fetchone()
     if existing_key:
-        await message.answer("У вас уже есть активный бесплатный ключ. Получить новый можно через 24 часа после последней активации.", reply_markup=main_menu)
-        return
+        if existing_key[2] > 0:
+            await message.answer("У вас уже есть активный платный ключ. Бесплатный ключ можно получить только если нет активных платных ключей.", reply_markup=main_menu)
+            return
+        else:
+            await message.answer("У вас уже есть активный бесплатный ключ. Получить новый можно через 24 часа после последней активации.", reply_markup=main_menu)
+            return
     else:
         await create_new_key_flow(cursor, message, user_id, tariff, None, country)
 
@@ -282,9 +300,12 @@ def check_free_tariff_limit(cursor, user_id):
     # Иначе можно
     return False
 
-def extend_existing_key(cursor, existing_key, duration):
+def extend_existing_key(cursor, existing_key, duration, email=None):
     new_expiry = existing_key[1] + duration
-    cursor.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry, existing_key[0]))
+    if email:
+        cursor.execute("UPDATE keys SET expiry_at = ?, email = ? WHERE id = ?", (new_expiry, email, existing_key[0]))
+    else:
+        cursor.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry, existing_key[0]))
 
 async def create_new_key_flow(cursor, message, user_id, tariff, email=None, country=None):
     now = int(time.time())
@@ -292,7 +313,7 @@ async def create_new_key_flow(cursor, message, user_id, tariff, email=None, coun
     cursor.execute("SELECT id, expiry_at, access_url FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (user_id, now))
     existing_key = cursor.fetchone()
     if existing_key:
-        extend_existing_key(cursor, existing_key, tariff['duration_sec'])
+        extend_existing_key(cursor, existing_key, tariff['duration_sec'], email)
         await message.answer(f"Ваш ключ продлён на {tariff['duration_sec']//86400} дней!\n\n{format_key_message(existing_key[2])}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
         # Уведомление админу
         admin_msg = (
@@ -597,6 +618,80 @@ async def process_pending_paid_payments():
         except Exception as e:
             logging.error(f"[AUTO-ISSUE] Общая ошибка фоновой задачи: {e}")
         await asyncio.sleep(300)
+
+@dp.message_handler(lambda m: m.text == "Помощь")
+async def handle_help(message: types.Message):
+    help_text = (
+        "Если VPN не работает, попробуйте удалить (забыть) активный ключ в приложении Outline и добавить его повторно."
+    )
+    await message.answer(help_text, reply_markup=help_keyboard)
+
+@dp.message_handler(lambda m: m.text == "🔙 Назад" and message.reply_markup == help_keyboard)
+async def handle_help_back(message: types.Message):
+    await message.answer("Главное меню:", reply_markup=main_menu)
+
+@dp.message_handler(lambda m: m.text == "Не помогло - перевыпустить ключ")
+async def handle_reissue_key(message: types.Message):
+    user_id = message.from_user.id
+    now = int(time.time())
+    with get_db_cursor(commit=True) as cursor:
+        # Получаем текущий активный ключ и его сервер/страну
+        cursor.execute("""
+            SELECT k.id, k.expiry_at, k.server_id, k.access_url, s.country, k.tariff_id, k.email
+            FROM keys k
+            JOIN servers s ON k.server_id = s.id
+            WHERE k.user_id = ? AND k.expiry_at > ?
+            ORDER BY k.expiry_at DESC LIMIT 1
+        """, (user_id, now))
+        current_key = cursor.fetchone()
+        if not current_key:
+            await message.answer("У вас нет активного ключа для перевыпуска.", reply_markup=main_menu)
+            return
+        key_id, expiry_at, old_server_id, old_access_url, country, tariff_id, old_email = current_key
+        # Получаем тариф
+        cursor.execute("SELECT name, duration_sec, price_rub FROM tariffs WHERE id = ?", (tariff_id,))
+        tariff_row = cursor.fetchone()
+        if not tariff_row:
+            await message.answer("Ошибка: тариф не найден.", reply_markup=main_menu)
+            return
+        tariff = {'id': tariff_id, 'name': tariff_row[0], 'duration_sec': tariff_row[1], 'price_rub': tariff_row[2]}
+        # Считаем оставшееся время
+        remaining = expiry_at - now
+        if remaining <= 0:
+            await message.answer("Срок действия вашего ключа истёк.", reply_markup=main_menu)
+            return
+        # Ищем другой сервер той же страны
+        cursor.execute("""
+            SELECT id, api_url, cert_sha256 FROM servers WHERE active = 1 AND country = ? AND id != ?
+        """, (country, old_server_id))
+        servers = cursor.fetchall()
+        if not servers:
+            await message.answer("Нет других серверов в вашей стране для перевыпуска ключа.", reply_markup=main_menu)
+            return
+        # Берём первый подходящий сервер
+        new_server_id, api_url, cert_sha256 = servers[0]
+        # Создаём новый ключ
+        key = await asyncio.get_event_loop().run_in_executor(None, create_key, api_url, cert_sha256)
+        if not key:
+            await message.answer("Ошибка при создании нового ключа.", reply_markup=main_menu)
+            return
+        # Удаляем старый ключ из Outline
+        cursor.execute("SELECT cert_sha256 FROM servers WHERE id = ?", (old_server_id,))
+        old_cert_sha256 = cursor.fetchone()
+        if old_cert_sha256:
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, delete_key, api_url, old_cert_sha256[0], key_id)
+            except Exception as e:
+                print(f"[ERROR] Не удалось удалить старый ключ: {e}")
+        # Удаляем старый ключ из базы
+        cursor.execute("DELETE FROM keys WHERE id = ?", (key_id,))
+        # Добавляем новый ключ с тем же сроком действия и email
+        cursor.execute(
+            "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, tariff_id)
+        )
+        await message.answer(format_key_message(key["accessUrl"]), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
 
 if __name__ == "__main__":
     from aiogram import executor
