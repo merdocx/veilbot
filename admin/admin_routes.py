@@ -16,6 +16,7 @@ import secrets
 from passlib.context import CryptContext
 from dotenv import load_dotenv
 from datetime import datetime
+import json
 
 # Load environment variables
 load_dotenv()
@@ -639,6 +640,25 @@ async def api_update_key_expiry(request: Request, key_id: int):
         c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_id))
         conn.commit()
     return JSONResponse({"success": True})
+
+@router.post("/yookassa/webhook")
+async def yookassa_webhook(request: Request):
+    body = await request.body()
+    try:
+        data = json.loads(body)
+        payment_id = data["object"]["id"]
+        status_ = data["object"].get("status")
+        if status_ == "succeeded":
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
+            conn.commit()
+            conn.close()
+            logging.info(f"[YOOKASSA_WEBHOOK] Payment {payment_id} marked as paid via webhook.")
+        return JSONResponse({"status": "ok"})
+    except Exception as e:
+        logging.error(f"[YOOKASSA_WEBHOOK] Error: {e}")
+        return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
 
 
 
