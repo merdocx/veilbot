@@ -692,6 +692,22 @@ async def handle_reissue_key(message: types.Message):
             (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, tariff_id)
         )
         await message.answer(format_key_message(key["accessUrl"]), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+        # Уведомление админу о перевыпуске
+        admin_msg = (
+            f"🔄 *Перевыпуск ключа*\n"
+            f"Пользователь: `{user_id}`\n"
+            f"Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
+            f"Старый сервер: `{old_server_id}`\n"
+            f"Новый сервер: `{new_server_id}`\n"
+            f"Новый ключ: `{key['accessUrl']}`\n"
+            f"Срок действия: до <code>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now + remaining))}</code>\n"
+        )
+        if old_email:
+            admin_msg += f"Email: `{old_email}`\n"
+        try:
+            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+        except Exception as e:
+            print(f"[ERROR] Failed to send admin notification (reissue): {e}")
 
 if __name__ == "__main__":
     from aiogram import executor
