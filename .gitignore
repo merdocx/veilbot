@@ -3,15 +3,22 @@
 .env.bot
 .env.local
 .env.production
+.env.*
 
 # Database files
 *.db
 *.sqlite
 *.sqlite3
+*.db.backup
+*.db.*.backup
 
 # Log files
 *.log
 logs/
+admin_audit.log
+bot.log
+country_debug.log
+nohup.out
 
 # Python
 __pycache__/
@@ -39,6 +46,7 @@ wheels/
 venv/
 env/
 ENV/
+.venv/
 
 # IDE
 .vscode/
@@ -58,7 +66,32 @@ Thumbs.db
 *.p12
 secrets/
 keys/
+certificates/
 
 # Temporary files
 *.tmp
-*.temp 
+*.temp
+*.bak
+
+# Git
+.git_broken/
+
+# Nginx logs (if copied)
+nginx/*.log
+
+# Backup files
+backup_*.db
+backup_*.sql
+
+# Test files
+test_*.py
+*_test.py
+
+# Documentation builds
+docs/_build/
+docs/build/
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml 
