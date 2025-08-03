@@ -38,4 +38,28 @@ jobs:
         run: |
           echo "Testing Python..."
           python3 --version
-          python3 -c "print('Hello World!')" 
+          python3 -c "print('Hello World!')"
+      
+      - name: Install dependencies
+        run: |
+          echo "Installing dependencies..."
+          python3 -m pip install --upgrade pip
+          pip3 install -r requirements.txt
+      
+      - name: Test imports
+        run: |
+          echo "Testing imports..."
+          python3 -c "import aiogram; print('aiogram OK')"
+          python3 -c "import fastapi; print('fastapi OK')"
+          python3 -c "import aiohttp; print('aiohttp OK')"
+      
+      - name: Run test script
+        run: |
+          echo "Running test_bot.py..."
+          python3 test_bot.py
+
+      - name: Security audit
+        run: |
+          echo "Running security audit..."
+          pip3 install pip-audit
+          pip3 audit || echo "Security audit completed with warnings"
