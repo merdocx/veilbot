@@ -1,0 +1,54 @@
+name: CI Simple
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Test Python
+        run: |
+          echo "Testing basic Python functionality..."
+          python3 --version
+          python3 -c "print('Hello from Python!')"
+      
+      - name: List files
+        run: |
+          echo "Current directory contents:"
+          ls -la
+          echo "Python files:"
+          find . -name "*.py" -type f | head -10
+      
+      - name: Install dependencies
+        run: |
+          echo "Installing dependencies..."
+          python3 -m pip install --upgrade pip
+          pip3 install -r requirements.txt
+      
+      - name: Test imports
+        run: |
+          echo "Testing imports..."
+          python3 -c "import aiogram; print('aiogram OK')"
+          python3 -c "import fastapi; print('fastapi OK')"
+          python3 -c "import aiohttp; print('aiohttp OK')"
+      
+      - name: Run test script
+        run: |
+          echo "Running test script..."
+          if [ -f test_bot.py ]; then
+            python3 test_bot.py
+          else
+            echo "test_bot.py not found"
+            exit 1
+          fi 
