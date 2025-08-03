@@ -3,6 +3,12 @@
 {% block page_title %}Очистка истекших ключей{% endblock %}
 
 {% block content %}
+<style>
+.stat-icon.purple {
+  background-color: #8b5cf6;
+  color: white;
+}
+</style>
 <div class="card">
     <div class="card-header">
         <h2 class="card-title">Результаты очистки</h2>
@@ -54,7 +60,19 @@
                     </div>
                     <div>
                         <div class="stat-value">{{ deleted_from_outline }}</div>
-                        <div class="stat-label">Удалено из серверов</div>
+                        <div class="stat-label">Удалено из Outline</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon purple">
+                        <span class="material-icons">security</span>
+                    </div>
+                    <div>
+                        <div class="stat-value">{{ deleted_from_v2ray or 0 }}</div>
+                        <div class="stat-label">Удалено из V2Ray</div>
                     </div>
                 </div>
             </div>

@@ -6,59 +6,68 @@
 <!-- Servers Table -->
 <div class="table-container">
     <table class="table servers-table">
-  <thead>
-    <tr>
-      <th>ID</th>
-      <th>Название</th>
-      <th>API URL</th>
-      <th>Выдано ключей</th>
-      <th>Макс. ключей</th>
-      <th>Статус</th>
-      <th>Страна</th>
-      <th></th>
-    </tr>
-    <tr>
-      <th><input type="text" id="filter-id" placeholder="Фильтр по ID" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-      <th><input type="text" id="filter-name" placeholder="Фильтр по названию" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-      <th><input type="text" id="filter-api-url" placeholder="Фильтр по API URL" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-      <th><input type="text" id="filter-issued" placeholder="Фильтр по выдано" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-      <th><input type="text" id="filter-max-keys" placeholder="Фильтр по макс." style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-      <th><input type="text" id="filter-status" placeholder="Фильтр по статусу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-      <th><input type="text" id="filter-country" placeholder="Фильтр по стране" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-      <th></th>
-    </tr>
-  </thead>
-  <tbody id="servers-tbody">
-    {% for s in servers %}
-    <tr>
-      <td>{{ s[0] }}</td>
-      <td><strong>{{ s[1] }}</strong></td>
-      <td><code class="code">{{ s[2] }}</code></td>
-      <td>{% if s[7] %}{{ s[7] }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
-      <td>{{ s[4] }}</td>
-      <td>
-        {% if s[5] %}
-          <span class="badge badge-success">Активен</span>
-        {% else %}
-          <span class="badge badge-danger">Неактивен</span>
-        {% endif %}
-      </td>
-      <td><span class="badge badge-info">{{ s[6] }}</span></td>
-      <td>
-        <div class="btn-group">
-          <a href="/servers/edit/{{ s[0] }}" class="btn btn-primary btn-sm" title="Редактировать">
-            <span class="material-icons">edit</span>
-          </a>
-          <a href="/delete_server/{{ s[0] }}" class="btn btn-danger btn-sm" 
-             onclick="return confirm('Удалить сервер?')" title="Удалить">
-            <span class="material-icons">delete</span>
-          </a>
-        </div>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Название</th>
+                <th>Протокол</th>
+                <th>API URL</th>
+                <th>Выдано ключей</th>
+                <th>Макс. ключей</th>
+                <th>Статус</th>
+                <th>Страна</th>
+                <th></th>
+            </tr>
+            <tr>
+                <th><input type="text" id="filter-id" placeholder="Фильтр по ID" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th><input type="text" id="filter-name" placeholder="Фильтр по названию" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th><input type="text" id="filter-protocol" placeholder="Фильтр по протоколу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th><input type="text" id="filter-api-url" placeholder="Фильтр по API URL" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th><input type="text" id="filter-issued" placeholder="Фильтр по выдано" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th><input type="text" id="filter-max-keys" placeholder="Фильтр по макс." style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th><input type="text" id="filter-status" placeholder="Фильтр по статусу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th><input type="text" id="filter-country" placeholder="Фильтр по стране" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody id="servers-tbody">
+            {% for s in servers %}
+            <tr>
+                <td>{{ s[0] }}</td>
+                <td><strong>{{ s[1] }}</strong></td>
+                <td>
+                    {% if s[7] == 'v2ray' %}
+                        <span class="badge badge-warning">🛡️ V2Ray</span>
+                    {% else %}
+                        <span class="badge badge-primary">🔒 Outline</span>
+                    {% endif %}
+                </td>
+                <td><code class="code">{{ s[2] }}</code></td>
+                <td>{% if s[11] %}{{ s[11] }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                <td>{{ s[4] }}</td>
+                <td>
+                    {% if s[5] %}
+                        <span class="badge badge-success">Активен</span>
+                    {% else %}
+                        <span class="badge badge-danger">Неактивен</span>
+                    {% endif %}
+                </td>
+                <td><span class="badge badge-info">{{ s[6] }}</span></td>
+                <td>
+                    <div class="btn-group">
+                        <a href="/servers/edit/{{ s[0] }}" class="btn btn-primary btn-sm" title="Редактировать">
+                            <span class="material-icons">edit</span>
+                        </a>
+                        <a href="/delete_server/{{ s[0] }}" class="btn btn-danger btn-sm" 
+                           onclick="return confirm('Удалить сервер?')" title="Удалить">
+                            <span class="material-icons">delete</span>
+                        </a>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
 </div>
 
 <!-- Пагинация -->
@@ -69,26 +78,51 @@
     <div class="card-header">
         <h2 class="card-title">Добавить новый сервер</h2>
     </div>
-    <form method="post" action="/add_server">
+    
+    <!-- Step 1: Server Type Selection -->
+    <div id="server-type-selection" class="server-type-container">
+        <h3>Выберите тип сервера:</h3>
+        <div class="server-type-options">
+            <div class="server-type-option" data-type="outline">
+                <div class="server-type-icon">🔒</div>
+                <div class="server-type-title">Outline VPN</div>
+                <div class="server-type-description">Современный VPN протокол с высокой скоростью</div>
+            </div>
+            <div class="server-type-option" data-type="v2ray">
+                <div class="server-type-icon">🛡️</div>
+                <div class="server-type-title">V2Ray VLESS</div>
+                <div class="server-type-description">Продвинутый протокол с Reality и обфускацией трафика</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Step 2: Server Configuration Form -->
+    <form id="server-form" method="post" action="/add_server" style="display: none;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="protocol" id="selected-protocol">
+        
+        <div class="form-header">
+            <h3 id="form-title">Настройка сервера</h3>
+            <button type="button" id="back-to-selection" class="btn btn-secondary btn-sm">
+                <span class="material-icons">arrow_back</span>
+                Изменить тип
+            </button>
+        </div>
+        
         <div class="form-grid">
+            <!-- Common Fields -->
             <div class="form-group">
-                <label class="form-label">Название сервера</label>
+                <label class="form-label">Название сервера *</label>
                 <input type="text" name="name" class="form-input" required placeholder="Введите название">
             </div>
             
             <div class="form-group">
-                <label class="form-label">API URL</label>
+                <label class="form-label">API URL *</label>
                 <input type="url" name="api_url" class="form-input" required placeholder="https://server.com:port/api">
             </div>
             
             <div class="form-group">
-                <label class="form-label">SHA256 сертификата</label>
-                <input type="text" name="cert_sha256" class="form-input" required placeholder="XX:XX:XX:XX:XX:XX:XX:XX">
-            </div>
-            
-            <div class="form-group">
-                <label class="form-label">Максимум ключей</label>
+                <label class="form-label">Максимум ключей *</label>
                 <input type="number" name="max_keys" class="form-input" required placeholder="100" min="1">
             </div>
             
@@ -97,87 +131,171 @@
                 <input type="text" name="country" class="form-input" placeholder="Введите страну">
             </div>
             
+            <!-- Outline-specific fields -->
+            <div class="form-group outline-fields" style="display: none;">
+                <label class="form-label">SHA256 сертификата *</label>
+                <input type="text" name="cert_sha256" class="form-input" placeholder="XX:XX:XX:XX:XX:XX:XX:XX">
+            </div>
+            
+            <!-- V2Ray-specific fields -->
+            <div class="form-group v2ray-fields" style="display: none;">
+                <label class="form-label">Домен *</label>
+                <input type="text" name="domain" class="form-input" placeholder="example.com">
+            </div>
+            
+            <div class="form-group v2ray-fields" style="display: none;">
+                <label class="form-label">API Ключ *</label>
+                <input type="text" name="api_key" class="form-input" placeholder="QBDMqDzCRh17NIGUsKDtWtoUmvwRVvSHHp4W8OCMcOM=" required>
+                <small class="form-help">API ключ для аутентификации V2Ray сервера</small>
+            </div>
+            
+            <div class="form-group v2ray-fields" style="display: none;">
+                <label class="form-label">V2Ray Путь (необязательно)</label>
+                <input type="text" name="v2ray_path" class="form-input" value="/v2ray" placeholder="/v2ray">
+                <small class="form-help">Путь для V2Ray API, по умолчанию /v2ray</small>
+            </div>
+            
             <div class="form-group">
                 <label class="form-checkbox">
                     <input type="checkbox" name="active" checked>
-        <span>Активен</span>
-      </label>
-    </div>
-    </div>
+                    <span>Активен</span>
+                </label>
+            </div>
+        </div>
         
         <div class="card-actions">
             <button type="submit" class="btn btn-primary">
                 <span class="material-icons">add</span>
                 Добавить сервер
             </button>
-  </div>
-</form>
+        </div>
+    </form>
 </div>
 
+<style>
+.server-type-container {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+.server-type-container h3 {
+    margin-bottom: 1.5rem;
+    color: #333;
+}
+
+.server-type-options {
+    display: flex;
+    gap: 2rem;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.server-type-option {
+    border: 2px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 2rem;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    min-width: 200px;
+    background: white;
+}
+
+.server-type-option:hover {
+    border-color: #007bff;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.15);
+}
+
+.server-type-option.selected {
+    border-color: #007bff;
+    background: #f8f9ff;
+}
+
+.server-type-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+}
+
+.server-type-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: #333;
+}
+
+.server-type-description {
+    font-size: 0.9rem;
+    color: #666;
+    line-height: 1.4;
+}
+
+.form-help {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.875rem;
+    color: #6c757d;
+}
+
+.form-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.form-header h3 {
+    margin: 0;
+    color: #333;
+}
+
+#back-to-selection {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+</style>
+
 <script>
-const filters = [
-  document.getElementById('filter-id'),
-  document.getElementById('filter-name'),
-  document.getElementById('filter-api-url'),
-  document.getElementById('filter-issued'),
-  document.getElementById('filter-max-keys'),
-  document.getElementById('filter-status'),
-  document.getElementById('filter-country')
-];
-const table = document.querySelector('.servers-table');
-const tbody = document.getElementById('servers-tbody');
-const rows = Array.from(tbody.rows);
-const pageSize = 10;
-let currentPage = 1;
-let filteredRows = rows.slice();
+// Server type selection
+document.querySelectorAll('.server-type-option').forEach(option => {
+    option.addEventListener('click', function() {
+        const selectedType = this.dataset.type;
+        
+        // Update UI
+        document.querySelectorAll('.server-type-option').forEach(opt => opt.classList.remove('selected'));
+        this.classList.add('selected');
+        
+        // Hide selection, show form
+        document.getElementById('server-type-selection').style.display = 'none';
+        document.getElementById('server-form').style.display = 'block';
+        
+        // Set protocol and form title
+        document.getElementById('selected-protocol').value = selectedType;
+        document.getElementById('form-title').textContent = 
+            selectedType === 'outline' ? 'Настройка Outline VPN сервера' : 'Настройка V2Ray VLESS сервера';
+        
+        // Show/hide specific fields
+        const outlineFields = document.querySelectorAll('.outline-fields');
+        const v2rayFields = document.querySelectorAll('.v2ray-fields');
+        
+        outlineFields.forEach(field => field.style.display = 'none');
+        v2rayFields.forEach(field => field.style.display = 'none');
+        
+        if (selectedType === 'outline') {
+            outlineFields.forEach(field => field.style.display = 'block');
+        } else if (selectedType === 'v2ray') {
+            v2rayFields.forEach(field => field.style.display = 'block');
+        }
+    });
+});
 
-function filterServersTable() {
-  filteredRows = rows.filter(row => {
-    for (let i = 0; i < filters.length; i++) {
-      const filterValue = filters[i].value.trim().toLowerCase();
-      let cellText = row.cells[i].textContent.toLowerCase();
-      // Для статуса и страны убираем лишние пробелы и символы
-      if (i === 5) cellText = cellText.replace(/\s+/g, '');
-      if (!cellText.includes(filterValue)) {
-        return false;
-      }
-    }
-    return true;
-  });
-  currentPage = 1;
-  renderPage();
-  renderPagination();
-}
-filters.forEach(input => input.addEventListener('input', filterServersTable));
-
-function renderPage() {
-  tbody.innerHTML = '';
-  const start = (currentPage - 1) * pageSize;
-  const end = start + pageSize;
-  filteredRows.slice(start, end).forEach(row => tbody.appendChild(row));
-}
-
-function renderPagination() {
-  const pagination = document.getElementById('pagination');
-  pagination.innerHTML = '';
-  const pageCount = Math.ceil(filteredRows.length / pageSize);
-  if (pageCount <= 1) return;
-  for (let i = 1; i <= pageCount; i++) {
-    const btn = document.createElement('button');
-    btn.textContent = i;
-    btn.className = 'btn btn-sm' + (i === currentPage ? ' btn-primary' : ' btn-secondary');
-    btn.style.margin = '0 2px';
-    btn.onclick = () => {
-      currentPage = i;
-      renderPage();
-      renderPagination();
-    };
-    pagination.appendChild(btn);
-  }
-}
-
-// Инициализация при загрузке
-renderPage();
-renderPagination();
+// Back to selection
+document.getElementById('back-to-selection').addEventListener('click', function() {
+    document.getElementById('server-type-selection').style.display = 'block';
+    document.getElementById('server-form').style.display = 'none';
+    document.querySelectorAll('.server-type-option').forEach(opt => opt.classList.remove('selected'));
+});
 </script>
 {% endblock %}
