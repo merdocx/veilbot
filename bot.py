@@ -83,7 +83,7 @@ def format_key_message(access_url: str) -> str:
         "3. Вставьте ключ выше"
     )
 
-def format_key_message_unified(config: str, protocol: str, tariff: dict = None) -> str:
+def format_key_message_unified(config: str, protocol: str, tariff: dict = None, remaining_time: int = None) -> str:
     """Унифицированное форматирование сообщения для обоих протоколов"""
     protocol_info = PROTOCOLS[protocol]
     
@@ -93,8 +93,14 @@ def format_key_message_unified(config: str, protocol: str, tariff: dict = None) 
         f"`{config}`\n\n"
     )
     
-    # Добавляем информацию о времени, если предоставлена
-    if tariff:
+    # Добавляем информацию о времени
+    if remaining_time is not None:
+        # Если передано оставшееся время, используем его
+        message += (
+            f"⏱ Осталось времени: *{format_duration(remaining_time)}*\n\n"
+        )
+    elif tariff:
+        # Иначе используем длительность тарифа (для новых ключей)
         message += (
             f"⏱ Осталось времени: *{format_duration(tariff['duration_sec'])}*\n\n"
         )
@@ -1561,7 +1567,7 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
                 (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, key_data['tariff_id'])
             )
             
-            await message.answer(format_key_message_unified(key["accessUrl"], new_protocol, tariff), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            await message.answer(format_key_message_unified(key["accessUrl"], new_protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
             
         else:  # v2ray
             # Создаём новый V2Ray ключ
@@ -1585,7 +1591,7 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
                     'email': old_email or f"user_{user_id}@veilbot.com"
                 })
                 
-                await message.answer(format_key_message_unified(config, new_protocol, tariff), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                await message.answer(format_key_message_unified(config, new_protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
             except Exception as e:
                 print(f"[ERROR] Ошибка при создании нового V2Ray ключа: {e}")
@@ -1683,7 +1689,7 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                 (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, key_data['tariff_id'])
             )
             
-            await message.answer(format_key_message(key["accessUrl"]), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            await message.answer(format_key_message_unified(key["accessUrl"], protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
             
         elif key_data['type'] == "v2ray":  # v2ray
             # Создаём новый V2Ray ключ
@@ -1730,7 +1736,7 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                     'email': old_email or f"user_{user_id}@veilbot.com"
                 })
                 
-                await message.answer(format_key_message_unified(config, protocol, tariff), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                await message.answer(format_key_message_unified(config, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
             except Exception as e:
                 print(f"[ERROR] Ошибка при перевыпуске V2Ray ключа: {e}")
