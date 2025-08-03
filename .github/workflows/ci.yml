@@ -17,22 +17,25 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Test Python
-        run: |
-          echo "Testing Python..."
-          python3 --version
-          python3 -c "print('Hello World!')"
-      
       - name: List files
         run: |
           echo "Files in repository:"
           ls -la
+          echo "Python files:"
+          find . -name "*.py" -type f | head -10
       
       - name: Test file exists
         run: |
+          echo "Checking if test_bot.py exists..."
           if [ -f test_bot.py ]; then
-            echo "test_bot.py found"
+            echo "✅ test_bot.py found"
           else
-            echo "test_bot.py not found"
+            echo "❌ test_bot.py not found"
             exit 1
-          fi 
+          fi
+      
+      - name: Test Python
+        run: |
+          echo "Testing Python..."
+          python3 --version
+          python3 -c "print('Hello World!')" 
