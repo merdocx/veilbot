@@ -8,35 +8,80 @@
         <h2 class="card-title">Редактировать сервер</h2>
     </div>
     
+    <!-- Server Type Display -->
+    <div class="server-type-display">
+        <div class="server-type-badge">
+            {% if server.protocol == 'v2ray' %}
+                <span class="server-type-icon">🛡️</span>
+                <span class="server-type-text">V2Ray VLESS</span>
+            {% else %}
+                <span class="server-type-icon">🔒</span>
+                <span class="server-type-text">Outline VPN</span>
+            {% endif %}
+        </div>
+        <div class="server-type-description">
+            {% if server.protocol == 'v2ray' %}
+                Продвинутый протокол с обфускацией трафика
+            {% else %}
+                Современный VPN протокол с высокой скоростью
+            {% endif %}
+        </div>
+    </div>
+    
     <form method="post" action="/servers/edit/{{ server.id }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="protocol" value="{{ server.protocol or 'outline' }}">
+        
         <div class="form-grid">
+            <!-- Common Fields -->
             <div class="form-group">
-                <label class="form-label">Название сервера</label>
+                <label class="form-label">Название сервера *</label>
                 <input type="text" name="name" class="form-input" required 
                        value="{{ server.name }}" placeholder="Введите название">
             </div>
             
             <div class="form-group">
-                <label class="form-label">API URL</label>
+                <label class="form-label">API URL *</label>
                 <input type="url" name="api_url" class="form-input" required 
                        value="{{ server.api_url }}" placeholder="https://server.com:port/api">
             </div>
             
             <div class="form-group">
-                <label class="form-label">SHA256 сертификата</label>
-                <input type="text" name="cert_sha256" class="form-input" required 
-                       value="{{ server.cert_sha256 }}" placeholder="XX:XX:XX:XX:XX:XX:XX:XX">
-            </div>
-            
-            <div class="form-group">
-                <label class="form-label">Максимум ключей</label>
+                <label class="form-label">Максимум ключей *</label>
                 <input type="number" name="max_keys" class="form-input" required 
                        value="{{ server.max_keys }}" placeholder="100" min="1">
             </div>
             
             <div class="form-group">
                 <label class="form-label">Страна</label>
-                <input type="text" name="country" class="form-input" value="{{ server.country }}" placeholder="Введите страну">
+                <input type="text" name="country" class="form-input" 
+                       value="{{ server.country }}" placeholder="Введите страну">
+            </div>
+            
+            <!-- Outline-specific fields -->
+            <div class="form-group outline-fields" style="display: {% if server.protocol == 'outline' %}block{% else %}none{% endif %};">
+                <label class="form-label">SHA256 сертификата *</label>
+                <input type="text" name="cert_sha256" class="form-input" 
+                       value="{{ server.cert_sha256 }}" placeholder="XX:XX:XX:XX:XX:XX:XX:XX">
+            </div>
+            
+            <!-- V2Ray-specific fields -->
+            <div class="form-group v2ray-fields" style="display: {% if server.protocol == 'v2ray' %}block{% else %}none{% endif %};">
+                <label class="form-label">Домен *</label>
+                <input type="text" name="domain" class="form-input" 
+                       value="{{ server.domain }}" placeholder="example.com">
+            </div>
+            
+            <div class="form-group v2ray-fields" style="display: {% if server.protocol == 'v2ray' %}block{% else %}none{% endif %};">
+                <label class="form-label">API Ключ *</label>
+                <input type="text" name="api_key" class="form-input" 
+                       value="{{ server.api_key }}" placeholder="veil-bird-secret-api-key-2024">
+            </div>
+            
+            <div class="form-group v2ray-fields" style="display: {% if server.protocol == 'v2ray' %}block{% else %}none{% endif %};">
+                <label class="form-label">V2Ray Путь</label>
+                <input type="text" name="v2ray_path" class="form-input" 
+                       value="{{ server.v2ray_path or '/v2ray' }}" placeholder="/v2ray">
             </div>
             
             <div class="form-group">
@@ -48,9 +93,9 @@
         </div>
         
         <div class="card-actions">
-            <a href="/servers" class="btn btn-warning">
-                <span class="material-icons">cancel</span>
-                Отмена
+            <a href="/servers" class="btn btn-secondary">
+                <span class="material-icons">arrow_back</span>
+                Назад к списку
             </a>
             <button type="submit" class="btn btn-primary">
                 <span class="material-icons">save</span>
@@ -59,4 +104,62 @@
         </div>
     </form>
 </div>
+
+<style>
+.server-type-display {
+    text-align: center;
+    margin-bottom: 2rem;
+    padding: 1.5rem;
+    background: #f8f9fa;
+    border-radius: 8px;
+    border: 1px solid #e9ecef;
+}
+
+.server-type-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.server-type-icon {
+    font-size: 1.5rem;
+}
+
+.server-type-text {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #333;
+}
+
+.server-type-description {
+    font-size: 0.9rem;
+    color: #666;
+    font-style: italic;
+}
+
+.form-grid {
+    margin-top: 1rem;
+}
+</style>
+
+<script>
+// Show/hide fields based on server protocol
+document.addEventListener('DOMContentLoaded', function() {
+    const protocol = '{{ server.protocol or "outline" }}';
+    const outlineFields = document.querySelectorAll('.outline-fields');
+    const v2rayFields = document.querySelectorAll('.v2ray-fields');
+    
+    // Hide all protocol-specific fields first
+    outlineFields.forEach(field => field.style.display = 'none');
+    v2rayFields.forEach(field => field.style.display = 'none');
+    
+    // Show fields for the current protocol
+    if (protocol === 'outline') {
+        outlineFields.forEach(field => field.style.display = 'block');
+    } else if (protocol === 'v2ray') {
+        v2rayFields.forEach(field => field.style.display = 'block');
+    }
+});
+</script>
 {% endblock %} 

@@ -20,7 +20,7 @@ body {
 
 /* Sidebar */
 .sidebar {
-    width: 200px;
+    width: 160px;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
     position: fixed;
@@ -31,7 +31,7 @@ body {
 }
 
 .sidebar-header {
-    padding: 1.5rem 1rem;
+    padding: 1.25rem 0.75rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -47,7 +47,7 @@ body {
 }
 
 .logo-text {
-    font-size: 1.25rem;
+    font-size: 1.125rem;
     font-weight: 700;
     letter-spacing: -0.025em;
 }
@@ -55,7 +55,7 @@ body {
 /* Navigation Menu */
 .nav-menu {
     list-style: none;
-    padding: 1rem 0;
+    padding: 0.75rem 0;
 }
 
 .nav-item {
@@ -66,7 +66,7 @@ body {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.75rem 1rem;
+    padding: 0.625rem 0.75rem;
     color: rgba(255, 255, 255, 0.8);
     text-decoration: none;
     transition: all 0.2s ease;
@@ -93,7 +93,7 @@ body {
 /* Main Content */
 .main-content {
     flex: 1;
-    margin-left: 200px;
+    margin-left: 160px;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
@@ -323,15 +323,16 @@ body {
 .table.tariffs-table th:nth-child(5), .table.tariffs-table td:nth-child(5) { width: 17%; } /* Actions */
 
 /* Specific column widths for keys table */
-.table.keys-table th:nth-child(1), .table.keys-table td:nth-child(1) { width: 8%; } /* ID */
-.table.keys-table th:nth-child(2), .table.keys-table td:nth-child(2) { width: 18%; } /* Key */
-.table.keys-table th:nth-child(3), .table.keys-table td:nth-child(3) { width: 12%; } /* Tariff */
-.table.keys-table th:nth-child(4), .table.keys-table td:nth-child(4) { width: 12%; } /* Email */
-.table.keys-table th:nth-child(5), .table.keys-table td:nth-child(5) { width: 12%; } /* Server */
-.table.keys-table th:nth-child(6), .table.keys-table td:nth-child(6) { width: 10%; } /* Created */
-.table.keys-table th:nth-child(7), .table.keys-table td:nth-child(7) { width: 20%; } /* Expires */
-.table.keys-table th:nth-child(8), .table.keys-table td:nth-child(8) { width: 20%; } /* Status */
-.table.keys-table th:nth-child(9), .table.keys-table td:nth-child(9) { width: 12%; } /* Actions */
+.table.keys-table th:nth-child(1), .table.keys-table td:nth-child(1) { width: 6%; } /* ID */
+.table.keys-table th:nth-child(2), .table.keys-table td:nth-child(2) { width: 7%; } /* Protocol */
+.table.keys-table th:nth-child(3), .table.keys-table td:nth-child(3) { width: 16%; } /* Key */
+.table.keys-table th:nth-child(4), .table.keys-table td:nth-child(4) { width: 10%; } /* Tariff */
+.table.keys-table th:nth-child(5), .table.keys-table td:nth-child(5) { width: 11%; } /* Email */
+.table.keys-table th:nth-child(6), .table.keys-table td:nth-child(6) { width: 11%; } /* Server */
+.table.keys-table th:nth-child(7), .table.keys-table td:nth-child(7) { width: 8%; } /* Created */
+.table.keys-table th:nth-child(8), .table.keys-table td:nth-child(8) { width: 8%; } /* Expires */
+.table.keys-table th:nth-child(9), .table.keys-table td:nth-child(9) { width: 8%; } /* Status */
+.table.keys-table th:nth-child(10), .table.keys-table td:nth-child(10) { width: 15%; } /* Actions */
 
 /* Keys table specific optimizations */
 .table.keys-table td {
@@ -382,6 +383,8 @@ body {
 
 .table td:nth-child(7) { text-align: center; } /* Actions columns */
 .table th:nth-child(7) { text-align: center; }
+.table td:nth-child(10) { text-align: center; } /* Actions columns for keys table */
+.table th:nth-child(10) { text-align: center; }
 
 /* Code display in tables */
 .table .code {
