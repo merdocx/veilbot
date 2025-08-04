@@ -84,6 +84,18 @@ class OutlineProtocol(VPNProtocol):
         # Outline не предоставляет детальную статистику через API
         # Возвращаем пустой список
         return []
+    
+    async def get_all_keys(self) -> List[Dict]:
+        """Получить все ключи с Outline сервера"""
+        try:
+            from outline import get_keys
+            keys = await asyncio.get_event_loop().run_in_executor(
+                None, get_keys, self.api_url, self.cert_sha256
+            )
+            return keys
+        except Exception as e:
+            logger.error(f"Error getting Outline keys: {e}")
+            return []
 
 class V2RayProtocol(VPNProtocol):
     """Реализация для V2Ray VLESS с новым API"""
