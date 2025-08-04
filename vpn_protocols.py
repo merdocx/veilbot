@@ -84,7 +84,7 @@ class OutlineProtocol(VPNProtocol):
         # Outline не предоставляет детальную статистику через API
         # Возвращаем пустой список
         return []
-    
+
     async def get_all_keys(self) -> List[Dict]:
         """Получить все ключи с Outline сервера"""
         try:
@@ -939,7 +939,7 @@ class ProtocolFactory:
             )
         elif protocol_type == 'v2ray':
             return V2RayProtocol(
-                server_config['api_url'],
+                server_config['api_url'], 
                 server_config.get('api_key')
             )
         else:
