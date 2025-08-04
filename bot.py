@@ -5,12 +5,13 @@ import re
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from config import TELEGRAM_BOT_TOKEN, PROTOCOLS
+from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration
 from db import init_db
 from outline import create_key, delete_key
 from payment import create_payment, check_payment
 from utils import get_db_cursor
 from vpn_protocols import ProtocolFactory, get_protocol_instructions, format_duration
+from validators import input_validator, db_validator, business_validator, validate_user_input, sanitize_user_input, ValidationError
 
 # Security configuration
 SECURITY_HEADERS = {
@@ -114,9 +115,8 @@ def format_key_message_unified(config: str, protocol: str, tariff: dict = None, 
     return message
 
 def is_valid_email(email: str) -> bool:
-    """Simple email validation"""
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return re.match(pattern, email) is not None
+    """Валидация email с использованием нового валидатора"""
+    return input_validator.validate_email(email)
 
 @dp.message_handler(commands=["start"])
 async def handle_start(message: types.Message):
@@ -317,18 +317,40 @@ async def handle_email_input(message: types.Message):
         user_states.pop(user_id, None)
         await handle_invite_friend(message)
         return
+    
     user_id = message.from_user.id
     email = message.text.strip()
-    print(f"[DEBUG] handle_email_input called: user_id={user_id}, email={email}, state={user_states.get(user_id)}")
-    if not is_valid_email(email):
-        await message.answer("❌ Неверный формат email. Пожалуйста, введите корректный email адрес:", reply_markup=cancel_keyboard)
-        return
-    state = user_states.get(user_id, {})
-    tariff = state.get("tariff")
-    country = state.get("country")
-    protocol = state.get("protocol", "outline")  # Получаем выбранный протокол
-    del user_states[user_id]
-    await create_payment_with_email_and_protocol(message, user_id, tariff, email, country, protocol)
+    
+    # Валидация и очистка email
+    try:
+        # Проверяем на SQL инъекции
+        if not input_validator.validate_sql_injection(email):
+            await message.answer("❌ Email содержит недопустимые символы.", reply_markup=cancel_keyboard)
+            return
+        
+        # Очищаем email от потенциально опасных символов
+        email = input_validator.sanitize_string(email, max_length=100)
+        
+        # Валидируем формат email
+        if not is_valid_email(email):
+            await message.answer("❌ Неверный формат email. Пожалуйста, введите корректный email адрес:", reply_markup=cancel_keyboard)
+            return
+        
+        print(f"[DEBUG] handle_email_input called: user_id={user_id}, email={email}, state={user_states.get(user_id)}")
+        
+        state = user_states.get(user_id, {})
+        tariff = state.get("tariff")
+        country = state.get("country")
+        protocol = state.get("protocol", "outline")
+        del user_states[user_id]
+        
+        await create_payment_with_email_and_protocol(message, user_id, tariff, email, country, protocol)
+        
+    except ValidationError as e:
+        await message.answer(f"❌ Ошибка валидации: {str(e)}", reply_markup=cancel_keyboard)
+    except Exception as e:
+        logging.error(f"Error in handle_email_input: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте еще раз.", reply_markup=cancel_keyboard)
 
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_country")
 async def handle_country_selection(message: types.Message):
@@ -337,16 +359,39 @@ async def handle_country_selection(message: types.Message):
         user_states.pop(user_id, None)
         await handle_invite_friend(message)
         return
+    
     user_id = message.from_user.id
     country = message.text.strip()
-    countries = get_countries()
-    if country not in countries:
-        await message.answer("Пожалуйста, выберите сервер из списка:", reply_markup=get_country_menu(countries))
-        return
     
-    # Сохраняем страну и переходим к выбору тарифа
-    user_states[user_id] = {"state": "waiting_tariff", "country": country}
-    await message.answer("Выберите тариф:", reply_markup=get_tariff_menu())
+    # Валидация и очистка названия страны
+    try:
+        # Проверяем на SQL инъекции
+        if not input_validator.validate_sql_injection(country):
+            await message.answer("❌ Название страны содержит недопустимые символы.", reply_markup=cancel_keyboard)
+            return
+        
+        # Очищаем название страны
+        country = input_validator.sanitize_string(country, max_length=50)
+        
+        # Валидируем формат названия страны
+        if not input_validator.validate_country(country):
+            await message.answer("❌ Неверное название страны.", reply_markup=cancel_keyboard)
+            return
+        
+        countries = get_countries()
+        if country not in countries:
+            await message.answer("Пожалуйста, выберите сервер из списка:", reply_markup=get_country_menu(countries))
+            return
+        
+        # Сохраняем страну и переходим к выбору тарифа
+        user_states[user_id] = {"state": "waiting_tariff", "country": country}
+        await message.answer("Выберите тариф:", reply_markup=get_tariff_menu())
+        
+    except ValidationError as e:
+        await message.answer(f"❌ Ошибка валидации: {str(e)}", reply_markup=cancel_keyboard)
+    except Exception as e:
+        logging.error(f"Error in handle_country_selection: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте еще раз.", reply_markup=cancel_keyboard)
 
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "protocol_selected")
 async def handle_protocol_country_selection(message: types.Message):
