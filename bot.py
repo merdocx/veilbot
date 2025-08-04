@@ -1474,6 +1474,46 @@ async def show_protocol_change_menu(message: types.Message, user_id: int, keys: 
         reply_markup=keyboard
     )
 
+async def delete_old_key_after_success(cursor, old_key_data: dict):
+    """Удаляет старый ключ после успешного создания нового"""
+    try:
+        if old_key_data['type'] == "outline":
+            # Удаляем старый ключ из Outline сервера
+            cursor.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (old_key_data['server_id'],))
+            old_server_data = cursor.fetchone()
+            if old_server_data and old_key_data.get('key_id'):
+                old_api_url, old_cert_sha256 = old_server_data
+                try:
+                    await asyncio.get_event_loop().run_in_executor(None, delete_key, old_api_url, old_cert_sha256, old_key_data['key_id'])
+                    print(f"[SUCCESS] Удален старый Outline ключ {old_key_data['key_id']} с сервера")
+                except Exception as e:
+                    print(f"[WARNING] Не удалось удалить старый Outline ключ с сервера: {e}")
+            
+            # Удаляем старый ключ из базы
+            cursor.execute("DELETE FROM keys WHERE id = ?", (old_key_data['db_id'],))
+            print(f"[SUCCESS] Удален старый Outline ключ {old_key_data['db_id']} из базы")
+            
+        else:  # v2ray
+            # Удаляем старый ключ из V2Ray сервера
+            cursor.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (old_key_data['server_id'],))
+            old_server_data = cursor.fetchone()
+            if old_server_data and old_key_data.get('v2ray_uuid'):
+                old_api_url, old_api_key = old_server_data
+                server_config = {'api_url': old_api_url, 'api_key': old_api_key}
+                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                try:
+                    await protocol_client.delete_user(old_key_data['v2ray_uuid'])
+                    print(f"[SUCCESS] Удален старый V2Ray ключ {old_key_data['v2ray_uuid']} с сервера")
+                except Exception as e:
+                    print(f"[WARNING] Не удалось удалить старый V2Ray ключ с сервера: {e}")
+            
+            # Удаляем старый ключ из базы
+            cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (old_key_data['db_id'],))
+            print(f"[SUCCESS] Удален старый V2Ray ключ {old_key_data['db_id']} из базы")
+            
+    except Exception as e:
+        print(f"[ERROR] Ошибка при удалении старого ключа: {e}")
+
 async def change_protocol_for_key(message: types.Message, user_id: int, key_data: dict):
     """Меняет протокол для конкретного ключа"""
     now = int(time.time())
@@ -1515,37 +1555,14 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
         # Берём первый подходящий сервер
         new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
         
-        # Удаляем старый ключ
-        if key_data['type'] == "outline":
-            # Удаляем старый ключ из Outline сервера
-            cursor.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (old_server_id,))
-            old_server_data = cursor.fetchone()
-            if old_server_data:
-                old_api_url, old_cert_sha256 = old_server_data
-                try:
-                    await asyncio.get_event_loop().run_in_executor(None, delete_key, old_api_url, old_cert_sha256, key_data['key_id'])
-                except Exception as e:
-                    print(f"[WARNING] Не удалось удалить старый Outline ключ (возможно уже удален): {e}")
-            
-            # Удаляем старый ключ из базы
-            cursor.execute("DELETE FROM keys WHERE id = ?", (key_data['id'],))
-        else:  # v2ray
-            # Удаляем старый ключ из V2Ray сервера
-            # Получаем данные старого сервера для правильного API ключа
-            cursor.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (old_server_id,))
-            old_server_data = cursor.fetchone()
-            if old_server_data:
-                old_api_url, old_api_key = old_server_data
-                server_config = {'api_url': old_api_url, 'api_key': old_api_key}
-                protocol_client = ProtocolFactory.create_protocol(old_protocol, server_config)
-                try:
-                    old_uuid = key_data['v2ray_uuid']
-                    await protocol_client.delete_user(old_uuid)
-                except Exception as e:
-                    print(f"[WARNING] Не удалось удалить старый V2Ray ключ (возможно уже удален): {e}")
-            
-            # Удаляем старый ключ из базы
-            cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_data['id'],))
+        # Сохраняем данные старого ключа для удаления после успешного создания нового
+        old_key_data = {
+            'type': key_data['type'],
+            'server_id': old_server_id,
+            'key_id': key_data.get('key_id'),
+            'v2ray_uuid': key_data.get('v2ray_uuid'),
+            'db_id': key_data['id']
+        }
         
         # Создаём новый ключ на другом протоколе
         if new_protocol == "outline":
@@ -1568,6 +1585,9 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
             )
             
             await message.answer(format_key_message_unified(key["accessUrl"], new_protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            
+            # Удаляем старый ключ после успешного создания нового
+            await delete_old_key_after_success(cursor, old_key_data)
             
         else:  # v2ray
             # Создаём новый V2Ray ключ
@@ -1592,6 +1612,9 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
                 })
                 
                 await message.answer(format_key_message_unified(config, new_protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                
+                # Удаляем старый ключ после успешного создания нового
+                await delete_old_key_after_success(cursor, old_key_data)
                 
             except Exception as e:
                 print(f"[ERROR] Ошибка при создании нового V2Ray ключа: {e}")
