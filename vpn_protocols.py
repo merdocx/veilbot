@@ -115,6 +115,9 @@ class V2RayProtocol(VPNProtocol):
                 }
                 
                 print(f"Creating V2Ray key with name: {email}")
+                print(f"V2Ray API URL: {self.api_url}/keys")
+                print(f"V2Ray headers: {self.headers}")
+                print(f"V2Ray key data: {key_data}")
                 
                 async with session.post(
                     f"{self.api_url}/keys",
@@ -128,6 +131,14 @@ class V2RayProtocol(VPNProtocol):
                     if response.status == 200:
                         try:
                             result = await response.json()
+                            
+                            # Проверяем, что результат - это словарь, а не список
+                            if isinstance(result, list):
+                                if len(result) > 0:
+                                    # Если это список с одним элементом, берем первый
+                                    result = result[0]
+                                else:
+                                    raise Exception(f"V2Ray API returned empty list - {response_text}")
                             
                             # Валидация ответа сервера
                             if not result.get('id'):
