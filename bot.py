@@ -1310,12 +1310,13 @@ async def handle_change_app(message: types.Message):
                 'id': key[0],
                 'expiry_at': key[1],
                 'server_id': key[2],
-                'access_url': key[3],
-                'country': key[4],
-                'tariff_id': key[5],
-                'email': key[6],
-                'protocol': key[7],
-                'type': key[8]
+                'key_id': key[3],
+                'access_url': key[4],
+                'country': key[5],
+                'tariff_id': key[6],
+                'email': key[7],
+                'protocol': key[8],
+                'type': key[9]
             })
         
         for key in v2ray_keys:
@@ -1352,7 +1353,7 @@ async def handle_reissue_key(message: types.Message):
     with get_db_cursor() as cursor:
         # Получаем все активные ключи пользователя
         cursor.execute("""
-            SELECT k.id, k.expiry_at, k.server_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
+            SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
             FROM keys k
             JOIN servers s ON k.server_id = s.id
             WHERE k.user_id = ? AND k.expiry_at > ?
@@ -1376,12 +1377,13 @@ async def handle_reissue_key(message: types.Message):
                 'id': key[0],
                 'expiry_at': key[1],
                 'server_id': key[2],
-                'access_url': key[3],
-                'country': key[4],
-                'tariff_id': key[5],
-                'email': key[6],
-                'protocol': key[7],
-                'type': key[8]
+                'key_id': key[3],
+                'access_url': key[4],
+                'country': key[5],
+                'tariff_id': key[6],
+                'email': key[7],
+                'protocol': key[8],
+                'type': key[9]
             })
         
         for key in v2ray_keys:
@@ -1699,10 +1701,13 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                 old_api_url, old_cert_sha256 = old_server_data
                 try:
                     # Проверяем, что это Outline ключ и у него есть key_id
+                    print(f"[DEBUG] key_data type: {key_data.get('type')}, key_id present: {'key_id' in key_data}")
                     if key_data['type'] == "outline" and 'key_id' in key_data:
+                        print(f"[DEBUG] Удаляем Outline ключ с ID: {key_data['key_id']} с сервера {old_server_id}")
                         await asyncio.get_event_loop().run_in_executor(None, delete_key, old_api_url, old_cert_sha256, key_data['key_id'])
                     else:
                         print(f"[WARNING] Пропускаем удаление Outline ключа - неверный тип или отсутствует key_id")
+                        print(f"[DEBUG] key_data keys: {list(key_data.keys())}")
                 except Exception as e:
                     print(f"[ERROR] Не удалось удалить старый Outline ключ: {e}")
             
@@ -1814,7 +1819,7 @@ async def handle_reissue_key_callback(callback_query: types.CallbackQuery):
     with get_db_cursor() as cursor:
         if key_type == "outline":
             cursor.execute("""
-                SELECT k.id, k.expiry_at, k.server_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
+                SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.id = ? AND k.user_id = ?
@@ -1838,11 +1843,12 @@ async def handle_reissue_key_callback(callback_query: types.CallbackQuery):
                 'id': key_data[0],
                 'expiry_at': key_data[1],
                 'server_id': key_data[2],
-                'access_url': key_data[3],
-                'country': key_data[4],
-                'tariff_id': key_data[5],
-                'email': key_data[6],
-                'protocol': key_data[7],
+                'key_id': key_data[3],
+                'access_url': key_data[4],
+                'country': key_data[5],
+                'tariff_id': key_data[6],
+                'email': key_data[7],
+                'protocol': key_data[8],
                 'type': 'outline'
             }
         else:
@@ -1861,6 +1867,7 @@ async def handle_reissue_key_callback(callback_query: types.CallbackQuery):
             }
     
     # Перевыпускаем ключ
+    print(f"[DEBUG] Передаем key_dict в reissue_specific_key: {list(key_dict.keys())}")
     await reissue_specific_key(callback_query.message, user_id, key_dict)
     await callback_query.answer()
 
@@ -1888,7 +1895,7 @@ async def handle_change_protocol_callback(callback_query: types.CallbackQuery):
     with get_db_cursor() as cursor:
         if key_type == "outline":
             cursor.execute("""
-                SELECT k.id, k.expiry_at, k.server_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
+                SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.id = ? AND k.user_id = ?
@@ -1912,11 +1919,12 @@ async def handle_change_protocol_callback(callback_query: types.CallbackQuery):
                 'id': key_data[0],
                 'expiry_at': key_data[1],
                 'server_id': key_data[2],
-                'access_url': key_data[3],
-                'country': key_data[4],
-                'tariff_id': key_data[5],
-                'email': key_data[6],
-                'protocol': key_data[7],
+                'key_id': key_data[3],
+                'access_url': key_data[4],
+                'country': key_data[5],
+                'tariff_id': key_data[6],
+                'email': key_data[7],
+                'protocol': key_data[8],
                 'type': 'outline'
             }
         else:
