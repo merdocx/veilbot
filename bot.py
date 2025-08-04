@@ -1286,7 +1286,7 @@ async def handle_change_app(message: types.Message):
     with get_db_cursor() as cursor:
         # Получаем все активные ключи пользователя
         cursor.execute("""
-            SELECT k.id, k.expiry_at, k.server_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
+            SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
             FROM keys k
             JOIN servers s ON k.server_id = s.id
             WHERE k.user_id = ? AND k.expiry_at > ?
@@ -1316,7 +1316,7 @@ async def handle_change_app(message: types.Message):
                 'tariff_id': key[6],
                 'email': key[7],
                 'protocol': key[8],
-                'type': key[9]
+                'type': 'outline'
             })
         
         for key in v2ray_keys:
@@ -1383,7 +1383,7 @@ async def handle_reissue_key(message: types.Message):
                 'tariff_id': key[6],
                 'email': key[7],
                 'protocol': key[8],
-                'type': key[9]
+                'type': 'outline'
             })
         
         for key in v2ray_keys:
