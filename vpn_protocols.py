@@ -136,7 +136,8 @@ class V2RayProtocol(VPNProtocol):
                                 'uuid': uuid_value,
                                 'name': email,
                                 'created_at': result.get('created_at'),
-                                'is_active': result.get('is_active', True)
+                                'is_active': result.get('is_active', True),
+                                'port': result.get('port')  # Добавляем порт из нового API
                             }
                         except Exception as parse_error:
                             raise Exception(f"Failed to parse V2Ray API response: {parse_error} - Response: {response_text}")
@@ -193,6 +194,8 @@ class V2RayProtocol(VPNProtocol):
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
+                        
+                        # Проверяем новую структуру ответа
                         if result.get('client_config'):
                             # Извлекаем только VLESS URL из client_config
                             client_config = result['client_config']
@@ -204,6 +207,16 @@ class V2RayProtocol(VPNProtocol):
                                     if line.strip().startswith('vless://'):
                                         return line.strip()
                             # Если не нашли VLESS URL, возвращаем всю конфигурацию
+                            return client_config
+                        
+                        # Если client_config не найден, проверяем альтернативную структуру
+                        if result.get('key') and result.get('client_config'):
+                            client_config = result['client_config']
+                            if 'vless://' in client_config:
+                                lines = client_config.split('\n')
+                                for line in lines:
+                                    if line.strip().startswith('vless://'):
+                                        return line.strip()
                             return client_config
                     
                     # Если API не работает, используем fallback
@@ -509,8 +522,16 @@ class V2RayProtocol(VPNProtocol):
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
+                        summary = result.get('summary', {})
+                        
                         return {
-                            'summary': result.get('summary', {}),
+                            'summary': {
+                                'total_system_traffic': summary.get('total_system_traffic', 0),
+                                'total_system_traffic_formatted': summary.get('total_system_traffic_formatted', '0 B'),
+                                'active_ports': summary.get('active_ports', 0),
+                                'interface_summary': summary.get('interface_summary', {}),
+                                'timestamp': summary.get('timestamp')
+                            },
                             'timestamp': result.get('timestamp')
                         }
                     else:
@@ -623,8 +644,15 @@ class V2RayProtocol(VPNProtocol):
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
+                        port_assignments = result.get('port_assignments', {})
+                        
                         return {
-                            'port_assignments': result.get('port_assignments', {}),
+                            'port_assignments': {
+                                'used_ports': port_assignments.get('used_ports', {}),
+                                'port_assignments': port_assignments.get('port_assignments', {}),
+                                'created_at': port_assignments.get('created_at'),
+                                'last_updated': port_assignments.get('last_updated')
+                            },
                             'used_ports': result.get('used_ports', 0),
                             'available_ports': result.get('available_ports', 0),
                             'max_ports': result.get('max_ports', 0),
@@ -692,8 +720,17 @@ class V2RayProtocol(VPNProtocol):
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
+                        config_status = result.get('config_status', {})
+                        
                         return {
-                            'config_status': result.get('config_status', {}),
+                            'config_status': {
+                                'total_inbounds': config_status.get('total_inbounds', 0),
+                                'vless_inbounds': config_status.get('vless_inbounds', 0),
+                                'api_inbounds': config_status.get('api_inbounds', 0),
+                                'port_assignments': config_status.get('port_assignments', {}),
+                                'config_valid': config_status.get('config_valid', False),
+                                'timestamp': config_status.get('timestamp')
+                            },
                             'timestamp': result.get('timestamp')
                         }
                     else:
@@ -736,8 +773,18 @@ class V2RayProtocol(VPNProtocol):
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
+                        validation = result.get('validation', {})
+                        
                         return {
-                            'validation': result.get('validation', {}),
+                            'validation': {
+                                'synchronized': validation.get('synchronized', False),
+                                'key_uuids': validation.get('key_uuids', []),
+                                'config_uuids': validation.get('config_uuids', []),
+                                'missing_in_config': validation.get('missing_in_config', []),
+                                'extra_in_config': validation.get('extra_in_config', []),
+                                'total_keys': validation.get('total_keys', 0),
+                                'total_config_clients': validation.get('total_config_clients', 0)
+                            },
                             'timestamp': result.get('timestamp')
                         }
                     else:
@@ -745,6 +792,54 @@ class V2RayProtocol(VPNProtocol):
                         return {}
         except Exception as e:
             logger.error(f"Error validating V2Ray Xray sync: {e}")
+            return {}
+    
+    async def get_all_keys(self) -> List[Dict]:
+        """Получить список всех ключей"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/keys",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        # Проверяем, что результат - это список
+                        if isinstance(result, list):
+                            return result
+                        else:
+                            logger.error(f"Unexpected response format for keys: {type(result)}")
+                            return []
+                    else:
+                        logger.error(f"Failed to get all keys: {response.status}")
+                        return []
+        except Exception as e:
+            logger.error(f"Error getting V2Ray all keys: {e}")
+            return []
+    
+    async def get_key_info(self, key_id: str) -> Dict:
+        """Получить информацию о конкретном ключе"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/keys/{key_id}",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return {
+                            'id': result.get('id'),
+                            'name': result.get('name'),
+                            'uuid': result.get('uuid'),
+                            'created_at': result.get('created_at'),
+                            'is_active': result.get('is_active', True),
+                            'port': result.get('port')
+                        }
+                    else:
+                        logger.error(f"Failed to get key info: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray key info: {e}")
             return {}
 
 class ProtocolFactory:
