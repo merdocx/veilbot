@@ -292,62 +292,54 @@ class V2RayProtocol(VPNProtocol):
             return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
     
     async def get_traffic_stats(self) -> List[Dict]:
-        """Получить статистику трафика V2Ray через новый API с точным мониторингом портов"""
+        """Получить статистику трафика V2Ray через новый API с простым мониторингом"""
         try:
             connector = aiohttp.TCPConnector(ssl=self.ssl_context)
             async with aiohttp.ClientSession(connector=connector) as session:
-                # Используем новый эндпоинт для точного мониторинга портов
+                # Используем новый эндпоинт для простого мониторинга
                 async with session.get(
-                    f"{self.api_url}/traffic/ports/exact",
+                    f"{self.api_url}/traffic/simple",
                     headers=self.headers
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
                         
-                        # Новая структура ответа с точным мониторингом портов
-                        ports_traffic = result.get('ports_traffic', {})
-                        total_ports = ports_traffic.get('total_ports', 0)
-                        ports_traffic_data = ports_traffic.get('ports_traffic', {})
-                        total_traffic = ports_traffic.get('total_traffic', 0)
-                        total_connections = ports_traffic.get('total_connections', 0)
-                        total_traffic_formatted = ports_traffic.get('total_traffic_formatted', '0 B')
-                        
-                        system_summary = result.get('system_summary', {})
-                        total_system_traffic = system_summary.get('total_system_traffic', 0)
-                        total_system_traffic_formatted = system_summary.get('total_system_traffic_formatted', '0 B')
-                        active_ports = system_summary.get('active_ports', 0)
+                        # Новая структура ответа с простым мониторингом
+                        data = result.get('data', {})
+                        ports = data.get('ports', {})
+                        total_connections = data.get('total_connections', 0)
+                        total_bytes = data.get('total_bytes', 0)
+                        timestamp = data.get('timestamp')
                         
                         # Преобразуем в формат, совместимый с существующим кодом
                         stats_list = []
-                        for uuid_key, port_data in ports_traffic_data.items():
-                            traffic = port_data.get('traffic', {})
+                        for port_key, port_data in ports.items():
                             stats_list.append({
-                                'uuid': uuid_key,
+                                'uuid': port_data.get('uuid'),
                                 'port': port_data.get('port'),
-                                'key_name': port_data.get('key_name'),
-                                'uplink_bytes': traffic.get('rx_bytes', 0),
-                                'downlink_bytes': traffic.get('tx_bytes', 0),
-                                'total_bytes': traffic.get('total_bytes', 0),
-                                'uplink_formatted': traffic.get('rx_formatted', '0 B'),
-                                'downlink_formatted': traffic.get('tx_formatted', '0 B'),
-                                'total_formatted': traffic.get('total_formatted', '0 B'),
-                                'uplink_mb': traffic.get('rx_bytes', 0) / (1024 * 1024),
-                                'downlink_mb': traffic.get('tx_bytes', 0) / (1024 * 1024),
-                                'total_mb': traffic.get('total_bytes', 0) / (1024 * 1024),
-                                'connections': traffic.get('connections', 0),
+                                'key_name': port_data.get('key_name', 'Unknown'),
+                                'uplink_bytes': port_data.get('rx_bytes', 0),
+                                'downlink_bytes': port_data.get('tx_bytes', 0),
+                                'total_bytes': port_data.get('total_bytes', 0),
+                                'uplink_formatted': port_data.get('rx_formatted', '0 B'),
+                                'downlink_formatted': port_data.get('tx_formatted', '0 B'),
+                                'total_formatted': port_data.get('total_formatted', '0 B'),
+                                'uplink_mb': port_data.get('rx_bytes', 0) / (1024 * 1024),
+                                'downlink_mb': port_data.get('tx_bytes', 0) / (1024 * 1024),
+                                'total_mb': port_data.get('total_bytes', 0) / (1024 * 1024),
+                                'connections': port_data.get('connections', 0),
                                 'connection_ratio': 0.0,  # Не предоставляется в новом API
-                                'connections_count': traffic.get('connections', 0),
-                                'timestamp': traffic.get('timestamp'),
-                                'source': result.get('source', 'port_monitor'),
-                                'method': 'port_monitor',
+                                'connections_count': port_data.get('connections', 0),
+                                'timestamp': port_data.get('timestamp'),
+                                'source': result.get('source', 'simple_monitor'),
+                                'method': 'connection_based_estimation',
                                 # Дополнительные поля из новой структуры
-                                'total_ports': total_ports,
-                                'total_traffic': total_traffic,
+                                'traffic_rate': port_data.get('traffic_rate', 0),
+                                'interface_traffic': port_data.get('interface_traffic', {}),
+                                'connection_details': port_data.get('connection_details', []),
                                 'total_connections': total_connections,
-                                'total_traffic_formatted': total_traffic_formatted,
-                                'total_system_traffic': total_system_traffic,
-                                'total_system_traffic_formatted': total_system_traffic_formatted,
-                                'active_ports': active_ports
+                                'total_bytes': total_bytes,
+                                'timestamp': timestamp
                             })
                         
                         return stats_list
@@ -415,41 +407,45 @@ class V2RayProtocol(VPNProtocol):
             return []
     
     async def get_key_traffic_stats(self, key_id: str) -> Dict:
-        """Получить статистику трафика конкретного ключа через новый API с точным мониторингом портов"""
+        """Получить статистику трафика конкретного ключа через новый API с простым мониторингом"""
         try:
             connector = aiohttp.TCPConnector(ssl=self.ssl_context)
             async with aiohttp.ClientSession(connector=connector) as session:
-                # Используем новый эндпоинт для точного мониторинга портов
+                # Используем новый эндпоинт для простого мониторинга
                 async with session.get(
-                    f"{self.api_url}/keys/{key_id}/traffic/port/exact",
+                    f"{self.api_url}/keys/{key_id}/traffic/simple",
                     headers=self.headers
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
                         
-                        # Новая структура ответа с точным мониторингом портов
+                        # Новая структура ответа с простым мониторингом
                         key_info = result.get('key', {})
-                        port_traffic = result.get('port_traffic', {})
+                        traffic = result.get('traffic', {})
                         
                         return {
                             'uuid': key_info.get('uuid'),
-                            'port': port_traffic.get('port'),
+                            'port': traffic.get('port'),
                             'key_name': key_info.get('name'),
-                            'uplink_bytes': port_traffic.get('rx_bytes', 0),
-                            'downlink_bytes': port_traffic.get('tx_bytes', 0),
-                            'total_bytes': port_traffic.get('total_bytes', 0),
-                            'uplink_formatted': port_traffic.get('rx_formatted', '0 B'),
-                            'downlink_formatted': port_traffic.get('tx_formatted', '0 B'),
-                            'total_formatted': port_traffic.get('total_formatted', '0 B'),
-                            'uplink_mb': port_traffic.get('rx_bytes', 0) / (1024 * 1024),
-                            'downlink_mb': port_traffic.get('tx_bytes', 0) / (1024 * 1024),
-                            'total_mb': port_traffic.get('total_bytes', 0) / (1024 * 1024),
-                            'connections': port_traffic.get('connections', 0),
+                            'uplink_bytes': traffic.get('rx_bytes', 0),
+                            'downlink_bytes': traffic.get('tx_bytes', 0),
+                            'total_bytes': traffic.get('total_bytes', 0),
+                            'uplink_formatted': traffic.get('rx_formatted', '0 B'),
+                            'downlink_formatted': traffic.get('tx_formatted', '0 B'),
+                            'total_formatted': traffic.get('total_formatted', '0 B'),
+                            'uplink_mb': traffic.get('rx_bytes', 0) / (1024 * 1024),
+                            'downlink_mb': traffic.get('tx_bytes', 0) / (1024 * 1024),
+                            'total_mb': traffic.get('total_bytes', 0) / (1024 * 1024),
+                            'connections': traffic.get('connections', 0),
                             'connection_ratio': 0.0,  # Не предоставляется в новом API
-                            'connections_count': port_traffic.get('connections', 0),
-                            'timestamp': port_traffic.get('timestamp'),
-                            'source': result.get('source', 'port_monitor'),
-                            'method': 'port_monitor'
+                            'connections_count': traffic.get('connections', 0),
+                            'timestamp': traffic.get('timestamp'),
+                            'source': result.get('source', 'simple_monitor'),
+                            'method': 'connection_based_estimation',
+                            # Дополнительные поля из новой структуры
+                            'traffic_rate': traffic.get('traffic_rate', 0),
+                            'interface_traffic': traffic.get('interface_traffic', {}),
+                            'connection_details': traffic.get('connection_details', [])
                         }
                     else:
                         # Fallback к устаревшему эндпоинту для совместимости
@@ -499,23 +495,24 @@ class V2RayProtocol(VPNProtocol):
             return {}
     
     async def reset_key_traffic(self, key_id: str) -> bool:
-        """Сбросить статистику трафика ключа через новый API с точным мониторингом портов"""
+        """Сбросить статистику трафика ключа через новый API с простым мониторингом"""
         try:
             connector = aiohttp.TCPConnector(ssl=self.ssl_context)
             async with aiohttp.ClientSession(connector=connector) as session:
-                # Используем новый эндпоинт для сброса статистики по порту
+                # Используем новый эндпоинт для сброса статистики
                 async with session.post(
-                    f"{self.api_url}/keys/{key_id}/traffic/port/reset",
+                    f"{self.api_url}/keys/{key_id}/traffic/simple/reset",
                     headers=self.headers
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
+                        status = result.get('status', '')
                         message = result.get('message', '')
-                        if 'reset successfully' in message.lower():
-                            logger.info(f"Successfully reset port traffic stats for key {key_id}")
+                        if status == 'success' or 'reset successfully' in message.lower():
+                            logger.info(f"Successfully reset traffic stats for key {key_id}")
                             return True
                         else:
-                            logger.warning(f"Unexpected port reset response: {message}")
+                            logger.warning(f"Unexpected reset response: {message}")
                     else:
                         # Fallback к устаревшему эндпоинту для совместимости
                         logger.warning(f"New reset API failed ({response.status}), trying legacy endpoint")
