@@ -1675,7 +1675,11 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
             if old_server_data:
                 old_api_url, old_cert_sha256 = old_server_data
                 try:
-                    await asyncio.get_event_loop().run_in_executor(None, delete_key, old_api_url, old_cert_sha256, key_data['key_id'])
+                    # Проверяем, что это Outline ключ и у него есть key_id
+                    if key_data['type'] == "outline" and 'key_id' in key_data:
+                        await asyncio.get_event_loop().run_in_executor(None, delete_key, old_api_url, old_cert_sha256, key_data['key_id'])
+                    else:
+                        print(f"[WARNING] Пропускаем удаление Outline ключа - неверный тип или отсутствует key_id")
                 except Exception as e:
                     print(f"[ERROR] Не удалось удалить старый Outline ключ: {e}")
             
