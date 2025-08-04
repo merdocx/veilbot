@@ -97,11 +97,18 @@ class V2RayProtocol(VPNProtocol):
         }
         if api_key:
             self.headers['X-API-Key'] = api_key
+        
+        # Настройка SSL контекста для самоподписанных сертификатов
+        import ssl
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
     
     async def create_user(self, email: str, level: int = 0) -> Dict:
         """Создать пользователя V2Ray через новый API"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 # Создаем ключ через новый API
                 key_data = {
                     "name": email
@@ -152,7 +159,8 @@ class V2RayProtocol(VPNProtocol):
         """Удалить пользователя V2Ray через новый API"""
         try:
             print(f"Attempting to delete V2Ray key {user_id} from {self.api_url}")
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.delete(
                     f"{self.api_url}/keys/{user_id}",
                     headers=self.headers
@@ -187,7 +195,8 @@ class V2RayProtocol(VPNProtocol):
         """Получить конфигурацию V2Ray пользователя через новый API"""
         try:
             # Получаем конфигурацию через новый API
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/keys/{user_id}/config",
                     headers=self.headers
@@ -239,7 +248,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_traffic_stats(self) -> List[Dict]:
         """Получить статистику трафика V2Ray через новый API с точным мониторингом портов"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 # Используем новый эндпоинт для точного мониторинга портов
                 async with session.get(
                     f"{self.api_url}/traffic/ports/exact",
@@ -307,7 +317,8 @@ class V2RayProtocol(VPNProtocol):
     async def _get_legacy_traffic_stats(self) -> List[Dict]:
         """Получить статистику трафика через устаревший API (fallback)"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/traffic/exact",
                     headers=self.headers
@@ -360,7 +371,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_key_traffic_stats(self, key_id: str) -> Dict:
         """Получить статистику трафика конкретного ключа через новый API с точным мониторингом портов"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 # Используем новый эндпоинт для точного мониторинга портов
                 async with session.get(
                     f"{self.api_url}/keys/{key_id}/traffic/port/exact",
@@ -405,7 +417,8 @@ class V2RayProtocol(VPNProtocol):
     async def _get_legacy_key_traffic_stats(self, key_id: str) -> Dict:
         """Получить статистику трафика конкретного ключа через устаревший API (fallback)"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/keys/{key_id}/traffic/exact",
                     headers=self.headers
@@ -442,7 +455,8 @@ class V2RayProtocol(VPNProtocol):
     async def reset_key_traffic(self, key_id: str) -> bool:
         """Сбросить статистику трафика ключа через новый API с точным мониторингом портов"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 # Используем новый эндпоинт для сброса статистики по порту
                 async with session.post(
                     f"{self.api_url}/keys/{key_id}/traffic/port/reset",
@@ -469,7 +483,8 @@ class V2RayProtocol(VPNProtocol):
     async def _reset_legacy_key_traffic(self, key_id: str) -> bool:
         """Сбросить статистику трафика ключа через устаревший API (fallback)"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(
                     f"{self.api_url}/keys/{key_id}/traffic/reset",
                     headers=self.headers
@@ -492,7 +507,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_traffic_status(self) -> Dict:
         """Получить статус системы мониторинга трафика"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/traffic/status",
                     headers=self.headers
@@ -515,7 +531,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_system_traffic_summary(self) -> Dict:
         """Получить системную сводку трафика"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/system/traffic/summary",
                     headers=self.headers
@@ -544,7 +561,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_system_config_status(self) -> Dict:
         """Получить статус синхронизации конфигурации"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/system/config-status",
                     headers=self.headers
@@ -569,7 +587,8 @@ class V2RayProtocol(VPNProtocol):
     async def sync_system_config(self) -> bool:
         """Принудительная синхронизация конфигурации"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(
                     f"{self.api_url}/system/sync-config",
                     headers=self.headers
@@ -592,7 +611,8 @@ class V2RayProtocol(VPNProtocol):
     async def verify_reality_settings(self) -> bool:
         """Проверить и обновить настройки Reality протокола"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(
                     f"{self.api_url}/system/verify-reality",
                     headers=self.headers
@@ -615,7 +635,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_api_status(self) -> Dict:
         """Получить статус API"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/",
                     headers=self.headers
@@ -637,7 +658,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_ports_status(self) -> Dict:
         """Получить статус портов через новый API"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/system/ports",
                     headers=self.headers
@@ -669,7 +691,8 @@ class V2RayProtocol(VPNProtocol):
     async def reset_all_ports(self) -> bool:
         """Сбросить все порты (только в экстренных случаях)"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(
                     f"{self.api_url}/system/ports/reset",
                     headers=self.headers
@@ -692,7 +715,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_ports_validation_status(self) -> Dict:
         """Получить статус валидации портов"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/system/ports/status",
                     headers=self.headers
@@ -713,7 +737,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_xray_config_status(self) -> Dict:
         """Получить статус конфигурации Xray"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/system/xray/config-status",
                     headers=self.headers
@@ -743,7 +768,8 @@ class V2RayProtocol(VPNProtocol):
     async def sync_xray_config(self) -> bool:
         """Синхронизировать конфигурацию Xray"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(
                     f"{self.api_url}/system/xray/sync-config",
                     headers=self.headers
@@ -766,7 +792,8 @@ class V2RayProtocol(VPNProtocol):
     async def validate_xray_sync(self) -> Dict:
         """Проверить соответствие конфигурации Xray с ключами"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/system/xray/validate-sync",
                     headers=self.headers
@@ -797,7 +824,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_all_keys(self) -> List[Dict]:
         """Получить список всех ключей"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/keys",
                     headers=self.headers
@@ -820,7 +848,8 @@ class V2RayProtocol(VPNProtocol):
     async def get_key_info(self, key_id: str) -> Dict:
         """Получить информацию о конкретном ключе"""
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{self.api_url}/keys/{key_id}",
                     headers=self.headers
