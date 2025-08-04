@@ -119,6 +119,15 @@ class V2RayProtocol(VPNProtocol):
                 print(f"V2Ray headers: {self.headers}")
                 print(f"V2Ray key data: {key_data}")
                 
+                # Сначала проверим статус API сервера
+                try:
+                    async with session.get(f"{self.api_url}/", headers=self.headers) as status_response:
+                        print(f"V2Ray API status check: {status_response.status}")
+                        if status_response.status != 200:
+                            print(f"Warning: V2Ray API status check failed: {status_response.status}")
+                except Exception as status_error:
+                    print(f"Warning: Could not check V2Ray API status: {status_error}")
+                
                 async with session.post(
                     f"{self.api_url}/keys",
                     headers=self.headers,
@@ -138,7 +147,33 @@ class V2RayProtocol(VPNProtocol):
                                     # Если это список с одним элементом, берем первый
                                     result = result[0]
                                 else:
-                                    raise Exception(f"V2Ray API returned empty list - {response_text}")
+                                    # Если API возвращает пустой список, попробуем альтернативный подход
+                                    print(f"V2Ray API returned empty list, trying alternative approach...")
+                                    # Попробуем создать ключ с другими параметрами
+                                    alternative_key_data = {
+                                        "name": email,
+                                        "email": email
+                                    }
+                                    
+                                    async with session.post(
+                                        f"{self.api_url}/keys",
+                                        headers=self.headers,
+                                        json=alternative_key_data
+                                    ) as alt_response:
+                                        alt_response_text = await alt_response.text()
+                                        print(f"Alternative V2Ray create response status: {alt_response.status}")
+                                        print(f"Alternative V2Ray create response text: {alt_response_text}")
+                                        
+                                        if alt_response.status == 200:
+                                            alt_result = await alt_response.json()
+                                            if isinstance(alt_result, list) and len(alt_result) > 0:
+                                                result = alt_result[0]
+                                            elif isinstance(alt_result, dict):
+                                                result = alt_result
+                                            else:
+                                                raise Exception(f"V2Ray API still returned empty response - {alt_response_text}")
+                                        else:
+                                            raise Exception(f"V2Ray API alternative request failed: {alt_response.status} - {alt_response_text}")
                             
                             # Валидация ответа сервера
                             if not result.get('id'):
