@@ -224,7 +224,75 @@ class V2RayProtocol(VPNProtocol):
             return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
     
     async def get_traffic_stats(self) -> List[Dict]:
-        """Получить статистику трафика V2Ray через новый API"""
+        """Получить статистику трафика V2Ray через новый API с точным мониторингом портов"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Используем новый эндпоинт для точного мониторинга портов
+                async with session.get(
+                    f"{self.api_url}/traffic/ports/exact",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        
+                        # Новая структура ответа с точным мониторингом портов
+                        ports_traffic = result.get('ports_traffic', {})
+                        total_ports = ports_traffic.get('total_ports', 0)
+                        ports_traffic_data = ports_traffic.get('ports_traffic', {})
+                        total_traffic = ports_traffic.get('total_traffic', 0)
+                        total_connections = ports_traffic.get('total_connections', 0)
+                        total_traffic_formatted = ports_traffic.get('total_traffic_formatted', '0 B')
+                        
+                        system_summary = result.get('system_summary', {})
+                        total_system_traffic = system_summary.get('total_system_traffic', 0)
+                        total_system_traffic_formatted = system_summary.get('total_system_traffic_formatted', '0 B')
+                        active_ports = system_summary.get('active_ports', 0)
+                        
+                        # Преобразуем в формат, совместимый с существующим кодом
+                        stats_list = []
+                        for uuid_key, port_data in ports_traffic_data.items():
+                            traffic = port_data.get('traffic', {})
+                            stats_list.append({
+                                'uuid': uuid_key,
+                                'port': port_data.get('port'),
+                                'key_name': port_data.get('key_name'),
+                                'uplink_bytes': traffic.get('rx_bytes', 0),
+                                'downlink_bytes': traffic.get('tx_bytes', 0),
+                                'total_bytes': traffic.get('total_bytes', 0),
+                                'uplink_formatted': traffic.get('rx_formatted', '0 B'),
+                                'downlink_formatted': traffic.get('tx_formatted', '0 B'),
+                                'total_formatted': traffic.get('total_formatted', '0 B'),
+                                'uplink_mb': traffic.get('rx_bytes', 0) / (1024 * 1024),
+                                'downlink_mb': traffic.get('tx_bytes', 0) / (1024 * 1024),
+                                'total_mb': traffic.get('total_bytes', 0) / (1024 * 1024),
+                                'connections': traffic.get('connections', 0),
+                                'connection_ratio': 0.0,  # Не предоставляется в новом API
+                                'connections_count': traffic.get('connections', 0),
+                                'timestamp': traffic.get('timestamp'),
+                                'source': result.get('source', 'port_monitor'),
+                                'method': 'port_monitor',
+                                # Дополнительные поля из новой структуры
+                                'total_ports': total_ports,
+                                'total_traffic': total_traffic,
+                                'total_connections': total_connections,
+                                'total_traffic_formatted': total_traffic_formatted,
+                                'total_system_traffic': total_system_traffic,
+                                'total_system_traffic_formatted': total_system_traffic_formatted,
+                                'active_ports': active_ports
+                            })
+                        
+                        return stats_list
+                    else:
+                        # Fallback к устаревшему эндпоинту для совместимости
+                        logger.warning(f"New traffic API failed ({response.status}), trying legacy endpoint")
+                        return await self._get_legacy_traffic_stats()
+        except Exception as e:
+            logger.error(f"Error getting V2Ray traffic stats: {e}")
+            # Fallback к устаревшему эндпоинту
+            return await self._get_legacy_traffic_stats()
+    
+    async def _get_legacy_traffic_stats(self) -> List[Dict]:
+        """Получить статистику трафика через устаревший API (fallback)"""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -234,7 +302,7 @@ class V2RayProtocol(VPNProtocol):
                     if response.status == 200:
                         result = await response.json()
                         
-                        # Новая структура ответа
+                        # Устаревшая структура ответа
                         total_keys = result.get('total_keys', 0)
                         active_keys = result.get('active_keys', 0)
                         total_traffic = result.get('total_traffic', '0 B')
@@ -262,7 +330,7 @@ class V2RayProtocol(VPNProtocol):
                                 'timestamp': key_stat.get('timestamp'),
                                 'source': key_stat.get('source', 'alternative_monitor'),
                                 'method': key_stat.get('method', 'network_distribution'),
-                                # Дополнительные поля из новой структуры
+                                # Дополнительные поля из устаревшей структуры
                                 'total_keys': total_keys,
                                 'active_keys': active_keys,
                                 'total_traffic': total_traffic
@@ -270,14 +338,59 @@ class V2RayProtocol(VPNProtocol):
                         
                         return stats_list
                     else:
-                        logger.error(f"Failed to get V2Ray stats: {response.status}")
+                        logger.error(f"Failed to get V2Ray stats (legacy): {response.status}")
                         return []
         except Exception as e:
-            logger.error(f"Error getting V2Ray traffic stats: {e}")
+            logger.error(f"Error getting V2Ray legacy traffic stats: {e}")
             return []
     
     async def get_key_traffic_stats(self, key_id: str) -> Dict:
-        """Получить статистику трафика конкретного ключа"""
+        """Получить статистику трафика конкретного ключа через новый API с точным мониторингом портов"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Используем новый эндпоинт для точного мониторинга портов
+                async with session.get(
+                    f"{self.api_url}/keys/{key_id}/traffic/port/exact",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        
+                        # Новая структура ответа с точным мониторингом портов
+                        key_info = result.get('key', {})
+                        port_traffic = result.get('port_traffic', {})
+                        
+                        return {
+                            'uuid': key_info.get('uuid'),
+                            'port': port_traffic.get('port'),
+                            'key_name': key_info.get('name'),
+                            'uplink_bytes': port_traffic.get('rx_bytes', 0),
+                            'downlink_bytes': port_traffic.get('tx_bytes', 0),
+                            'total_bytes': port_traffic.get('total_bytes', 0),
+                            'uplink_formatted': port_traffic.get('rx_formatted', '0 B'),
+                            'downlink_formatted': port_traffic.get('tx_formatted', '0 B'),
+                            'total_formatted': port_traffic.get('total_formatted', '0 B'),
+                            'uplink_mb': port_traffic.get('rx_bytes', 0) / (1024 * 1024),
+                            'downlink_mb': port_traffic.get('tx_bytes', 0) / (1024 * 1024),
+                            'total_mb': port_traffic.get('total_bytes', 0) / (1024 * 1024),
+                            'connections': port_traffic.get('connections', 0),
+                            'connection_ratio': 0.0,  # Не предоставляется в новом API
+                            'connections_count': port_traffic.get('connections', 0),
+                            'timestamp': port_traffic.get('timestamp'),
+                            'source': result.get('source', 'port_monitor'),
+                            'method': 'port_monitor'
+                        }
+                    else:
+                        # Fallback к устаревшему эндпоинту для совместимости
+                        logger.warning(f"New key traffic API failed ({response.status}), trying legacy endpoint")
+                        return await self._get_legacy_key_traffic_stats(key_id)
+        except Exception as e:
+            logger.error(f"Error getting V2Ray key traffic stats: {e}")
+            # Fallback к устаревшему эндпоинту
+            return await self._get_legacy_key_traffic_stats(key_id)
+    
+    async def _get_legacy_key_traffic_stats(self, key_id: str) -> Dict:
+        """Получить статистику трафика конкретного ключа через устаревший API (fallback)"""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -307,14 +420,41 @@ class V2RayProtocol(VPNProtocol):
                             'method': traffic_bytes.get('method', 'network_distribution')
                         }
                     else:
-                        logger.error(f"Failed to get V2Ray key stats: {response.status}")
+                        logger.error(f"Failed to get V2Ray key stats (legacy): {response.status}")
                         return {}
         except Exception as e:
-            logger.error(f"Error getting V2Ray key traffic stats: {e}")
+            logger.error(f"Error getting V2Ray legacy key traffic stats: {e}")
             return {}
     
     async def reset_key_traffic(self, key_id: str) -> bool:
-        """Сбросить статистику трафика ключа"""
+        """Сбросить статистику трафика ключа через новый API с точным мониторингом портов"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Используем новый эндпоинт для сброса статистики по порту
+                async with session.post(
+                    f"{self.api_url}/keys/{key_id}/traffic/port/reset",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        message = result.get('message', '')
+                        if 'reset successfully' in message.lower():
+                            logger.info(f"Successfully reset port traffic stats for key {key_id}")
+                            return True
+                        else:
+                            logger.warning(f"Unexpected port reset response: {message}")
+                    else:
+                        # Fallback к устаревшему эндпоинту для совместимости
+                        logger.warning(f"New reset API failed ({response.status}), trying legacy endpoint")
+                        return await self._reset_legacy_key_traffic(key_id)
+                    return False
+        except Exception as e:
+            logger.error(f"Error resetting V2Ray key traffic: {e}")
+            # Fallback к устаревшему эндпоинту
+            return await self._reset_legacy_key_traffic(key_id)
+    
+    async def _reset_legacy_key_traffic(self, key_id: str) -> bool:
+        """Сбросить статистику трафика ключа через устаревший API (fallback)"""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -325,15 +465,15 @@ class V2RayProtocol(VPNProtocol):
                         result = await response.json()
                         message = result.get('message', '')
                         if 'reset successfully' in message.lower():
-                            logger.info(f"Successfully reset traffic stats for key {key_id}")
+                            logger.info(f"Successfully reset traffic stats for key {key_id} (legacy)")
                             return True
                         else:
-                            logger.warning(f"Unexpected reset response: {message}")
+                            logger.warning(f"Unexpected reset response (legacy): {message}")
                     else:
-                        logger.error(f"Failed to reset traffic stats: {response.status}")
+                        logger.error(f"Failed to reset traffic stats (legacy): {response.status}")
                     return False
         except Exception as e:
-            logger.error(f"Error resetting V2Ray key traffic: {e}")
+            logger.error(f"Error resetting V2Ray key traffic (legacy): {e}")
             return False
     
     async def get_traffic_status(self) -> Dict:
@@ -357,6 +497,27 @@ class V2RayProtocol(VPNProtocol):
                         return {}
         except Exception as e:
             logger.error(f"Error getting V2Ray traffic status: {e}")
+            return {}
+    
+    async def get_system_traffic_summary(self) -> Dict:
+        """Получить системную сводку трафика"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/system/traffic/summary",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return {
+                            'summary': result.get('summary', {}),
+                            'timestamp': result.get('timestamp')
+                        }
+                    else:
+                        logger.error(f"Failed to get system traffic summary: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray system traffic summary: {e}")
             return {}
     
     async def get_system_config_status(self) -> Dict:
@@ -450,6 +611,140 @@ class V2RayProtocol(VPNProtocol):
                         return {}
         except Exception as e:
             logger.error(f"Error getting V2Ray API status: {e}")
+            return {}
+    
+    async def get_ports_status(self) -> Dict:
+        """Получить статус портов через новый API"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/system/ports",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return {
+                            'port_assignments': result.get('port_assignments', {}),
+                            'used_ports': result.get('used_ports', 0),
+                            'available_ports': result.get('available_ports', 0),
+                            'max_ports': result.get('max_ports', 0),
+                            'port_range': result.get('port_range', ''),
+                            'timestamp': result.get('timestamp')
+                        }
+                    else:
+                        logger.error(f"Failed to get ports status: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray ports status: {e}")
+            return {}
+    
+    async def reset_all_ports(self) -> bool:
+        """Сбросить все порты (только в экстренных случаях)"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.api_url}/system/ports/reset",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        message = result.get('message', '')
+                        if 'reset successfully' in message.lower():
+                            logger.info("Successfully reset all ports")
+                            return True
+                        else:
+                            logger.warning(f"Unexpected ports reset response: {message}")
+                    else:
+                        logger.error(f"Failed to reset ports: {response.status}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error resetting V2Ray ports: {e}")
+            return False
+    
+    async def get_ports_validation_status(self) -> Dict:
+        """Получить статус валидации портов"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/system/ports/status",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return {
+                            'validation': result.get('validation', {}),
+                            'timestamp': result.get('timestamp')
+                        }
+                    else:
+                        logger.error(f"Failed to get ports validation status: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray ports validation status: {e}")
+            return {}
+    
+    async def get_xray_config_status(self) -> Dict:
+        """Получить статус конфигурации Xray"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/system/xray/config-status",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return {
+                            'config_status': result.get('config_status', {}),
+                            'timestamp': result.get('timestamp')
+                        }
+                    else:
+                        logger.error(f"Failed to get Xray config status: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray Xray config status: {e}")
+            return {}
+    
+    async def sync_xray_config(self) -> bool:
+        """Синхронизировать конфигурацию Xray"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.api_url}/system/xray/sync-config",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        message = result.get('message', '')
+                        if 'synchronized successfully' in message.lower():
+                            logger.info("Successfully synchronized Xray config")
+                            return True
+                        else:
+                            logger.warning(f"Unexpected Xray sync response: {message}")
+                    else:
+                        logger.error(f"Failed to sync Xray config: {response.status}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error syncing V2Ray Xray config: {e}")
+            return False
+    
+    async def validate_xray_sync(self) -> Dict:
+        """Проверить соответствие конфигурации Xray с ключами"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/system/xray/validate-sync",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return {
+                            'validation': result.get('validation', {}),
+                            'timestamp': result.get('timestamp')
+                        }
+                    else:
+                        logger.error(f"Failed to validate Xray sync: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error validating V2Ray Xray sync: {e}")
             return {}
 
 class ProtocolFactory:
