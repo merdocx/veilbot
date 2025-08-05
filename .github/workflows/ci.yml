@@ -33,10 +33,10 @@ jobs:
           echo "📁 Directories:"
           find . -type d -maxdepth 2 | sort
       
-      - name: Run basic tests
+      - name: Run comprehensive tests
         run: |
-          echo "🧪 Running basic tests..."
-          python test_bot.py
+          echo "🧪 Running comprehensive tests..."
+          python run_tests.py
       
       - name: Test configuration validation
         run: |
