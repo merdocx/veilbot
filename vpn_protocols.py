@@ -1031,6 +1031,44 @@ class V2RayProtocol(VPNProtocol):
             logger.error(f"Error cleaning up V2Ray traffic history: {e}")
             return False
 
+    async def get_key_monthly_traffic(self, key_id: str) -> Dict:
+        """Получить месячную статистику трафика для конкретного ключа"""
+        try:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(
+                    f"{self.api_url}/keys/{key_id}/traffic/monthly",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result
+                    else:
+                        logger.error(f"Failed to get key monthly traffic: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray key monthly traffic: {e}")
+            return {}
+
+    async def get_monthly_traffic(self) -> Dict:
+        """Получить месячную статистику трафика для всех ключей"""
+        try:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(
+                    f"{self.api_url}/traffic/monthly",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result
+                    else:
+                        logger.error(f"Failed to get monthly traffic: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray monthly traffic: {e}")
+            return {}
+
 class ProtocolFactory:
     """Фабрика для создания протоколов"""
     

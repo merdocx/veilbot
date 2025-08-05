@@ -73,7 +73,9 @@ class TestVPNProtocols(unittest.TestCase):
                 'get_key_traffic_history', 
                 'get_daily_traffic_stats',
                 'reset_key_traffic_history',
-                'cleanup_traffic_history'
+                'cleanup_traffic_history',
+                'get_key_monthly_traffic',
+                'get_monthly_traffic'
             ]
             for method in methods:
                 self.assertTrue(hasattr(V2RayProtocol, method), f"Method {method} not found")
