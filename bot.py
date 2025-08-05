@@ -5,7 +5,7 @@ import re
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration
+from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration, ADMIN_ID
 from db import init_db
 from outline import create_key, delete_key
 from payment import create_payment, check_payment
@@ -20,8 +20,6 @@ SECURITY_HEADERS = {
     "X-XSS-Protection": "1; mode=block",
     "Referrer-Policy": "strict-origin-when-cross-origin"
 }
-
-ADMIN_ID = 46701395
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN is not set in config.py")
