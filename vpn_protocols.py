@@ -926,6 +926,111 @@ class V2RayProtocol(VPNProtocol):
             logger.error(f"Error getting V2Ray key info: {e}")
             return {}
 
+    async def get_traffic_history(self) -> Dict:
+        """Получить общий объем трафика для всех ключей с момента создания"""
+        try:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(
+                    f"{self.api_url}/traffic/history",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result
+                    else:
+                        logger.error(f"Failed to get traffic history: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray traffic history: {e}")
+            return {}
+
+    async def get_key_traffic_history(self, key_id: str) -> Dict:
+        """Получить общий объем трафика для конкретного ключа с момента создания"""
+        try:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(
+                    f"{self.api_url}/keys/{key_id}/traffic/history",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result
+                    else:
+                        logger.error(f"Failed to get key traffic history: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray key traffic history: {e}")
+            return {}
+
+    async def get_daily_traffic_stats(self, date: str) -> Dict:
+        """Получить ежедневную статистику трафика (формат даты: YYYY-MM-DD)"""
+        try:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(
+                    f"{self.api_url}/traffic/daily/{date}",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result
+                    else:
+                        logger.error(f"Failed to get daily traffic stats: {response.status}")
+                        return {}
+        except Exception as e:
+            logger.error(f"Error getting V2Ray daily traffic stats: {e}")
+            return {}
+
+    async def reset_key_traffic_history(self, key_id: str) -> bool:
+        """Сбросить историю трафика для конкретного ключа"""
+        try:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.post(
+                    f"{self.api_url}/keys/{key_id}/traffic/history/reset",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        message = result.get('message', '')
+                        if 'reset successfully' in message.lower():
+                            logger.info(f"Successfully reset traffic history for key {key_id}")
+                            return True
+                        else:
+                            logger.warning(f"Unexpected reset response: {message}")
+                    else:
+                        logger.error(f"Failed to reset key traffic history: {response.status}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error resetting V2Ray key traffic history: {e}")
+            return False
+
+    async def cleanup_traffic_history(self, days_to_keep: int = 30) -> bool:
+        """Очистить старые данные истории трафика"""
+        try:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.post(
+                    f"{self.api_url}/traffic/history/cleanup?days_to_keep={days_to_keep}",
+                    headers=self.headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        message = result.get('message', '')
+                        if 'cleaned up' in message.lower():
+                            logger.info(f"Successfully cleaned up traffic history older than {days_to_keep} days")
+                            return True
+                        else:
+                            logger.warning(f"Unexpected cleanup response: {message}")
+                    else:
+                        logger.error(f"Failed to cleanup traffic history: {response.status}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error cleaning up V2Ray traffic history: {e}")
+            return False
+
 class ProtocolFactory:
     """Фабрика для создания протоколов"""
     
