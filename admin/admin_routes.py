@@ -24,6 +24,9 @@ load_dotenv()
 # Add parent directory to Python path to import outline module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from outline import delete_key
+from vpn_protocols import ProtocolFactory
+import aiohttp
+import ssl
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -173,6 +176,55 @@ def datetime_local(ts):
         return time.strftime('%Y-%m-%dT%H:%M', time.localtime(ts))
     except Exception:
         return ""
+
+async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: dict) -> str:
+    """Get monthly traffic for a specific key"""
+    try:
+        if protocol == 'v2ray':
+            # Create V2Ray protocol instance
+            v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
+            
+            # Get overall traffic history and find the specific key
+            traffic_history = await v2ray.get_traffic_history()
+            
+            if traffic_history and traffic_history.get('data'):
+                data = traffic_history.get('data', {})
+                keys = data.get('keys', [])
+                
+                # Find the specific key by UUID
+                for key in keys:
+                    if key.get('key_uuid') == key_uuid:
+                        total_traffic = key.get('total_traffic', {})
+                        total_formatted = total_traffic.get('total_formatted', '0 B')
+                        
+                        # For now, return total traffic since we don't have monthly breakdown
+                        # TODO: Implement monthly calculation when daily stats are available
+                        return total_formatted
+                
+                # Key not found
+                return "0 B"
+            else:
+                return "0 B"
+        else:
+            # For Outline, we don't have historical data yet
+            return "N/A"
+    except Exception as e:
+        logging.error(f"Error getting monthly traffic for key {key_uuid}: {e}")
+        return "Error"
+
+def format_bytes(bytes_value):
+    """Format bytes to human readable format"""
+    if bytes_value == 0:
+        return "0 B"
+    
+    units = ['B', 'KB', 'MB', 'GB', 'TB']
+    unit_index = 0
+    
+    while bytes_value >= 1024 and unit_index < len(units) - 1:
+        bytes_value /= 1024
+        unit_index += 1
+    
+    return f"{bytes_value:.2f} {units[unit_index]}"
 templates.env.filters["timestamp"] = timestamp_filter
 templates.env.filters["my_datetime_local"] = datetime_local
 
@@ -612,7 +664,8 @@ async def keys_page(request: Request):
     c.execute("""
         SELECT k.id, k.v2ray_uuid as key_id, 
                'vless://' || k.v2ray_uuid || '@' || s.domain || ':443?path=' || COALESCE(s.v2ray_path, '/v2ray') || '&security=tls&type=ws#VeilBot-V2Ray' as access_url,
-               k.created_at, k.expiry_at, s.name, k.email, t.name as tariff_name, 'v2ray' as protocol
+               k.created_at, k.expiry_at, s.name, k.email, t.name as tariff_name, 'v2ray' as protocol,
+               s.api_url, s.api_key
         FROM v2ray_keys k
         JOIN servers s ON k.server_id = s.id
         LEFT JOIN tariffs t ON k.tariff_id = t.id
@@ -623,15 +676,40 @@ async def keys_page(request: Request):
     keys = outline_keys + v2ray_keys
     keys.sort(key=lambda x: x[3], reverse=True)  # Сортировка по created_at
     
+    # Получаем данные о трафике для V2Ray ключей
+    keys_with_traffic = []
+    for key in keys:
+        if len(key) > 8 and key[8] == 'v2ray':  # V2Ray ключ
+            try:
+                # Получаем конфигурацию сервера
+                server_config = {
+                    'api_url': key[9] if len(key) > 9 else '',  # api_url
+                    'api_key': key[10] if len(key) > 10 else ''  # api_key
+                }
+                
+                # Получаем трафик за текущий месяц (key[1] - это UUID для V2Ray)
+                monthly_traffic = await get_key_monthly_traffic(key[1], 'v2ray', server_config)
+                
+                # Добавляем трафик к ключу
+                key_with_traffic = list(key) + [monthly_traffic]
+                keys_with_traffic.append(key_with_traffic)
+            except Exception as e:
+                logging.error(f"Error getting traffic for V2Ray key {key[1]}: {e}")
+                key_with_traffic = list(key) + ["Error"]
+                keys_with_traffic.append(key_with_traffic)
+        else:  # Outline ключ
+            key_with_traffic = list(key) + ["N/A"]
+            keys_with_traffic.append(key_with_traffic)
+    
     # Debug logging
-    keys_with_email = [k for k in keys if k[6]]
-    log_admin_action(request, "KEYS_QUERY_RESULT", f"Total keys: {len(keys)}, Keys with email: {len(keys_with_email)}")
+    keys_with_email = [k for k in keys_with_traffic if k[6]]
+    log_admin_action(request, "KEYS_QUERY_RESULT", f"Total keys: {len(keys_with_traffic)}, Keys with email: {len(keys_with_email)}")
     
     conn.close()
 
     return templates.TemplateResponse("keys.html", {
         "request": request, 
-        "keys": keys,
+        "keys": keys_with_traffic,
         "current_time": int(time.time())
     })
 
