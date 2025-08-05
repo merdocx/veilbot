@@ -184,30 +184,68 @@ async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: d
             # Create V2Ray protocol instance
             v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
             
-            # Get overall traffic history
-            traffic_history = await v2ray.get_traffic_history()
+            # Get monthly traffic for all keys and find specific key
+            monthly_traffic = await v2ray.get_monthly_traffic()
             
-            if traffic_history and traffic_history.get('data'):
-                data = traffic_history.get('data', {})
+            if monthly_traffic and monthly_traffic.get('data'):
+                data = monthly_traffic.get('data', {})
                 keys = data.get('keys', [])
                 
                 # Find the specific key by UUID
                 for key in keys:
                     if key.get('key_uuid') == key_uuid:
-                        total_traffic = key.get('total_traffic', {})
-                        total_bytes = total_traffic.get('total_bytes', 0)
+                        monthly_traffic_data = key.get('monthly_traffic', {})
+                        total_bytes = monthly_traffic_data.get('total_bytes', 0)
                         
-                        # For now, we'll show total traffic since creation
-                        # TODO: Implement proper monthly calculation when API supports it
+                        # Convert to GB and format
                         if total_bytes == 0:
                             return "0 GB"
                         
                         traffic_gb = total_bytes / (1024 * 1024 * 1024)
                         return f"{traffic_gb:.2f} GB"
                 
+                # Key not found in monthly data, fallback to total traffic
+                traffic_history = await v2ray.get_traffic_history()
+                
+                if traffic_history and traffic_history.get('data'):
+                    data = traffic_history.get('data', {})
+                    keys = data.get('keys', [])
+                    
+                    # Find the specific key by UUID
+                    for key in keys:
+                        if key.get('key_uuid') == key_uuid:
+                            total_traffic = key.get('total_traffic', {})
+                            total_bytes = total_traffic.get('total_bytes', 0)
+                            
+                            if total_bytes == 0:
+                                return "0 GB"
+                            
+                            traffic_gb = total_bytes / (1024 * 1024 * 1024)
+                            return f"{traffic_gb:.2f} GB"
+                
                 # Key not found
                 return "0 GB"
             else:
+                # Fallback to total traffic if monthly data not available
+                traffic_history = await v2ray.get_traffic_history()
+                
+                if traffic_history and traffic_history.get('data'):
+                    data = traffic_history.get('data', {})
+                    keys = data.get('keys', [])
+                    
+                    # Find the specific key by UUID
+                    for key in keys:
+                        if key.get('key_uuid') == key_uuid:
+                            total_traffic = key.get('total_traffic', {})
+                            total_bytes = total_traffic.get('total_bytes', 0)
+                            
+                            if total_bytes == 0:
+                                return "0 GB"
+                            
+                            traffic_gb = total_bytes / (1024 * 1024 * 1024)
+                            return f"{traffic_gb:.2f} GB"
+                
+                # Key not found
                 return "0 GB"
         else:
             # For Outline, we don't have historical data yet
