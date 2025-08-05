@@ -88,9 +88,10 @@ nginx/*.log
 backup_*.db
 backup_*.sql
 
-# Test files
-test_*.py
-*_test.py
+# Test files (keep test files for CI/CD, but ignore test outputs)
+*.test
+test_output/
+.coverage
 
 # Documentation builds
 docs/_build/
