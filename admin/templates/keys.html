@@ -12,23 +12,29 @@
     border-radius: 8px;
     overflow: hidden;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    font-size: 0.8rem;
 }
 
 .keys-table th {
     background: #f8fafc;
-    padding: 12px 8px;
+    padding: 8px 6px;
     text-align: left;
     font-weight: 600;
     color: #374151;
     border-bottom: 1px solid #e5e7eb;
-    font-size: 0.875rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
 }
 
 .keys-table td {
-    padding: 12px 8px;
+    padding: 8px 6px;
     border-bottom: 1px solid #f3f4f6;
-    font-size: 0.875rem;
+    font-size: 0.75rem;
     vertical-align: middle;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .keys-table tr:hover {
@@ -50,16 +56,16 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 8px 12px;
+    padding: 6px 8px;
     border: none;
-    border-radius: 6px;
-    font-size: 0.875rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
     font-weight: 500;
     text-decoration: none;
     cursor: pointer;
     transition: all 0.2s ease;
-    min-width: 36px;
-    height: 36px;
+    min-width: 28px;
+    height: 28px;
 }
 
 .btn-danger {
@@ -83,7 +89,7 @@
 }
 
 .btn .material-icons {
-    font-size: 16px;
+    font-size: 14px;
 }
 
 .badge {
@@ -105,6 +111,27 @@
     color: white;
     font-weight: 600;
 }
+
+.email {
+    font-size: 0.7rem;
+    color: #374151;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+}
+
+.code {
+    font-family: 'Courier New', monospace;
+    font-size: 0.7rem;
+    background: #f3f4f6;
+    padding: 2px 4px;
+    border-radius: 3px;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .badge-v2ray {
@@ -344,35 +371,37 @@
     <div class="filter-row">
         <table style="width: 100%; border-collapse: collapse;">
             <tr>
-                <td style="padding: 0 4px;"><input type="text" id="filter-id" placeholder="ID"></td>
-                <td style="padding: 0 4px;"><input type="text" id="filter-protocol" placeholder="Протокол"></td>
-                <td style="padding: 0 4px;"><input type="text" id="filter-key" placeholder="Ключ"></td>
-                <td style="padding: 0 4px;"><input type="text" id="filter-tariff" placeholder="Тариф"></td>
-                <td style="padding: 0 4px;"><input type="text" id="filter-email" placeholder="Email"></td>
-                <td style="padding: 0 4px;"><input type="text" id="filter-server" placeholder="Сервер"></td>
-                <td style="padding: 0 4px;"><input type="text" id="filter-created" placeholder="Создан"></td>
-                <td style="padding: 0 4px;"><input type="text" id="filter-expiry" placeholder="Истекает"></td>
-                <td style="padding: 0 4px;"><input type="text" id="filter-status" placeholder="Статус"></td>
-                <td style="padding: 0 4px; width: 120px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-id" placeholder="ID" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-protocol" placeholder="Протокол" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-key" placeholder="Ключ" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-tariff" placeholder="Тариф" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-email" placeholder="Email" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-traffic" placeholder="Трафик" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-server" placeholder="Сервер" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-created" placeholder="Создан" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-expiry" placeholder="Истекает" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px;"><input type="text" id="filter-status" placeholder="Статус" style="font-size: 0.7rem; padding: 2px 4px;"></td>
+                <td style="padding: 0 2px; width: 80px;"></td>
             </tr>
         </table>
     </div>
 
     <!-- Таблица -->
-    <table class="keys-table">
+    <div style="overflow-x: auto; margin-top: 1rem;">
+        <table class="keys-table">
         <thead>
             <tr>
-                <th>ID</th>
-                <th>Протокол</th>
-                <th>Ключ</th>
-                <th>Тариф</th>
-                <th>Email</th>
-                <th>Трафик (месяц)</th>
-                <th>Сервер</th>
-                <th>Создан</th>
-                <th>Истекает</th>
-                <th>Статус</th>
-                <th>Действия</th>
+                <th style="width: 50px;">ID</th>
+                <th style="width: 80px;">Протокол</th>
+                <th style="width: 150px;">Ключ</th>
+                <th style="width: 80px;">Тариф</th>
+                <th style="width: 120px;">Email</th>
+                <th style="width: 100px;">Трафик</th>
+                <th style="width: 80px;">Сервер</th>
+                <th style="width: 90px;">Создан</th>
+                <th style="width: 90px;">Истекает</th>
+                <th style="width: 70px;">Статус</th>
+                <th style="width: 80px;">Действия</th>
             </tr>
         </thead>
         <tbody id="keys-tbody">
@@ -381,15 +410,15 @@
                 <td>{{ k[0] }}</td>
                 <td>
                     {% if k[8] == 'outline' %}
-                        <span class="badge badge-outline">🔒 Outline</span>
+                        <span class="badge badge-outline">🔒</span>
                     {% elif k[8] == 'v2ray' %}
-                        <span class="badge badge-v2ray">🛡️ V2Ray</span>
+                        <span class="badge badge-v2ray">🛡️</span>
                     {% else %}
                         <span class="badge badge-info">{{ k[8] }}</span>
                     {% endif %}
                 </td>
                 <td>
-                    <div class="code">{{ k[2]|truncate(50) }}</div>
+                    <div class="code" title="{{ k[2] }}">{{ k[2]|truncate(30) }}</div>
                 </td>
                 <td>
                     {% if k[7] %}
@@ -415,8 +444,8 @@
                 <td>
                     <span class="badge badge-info">{{ k[5] }}</span>
                 </td>
-                <td>{{ k[3]|timestamp }}</td>
-                <td>{{ k[4]|timestamp }}</td>
+                <td title="{{ k[3]|timestamp }}">{{ k[3]|timestamp|truncate(10) }}</td>
+                <td title="{{ k[4]|timestamp }}">{{ k[4]|timestamp|truncate(10) }}</td>
                 <td>
                     {% if k[4] > current_time %}
                         <span class="badge badge-success">Активен</span>
@@ -443,7 +472,7 @@
             {% endfor %}
         </tbody>
     </table>
-</div>
+    </div>
 
 <!-- Пагинация -->
 <div class="pagination" id="pagination"></div>
@@ -476,6 +505,7 @@ const filters = [
     document.getElementById('filter-key'),
     document.getElementById('filter-tariff'),
     document.getElementById('filter-email'),
+    document.getElementById('filter-traffic'),
     document.getElementById('filter-server'),
     document.getElementById('filter-created'),
     document.getElementById('filter-expiry'),
