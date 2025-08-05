@@ -178,13 +178,13 @@ def datetime_local(ts):
         return ""
 
 async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: dict) -> str:
-    """Get monthly traffic for a specific key"""
+    """Get monthly traffic for a specific key in GB"""
     try:
         if protocol == 'v2ray':
             # Create V2Ray protocol instance
             v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
             
-            # Get overall traffic history and find the specific key
+            # Get overall traffic history
             traffic_history = await v2ray.get_traffic_history()
             
             if traffic_history and traffic_history.get('data'):
@@ -195,16 +195,20 @@ async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: d
                 for key in keys:
                     if key.get('key_uuid') == key_uuid:
                         total_traffic = key.get('total_traffic', {})
-                        total_formatted = total_traffic.get('total_formatted', '0 B')
+                        total_bytes = total_traffic.get('total_bytes', 0)
                         
-                        # For now, return total traffic since we don't have monthly breakdown
-                        # TODO: Implement monthly calculation when daily stats are available
-                        return total_formatted
+                        # For now, we'll show total traffic since creation
+                        # TODO: Implement proper monthly calculation when API supports it
+                        if total_bytes == 0:
+                            return "0 GB"
+                        
+                        traffic_gb = total_bytes / (1024 * 1024 * 1024)
+                        return f"{traffic_gb:.2f} GB"
                 
                 # Key not found
-                return "0 B"
+                return "0 GB"
             else:
-                return "0 B"
+                return "0 GB"
         else:
             # For Outline, we don't have historical data yet
             return "N/A"
