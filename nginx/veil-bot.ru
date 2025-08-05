@@ -1,7 +1,33 @@
+# HTTP -> HTTPS redirect
 server {
     listen 80;
     listen [::]:80;
     server_name veil-bot.ru www.veil-bot.ru;
+    
+    # Редирект на HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+# HTTPS server
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name veil-bot.ru www.veil-bot.ru;
+    
+    # SSL Configuration
+    ssl_certificate /etc/letsencrypt/live/veil-bot.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/veil-bot.ru/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/veil-bot.ru/chain.pem;
+    
+    # SSL Security
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    
+    # HSTS
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     
     # Логи
     access_log /var/log/nginx/veil-bot.ru.access.log;
@@ -9,7 +35,7 @@ server {
     
     # Проксирование на админку
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:8001;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

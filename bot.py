@@ -502,72 +502,54 @@ async def handle_free_tariff(cursor, message, user_id, tariff, country=None):
         await create_new_key_flow(cursor, message, user_id, tariff, None, country)
 
 def check_free_tariff_limit(cursor, user_id):
-    # Найти последний бесплатный ключ пользователя
-    cursor.execute("""
-        SELECT expiry_at, created_at FROM keys k
-        JOIN tariffs t ON k.tariff_id = t.id
-        WHERE k.user_id = ? AND t.price_rub = 0
-        ORDER BY k.expiry_at DESC LIMIT 1
-    """, (user_id,))
-    row = cursor.fetchone()
-    if not row:
-        return False
-    expiry_at, created_at = row
-    now = int(time.time())
-    # Если ключ ещё активен — нельзя
-    if expiry_at > now:
-        return True
-    # Если с момента истечения прошло менее 24 часов — нельзя
-    if now - expiry_at < 86400:
-        return True
-    # Иначе можно
-    return False
+    """Проверка лимита бесплатных ключей (для обратной совместимости)"""
+    return check_free_tariff_limit_by_protocol_and_country(cursor, user_id, "outline")
 
 def check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol="outline", country=None):
     """Проверка лимита бесплатных ключей для конкретного протокола и страны"""
+    now = int(time.time())
+    day_ago = now - 86400  # 24 часа назад
+    
     if protocol == "outline":
         if country:
             cursor.execute("""
-                SELECT k.expiry_at, k.created_at FROM keys k
+                SELECT k.created_at FROM keys k
                 JOIN tariffs t ON k.tariff_id = t.id
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
-                ORDER BY k.expiry_at DESC LIMIT 1
-            """, (user_id, country))
+                AND k.created_at > ?
+                ORDER BY k.created_at DESC LIMIT 1
+            """, (user_id, country, day_ago))
         else:
             cursor.execute("""
-                SELECT expiry_at, created_at FROM keys k
+                SELECT k.created_at FROM keys k
                 JOIN tariffs t ON k.tariff_id = t.id
                 WHERE k.user_id = ? AND t.price_rub = 0
-                ORDER BY k.expiry_at DESC LIMIT 1
-            """, (user_id,))
+                AND k.created_at > ?
+                ORDER BY k.created_at DESC LIMIT 1
+            """, (user_id, day_ago))
     else:  # v2ray
         if country:
             cursor.execute("""
-                SELECT k.expiry_at, k.created_at FROM v2ray_keys k
+                SELECT k.created_at FROM v2ray_keys k
                 JOIN tariffs t ON k.tariff_id = t.id
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
-                ORDER BY k.expiry_at DESC LIMIT 1
-            """, (user_id, country))
+                AND k.created_at > ?
+                ORDER BY k.created_at DESC LIMIT 1
+            """, (user_id, country, day_ago))
         else:
             cursor.execute("""
-                SELECT expiry_at, created_at FROM v2ray_keys k
+                SELECT k.created_at FROM v2ray_keys k
                 JOIN tariffs t ON k.tariff_id = t.id
                 WHERE k.user_id = ? AND t.price_rub = 0
-                ORDER BY k.expiry_at DESC LIMIT 1
-            """, (user_id,))
+                AND k.created_at > ?
+                ORDER BY k.created_at DESC LIMIT 1
+            """, (user_id, day_ago))
     
     row = cursor.fetchone()
-    if not row:
-        return False
-    expiry_at, created_at = row
-    now = int(time.time())
-    # Если ключ ещё активен — нельзя
-    if expiry_at > now:
-        return True
-    # Если с момента истечения прошло менее 24 часов — нельзя
-    if now - expiry_at < 86400:
+    # Если найден ключ, созданный в последние 24 часа — нельзя
+    if row:
         return True
     # Иначе можно
     return False
@@ -649,6 +631,9 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
         existing_key = cursor.fetchone()
         if existing_key:
             extend_existing_key(cursor, existing_key, tariff['duration_sec'], email, tariff['id'])
+            # Очищаем состояние пользователя
+            user_states.pop(user_id, None)
+            
             await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(existing_key[2], protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
             return
     else:  # v2ray
@@ -669,6 +654,9 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             # Используем новый формат Reality протокола
             config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
             
+            # Очищаем состояние пользователя
+            user_states.pop(user_id, None)
+            
             await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
             return
     
@@ -679,6 +667,13 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
         return
     
     try:
+        # Отправляем сообщение о начале создания ключа
+        loading_msg = await message.answer(
+            f"🔄 Создаю ключ {PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}...\n"
+            f"Пожалуйста, подождите.",
+            reply_markup=None
+        )
+        
         # Создаем протокол-клиент
         server_config = {
             'api_url': server[2],
@@ -721,6 +716,15 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                 'email': email or f"user_{user_id}@veilbot.com"
             })
         
+        # Удаляем сообщение о загрузке
+        try:
+            await loading_msg.delete()
+        except:
+            pass
+        
+        # Очищаем состояние пользователя
+        user_states.pop(user_id, None)
+        
         # Отправляем пользователю
         await message.answer(
             format_key_message_unified(config, protocol, tariff),
@@ -759,6 +763,15 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                     print(f"[CLEANUP] Deleted Outline key {user_data['id']} from server due to error")
         except Exception as cleanup_error:
             print(f"[ERROR] Failed to cleanup {protocol} user after error: {cleanup_error}")
+        
+        # Удаляем сообщение о загрузке
+        try:
+            await loading_msg.delete()
+        except:
+            pass
+        
+        # Очищаем состояние пользователя
+        user_states.pop(user_id, None)
         
         # Отправляем сообщение об ошибке пользователю
         await message.answer(
