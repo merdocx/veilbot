@@ -33,6 +33,16 @@ def validate_url(url: str) -> bool:
     pattern = r'^https?://[^\s/$.?#].[^\s]*$'
     return bool(re.match(pattern, url))
 
+def validate_admin_id(admin_id: str) -> bool:
+    """Валидация Admin ID"""
+    if not admin_id:
+        return False
+    try:
+        int(admin_id)
+        return True
+    except ValueError:
+        return False
+
 # Bot configuration from environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
@@ -47,6 +57,9 @@ DB_ENCRYPTION_KEY = os.getenv("DB_ENCRYPTION_KEY")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH")
 SECRET_KEY = os.getenv("SECRET_KEY")
+
+# Bot admin configuration
+ADMIN_ID = int(os.getenv("ADMIN_ID", "46701395"))
 
 # Session configuration
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", "3600"))
@@ -107,6 +120,10 @@ def validate_configuration() -> Dict[str, Any]:
     if not SECRET_KEY:
         warnings.append("SECRET_KEY not set - using default (insecure)")
     
+    # Validate admin ID
+    if not validate_admin_id(str(ADMIN_ID)):
+        errors.append("Invalid ADMIN_ID format")
+    
     # Validate session configuration
     if SESSION_MAX_AGE <= 0:
         errors.append("SESSION_MAX_AGE must be positive")
@@ -136,6 +153,6 @@ __all__ = [
     'TELEGRAM_BOT_TOKEN', 'YOOKASSA_SHOP_ID', 'YOOKASSA_API_KEY', 
     'YOOKASSA_RETURN_URL', 'DATABASE_PATH', 'DB_ENCRYPTION_KEY',
     'ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH', 'SECRET_KEY',
-    'SESSION_MAX_AGE', 'SESSION_SECURE', 'RATE_LIMIT_LOGIN', 
+    'ADMIN_ID', 'SESSION_MAX_AGE', 'SESSION_SECURE', 'RATE_LIMIT_LOGIN', 
     'RATE_LIMIT_API', 'PROTOCOLS', 'validate_configuration'
 ]
