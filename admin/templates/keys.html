@@ -435,8 +435,10 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if k[8] == 'v2ray' and k|length > 10 %}
-                        <span class="badge badge-traffic">{{ k[10] }}</span>
+                    {% if k[8] == 'v2ray' and k|length > 11 %}
+                        <span class="badge badge-traffic">{{ k[11] }}</span>
+                    {% elif k[8] == 'outline' and k|length > 9 %}
+                        <span class="badge badge-traffic">{{ k[9] }}</span>
                     {% else %}
                         <span class="text-muted">N/A</span>
                     {% endif %}
