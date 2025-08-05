@@ -17,25 +17,105 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: List files
+      - name: Install dependencies
         run: |
-          echo "Files in repository:"
-          ls -la
-          echo "Python files:"
-          find . -name "*.py" -type f | head -10
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
       
-      - name: Test file exists
+      - name: List project structure
         run: |
-          echo "Checking if test_bot.py exists..."
-          if [ -f test_bot.py ]; then
-            echo "✅ test_bot.py found"
+          echo "📁 Project structure:"
+          ls -la
+          echo ""
+          echo "📁 Python files:"
+          find . -name "*.py" -type f | head -10
+          echo ""
+          echo "📁 Directories:"
+          find . -type d -maxdepth 2 | sort
+      
+      - name: Run basic tests
+        run: |
+          echo "🧪 Running basic tests..."
+          python test_bot.py
+      
+      - name: Test configuration validation
+        run: |
+          echo "🔧 Testing configuration..."
+          python -c "
+          import os
+          os.environ['TELEGRAM_BOT_TOKEN'] = '123456789:KhO-lzCMPJqZF8CD07t-RSEgZJol2i7_yez'
+          os.environ['YOOKASSA_SHOP_ID'] = '123456'
+          os.environ['YOOKASSA_API_KEY'] = 'test_1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'
+          os.environ['YOOKASSA_RETURN_URL'] = 'https://example.com'
+          os.environ['ADMIN_ID'] = '123456789'
+          
+          from config import validate_configuration
+          result = validate_configuration()
+          print(f'Configuration validation: {result}')
+          assert result['is_valid'], 'Configuration validation failed'
+          print('✅ Configuration validation passed')
+          "
+      
+      - name: Test imports without environment
+        run: |
+          echo "📦 Testing module imports..."
+          python -c "
+          # Test basic imports that don't require environment variables
+          from config import PROTOCOLS
+          from db import init_db
+          from validators import input_validator, db_validator, business_validator
+          from vpn_protocols import ProtocolFactory
+          from utils import get_db_cursor
+          print('✅ All basic imports successful')
+          "
+      
+      - name: Check code quality
+        run: |
+          echo "🔍 Checking code quality..."
+          # Check for syntax errors
+          python -m py_compile bot.py
+          python -m py_compile config.py
+          python -m py_compile db.py
+          python -m py_compile payment.py
+          python -m py_compile validators.py
+          python -m py_compile vpn_protocols.py
+          python -m py_compile utils.py
+          echo "✅ No syntax errors found"
+      
+      - name: Test project structure
+        run: |
+          echo "📋 Testing project structure..."
+          # Check required files
+          required_files=('bot.py', 'config.py', 'db.py', 'payment.py', 'requirements.txt', '.env.example')
+          for file in "${required_files[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✅ $file exists"
+            else
+              echo "❌ $file missing"
+              exit 1
+            fi
+          done
+          
+          # Check required directories
+          required_dirs=('admin', 'docs', 'scripts', 'setup')
+          for dir in "${required_dirs[@]}"; do
+            if [ -d "$dir" ]; then
+              echo "✅ $dir exists"
+            else
+              echo "❌ $dir missing"
+              exit 1
+            fi
+          done
+          echo "✅ Project structure is correct"
+      
+      - name: Test requirements
+        run: |
+          echo "📋 Testing requirements.txt..."
+          if [ -f requirements.txt ]; then
+            echo "✅ requirements.txt exists"
+            echo "📦 Dependencies:"
+            cat requirements.txt
           else
-            echo "❌ test_bot.py not found"
+            echo "❌ requirements.txt missing"
             exit 1
           fi
-      
-      - name: Test Python
-        run: |
-          echo "Testing Python..."
-          python3 --version
-          python3 -c "print('Hello World!')"
