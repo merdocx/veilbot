@@ -3,14 +3,26 @@ import time
 import sqlite3
 import re
 import logging
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration, ADMIN_ID
 from db import init_db
 from outline import create_key, delete_key
-from payment import create_payment, check_payment
 from utils import get_db_cursor
-from vpn_protocols import ProtocolFactory, get_protocol_instructions, format_duration
+
+# Оптимизация памяти
+from memory_optimizer import (
+    get_payment_service, get_vpn_service, get_security_logger,
+    optimize_memory, get_memory_stats, log_memory_usage
+)
+
+# Ленивые импорты для тяжелых модулей
+PAYMENT_MODULE_AVAILABLE = None  # Будет определено при первом использовании
+VPN_PROTOCOLS_AVAILABLE = None   # Будет определено при первом использовании
+SECURITY_LOGGER_AVAILABLE = None # Будет определено при первом использовании
+
+# Импорты валидаторов (легкие модули)
 from validators import input_validator, db_validator, business_validator, validate_user_input, sanitize_user_input, ValidationError
 
 # Security configuration
@@ -26,6 +38,9 @@ if not TELEGRAM_BOT_TOKEN:
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher(bot)
+
+# Инициализация будет выполнена при первом использовании через lazy loading
+print("🚀 VeilBot запущен с оптимизацией памяти")
 
 # Simple state management for email collection
 user_states = {}  # user_id -> {"state": ..., ...}
@@ -477,7 +492,7 @@ def get_tariff_by_name_and_price(cursor, tariff_name, price):
 
 async def handle_free_tariff(cursor, message, user_id, tariff, country=None):
     if check_free_tariff_limit(cursor, user_id):
-        await message.answer("Вы уже активировали бесплатный тариф за последние 24 часа.", reply_markup=main_menu)
+        await message.answer("Вы уже получали бесплатный тариф ранее. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
         return
     now = int(time.time())
     # Проверяем наличие активного ключа и его тип
@@ -494,19 +509,17 @@ async def handle_free_tariff(cursor, message, user_id, tariff, country=None):
             await message.answer("У вас уже есть активный платный ключ. Бесплатный ключ можно получить только если нет активных платных ключей.", reply_markup=main_menu)
             return
         else:
-            await message.answer("У вас уже есть активный бесплатный ключ. Получить новый можно через 24 часа после последней активации.", reply_markup=main_menu)
+            await message.answer("У вас уже есть активный бесплатный ключ. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
             return
     else:
         await create_new_key_flow(cursor, message, user_id, tariff, None, country)
 
 def check_free_tariff_limit(cursor, user_id):
-    """Проверка лимита бесплатных ключей (для обратной совместимости)"""
+    """Проверка лимита бесплатных ключей - один раз навсегда (для обратной совместимости)"""
     return check_free_tariff_limit_by_protocol_and_country(cursor, user_id, "outline")
 
 def check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol="outline", country=None):
-    """Проверка лимита бесплатных ключей для конкретного протокола и страны"""
-    now = int(time.time())
-    day_ago = now - 86400  # 24 часа назад
+    """Проверка лимита бесплатных ключей для конкретного протокола и страны - один раз навсегда"""
     
     if protocol == "outline":
         if country:
@@ -515,17 +528,15 @@ def check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol="o
                 JOIN tariffs t ON k.tariff_id = t.id
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
-                AND k.created_at > ?
                 ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id, country, day_ago))
+            """, (user_id, country))
         else:
             cursor.execute("""
                 SELECT k.created_at FROM keys k
                 JOIN tariffs t ON k.tariff_id = t.id
                 WHERE k.user_id = ? AND t.price_rub = 0
-                AND k.created_at > ?
                 ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id, day_ago))
+            """, (user_id,))
     else:  # v2ray
         if country:
             cursor.execute("""
@@ -533,27 +544,25 @@ def check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol="o
                 JOIN tariffs t ON k.tariff_id = t.id
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
-                AND k.created_at > ?
                 ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id, country, day_ago))
+            """, (user_id, country))
         else:
             cursor.execute("""
                 SELECT k.created_at FROM v2ray_keys k
                 JOIN tariffs t ON k.tariff_id = t.id
                 WHERE k.user_id = ? AND t.price_rub = 0
-                AND k.created_at > ?
                 ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id, day_ago))
+            """, (user_id,))
     
     row = cursor.fetchone()
-    # Если найден ключ, созданный в последние 24 часа — нельзя
+    # Если найден любой бесплатный ключ — нельзя (только один раз навсегда)
     if row:
         return True
     # Иначе можно
     return False
 
 def check_free_tariff_limit_by_protocol(cursor, user_id, protocol="outline"):
-    """Проверка лимита бесплатных ключей для конкретного протокола (для обратной совместимости)"""
+    """Проверка лимита бесплатных ключей для конкретного протокола - один раз навсегда (для обратной совместимости)"""
     return check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol)
 
 def extend_existing_key(cursor, existing_key, duration, email=None, tariff_id=None):
@@ -672,7 +681,7 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             reply_markup=None
         )
         
-        # Создаем протокол-клиент
+        # Создаем протокол-клиент с lazy loading
         server_config = {
             'api_url': server[2],
             'cert_sha256': server[3],
@@ -681,7 +690,25 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             'path': server[6]
         }
         
-        protocol_client = ProtocolFactory.create_protocol(protocol, server_config)
+        # Ленивая инициализация VPN протоколов
+        global VPN_PROTOCOLS_AVAILABLE
+        if VPN_PROTOCOLS_AVAILABLE is None:
+            try:
+                vpn_service = get_vpn_service()
+                VPN_PROTOCOLS_AVAILABLE = vpn_service is not None
+                if VPN_PROTOCOLS_AVAILABLE:
+                    print("✅ VPN протоколы инициализированы (lazy loading)")
+                else:
+                    print("⚠️ VPN протоколы недоступны")
+            except Exception as e:
+                VPN_PROTOCOLS_AVAILABLE = False
+                print(f"⚠️ Ошибка инициализации VPN протоколов: {e}")
+        
+        if VPN_PROTOCOLS_AVAILABLE:
+            from vpn_protocols import ProtocolFactory
+            protocol_client = ProtocolFactory.create_protocol(protocol, server_config)
+        else:
+            raise Exception("VPN протоколы недоступны")
         
         # Создаем пользователя на сервере (ВАЖНО: делаем это до сохранения в БД)
         user_data = await protocol_client.create_user(email or f"user_{user_id}@veilbot.com")
@@ -700,6 +727,23 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             """, (server[0], user_id, user_data['accessUrl'], expiry, user_data['id'], now, email, tariff['id'], protocol))
             
             config = user_data['accessUrl']
+            
+            # Логирование создания Outline ключа
+            try:
+                security_logger = get_security_logger()
+                if security_logger:
+                    security_logger.log_key_creation(
+                        user_id=user_id,
+                        key_id=user_data['id'],
+                        protocol=protocol,
+                        server_id=server[0],
+                        tariff_id=tariff['id'],
+                        ip_address=getattr(message, 'from_user', {}).get('id', None),
+                        user_agent="Telegram Bot"
+                    )
+            except Exception as e:
+                logging.error(f"Error logging key creation: {e}")
+                
         else:  # v2ray
             cursor.execute("""
                 INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id)
@@ -713,6 +757,22 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                 'path': server[6] or '/v2ray',
                 'email': email or f"user_{user_id}@veilbot.com"
             })
+            
+            # Логирование создания V2Ray ключа
+            try:
+                security_logger = get_security_logger()
+                if security_logger:
+                    security_logger.log_key_creation(
+                        user_id=user_id,
+                        key_id=user_data['uuid'],
+                        protocol=protocol,
+                        server_id=server[0],
+                        tariff_id=tariff['id'],
+                        ip_address=getattr(message, 'from_user', {}).get('id', None),
+                        user_agent="Telegram Bot"
+                    )
+            except Exception as e:
+                logging.error(f"Error logging key creation: {e}")
         
         # Удаляем сообщение о загрузке
         try:
@@ -749,6 +809,21 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
     except Exception as e:
         # При ошибке пытаемся удалить созданного пользователя с сервера
         print(f"[ERROR] Failed to create {protocol} key: {e}")
+        
+        # Логирование ошибки создания ключа
+        try:
+            security_logger = get_security_logger()
+            if security_logger:
+                security_logger.log_suspicious_activity(
+                    user_id=user_id,
+                    activity_type="key_creation_failed",
+                    details=f"Failed to create {protocol} key: {str(e)}",
+                    ip_address=getattr(message, 'from_user', {}).get('id', None),
+                    user_agent="Telegram Bot"
+                )
+        except Exception as log_e:
+            logging.error(f"Error logging key creation failure: {log_e}")
+        
         try:
             if 'user_data' in locals() and user_data:
                 if protocol == 'v2ray' and user_data.get('uuid'):
@@ -821,9 +896,9 @@ async def handle_free_tariff_with_protocol(cursor, message, user_id, tariff, cou
     # Проверяем лимит бесплатных ключей для выбранного протокола и страны
     if check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol, country):
         if country:
-            await message.answer(f"Вы уже активировали бесплатный тариф {PROTOCOLS[protocol]['name']} для страны {country} за последние 24 часа.", reply_markup=main_menu)
+            await message.answer(f"Вы уже получали бесплатный тариф {PROTOCOLS[protocol]['name']} для страны {country} ранее. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
         else:
-            await message.answer(f"Вы уже активировали бесплатный тариф {PROTOCOLS[protocol]['name']} за последние 24 часа.", reply_markup=main_menu)
+            await message.answer(f"Вы уже получали бесплатный тариф {PROTOCOLS[protocol]['name']} ранее. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
         return
     
     now = int(time.time())
@@ -876,9 +951,9 @@ async def handle_free_tariff_with_protocol(cursor, message, user_id, tariff, cou
             return
         else:
             if country:
-                await message.answer(f"У вас уже есть активный бесплатный ключ {PROTOCOLS[protocol]['name']} для страны {country}. Получить новый можно через 24 часа после последней активации.", reply_markup=main_menu)
+                await message.answer(f"У вас уже есть активный бесплатный ключ {PROTOCOLS[protocol]['name']} для страны {country}. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
             else:
-                await message.answer(f"У вас уже есть активный бесплатный ключ {PROTOCOLS[protocol]['name']}. Получить новый можно через 24 часа после последней активации.", reply_markup=main_menu)
+                await message.answer(f"У вас уже есть активный бесплатный ключ {PROTOCOLS[protocol]['name']}. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
             return
     else:
         await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, None, country, protocol)
@@ -890,60 +965,142 @@ async def handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, cou
 async def create_payment_with_email_and_protocol(message, user_id, tariff, email=None, country=None, protocol="outline"):
     """Создание платежа с поддержкой протоколов"""
     print(f"[DEBUG] create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}")
-    if email:
-        # Если email уже есть, создаем платеж сразу
-        print(f"[DEBUG] Creating payment: amount={tariff['price_rub']}, description='Покупка тарифа {tariff['name']}', email={email}")
-        payment_id, payment_url = await asyncio.get_event_loop().run_in_executor(
-            None, create_payment, tariff['price_rub'], f"Покупка тарифа '{tariff['name']}'", email
-        )
-        if not payment_id:
+    
+    # Ленивая инициализация платежного модуля
+    global PAYMENT_MODULE_AVAILABLE
+    if PAYMENT_MODULE_AVAILABLE is None:
+        try:
+            payment_service = get_payment_service()
+            PAYMENT_MODULE_AVAILABLE = payment_service is not None
+            if PAYMENT_MODULE_AVAILABLE:
+                print("✅ Платежный сервис инициализирован (lazy loading)")
+            else:
+                print("⚠️ Платежный сервис недоступен")
+        except Exception as e:
+            PAYMENT_MODULE_AVAILABLE = False
+            print(f"⚠️ Ошибка инициализации платежного сервиса: {e}")
+    
+    # Логирование попытки создания платежа
+    try:
+        security_logger = get_security_logger()
+        if security_logger:
+            security_logger.log_payment_attempt(
+                user_id=user_id,
+                amount=tariff.get('price_rub', 0) * 100,  # Конвертируем в копейки
+                protocol=protocol,
+                country=country,
+                email=email,
+                success=True,
+                ip_address=getattr(message, 'from_user', {}).get('id', None),
+                user_agent="Telegram Bot"
+            )
+    except Exception as e:
+        logging.error(f"Error logging payment attempt: {e}")
+    
+    # Используем новый платежный модуль
+    if PAYMENT_MODULE_AVAILABLE:
+        try:
+            # Используем lazy loading для legacy adapter
+            from payments.adapters.legacy_adapter import create_payment_with_email_and_protocol_legacy
+            result = await create_payment_with_email_and_protocol_legacy(message, user_id, tariff, email, country, protocol)
+            
+            if result and result != (None, None):
+                # Новый модуль создал платеж
+                payment_id, payment_url = result
+                print(f"[DEBUG] New payment module created payment: {payment_id}")
+                
+                # Логирование успешного создания платежа
+                try:
+                    security_logger = get_security_logger()
+                    if security_logger:
+                        security_logger.log_payment_success(
+                            user_id=user_id,
+                            payment_id=payment_id,
+                            amount=tariff.get('price_rub', 0) * 100,
+                            protocol=protocol,
+                            country=country,
+                            ip_address=getattr(message, 'from_user', {}).get('id', None),
+                            user_agent="Telegram Bot"
+                        )
+                except Exception as e:
+                    logging.error(f"Error logging payment success: {e}")
+                
+                # Выбираем сервер с учетом протокола
+                with get_db_cursor() as cursor:
+                    server = select_available_server_by_protocol(cursor, country, protocol)
+                    if not server:
+                        await message.answer(f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
+                        return
+                
+                # Создаем inline клавиатуру для оплаты
+                keyboard = InlineKeyboardMarkup()
+                keyboard.add(InlineKeyboardButton("💳 Оплатить", url=payment_url))
+                keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_payment"))
+                
+                # Определяем email для отображения
+                display_email = email if email else f"user_{user_id}@veilbot.com"
+                
+                await message.answer(
+                    f"💳 *Оплата {PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}*\n\n"
+                    f"📦 Тариф: *{tariff['name']}*\n"
+                    f"💰 Сумма: *{tariff['price_rub']}₽*\n"
+                    f"📧 Email: `{display_email}`\n\n"
+                    "Нажмите кнопку ниже для оплаты:",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+                
+                # Запускаем ожидание платежа
+                asyncio.create_task(wait_for_payment_with_protocol(message, payment_id, server, user_id, tariff, country, protocol))
+                return
+            else:
+                print(f"[DEBUG] New payment module failed to create payment")
+                
+                # Логирование неудачного создания платежа
+                try:
+                    security_logger = get_security_logger()
+                    if security_logger:
+                        security_logger.log_payment_failure(
+                            user_id=user_id,
+                            amount=tariff.get('price_rub', 0) * 100,
+                            protocol=protocol,
+                            error="Payment creation failed",
+                            country=country,
+                            ip_address=getattr(message, 'from_user', {}).get('id', None),
+                            user_agent="Telegram Bot"
+                        )
+                except Exception as log_e:
+                    logging.error(f"Error logging payment failure: {log_e}")
+                
+                await message.answer("Ошибка при создании платежа.", reply_markup=main_menu)
+                return
+                
+        except Exception as e:
+            print(f"⚠️ Ошибка в новом платежном модуле: {e}")
+            
+            # Логирование ошибки в платежном модуле
+            try:
+                security_logger = get_security_logger()
+                if security_logger:
+                    security_logger.log_payment_failure(
+                        user_id=user_id,
+                        amount=tariff.get('price_rub', 0) * 100,
+                        protocol=protocol,
+                        error=str(e),
+                        country=country,
+                        ip_address=getattr(message, 'from_user', {}).get('id', None),
+                        user_agent="Telegram Bot"
+                    )
+            except Exception as log_e:
+                logging.error(f"Error logging payment module error: {log_e}")
+            
             await message.answer("Ошибка при создании платежа.", reply_markup=main_menu)
             return
-        
-        # Сохраняем информацию о платеже
-        with get_db_cursor(commit=True) as cursor:
-            cursor.execute("""
-                INSERT INTO payments (payment_id, user_id, tariff_id, amount, email, status, created_at, country, protocol)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (payment_id, user_id, tariff['id'], tariff['price_rub'], email, 'pending', int(time.time()), country, protocol))
-        
-        # Выбираем сервер с учетом протокола
-        with get_db_cursor() as cursor:
-            server = select_available_server_by_protocol(cursor, country, protocol)
-            if not server:
-                await message.answer(f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
-                return
-        
-        # Используем URL, возвращаемый функцией create_payment
-        if not payment_url:
-            payment_url = f"https://yoomoney.ru/checkout/payments/v2/contract?orderId={payment_id}"
-        
-        # Создаем inline клавиатуру для оплаты
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("💳 Оплатить", url=payment_url))
-        keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_payment"))
-        
-        await message.answer(
-            f"💳 *Оплата {PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}*\n\n"
-            f"📦 Тариф: *{tariff['name']}*\n"
-            f"💰 Сумма: *{tariff['price_rub']}₽*\n"
-            f"📧 Email: `{email}`\n\n"
-            "Нажмите кнопку ниже для оплаты:",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
-        
-        # Запускаем ожидание платежа
-        asyncio.create_task(wait_for_payment_with_protocol(message, payment_id, server, user_id, tariff, country, protocol))
     else:
-        # Если email нет, запрашиваем его
-        user_states[user_id] = {
-            "state": "waiting_email",
-            "tariff": tariff,
-            "country": country,
-            "protocol": protocol
-        }
-        await message.answer("Введите ваш email для получения ключа:", reply_markup=cancel_keyboard)
+        # Если новый модуль недоступен
+        print(f"⚠️ Новый платежный модуль недоступен")
+        await message.answer("Платежная система временно недоступна.", reply_markup=main_menu)
+        return
 
 def select_available_server(cursor, country=None):
     now = int(time.time())
@@ -958,107 +1115,63 @@ def select_available_server(cursor, country=None):
             return {"id": s_id, "api_url": api_url, "cert_sha256": cert_sha256}
     return None
 
-async def handle_paid_tariff(cursor, message, user_id, tariff, country=None):
-    user_states[user_id] = {
-        "state": "waiting_email",
-        "tariff": tariff,
-        "country": country
-    }
-    print(f"[DEBUG] handle_paid_tariff: user_id={user_id}, set state to waiting_email, tariff={tariff}, country={country}")
-    await message.answer(
-        f"💳 Для создания платежа необходимо указать email для чека.\n\n"
-        f"Тариф: {tariff['name']}\n"
-        f"Стоимость: {tariff['price_rub']}₽\n\n"
-        f"Пожалуйста, введите ваш email адрес:",
-        reply_markup=cancel_keyboard
-    )
 
-async def create_payment_with_email(message, user_id, tariff, email, country=None):
-    print(f"[DEBUG] create_payment_with_email called: user_id={user_id}, email={email}, tariff={tariff}, country={country}")
-    with get_db_cursor() as cursor:
-        server = select_available_server(cursor, country)
-        if not server:
-            await message.answer("На всех серверах закончились места. Попробуйте позже.", reply_markup=main_menu)
-            return
-    payment_id, url = await asyncio.get_event_loop().run_in_executor(
-        None, create_payment, tariff['price_rub'], f"Покупка тарифа '{tariff['name']}'", email
-    )
-    if not payment_id:
-        await message.answer("Ошибка при создании платежа.", reply_markup=main_menu)
-        return
-    with get_db_cursor(commit=True) as cursor:
-        cursor.execute("INSERT INTO payments (user_id, tariff_id, payment_id, email) VALUES (?, ?, ?, ?)", (user_id, tariff['id'], payment_id, email))
-        await message.answer(f"Перейдите по ссылке для оплаты: {url}", reply_markup=main_menu)
-        asyncio.create_task(wait_for_payment(message, payment_id, server, user_id, tariff, country))
-
-async def wait_for_payment(message, payment_id, server, user_id, tariff, country=None):
-    for _ in range(60): # 5 минут
-        await asyncio.sleep(5)
-        if await asyncio.get_event_loop().run_in_executor(None, check_payment, payment_id):
-            with get_db_cursor(commit=True) as cursor:
-                cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
-                cursor.execute("SELECT email FROM payments WHERE payment_id = ?", (payment_id,))
-                payment_data = cursor.fetchone()
-                email = payment_data[0] if payment_data else None
-                await create_new_key_flow(cursor, message, user_id, tariff, email, country)
-                # --- Реферальный бонус ---
-                cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
-                ref_row = cursor.fetchone()
-                if ref_row and ref_row[0] and not ref_row[1]:
-                    referrer_id = ref_row[0]
-                    # Проверяем, есть ли у пригласившего активный ключ
-                    now = int(time.time())
-                    cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
-                    key = cursor.fetchone()
-                    bonus_duration = 30 * 24 * 3600  # 1 месяц
-                    if key:
-                        extend_existing_key(cursor, key, bonus_duration)
-                        await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
-                    else:
-                        # Выдаём новый ключ на месяц
-                        cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
-                        bonus_tariff = cursor.fetchone()
-                        if bonus_tariff:
-                            bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
-                            await create_new_key_flow(cursor, message, referrer_id, bonus_tariff_dict)
-                            await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
-                    cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
-            return
 
 async def wait_for_payment_with_protocol(message, payment_id, server, user_id, tariff, country=None, protocol="outline"):
     """Ожидание платежа с поддержкой протоколов"""
-    for _ in range(60): # 5 минут
-        await asyncio.sleep(5)
-        if await asyncio.get_event_loop().run_in_executor(None, check_payment, payment_id):
-            with get_db_cursor(commit=True) as cursor:
-                cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
-                cursor.execute("SELECT email FROM payments WHERE payment_id = ?", (payment_id,))
-                payment_data = cursor.fetchone()
-                email = payment_data[0] if payment_data else None
-                await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol)
-                # --- Реферальный бонус ---
-                cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
-                ref_row = cursor.fetchone()
-                if ref_row and ref_row[0] and not ref_row[1]:
-                    referrer_id = ref_row[0]
-                    # Проверяем, есть ли у пригласившего активный ключ
-                    now = int(time.time())
-                    cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
-                    key = cursor.fetchone()
-                    bonus_duration = 30 * 24 * 3600  # 1 месяц
-                    if key:
-                        extend_existing_key(cursor, key, bonus_duration)
-                        await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
-                    else:
-                        # Выдаём новый ключ на месяц
-                        cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
-                        bonus_tariff = cursor.fetchone()
-                        if bonus_tariff:
-                            bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
-                            await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                            await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
-                    cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
+    
+    # Используем новый платежный модуль
+    if PAYMENT_MODULE_AVAILABLE:
+        try:
+            from payments.adapters.legacy_adapter import wait_for_payment_with_protocol_legacy
+            success = await wait_for_payment_with_protocol_legacy(message, payment_id, protocol)
+            
+            if success:
+                print(f"[DEBUG] New payment module confirmed payment success: {payment_id}")
+                # Создаем ключ после успешного платежа
+                with get_db_cursor(commit=True) as cursor:
+                    cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
+                    cursor.execute("SELECT email FROM payments WHERE payment_id = ?", (payment_id,))
+                    payment_data = cursor.fetchone()
+                    email = payment_data[0] if payment_data else None
+                    await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol)
+                    # --- Реферальный бонус ---
+                    cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
+                    ref_row = cursor.fetchone()
+                    if ref_row and ref_row[0] and not ref_row[1]:
+                        referrer_id = ref_row[0]
+                        # Проверяем, есть ли у пригласившего активный ключ
+                        now = int(time.time())
+                        cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
+                        key = cursor.fetchone()
+                        bonus_duration = 30 * 24 * 3600  # 1 месяц
+                        if key:
+                            extend_existing_key(cursor, key, bonus_duration)
+                            await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
+                        else:
+                            # Выдаём новый ключ на месяц
+                            cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
+                            bonus_tariff = cursor.fetchone()
+                            if bonus_tariff:
+                                bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
+                                await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
+                                await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                        cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
+                return
+            else:
+                print(f"[DEBUG] New payment module timeout or failed: {payment_id}")
+                await message.answer("Время ожидания платежа истекло. Попробуйте создать платеж заново.", reply_markup=main_menu)
+                return
+                
+        except Exception as e:
+            print(f"⚠️ Ошибка в новом платежном модуле: {e}")
+            await message.answer("Ошибка при проверке платежа. Обратитесь в поддержку.", reply_markup=main_menu)
             return
+    else:
+        # Если новый модуль недоступен
+        print(f"⚠️ Новый платежный модуль недоступен")
+        await message.answer("Платежная система временно недоступна.", reply_markup=main_menu)
+        return
 
 async def auto_delete_expired_keys():
     while True:
@@ -1087,6 +1200,14 @@ async def auto_delete_expired_keys():
             deleted_count = cursor.rowcount
             if deleted_count > 0:
                 print(f"Deleted {deleted_count} expired keys")
+        
+        # Оптимизация памяти после очистки
+        try:
+            optimize_memory()
+            log_memory_usage()
+        except Exception as e:
+            print(f"[ERROR] Ошибка при оптимизации памяти: {e}")
+        
         await asyncio.sleep(600)
 
 async def notify_expiring_keys():
@@ -1209,6 +1330,15 @@ def get_country_menu(countries):
     return menu
 
 async def process_pending_paid_payments():
+    # Используем новый платежный модуль если доступен
+    if PAYMENT_MODULE_AVAILABLE:
+        try:
+            from payments.adapters.legacy_adapter import process_pending_paid_payments_legacy
+            return await process_pending_paid_payments_legacy()
+        except Exception as e:
+            print(f"⚠️ Ошибка в новом платежном модуле, используем старый: {e}")
+    
+    # Fallback на старый код
     while True:
         try:
             with get_db_cursor(commit=True) as cursor:
@@ -1326,6 +1456,7 @@ async def handle_help(message: types.Message):
         "Если VPN не работает:\n"
         "- возможно был заблокирован сервер, поможет перевыпуск ключа;\n"
         "- сломалось приложение, поможет его смена.\n\n"
+        "Оплаченный срок действия ключа сохранится!\n\n"
         "Выберите вариант ниже:"
     )
     await message.answer(help_text, reply_markup=help_keyboard)
@@ -2006,6 +2137,148 @@ async def handle_change_protocol_callback(callback_query: types.CallbackQuery):
 async def handle_cancel_protocol_change(callback_query: types.CallbackQuery):
     """Обработчик отмены смены протокола"""
     await callback_query.message.edit_text("Смена протокола отменена.")
+    await callback_query.answer()
+
+async def broadcast_message(message_text: str, admin_id: int = None):
+    """
+    Функция для рассылки сообщений всем пользователям бота
+    
+    Args:
+        message_text (str): Текст сообщения для рассылки
+        admin_id (int): ID администратора для уведомлений о результатах рассылки
+    """
+    success_count = 0
+    failed_count = 0
+    total_users = 0
+    
+    try:
+        # Получаем всех уникальных пользователей из базы данных
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT DISTINCT user_id FROM keys 
+                UNION 
+                SELECT DISTINCT user_id FROM v2ray_keys 
+                ORDER BY user_id
+            """)
+            user_ids = [row[0] for row in cursor.fetchall()]
+            total_users = len(user_ids)
+        
+        if total_users == 0:
+            if admin_id:
+                await bot.send_message(admin_id, "❌ Нет пользователей для рассылки")
+            return
+        
+        # Отправляем сообщение каждому пользователю
+        for user_id in user_ids:
+            try:
+                await bot.send_message(user_id, message_text, parse_mode='Markdown')
+                success_count += 1
+                # Небольшая задержка, чтобы не превысить лимиты Telegram
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                failed_count += 1
+                logging.error(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
+                continue
+        
+        # Отправляем отчет администратору
+        if admin_id:
+            report = (
+                f"📊 *Отчет о рассылке*\n\n"
+                f"✅ Успешно отправлено: {success_count}\n"
+                f"❌ Ошибок: {failed_count}\n"
+                f"📈 Всего пользователей: {total_users}\n"
+                f"📊 Процент успеха: {(success_count/total_users*100):.1f}%"
+            )
+            await bot.send_message(admin_id, report, parse_mode='Markdown')
+            
+    except Exception as e:
+        error_msg = f"❌ Ошибка при рассылке: {e}"
+        logging.error(error_msg)
+        if admin_id:
+            await bot.send_message(admin_id, error_msg)
+
+@dp.message_handler(commands=["broadcast"])
+async def handle_broadcast_command(message: types.Message):
+    """
+    Обработчик команды /broadcast для администратора
+    Использование: /broadcast <текст сообщения>
+    """
+    # Проверяем, что команда отправлена администратором
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ У вас нет прав для выполнения этой команды")
+        return
+    
+    # Получаем текст сообщения (убираем команду /broadcast)
+    command_parts = message.text.split(' ', 1)
+    if len(command_parts) < 2:
+        await message.answer(
+            "❌ Неверный формат команды\n"
+            "Использование: /broadcast <текст сообщения>\n\n"
+            "Пример:\n"
+            "/broadcast 🔔 Важное обновление! Добавлены новые серверы."
+        )
+        return
+    
+    broadcast_text = command_parts[1]
+    
+    # Сохраняем текст в временное хранилище
+    text_hash = hash(broadcast_text)
+    broadcast_texts[text_hash] = broadcast_text
+    
+    # Подтверждение рассылки
+    confirm_keyboard = InlineKeyboardMarkup()
+    confirm_keyboard.add(
+        InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm_broadcast:{text_hash}"),
+        InlineKeyboardButton("❌ Отменить", callback_data="cancel_broadcast")
+    )
+    
+    await message.answer(
+        f"📢 *Предварительный просмотр рассылки:*\n\n"
+        f"{broadcast_text}\n\n"
+        f"⚠️ Это сообщение будет отправлено всем пользователям бота!",
+        reply_markup=confirm_keyboard,
+        parse_mode='Markdown'
+    )
+
+# Временное хранилище для текстов рассылки
+broadcast_texts = {}
+
+@dp.callback_query_handler(lambda c: c.data.startswith("confirm_broadcast:"))
+async def handle_confirm_broadcast(callback_query: types.CallbackQuery):
+    """Обработчик подтверждения рассылки"""
+    if callback_query.from_user.id != ADMIN_ID:
+        await callback_query.answer("❌ У вас нет прав для выполнения этой команды")
+        return
+    
+    # Получаем хеш сообщения из callback_data
+    message_hash = int(callback_query.data.split(":")[1])
+    
+    # Получаем оригинальный текст из временного хранилища
+    original_text = broadcast_texts.get(message_hash)
+    if not original_text:
+        await callback_query.answer("❌ Ошибка: текст рассылки не найден")
+        return
+    
+    await callback_query.message.edit_text(
+        "📤 *Рассылка запущена...*\n\n"
+        "⏳ Пожалуйста, подождите. Отчет будет отправлен по завершении.",
+        parse_mode='Markdown'
+    )
+    
+    # Запускаем рассылку с оригинальным текстом
+    await broadcast_message(original_text, ADMIN_ID)
+    
+    # Очищаем временное хранилище
+    del broadcast_texts[message_hash]
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_broadcast")
+async def handle_cancel_broadcast(callback_query: types.CallbackQuery):
+    """Обработчик отмены рассылки"""
+    if callback_query.from_user.id != ADMIN_ID:
+        await callback_query.answer("❌ У вас нет прав для выполнения этой команды")
+        return
+    
+    await callback_query.message.edit_text("❌ Рассылка отменена")
     await callback_query.answer()
 
 if __name__ == "__main__":

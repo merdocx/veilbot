@@ -106,25 +106,29 @@ class ServerForm(BaseModel):
     
     @validator('domain')
     def validate_domain(cls, v):
-        if v and not re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', v):
+        # Обработка случаев, когда v может быть "None" или None
+        if v in [None, "None", ""]:
+            return ""
+        if not re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', v):
             raise ValueError('Invalid domain format')
-        return v.strip() if v else ""
+        return v.strip()
     
     @validator('api_key')
-    def validate_api_key(cls, v):
-        # API key обязателен для V2Ray API
-        if not v or not v.strip():
+    def validate_api_key(cls, v, values):
+        # API key обязателен только для V2Ray серверов
+        protocol = values.get('protocol', 'outline')
+        if protocol == 'v2ray' and (not v or not v.strip() or v == "None"):
             raise ValueError("API key is required for V2Ray servers")
+        # Обработка случаев, когда v может быть "None"
+        if v in [None, "None", ""]:
+            return ""
         return v.strip()
     
     @validator('v2ray_path')
     def validate_v2ray_path(cls, v):
-        if not v.startswith('/'):
-            raise ValueError('V2Ray path must start with /')
-        return v
-    
-    @validator('v2ray_path')
-    def validate_v2ray_path(cls, v):
+        # Обработка случаев, когда v может быть "None" или None
+        if v in [None, "None", ""]:
+            return "/v2ray"
         if not v.startswith('/'):
             raise ValueError('V2Ray path must start with /')
         return v
@@ -636,6 +640,14 @@ async def edit_server(request: Request, server_id: int):
     domain = form.get("domain", "")
     api_key = form.get("api_key", "")
     v2ray_path = form.get("v2ray_path", "/v2ray")
+    
+    # Обработка случаев, когда поля приходят как строки "None"
+    if domain == "None":
+        domain = ""
+    if api_key == "None":
+        api_key = ""
+    if v2ray_path == "None":
+        v2ray_path = "/v2ray"
     
     try:
         # Validate input

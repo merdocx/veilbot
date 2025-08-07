@@ -86,13 +86,21 @@ class TestVPNProtocols(unittest.TestCase):
 class TestPayment(unittest.TestCase):
     """Test payment functionality"""
     
-    def test_payment_import(self):
-        """Test that payment module can be imported"""
+    def test_payment_module_import(self):
+        """Test that new payment module can be imported"""
         try:
-            from payment import create_payment, check_payment
-            self.assertTrue(True, "Payment module imported successfully")
+            from payments.config import initialize_payment_module
+            self.assertTrue(True, "New payment module imported successfully")
         except ImportError as e:
-            self.fail(f"Failed to import payment module: {e}")
+            self.fail(f"Failed to import new payment module: {e}")
+    
+    def test_legacy_adapter_import(self):
+        """Test that legacy adapter can be imported"""
+        try:
+            from payments.adapters.legacy_adapter import LegacyPaymentAdapter
+            self.assertTrue(True, "Legacy adapter imported successfully")
+        except ImportError as e:
+            self.fail(f"Failed to import legacy adapter: {e}")
 
 class TestUtils(unittest.TestCase):
     """Test utility functions"""
@@ -114,7 +122,6 @@ class TestProjectStructure(unittest.TestCase):
             'bot.py',
             'config.py',
             'db.py',
-            'payment.py',
             'requirements.txt',
             '.env.example'
         ]
@@ -124,6 +131,17 @@ class TestProjectStructure(unittest.TestCase):
                 os.path.exists(file_path),
                 f"Required file {file_path} does not exist"
             )
+    
+    def test_payments_module_exists(self):
+        """Test that payments module exists"""
+        self.assertTrue(
+            os.path.exists('payments'),
+            "Payments module directory does not exist"
+        )
+        self.assertTrue(
+            os.path.exists('payments/__init__.py'),
+            "Payments module __init__.py does not exist"
+        )
     
     def test_directories_exist(self):
         """Test that required directories exist"""
