@@ -69,6 +69,17 @@ jobs:
           print('✅ All basic imports successful')
           "
       
+      - name: Test new module imports
+        run: |
+          echo "📦 Testing new module imports..."
+          python -c "
+          # Test new modules that don't require environment variables
+          import payments
+          from memory_optimizer import MemoryOptimizer, get_memory_stats
+          from security_logger import SecurityLogger, security_logger
+          print('✅ All new module imports successful')
+          "
+      
       - name: Check code quality
         run: |
           echo "🔍 Checking code quality..."
@@ -88,6 +99,16 @@ jobs:
           python -m py_compile payments/config.py
           python -m py_compile payments/adapters/legacy_adapter.py
           echo "✅ Payments module syntax OK"
+      
+      - name: Test new modules
+        run: |
+          echo "🔧 Testing new modules..."
+          python -m py_compile memory_optimizer.py
+          python -m py_compile security_logger.py
+          python -m py_compile test_memory_optimization.py
+          python -m py_compile test_memory_performance.py
+          python -m py_compile test_security_logger.py
+          echo "✅ New modules syntax OK"
       
       - name: Test project structure
         run: |
@@ -118,14 +139,24 @@ jobs:
             exit 1
           fi
           
-          # Check required directories
-          required_dirs=('admin', 'docs', 'scripts', 'setup')
+          # Check required directories (some may be empty after cleanup)
+          required_dirs=('admin', 'docs')
           for dir in "${required_dirs[@]}"; do
             if [ -d "$dir" ]; then
               echo "✅ $dir exists"
             else
               echo "❌ $dir missing"
               exit 1
+            fi
+          done
+          
+          # Check optional directories (may be empty after cleanup)
+          optional_dirs=('scripts', 'setup')
+          for dir in "${optional_dirs[@]}"; do
+            if [ -d "$dir" ]; then
+              echo "✅ $dir exists (may be empty)"
+            else
+              echo "⚠️ $dir missing (optional after cleanup)"
             fi
           done
           echo "✅ Project structure is correct"
