@@ -63,13 +63,32 @@ def run_syntax_tests():
     """Test for syntax errors in Python files"""
     print("🔍 Checking for syntax errors...")
     python_files = [
-        'bot.py', 'config.py', 'db.py', 'payment.py', 
+        'bot.py', 'config.py', 'db.py', 
         'validators.py', 'vpn_protocols.py', 'utils.py',
         'test_bot.py', 'run_tests.py'
     ]
     
     success = True
     for file_path in python_files:
+        if os.path.exists(file_path):
+            try:
+                subprocess.run([sys.executable, '-m', 'py_compile', file_path], 
+                             check=True, capture_output=True)
+                print(f"✅ {file_path} - No syntax errors")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ {file_path} - Syntax error: {e}")
+                success = False
+        else:
+            print(f"⚠️ {file_path} - File not found")
+    
+    # Test payments module
+    payments_files = [
+        'payments/__init__.py',
+        'payments/config.py',
+        'payments/adapters/legacy_adapter.py'
+    ]
+    
+    for file_path in payments_files:
         if os.path.exists(file_path):
             try:
                 subprocess.run([sys.executable, '-m', 'py_compile', file_path], 
@@ -88,11 +107,11 @@ def run_structure_tests():
     print("📋 Testing project structure...")
     
     required_files = [
-        'bot.py', 'config.py', 'db.py', 'payment.py', 
+        'bot.py', 'config.py', 'db.py', 
         'requirements.txt', '.env.example'
     ]
     
-    required_dirs = ['admin', 'docs', 'scripts', 'setup']
+    required_dirs = ['admin', 'docs', 'scripts', 'setup', 'payments']
     
     success = True
     
@@ -104,12 +123,24 @@ def run_structure_tests():
             print(f"❌ {file_path} missing")
             success = False
     
+    # Check payments module
+    if os.path.exists('payments'):
+        print("✅ payments/ directory exists")
+        if os.path.exists('payments/__init__.py'):
+            print("✅ payments/__init__.py exists")
+        else:
+            print("❌ payments/__init__.py missing")
+            success = False
+    else:
+        print("❌ payments/ directory missing")
+        success = False
+    
     # Check required directories
     for dir_path in required_dirs:
         if os.path.exists(dir_path):
-            print(f"✅ {dir_path}/ exists")
+            print(f"✅ {dir_path}/ directory exists")
         else:
-            print(f"❌ {dir_path}/ missing")
+            print(f"❌ {dir_path}/ directory missing")
             success = False
     
     return success

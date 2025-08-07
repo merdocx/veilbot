@@ -76,17 +76,24 @@ jobs:
           python -m py_compile bot.py
           python -m py_compile config.py
           python -m py_compile db.py
-          python -m py_compile payment.py
           python -m py_compile validators.py
           python -m py_compile vpn_protocols.py
           python -m py_compile utils.py
           echo "✅ No syntax errors found"
       
+      - name: Test payments module
+        run: |
+          echo "💳 Testing payments module..."
+          python -m py_compile payments/__init__.py
+          python -m py_compile payments/config.py
+          python -m py_compile payments/adapters/legacy_adapter.py
+          echo "✅ Payments module syntax OK"
+      
       - name: Test project structure
         run: |
           echo "📋 Testing project structure..."
           # Check required files
-          required_files=('bot.py', 'config.py', 'db.py', 'payment.py', 'requirements.txt', '.env.example')
+          required_files=('bot.py', 'config.py', 'db.py', 'requirements.txt', '.env.example')
           for file in "${required_files[@]}"; do
             if [ -f "$file" ]; then
               echo "✅ $file exists"
@@ -95,6 +102,21 @@ jobs:
               exit 1
             fi
           done
+          
+          # Check payments module
+          if [ -d "payments" ]; then
+            echo "✅ payments/ directory exists"
+          else
+            echo "❌ payments/ directory missing"
+            exit 1
+          fi
+          
+          if [ -f "payments/__init__.py" ]; then
+            echo "✅ payments/__init__.py exists"
+          else
+            echo "❌ payments/__init__.py missing"
+            exit 1
+          fi
           
           # Check required directories
           required_dirs=('admin', 'docs', 'scripts', 'setup')
