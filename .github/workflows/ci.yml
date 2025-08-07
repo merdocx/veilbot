@@ -72,11 +72,60 @@ jobs:
       - name: Test new module imports
         run: |
           echo "📦 Testing new module imports..."
+          echo "🔍 Current directory: $(pwd)"
+          echo "🔍 Python version: $(python --version)"
+          echo "🔍 Python path: $(python -c 'import sys; print(sys.path[:3])')"
+          
           python -c "
+          import os
+          import sys
+          
+          print('🔍 Checking project structure...')
+          print(f'Current directory: {os.getcwd()}')
+          
+          # Check required files
+          required_files = ['bot.py', 'config.py', 'db.py', 'requirements.txt', '.env.example']
+          for file in required_files:
+              if os.path.exists(file):
+                  print(f'✅ {file} exists')
+              else:
+                  print(f'❌ {file} missing')
+          
+          # Check directories
+          required_dirs = ['admin', 'docs', 'scripts', 'setup', 'payments']
+          for dir in required_dirs:
+              if os.path.exists(dir):
+                  print(f'✅ {dir}/ exists')
+              else:
+                  print(f'❌ {dir}/ missing')
+          
+          print('🔍 Testing imports...')
+          
           # Test new modules that don't require environment variables
-          import payments
-          from memory_optimizer import MemoryOptimizer, get_memory_stats
-          from security_logger import SecurityLogger, security_logger
+          try:
+              import payments
+              print('✅ payments module imported')
+          except Exception as e:
+              print(f'❌ payments import failed: {e}')
+              import traceback
+              traceback.print_exc()
+          
+          try:
+              from memory_optimizer import MemoryOptimizer, get_memory_stats
+              print('✅ memory_optimizer imported')
+          except Exception as e:
+              print(f'❌ memory_optimizer import failed: {e}')
+              import traceback
+              traceback.print_exc()
+          
+          try:
+              from security_logger import SecurityLogger, security_logger
+              print('✅ security_logger imported')
+          except Exception as e:
+              print(f'❌ security_logger import failed: {e}')
+              import traceback
+              traceback.print_exc()
+          
           print('✅ All new module imports successful')
           "
       

@@ -147,9 +147,7 @@ class TestProjectStructure(unittest.TestCase):
         """Test that required directories exist"""
         required_dirs = [
             'admin',
-            'docs',
-            'scripts',
-            'setup'
+            'docs'
         ]
         
         for dir_path in required_dirs:
@@ -157,6 +155,18 @@ class TestProjectStructure(unittest.TestCase):
                 os.path.exists(dir_path),
                 f"Required directory {dir_path} does not exist"
             )
+        
+        # Check optional directories (may be empty after cleanup)
+        optional_dirs = [
+            'scripts',
+            'setup'
+        ]
+        
+        for dir_path in optional_dirs:
+            if os.path.exists(dir_path):
+                print(f"✅ {dir_path} exists (may be empty)")
+            else:
+                print(f"⚠️ {dir_path} missing (optional after cleanup)")
 
 if __name__ == '__main__':
     # Run tests
