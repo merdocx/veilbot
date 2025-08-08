@@ -10,6 +10,7 @@ from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration, ADMIN_
 from db import init_db
 from outline import create_key, delete_key
 from utils import get_db_cursor
+from vpn_protocols import format_duration
 
 # Оптимизация памяти
 from memory_optimizer import (
@@ -521,6 +522,29 @@ def check_free_tariff_limit(cursor, user_id):
 def check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol="outline", country=None):
     """Проверка лимита бесплатных ключей для конкретного протокола и страны - один раз навсегда"""
     
+    # Проверяем в таблице free_key_usage - это основная проверка
+    # Сначала проверяем, получал ли пользователь бесплатный ключ для этого протокола вообще
+    cursor.execute("""
+        SELECT created_at FROM free_key_usage 
+        WHERE user_id = ? AND protocol = ?
+    """, (user_id, protocol))
+    
+    row = cursor.fetchone()
+    if row:
+        return True  # Пользователь уже получал бесплатный ключ для этого протокола
+    
+    # Если указана конкретная страна, дополнительно проверяем для неё
+    if country:
+        cursor.execute("""
+            SELECT created_at FROM free_key_usage 
+            WHERE user_id = ? AND protocol = ? AND country = ?
+        """, (user_id, protocol, country))
+        
+        row = cursor.fetchone()
+        if row:
+            return True  # Пользователь уже получал бесплатный ключ для этого протокола и страны
+    
+    # Дополнительная проверка в таблицах ключей (для обратной совместимости)
     if protocol == "outline":
         if country:
             cursor.execute("""
@@ -564,6 +588,22 @@ def check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol="o
 def check_free_tariff_limit_by_protocol(cursor, user_id, protocol="outline"):
     """Проверка лимита бесплатных ключей для конкретного протокола - один раз навсегда (для обратной совместимости)"""
     return check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol)
+
+def record_free_key_usage(cursor, user_id, protocol="outline", country=None):
+    """Записывает использование бесплатного ключа пользователем"""
+    now = int(time.time())
+    try:
+        cursor.execute("""
+            INSERT INTO free_key_usage (user_id, protocol, country, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, protocol, country, now))
+        return True
+    except sqlite3.IntegrityError:
+        # Запись уже существует (UNIQUE constraint)
+        return False
+    except Exception as e:
+        print(f"[ERROR] Failed to record free key usage: {e}")
+        return False
 
 def extend_existing_key(cursor, existing_key, duration, email=None, tariff_id=None):
     new_expiry = existing_key[1] + duration
@@ -613,6 +653,11 @@ async def create_new_key_flow(cursor, message, user_id, tariff, email=None, coun
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (server['id'], user_id, key["accessUrl"], expiry, key["id"], now, email, tariff['id'])
     )
+    
+    # Если это бесплатный тариф, записываем использование
+    if tariff['price_rub'] == 0:
+        record_free_key_usage(cursor, user_id, "outline", country)
+    
     await message.answer(format_key_message(key["accessUrl"]), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
     # Admin notification as before
     admin_msg = (
@@ -779,6 +824,10 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             await loading_msg.delete()
         except:
             pass
+        
+        # Если это бесплатный тариф, записываем использование
+        if tariff['price_rub'] == 0:
+            record_free_key_usage(cursor, user_id, protocol, country)
         
         # Очищаем состояние пользователя
         user_states.pop(user_id, None)
@@ -1358,12 +1407,12 @@ async def process_pending_paid_payments():
                 
                 for payment_id, user_id, tariff_id, email, protocol, country in payments:
                     # Получаем тариф
-                    cursor.execute('SELECT name, duration_sec FROM tariffs WHERE id=?', (tariff_id,))
+                    cursor.execute('SELECT name, duration_sec, price_rub FROM tariffs WHERE id=?', (tariff_id,))
                     tariff_row = cursor.fetchone()
                     if not tariff_row:
                         logging.error(f"[AUTO-ISSUE] Не найден тариф id={tariff_id} для user_id={user_id}")
                         continue
-                    tariff = {'id': tariff_id, 'name': tariff_row[0], 'duration_sec': tariff_row[1]}
+                    tariff = {'id': tariff_id, 'name': tariff_row[0], 'duration_sec': tariff_row[1], 'price_rub': tariff_row[2]}
                     
                     # Определяем протокол (если не указан, используем outline по умолчанию)
                     if not protocol:
@@ -1393,6 +1442,10 @@ async def process_pending_paid_payments():
                             (server['id'], user_id, key["accessUrl"], expiry, key["id"], now, email, tariff_id)
                         )
                         
+                        # Если это бесплатный тариф, записываем использование
+                        if tariff['price_rub'] == 0:
+                            record_free_key_usage(cursor, user_id, protocol, country)
+                        
                         # Уведомляем пользователя
                         try:
                             await bot.send_message(user_id, format_key_message(key["accessUrl"]), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
@@ -1417,6 +1470,10 @@ async def process_pending_paid_payments():
                                 "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
                                 (server['id'], user_id, user_data['uuid'], email or f"user_{user_id}@veilbot.com", now, expiry, tariff_id)
                             )
+                            
+                            # Если это бесплатный тариф, записываем использование
+                            if tariff['price_rub'] == 0:
+                                record_free_key_usage(cursor, user_id, protocol, country)
                             
                             # Получаем конфигурацию
                             config = await protocol_client.get_user_config(user_data['uuid'], {

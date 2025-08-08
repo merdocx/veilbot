@@ -55,6 +55,16 @@ def init_db():
         bonus_issued INTEGER DEFAULT 0
     )""")
 
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS free_key_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        protocol TEXT NOT NULL,
+        country TEXT,
+        created_at INTEGER,
+        UNIQUE(user_id, protocol, country)
+    )""")
+
     conn.commit()
     conn.close()
 
@@ -124,6 +134,26 @@ def migrate_add_revoked_to_payments():
         print("Поле revoked уже существует в таблице payments.")
     conn.close()
 
+def migrate_add_free_key_usage():
+    conn = sqlite3.connect("vpn.db")
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS free_key_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                protocol TEXT NOT NULL,
+                country TEXT,
+                created_at INTEGER,
+                UNIQUE(user_id, protocol, country)
+            )
+        """)
+        conn.commit()
+        print("Таблица free_key_usage успешно создана.")
+    except sqlite3.OperationalError:
+        print("Таблица free_key_usage уже существует.")
+    conn.close()
+
 if __name__ == "__main__":
     init_db()
     migrate_add_key_id()
@@ -132,4 +162,5 @@ if __name__ == "__main__":
     migrate_add_tariff_id_to_keys()
     migrate_add_country_to_servers()
     migrate_add_revoked_to_payments()
+    migrate_add_free_key_usage()
 
