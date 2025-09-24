@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block page_title %}Платеж {{ payment.payment_id if payment else '' }}{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <h2>Детали платежа</h2>
+  </div>
+  <div class="card-body">
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% else %}
+      <div class="grid-2">
+        <div>
+          <h3>Основное</h3>
+          <ul class="kv">
+            <li><b>ID:</b> {{ payment.id }}</li>
+            <li><b>Payment ID:</b> {{ payment.payment_id }}</li>
+            <li><b>User ID:</b> {{ payment.user_id }}</li>
+            <li><b>Tariff ID:</b> {{ payment.tariff_id }}</li>
+            <li><b>Сумма:</b> {{ payment.amount|rub }}</li>
+            <li><b>Статус:</b> {{ payment.status }}</li>
+            <li><b>Email:</b> {{ payment.email or '—' }}</li>
+            <li><b>Страна:</b> {{ payment.country or '—' }}</li>
+            <li><b>Протокол:</b> {{ payment.protocol or '—' }}</li>
+            <li><b>Создан:</b> {{ payment.created_at.timestamp() if payment.created_at else 0 | timestamp }}</li>
+            <li><b>Оплачен:</b> {{ payment.paid_at.timestamp() if payment.paid_at else 0 | timestamp }}</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Действия</h3>
+          <form method="post" action="/payments/{{ payment.payment_id }}/recheck" onsubmit="return submitAjax(event, this)">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button class="btn">Перепроверить статус</button>
+          </form>
+          {% if payment.status != 'refunded' %}
+          <form method="post" action="/payments/{{ payment.payment_id }}/refund" onsubmit="return submitAjax(event, this)" style="margin-top:8px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <label>Сумма (копейки):</label>
+            <input type="number" name="amount" value="{{ payment.amount }}" />
+            <label>Причина:</label>
+            <input type="text" name="reason" value="Возврат" />
+            <button class="btn btn-danger">Возврат</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+
+      <h3>Метаданные</h3>
+      <pre>{{ payment.metadata | tojson(indent=2) }}</pre>
+
+      <h3>Данные провайдера</h3>
+      <pre>{% if provider_info %}{{ provider_info | tojson(indent=2) }}{% else %}—{% endif %}</pre>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+async function submitAjax(e, form) {
+  e.preventDefault();
+  const resp = await fetch(form.action, { method: 'POST', body: new FormData(form) });
+  const data = await resp.json().catch(() => ({}));
+  alert(data.success ? 'Готово' : ('Ответ: ' + JSON.stringify(data)));
+  window.location.reload();
+  return false;
+}
+</script>
+{% endblock %}
+
+

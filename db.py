@@ -1,7 +1,9 @@
 import sqlite3
+import logging
+from config import DATABASE_PATH
 
 def init_db():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH, timeout=5)
     c = conn.cursor()
 
     c.execute("""
@@ -11,7 +13,12 @@ def init_db():
         api_url TEXT,
         cert_sha256 TEXT,
         max_keys INTEGER DEFAULT 100,
-        active INTEGER DEFAULT 1
+        active INTEGER DEFAULT 1,
+        country TEXT,
+        protocol TEXT DEFAULT 'outline',
+        domain TEXT,
+        v2ray_path TEXT,
+        api_key TEXT
     )""")
 
     c.execute("""
@@ -33,7 +40,20 @@ def init_db():
         traffic_limit_mb INTEGER,
         notified INTEGER DEFAULT 0,
         key_id TEXT,
-        email TEXT
+        email TEXT,
+        tariff_id INTEGER
+    )""")
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS v2ray_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        server_id INTEGER,
+        user_id INTEGER,
+        v2ray_uuid TEXT,
+        email TEXT,
+        created_at INTEGER,
+        expiry_at INTEGER,
+        tariff_id INTEGER
     )""")
 
     c.execute("""
@@ -43,7 +63,8 @@ def init_db():
         tariff_id INTEGER,
         payment_id TEXT,
         status TEXT DEFAULT 'pending',
-        email TEXT
+        email TEXT,
+        revoked INTEGER DEFAULT 0
     )""")
 
     c.execute("""
@@ -65,77 +86,173 @@ def init_db():
         UNIQUE(user_id, protocol, country)
     )""")
 
+    # Webhook logs
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS webhook_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT,
+            event TEXT,
+            payload TEXT,
+            result TEXT,
+            status_code INTEGER,
+            ip TEXT,
+            created_at INTEGER
+        )
+        """
+    )
+    # Helpful indexes
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_webhook_logs_created_at ON webhook_logs(created_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_webhook_logs_provider ON webhook_logs(provider)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_webhook_logs_event ON webhook_logs(event)")
+    except sqlite3.OperationalError:
+        pass
+
+    # Ensure extended payments schema exists (for tests and new deployments)
+    try:
+        # Check existing columns
+        c.execute("PRAGMA table_info(payments)")
+        cols = {row[1] for row in c.fetchall()}
+        if 'currency' not in cols:
+            migrate_extend_payments_schema()
+    except Exception as e:
+        logging.warning(f"Failed to ensure extended payments schema: {e}")
+
+    # PRAGMA tuning for better performance and durability
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+        c.execute("PRAGMA temp_store=MEMORY")
+        c.execute("PRAGMA mmap_size=30000000000")  # ~30GB if supported, harmless fallback otherwise
+        c.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.DatabaseError as e:
+        logging.warning(f"SQLite PRAGMA setup failed: {e}")
+
     conn.commit()
     conn.close()
 
 def migrate_add_key_id():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("ALTER TABLE keys ADD COLUMN key_id TEXT")
         conn.commit()
-        print("Поле key_id успешно добавлено.")
+        logging.info("Поле key_id успешно добавлено.")
     except sqlite3.OperationalError:
-        print("Поле key_id уже существует.")
+        logging.info("Поле key_id уже существует.")
     conn.close()
 
 def migrate_add_email():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("ALTER TABLE keys ADD COLUMN email TEXT")
         conn.commit()
-        print("Поле email успешно добавлено в таблицу keys.")
+        logging.info("Поле email успешно добавлено в таблицу keys.")
     except sqlite3.OperationalError:
-        print("Поле email уже существует в таблице keys.")
+        logging.info("Поле email уже существует в таблице keys.")
     conn.close()
 
 def migrate_add_payment_email():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("ALTER TABLE payments ADD COLUMN email TEXT")
         conn.commit()
-        print("Поле email успешно добавлено в таблицу payments.")
+        logging.info("Поле email успешно добавлено в таблицу payments.")
     except sqlite3.OperationalError:
-        print("Поле email уже существует в таблице payments.")
+        logging.info("Поле email уже существует в таблице payments.")
     conn.close()
 
 def migrate_add_tariff_id_to_keys():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("ALTER TABLE keys ADD COLUMN tariff_id INTEGER")
         conn.commit()
-        print("Поле tariff_id успешно добавлено в таблицу keys.")
+        logging.info("Поле tariff_id успешно добавлено в таблицу keys.")
     except sqlite3.OperationalError:
-        print("Поле tariff_id уже существует в таблице keys.")
+        logging.info("Поле tariff_id уже существует в таблице keys.")
     conn.close()
 
 def migrate_add_country_to_servers():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("ALTER TABLE servers ADD COLUMN country TEXT")
         conn.commit()
-        print("Поле country успешно добавлено в таблицу servers.")
+        logging.info("Поле country успешно добавлено в таблицу servers.")
     except sqlite3.OperationalError:
-        print("Поле country уже существует в таблице servers.")
+        logging.info("Поле country уже существует в таблице servers.")
     conn.close()
 
 def migrate_add_revoked_to_payments():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("ALTER TABLE payments ADD COLUMN revoked INTEGER DEFAULT 0")
         conn.commit()
-        print("Поле revoked успешно добавлено в таблицу payments.")
+        logging.info("Поле revoked успешно добавлено в таблицу payments.")
     except sqlite3.OperationalError:
-        print("Поле revoked уже существует в таблице payments.")
+        logging.info("Поле revoked уже существует в таблице payments.")
     conn.close()
 
+def migrate_extend_payments_schema():
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # Получаем существующие колонки
+        cursor.execute("PRAGMA table_info(payments)")
+        cols = {row[1] for row in cursor.fetchall()}
+
+        # Требуемые дополнительные поля по новой схеме
+        required_columns = [
+            ("amount", "INTEGER DEFAULT 0"),
+            ("currency", "TEXT DEFAULT 'RUB'"),
+            ("country", "TEXT"),
+            ("protocol", "TEXT DEFAULT 'outline'"),
+            ("provider", "TEXT DEFAULT 'yookassa'"),
+            ("method", "TEXT"),
+            ("description", "TEXT"),
+            ("created_at", "INTEGER"),
+            ("updated_at", "INTEGER"),
+            ("paid_at", "INTEGER"),
+            ("metadata", "TEXT")
+        ]
+
+        added = 0
+        for name, decl in required_columns:
+            if name not in cols:
+                try:
+                    cursor.execute(f"ALTER TABLE payments ADD COLUMN {name} {decl}")
+                    added += 1
+                except sqlite3.OperationalError:
+                    pass
+
+        # Уникальный индекс на payment_id
+        try:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)")
+        except sqlite3.OperationalError:
+            pass
+
+        # Полезные индексы для запросов
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments(created_at)")
+        except sqlite3.OperationalError:
+            pass
+
+        conn.commit()
+        logging.info(f"Схема payments обновлена, добавлено полей: {added}")
+    finally:
+        conn.close()
+
 def migrate_add_free_key_usage():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("""
@@ -149,10 +266,119 @@ def migrate_add_free_key_usage():
             )
         """)
         conn.commit()
-        print("Таблица free_key_usage успешно создана.")
+        logging.info("Таблица free_key_usage успешно создана.")
     except sqlite3.OperationalError:
-        print("Таблица free_key_usage уже существует.")
+        logging.info("Таблица free_key_usage уже существует.")
     conn.close()
+
+def migrate_add_protocol_fields():
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE servers ADD COLUMN protocol TEXT DEFAULT 'outline'")
+        conn.commit()
+        logging.info("Поле protocol успешно добавлено в таблицу servers.")
+    except sqlite3.OperationalError:
+        logging.info("Поле protocol уже существует в таблице servers.")
+    
+    try:
+        cursor.execute("ALTER TABLE servers ADD COLUMN domain TEXT")
+        conn.commit()
+        logging.info("Поле domain успешно добавлено в таблицу servers.")
+    except sqlite3.OperationalError:
+        logging.info("Поле domain уже существует в таблице servers.")
+    
+    try:
+        cursor.execute("ALTER TABLE servers ADD COLUMN v2ray_path TEXT")
+        conn.commit()
+        logging.info("Поле v2ray_path успешно добавлено в таблицу servers.")
+    except sqlite3.OperationalError:
+        logging.info("Поле v2ray_path уже существует в таблице servers.")
+    
+    try:
+        cursor.execute("ALTER TABLE servers ADD COLUMN api_key TEXT")
+        conn.commit()
+        logging.info("Поле api_key успешно добавлено в таблицу servers.")
+    except sqlite3.OperationalError:
+        logging.info("Поле api_key уже существует в таблице servers.")
+    
+    conn.close()
+
+def migrate_add_tariff_id_to_v2ray_keys():
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN tariff_id INTEGER")
+        conn.commit()
+        logging.info("Поле tariff_id успешно добавлено в таблицу v2ray_keys.")
+    except sqlite3.OperationalError:
+        logging.info("Поле tariff_id уже существует в таблице v2ray_keys.")
+    conn.close()
+
+def migrate_add_common_indexes():
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # keys indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_expiry_at ON keys(expiry_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_server_id ON keys(server_id)")
+        # v2ray_keys indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)")
+        # servers indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_servers_active ON servers(active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_servers_protocol ON servers(protocol)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_servers_country ON servers(country)")
+        # tariffs helpful index
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tariffs_price_rub ON tariffs(price_rub)")
+        conn.commit()
+        logging.info("Созданы индексы для основных таблиц (если отсутствовали)")
+    finally:
+        conn.close()
+
+def migrate_add_unique_key_indexes():
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        try:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_keys_user_keyid ON keys(user_id, key_id)")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2ray_user_uuid ON v2ray_keys(user_id, v2ray_uuid)")
+        except sqlite3.OperationalError:
+            pass
+        conn.commit()
+        logging.info("Установлены уникальные индексы для keys и v2ray_keys (если отсутствовали)")
+    finally:
+        conn.close()
+def migrate_create_webhook_logs():
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS webhook_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT,
+                event TEXT,
+                payload TEXT,
+                result TEXT,
+                status_code INTEGER,
+                ip TEXT,
+                created_at INTEGER
+            )
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_webhook_logs_created_at ON webhook_logs(created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_webhook_logs_provider ON webhook_logs(provider)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_webhook_logs_event ON webhook_logs(event)")
+        conn.commit()
+        logging.info("Таблица webhook_logs создана/проверена")
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     init_db()
@@ -163,4 +389,10 @@ if __name__ == "__main__":
     migrate_add_country_to_servers()
     migrate_add_revoked_to_payments()
     migrate_add_free_key_usage()
+    migrate_add_protocol_fields()
+    migrate_add_tariff_id_to_v2ray_keys()
+    migrate_extend_payments_schema()
+    migrate_add_common_indexes()
+    migrate_add_unique_key_indexes()
+    migrate_create_webhook_logs()
 

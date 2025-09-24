@@ -4,13 +4,14 @@ import sqlite3
 import re
 import logging
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types
+from app.logging_config import setup_logging
+from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration, ADMIN_ID
 from db import init_db
 from outline import create_key, delete_key
 from utils import get_db_cursor
-from vpn_protocols import format_duration
+from vpn_protocols import format_duration, ProtocolFactory, get_protocol_instructions
 
 # Оптимизация памяти
 from memory_optimizer import (
@@ -40,8 +41,17 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher(bot)
 
+# Явная проверка конфигурации при старте
+config_validation = validate_configuration()
+if not config_validation['is_valid']:
+    for err in config_validation['errors']:
+        logging.error(f"Config error: {err}")
+    raise RuntimeError("Invalid configuration. Check environment variables.")
+for warn in config_validation['warnings']:
+    logging.warning(f"Config warning: {warn}")
+
 # Инициализация будет выполнена при первом использовании через lazy loading
-print("🚀 VeilBot запущен с оптимизацией памяти")
+logging.info("🚀 VeilBot запущен с оптимизацией памяти")
 
 # Simple state management for email collection
 user_states = {}  # user_id -> {"state": ..., ...}
@@ -74,9 +84,12 @@ help_keyboard.add(KeyboardButton("🔙 Назад"))
 cancel_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
 cancel_keyboard.add(KeyboardButton("🔙 Отмена"))
 
-def get_tariff_menu() -> ReplyKeyboardMarkup:
+def get_tariff_menu(paid_only: bool = False) -> ReplyKeyboardMarkup:
     with get_db_cursor() as cursor:
-        cursor.execute("SELECT id, name, price_rub, duration_sec FROM tariffs ORDER BY price_rub ASC")
+        if paid_only:
+            cursor.execute("SELECT id, name, price_rub, duration_sec FROM tariffs WHERE price_rub > 0 ORDER BY price_rub ASC")
+        else:
+            cursor.execute("SELECT id, name, price_rub, duration_sec FROM tariffs ORDER BY price_rub ASC")
         tariffs = cursor.fetchall()
 
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -99,34 +112,42 @@ def format_key_message(access_url: str) -> str:
     )
 
 def format_key_message_unified(config: str, protocol: str, tariff: dict = None, remaining_time: int = None) -> str:
-    """Унифицированное форматирование сообщения для обоих протоколов"""
-    protocol_info = PROTOCOLS[protocol]
+    """Унифицированное форматирование сообщения с ключом для всех протоколов"""
+    protocol_info = PROTOCOLS.get(protocol, {})
+    protocol_name = protocol_info.get('name', protocol.upper())
+    protocol_icon = protocol_info.get('icon', '🔒')
     
-    # Базовая структура сообщения
-    message = (
-        f"*Ваш ключ {protocol_info['icon']} {protocol_info['name']}* (коснитесь, чтобы скопировать):\n"
+    # Форматируем оставшееся время
+    if remaining_time:
+        time_str = format_duration(remaining_time)
+        time_info = f"\n⏰ *Осталось:* {time_str}"
+    else:
+        time_info = ""
+    
+    # Форматируем информацию о тарифе
+    if tariff:
+        tariff_info = f"\n📦 *Тариф:* {tariff.get('name', 'Неизвестно')}"
+        if tariff.get('price_rub', 0) > 0:
+            tariff_info += f" — {tariff['price_rub']}₽"
+        else:
+            tariff_info += " — бесплатно"
+    else:
+        tariff_info = ""
+    
+    # Получаем инструкции по подключению
+    try:
+        instructions = get_protocol_instructions(protocol)
+    except Exception as e:
+        logging.warning(f"Не удалось получить инструкции для протокола {protocol}: {e}")
+        instructions = "Инструкции по подключению временно недоступны."
+    
+    return (
+        f"{protocol_icon} *{protocol_name}*\n\n"
+        f"*Ваш ключ* (коснитесь, чтобы скопировать):\n"
         f"`{config}`\n\n"
+        f"🔧 *Как подключиться:*\n{instructions}"
+        f"{tariff_info}{time_info}"
     )
-    
-    # Добавляем информацию о времени
-    if remaining_time is not None:
-        # Если передано оставшееся время, используем его
-        message += (
-            f"⏱ Осталось времени: *{format_duration(remaining_time)}*\n\n"
-        )
-    elif tariff:
-        # Иначе используем длительность тарифа (для новых ключей)
-        message += (
-            f"⏱ Осталось времени: *{format_duration(tariff['duration_sec'])}*\n\n"
-        )
-    
-    # Добавляем инструкции по подключению
-    message += (
-        f"🔧 *Как подключиться:*\n"
-        f"{get_protocol_instructions(protocol)}"
-    )
-    
-    return message
 
 def is_valid_email(email: str) -> bool:
     """Валидация email с использованием нового валидатора"""
@@ -157,17 +178,22 @@ async def handle_buy_menu(message: types.Message):
         del user_states[user_id]
     
     # Показываем выбор протокола
-    await message.answer(
-        "Выберите VPN протокол:",
-        reply_markup=get_protocol_selection_menu()
-    )
+    try:
+        await message.answer(
+            "Выберите VPN протокол:",
+            reply_markup=get_protocol_selection_menu()
+        )
+    except Exception as e:
+        logging.error(f"Error showing protocol selection: {e}")
+        await message.answer("❌ Не удалось отобразить выбор протокола. Попробуйте ещё раз.", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text in [f"{PROTOCOLS['outline']['icon']} {PROTOCOLS['outline']['name']}", 
                                         f"{PROTOCOLS['v2ray']['icon']} {PROTOCOLS['v2ray']['name']}"])
 async def handle_protocol_selection(message: types.Message):
     """Обработка выбора протокола"""
     user_id = message.from_user.id
-    protocol = 'outline' if 'Outline' in message.text else 'v2ray'
+    text = message.text or ""
+    protocol = 'outline' if ('Outline' in text or 'Outline VPN' in text) else ('v2ray' if 'V2Ray' in text or 'VLESS' in text else 'outline')
     
     # Сохраняем выбор протокола в состоянии пользователя
     user_states[user_id] = {
@@ -313,7 +339,7 @@ async def back_to_main(message: types.Message):
 # --- Обработчик кнопки 'Пригласить друга' (теперь выше всех универсальных) ---
 @dp.message_handler(lambda m: m.text == "Получить месяц бесплатно")
 async def handle_invite_friend(message: types.Message):
-    print(f"[DEBUG] handle_invite_friend called: user_id={message.from_user.id}")
+    logging.debug(f"handle_invite_friend called: user_id={message.from_user.id}")
     user_id = message.from_user.id
     bot_username = (await bot.get_me()).username
     invite_link = f"https://t.me/{bot_username}?start={user_id}"
@@ -350,7 +376,7 @@ async def handle_email_input(message: types.Message):
             await message.answer("❌ Неверный формат email. Пожалуйста, введите корректный email адрес:", reply_markup=cancel_keyboard)
             return
         
-        print(f"[DEBUG] handle_email_input called: user_id={user_id}, email={email}, state={user_states.get(user_id)}")
+        logging.debug(f"handle_email_input called: user_id={user_id}, email={email}, state={user_states.get(user_id)}")
         
         state = user_states.get(user_id, {})
         tariff = state.get("tariff")
@@ -358,6 +384,7 @@ async def handle_email_input(message: types.Message):
         protocol = state.get("protocol", "outline")
         del user_states[user_id]
         
+        # Создаем платеж с указанным email
         await create_payment_with_email_and_protocol(message, user_id, tariff, email, country, protocol)
         
     except ValidationError as e:
@@ -410,41 +437,45 @@ async def handle_country_selection(message: types.Message):
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "protocol_selected")
 async def handle_protocol_country_selection(message: types.Message):
     """Обработка выбора страны после выбора протокола"""
-    if message.text == "🔙 Назад":
+    try:
+        if message.text == "🔙 Назад":
+            user_id = message.from_user.id
+            user_states.pop(user_id, None)
+            await message.answer("Выберите протокол:", reply_markup=get_protocol_selection_menu())
+            return
+        
+        if message.text == "Получить месяц бесплатно":
+            user_id = message.from_user.id
+            user_states.pop(user_id, None)
+            await handle_invite_friend(message)
+            return
+        
         user_id = message.from_user.id
-        user_states.pop(user_id, None)
-        await message.answer("Выберите протокол:", reply_markup=get_protocol_selection_menu())
-        return
-    
-    if message.text == "Получить месяц бесплатно":
-        user_id = message.from_user.id
-        user_states.pop(user_id, None)
-        await handle_invite_friend(message)
-        return
-    
-    user_id = message.from_user.id
-    user_state = user_states.get(user_id, {})
-    country = message.text.strip()
-    protocol = user_state.get("protocol", "outline")
-    
-    # Получаем страны только для выбранного протокола
-    countries = get_countries_by_protocol(protocol)
-    
-    if country not in countries:
-        protocol_info = PROTOCOLS[protocol]
-        await message.answer(
-            f"Пожалуйста, выберите страну из списка для {protocol_info['name']}:", 
-            reply_markup=get_country_menu(countries)
-        )
-        return
-    
-    # Сохраняем страну и переходим к выбору тарифа
-    user_states[user_id] = {
-        "state": "waiting_tariff", 
-        "country": country,
-        "protocol": protocol
-    }
-    await message.answer("Выберите тариф:", reply_markup=get_tariff_menu())
+        user_state = user_states.get(user_id, {})
+        country = (message.text or "").strip()
+        protocol = user_state.get("protocol", "outline")
+        
+        # Получаем страны только для выбранного протокола
+        countries = get_countries_by_protocol(protocol)
+        
+        if country not in countries:
+            protocol_info = PROTOCOLS.get(protocol, {"name": protocol})
+            await message.answer(
+                f"Пожалуйста, выберите страну из списка для {protocol_info['name']}:", 
+                reply_markup=get_country_menu(countries)
+            )
+            return
+        
+        # Сохраняем страну и переходим к выбору тарифа
+        user_states[user_id] = {
+            "state": "waiting_tariff", 
+            "country": country,
+            "protocol": protocol
+        }
+        await message.answer("Выберите тариф:", reply_markup=get_tariff_menu())
+    except Exception as e:
+        logging.error(f"Error in handle_protocol_country_selection: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте ещё раз или выберите протокол заново.", reply_markup=get_protocol_selection_menu())
 
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_tariff" and "—" in m.text and any(w in m.text for w in ["₽", "бесплатно"]))
 async def handle_tariff_selection_with_country(message: types.Message):
@@ -467,6 +498,10 @@ async def handle_tariff_selection_with_country(message: types.Message):
     tariff_name = parts[0].strip()
     price_part = parts[1].strip()
     if "бесплатно" in price_part:
+        # Если пользователь в сценарии продления, не разрешаем бесплатные тарифы
+        if user_states.get(user_id, {}).get("paid_only"):
+            await message.answer("Для продления доступны только платные тарифы. Выберите платный тариф.", reply_markup=get_tariff_menu(paid_only=True))
+            return
         price = 0
     else:
         try:
@@ -479,10 +514,36 @@ async def handle_tariff_selection_with_country(message: types.Message):
         if not tariff:
             await message.answer("Не удалось найти тариф.", reply_markup=main_menu)
             return
-        if tariff['price_rub'] == 0:
+        if tariff['price_rub'] == 0 and not user_states.get(user_id, {}).get("paid_only"):
             await handle_free_tariff_with_protocol(cursor, message, user_id, tariff, country, protocol)
         else:
-            await handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, country, protocol)
+            # Если это сценарий продления, не запрашиваем email — используем email из БД
+            if user_states.get(user_id, {}).get("paid_only"):
+                email_db = None
+                try:
+                    now_ts = int(time.time())
+                    # Пытаемся получить email из текущего протокола, если outline
+                    if (protocol or 'outline') == 'outline':
+                        cursor.execute("SELECT email FROM keys WHERE user_id = ? AND email IS NOT NULL AND email != '' ORDER BY expiry_at DESC LIMIT 1", (user_id,))
+                        row = cursor.fetchone()
+                        email_db = row[0] if row and row[0] else None
+                    # Фолбэк: пробуем взять из v2ray_keys
+                    if not email_db:
+                        cursor.execute("SELECT email FROM v2ray_keys WHERE user_id = ? AND email IS NOT NULL AND email != '' ORDER BY expiry_at DESC LIMIT 1", (user_id,))
+                        row2 = cursor.fetchone()
+                        email_db = row2[0] if row2 and row2[0] else None
+                except Exception:
+                    email_db = None
+
+                if not email_db:
+                    email_db = f"user_{user_id}@veilbot.com"
+
+                # Сразу создаем платеж без запроса email у пользователя
+                # Сбрасываем временное состояние выбора тарифа
+                user_states[user_id] = {}
+                await create_payment_with_email_and_protocol(message, user_id, tariff, email_db, country, protocol)
+            else:
+                await handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, country, protocol)
 
 def get_tariff_by_name_and_price(cursor, tariff_name, price):
     cursor.execute("SELECT id, name, price_rub, duration_sec FROM tariffs WHERE name = ? AND price_rub = ?", (tariff_name, price))
@@ -602,8 +663,158 @@ def record_free_key_usage(cursor, user_id, protocol="outline", country=None):
         # Запись уже существует (UNIQUE constraint)
         return False
     except Exception as e:
-        print(f"[ERROR] Failed to record free key usage: {e}")
+        logging.error(f"Failed to record free key usage: {e}")
         return False
+
+def check_server_availability(api_url, cert_sha256, protocol='outline'):
+    """Проверяет доступность сервера"""
+    try:
+        if protocol == 'outline':
+            # Для Outline проверяем доступность API
+            import requests
+            response = requests.get(f"{api_url}/access-keys", verify=False, timeout=10)
+            return response.status_code == 200
+        elif protocol == 'v2ray':
+            # Для V2Ray проверяем доступность API
+            import requests
+            response = requests.get(f"{api_url}/", verify=False, timeout=10)
+            return response.status_code == 200
+        return False
+    except Exception as e:
+        logging.warning(f"Server availability check failed: {e}")
+        return False
+
+def find_alternative_server(cursor, country, protocol, exclude_server_id=None):
+    """Находит альтернативный сервер той же страны и протокола"""
+    if country:
+        cursor.execute("""
+            SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+            FROM servers 
+            WHERE active = 1 AND country = ? AND protocol = ? AND id != ?
+            ORDER BY RANDOM() LIMIT 1
+        """, (country, protocol, exclude_server_id or 0))
+    else:
+        cursor.execute("""
+            SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+            FROM servers 
+            WHERE active = 1 AND protocol = ? AND id != ?
+            ORDER BY RANDOM() LIMIT 1
+        """, (protocol, exclude_server_id or 0))
+    
+    row = cursor.fetchone()
+    if not row:
+        return None
+    
+    return row
+
+async def extend_existing_key_with_fallback(cursor, existing_key, duration, email=None, tariff_id=None, protocol='outline'):
+    """Продлевает существующий ключ с fallback на альтернативный сервер"""
+    new_expiry = existing_key[1] + duration
+    
+    # Получаем информацию о текущем сервере в зависимости от протокола
+    if protocol == 'outline':
+        cursor.execute("SELECT server_id FROM keys WHERE id = ?", (existing_key[0],))
+        server_id = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT api_url, cert_sha256, country FROM servers WHERE id = ?", (server_id,))
+        server_data = cursor.fetchone()
+        
+        if not server_data:
+            logging.error(f"Server {server_id} not found for key {existing_key[0]}")
+            return False
+        
+        api_url, cert_sha256, country = server_data
+    else:  # v2ray
+        server_id = existing_key[5]  # server_id из запроса
+        cursor.execute("SELECT api_url, api_key, country FROM servers WHERE id = ?", (server_id,))
+        server_data = cursor.fetchone()
+        
+        if not server_data:
+            logging.error(f"Server {server_id} not found for V2Ray key {existing_key[0]}")
+            return False
+        
+        api_url, api_key, country = server_data
+        cert_sha256 = None  # Для V2Ray не используется
+    
+    # Проверяем доступность текущего сервера
+    if check_server_availability(api_url, cert_sha256, protocol):
+        # Сервер доступен, просто продлеваем
+        if protocol == 'outline':
+            if email and tariff_id:
+                cursor.execute("UPDATE keys SET expiry_at = ?, email = ?, tariff_id = ? WHERE id = ?", (new_expiry, email, tariff_id, existing_key[0]))
+            elif email:
+                cursor.execute("UPDATE keys SET expiry_at = ?, email = ? WHERE id = ?", (new_expiry, email, existing_key[0]))
+            elif tariff_id:
+                cursor.execute("UPDATE keys SET expiry_at = ?, tariff_id = ? WHERE id = ?", (new_expiry, tariff_id, existing_key[0]))
+            else:
+                cursor.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry, existing_key[0]))
+        else:  # v2ray
+            if email and tariff_id:
+                cursor.execute("UPDATE v2ray_keys SET expiry_at = ?, email = ?, tariff_id = ? WHERE id = ?", (new_expiry, email, tariff_id, existing_key[0]))
+            elif email:
+                cursor.execute("UPDATE v2ray_keys SET expiry_at = ?, email = ? WHERE id = ?", (new_expiry, email, existing_key[0]))
+            elif tariff_id:
+                cursor.execute("UPDATE v2ray_keys SET expiry_at = ?, tariff_id = ? WHERE id = ?", (new_expiry, tariff_id, existing_key[0]))
+            else:
+                cursor.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (new_expiry, existing_key[0]))
+        return True
+    else:
+        # Сервер недоступен, ищем альтернативный
+        logging.warning(f"Server {server_id} is not available, looking for alternative")
+        alternative_server = find_alternative_server(cursor, country, protocol, server_id)
+        
+        if not alternative_server:
+            logging.error(f"No alternative server found for country={country}, protocol={protocol}")
+            return False
+        
+        alt_server_id, alt_name, alt_api_url, alt_cert_sha256, alt_domain, alt_api_key, alt_v2ray_path = alternative_server
+        
+        # Проверяем доступность альтернативного сервера
+        if not check_server_availability(alt_api_url, alt_cert_sha256, protocol):
+            logging.error(f"Alternative server {alt_server_id} is also not available")
+            return False
+        
+        try:
+            # Создаем новый ключ на альтернативном сервере
+            if protocol == 'outline':
+                key = await asyncio.get_event_loop().run_in_executor(None, create_key, alt_api_url, alt_cert_sha256)
+                if not key:
+                    logging.error(f"Failed to create key on alternative server {alt_server_id}")
+                    return False
+                
+                # Обновляем ключ в базе данных
+                cursor.execute("""
+                    UPDATE keys 
+                    SET server_id = ?, access_url = ?, key_id = ?, expiry_at = ?, email = ?, tariff_id = ?
+                    WHERE id = ?
+                """, (alt_server_id, key['accessUrl'], key['id'], new_expiry, email or '', tariff_id or 0, existing_key[0]))
+                
+                logging.info(f"Key {existing_key[0]} moved to alternative server {alt_server_id} ({alt_name})")
+                return True
+                
+            elif protocol == 'v2ray':
+                # Для V2Ray создаем новый ключ
+                from vpn_protocols import V2RayProtocol
+                v2ray_client = V2RayProtocol(alt_api_url, alt_api_key)
+                user_data = await v2ray_client.create_user(email or f"user_{existing_key[0]}@veilbot.com")
+                
+                if not user_data or not user_data.get('uuid'):
+                    logging.error(f"Failed to create V2Ray key on alternative server {alt_server_id}")
+                    return False
+                
+                # Обновляем ключ в базе данных
+                cursor.execute("""
+                    UPDATE v2ray_keys 
+                    SET server_id = ?, v2ray_uuid = ?, expiry_at = ?, email = ?, tariff_id = ?
+                    WHERE id = ?
+                """, (alt_server_id, user_data['uuid'], new_expiry, email or '', tariff_id or 0, existing_key[0]))
+                
+                logging.info(f"V2Ray key {existing_key[0]} moved to alternative server {alt_server_id} ({alt_name})")
+                return True
+                
+        except Exception as e:
+            logging.error(f"Error creating key on alternative server: {e}")
+            return False
 
 def extend_existing_key(cursor, existing_key, duration, email=None, tariff_id=None):
     new_expiry = existing_key[1] + duration
@@ -636,7 +847,7 @@ async def create_new_key_flow(cursor, message, user_id, tariff, email=None, coun
         try:
             await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="Markdown")
         except Exception as e:
-            print(f"[ERROR] Failed to send admin notification: {e}")
+            logging.error(f"Failed to send admin notification: {e}")
         return
     # Если нет активного ключа — создаём новый
     server = select_available_server(cursor, country)
@@ -671,7 +882,7 @@ async def create_new_key_flow(cursor, message, user_id, tariff, email=None, coun
     try:
         await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="Markdown")
     except Exception as e:
-        print(f"[ERROR] Failed to send admin notification: {e}")
+        logging.error(f"Failed to send admin notification: {e}")
 
 async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email=None, country=None, protocol="outline"):
     """Создание нового ключа с поддержкой протоколов"""
@@ -682,35 +893,56 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
         cursor.execute("SELECT id, expiry_at, access_url FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (user_id, now))
         existing_key = cursor.fetchone()
         if existing_key:
-            extend_existing_key(cursor, existing_key, tariff['duration_sec'], email, tariff['id'])
-            # Очищаем состояние пользователя
-            user_states.pop(user_id, None)
+            # Используем новую функцию с fallback на альтернативный сервер
+            success = await extend_existing_key_with_fallback(cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol)
             
-            await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(existing_key[2], protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-            return
+            if success:
+                # Получаем обновленную информацию о ключе
+                cursor.execute("SELECT access_url FROM keys WHERE id = ?", (existing_key[0],))
+                updated_key = cursor.fetchone()
+                access_url = updated_key[0] if updated_key else existing_key[2]
+                
+                # Очищаем состояние пользователя
+                user_states.pop(user_id, None)
+                
+                await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                return
+            else:
+                # Если не удалось продлить, создаем новый ключ
+                logging.warning(f"Failed to extend key {existing_key[0]}, creating new key for user {user_id}")
+                # Продолжаем выполнение для создания нового ключа
     else:  # v2ray
-        cursor.execute("SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, now))
+        cursor.execute("SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, now))
         existing_key = cursor.fetchone()
         if existing_key:
-            # Продление V2Ray ключа
-            new_expiry = existing_key[1] + tariff['duration_sec']
-            if email:
-                cursor.execute("UPDATE v2ray_keys SET expiry_at = ?, tariff_id = ?, email = ? WHERE id = ?", (new_expiry, tariff['id'], email, existing_key[0]))
+            # Используем новую функцию с fallback на альтернативный сервер
+            success = await extend_existing_key_with_fallback(cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol)
+            
+            if success:
+                # Получаем обновленную информацию о ключе
+                cursor.execute("SELECT k.v2ray_uuid, s.domain, s.v2ray_path FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.id = ?", (existing_key[0],))
+                updated_key = cursor.fetchone()
+                
+                if updated_key:
+                    v2ray_uuid, domain, path = updated_key
+                    # Используем новый формат Reality протокола
+                    config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                else:
+                    # Fallback к старой конфигурации
+                    v2ray_uuid = existing_key[2]
+                    domain = existing_key[3]
+                    path = existing_key[4] or '/v2ray'
+                    config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                
+                # Очищаем состояние пользователя
+                user_states.pop(user_id, None)
+                
+                await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                return
             else:
-                cursor.execute("UPDATE v2ray_keys SET expiry_at = ?, tariff_id = ? WHERE id = ?", (new_expiry, tariff['id'], existing_key[0]))
-            
-            # Формируем конфигурацию V2Ray
-            v2ray_uuid = existing_key[2]
-            domain = existing_key[3]
-            path = existing_key[4] or '/v2ray'
-            # Используем новый формат Reality протокола
-            config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
-            
-            # Очищаем состояние пользователя
-            user_states.pop(user_id, None)
-            
-            await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-            return
+                # Если не удалось продлить, создаем новый ключ
+                logging.warning(f"Failed to extend V2Ray key {existing_key[0]}, creating new key for user {user_id}")
+                # Продолжаем выполнение для создания нового ключа
     
     # Если нет активного ключа — создаём новый
     server = select_available_server_by_protocol(cursor, country, protocol)
@@ -742,12 +974,12 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                 vpn_service = get_vpn_service()
                 VPN_PROTOCOLS_AVAILABLE = vpn_service is not None
                 if VPN_PROTOCOLS_AVAILABLE:
-                    print("✅ VPN протоколы инициализированы (lazy loading)")
+                    logging.info("VPN протоколы инициализированы (lazy loading)")
                 else:
-                    print("⚠️ VPN протоколы недоступны")
+                    logging.warning("VPN протоколы недоступны")
             except Exception as e:
                 VPN_PROTOCOLS_AVAILABLE = False
-                print(f"⚠️ Ошибка инициализации VPN протоколов: {e}")
+                logging.warning(f"Ошибка инициализации VPN протоколов: {e}")
         
         if VPN_PROTOCOLS_AVAILABLE:
             from vpn_protocols import ProtocolFactory
@@ -853,11 +1085,11 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
         try:
             await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="Markdown")
         except Exception as e:
-            print(f"[ERROR] Failed to send admin notification: {e}")
+            logging.error(f"Failed to send admin notification: {e}")
             
     except Exception as e:
         # При ошибке пытаемся удалить созданного пользователя с сервера
-        print(f"[ERROR] Failed to create {protocol} key: {e}")
+        logging.error(f"Failed to create {protocol} key: {e}")
         
         # Логирование ошибки создания ключа
         try:
@@ -877,14 +1109,14 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             if 'user_data' in locals() and user_data:
                 if protocol == 'v2ray' and user_data.get('uuid'):
                     await protocol_client.delete_user(user_data['uuid'])
-                    print(f"[CLEANUP] Deleted V2Ray user {user_data['uuid']} from server due to error")
+                    logging.info(f"Deleted V2Ray user {user_data['uuid']} from server due to error")
                 elif protocol == 'outline' and user_data.get('id'):
                     # Для Outline используем существующую функцию
                     from outline import delete_key
                     delete_key(server[2], server[3], user_data['id'])
-                    print(f"[CLEANUP] Deleted Outline key {user_data['id']} from server due to error")
+                    logging.info(f"Deleted Outline key {user_data['id']} from server due to error")
         except Exception as cleanup_error:
-            print(f"[ERROR] Failed to cleanup {protocol} user after error: {cleanup_error}")
+            logging.error(f"Failed to cleanup {protocol} user after error: {cleanup_error}")
         
         # Удаляем сообщение о загрузке
         try:
@@ -1005,15 +1237,31 @@ async def handle_free_tariff_with_protocol(cursor, message, user_id, tariff, cou
                 await message.answer(f"У вас уже есть активный бесплатный ключ {PROTOCOLS[protocol]['name']}. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
             return
     else:
+        # Для бесплатного тарифа создаем ключ сразу без запроса email
         await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, None, country, protocol)
 
 async def handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, country=None, protocol="outline"):
     """Обработка платного тарифа с поддержкой протоколов"""
-    await create_payment_with_email_and_protocol(message, user_id, tariff, None, country, protocol)
+    # Сохраняем состояние и запрашиваем email
+    user_states[user_id] = {
+        "state": "waiting_email",
+        "tariff": tariff,
+        "country": country,
+        "protocol": protocol
+    }
+    
+    await message.answer(
+        f"💳 *Оплата {PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}*\n\n"
+        f"📦 Тариф: *{tariff['name']}*\n"
+        f"💰 Сумма: *{tariff['price_rub']}₽*\n\n"
+        "📧 Пожалуйста, введите ваш email адрес для получения чека:",
+        reply_markup=cancel_keyboard,
+        parse_mode="Markdown"
+    )
 
 async def create_payment_with_email_and_protocol(message, user_id, tariff, email=None, country=None, protocol="outline"):
     """Создание платежа с поддержкой протоколов"""
-    print(f"[DEBUG] create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}")
+    logging.debug(f"create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}")
     
     # Ленивая инициализация платежного модуля
     global PAYMENT_MODULE_AVAILABLE
@@ -1022,27 +1270,32 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
             payment_service = get_payment_service()
             PAYMENT_MODULE_AVAILABLE = payment_service is not None
             if PAYMENT_MODULE_AVAILABLE:
-                print("✅ Платежный сервис инициализирован (lazy loading)")
+                logging.info("Платежный сервис инициализирован (lazy loading)")
             else:
-                print("⚠️ Платежный сервис недоступен")
+                logging.warning("Платежный сервис недоступен")
         except Exception as e:
             PAYMENT_MODULE_AVAILABLE = False
-            print(f"⚠️ Ошибка инициализации платежного сервиса: {e}")
+            logging.warning(f"Ошибка инициализации платежного сервиса: {e}")
     
     # Логирование попытки создания платежа
     try:
-        security_logger = get_security_logger()
-        if security_logger:
-            security_logger.log_payment_attempt(
-                user_id=user_id,
-                amount=tariff.get('price_rub', 0) * 100,  # Конвертируем в копейки
-                protocol=protocol,
-                country=country,
-                email=email,
-                success=True,
-                ip_address=getattr(message, 'from_user', {}).get('id', None),
-                user_agent="Telegram Bot"
-            )
+            security_logger = get_security_logger()
+            if security_logger:
+                ip_addr = None
+                try:
+                    ip_addr = str(message.from_user.id) if getattr(message, 'from_user', None) else None
+                except Exception:
+                    ip_addr = None
+                security_logger.log_payment_attempt(
+                    user_id=user_id,
+                    amount=tariff.get('price_rub', 0) * 100,  # Конвертируем в копейки
+                    protocol=protocol,
+                    country=country,
+                    email=email,
+                    success=True,
+                    ip_address=ip_addr,
+                    user_agent="Telegram Bot"
+                )
     except Exception as e:
         logging.error(f"Error logging payment attempt: {e}")
     
@@ -1056,7 +1309,7 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
             if result and result != (None, None):
                 # Новый модуль создал платеж
                 payment_id, payment_url = result
-                print(f"[DEBUG] New payment module created payment: {payment_id}")
+                logging.debug(f"New payment module created payment: {payment_id}")
                 
                 # Логирование успешного создания платежа
                 try:
@@ -1103,7 +1356,7 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
                 asyncio.create_task(wait_for_payment_with_protocol(message, payment_id, server, user_id, tariff, country, protocol))
                 return
             else:
-                print(f"[DEBUG] New payment module failed to create payment")
+                logging.debug("New payment module failed to create payment")
                 
                 # Логирование неудачного создания платежа
                 try:
@@ -1125,7 +1378,7 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
                 return
                 
         except Exception as e:
-            print(f"⚠️ Ошибка в новом платежном модуле: {e}")
+            logging.warning(f"Ошибка в новом платежном модуле: {e}")
             
             # Логирование ошибки в платежном модуле
             try:
@@ -1147,7 +1400,7 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
             return
     else:
         # Если новый модуль недоступен
-        print(f"⚠️ Новый платежный модуль недоступен")
+        logging.warning("Новый платежный модуль недоступен")
         await message.answer("Платежная система временно недоступна.", reply_markup=main_menu)
         return
 
@@ -1176,7 +1429,7 @@ async def wait_for_payment_with_protocol(message, payment_id, server, user_id, t
             success = await wait_for_payment_with_protocol_legacy(message, payment_id, protocol)
             
             if success:
-                print(f"[DEBUG] New payment module confirmed payment success: {payment_id}")
+                logging.debug(f"New payment module confirmed payment success: {payment_id}")
                 # Создаем ключ после успешного платежа
                 with get_db_cursor(commit=True) as cursor:
                     cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
@@ -1208,17 +1461,17 @@ async def wait_for_payment_with_protocol(message, payment_id, server, user_id, t
                         cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
                 return
             else:
-                print(f"[DEBUG] New payment module timeout or failed: {payment_id}")
+                logging.debug(f"New payment module timeout or failed: {payment_id}")
                 await message.answer("Время ожидания платежа истекло. Попробуйте создать платеж заново.", reply_markup=main_menu)
                 return
                 
         except Exception as e:
-            print(f"⚠️ Ошибка в новом платежном модуле: {e}")
+            logging.warning(f"Ошибка в новом платежном модуле: {e}")
             await message.answer("Ошибка при проверке платежа. Обратитесь в поддержку.", reply_markup=main_menu)
             return
     else:
         # Если новый модуль недоступен
-        print(f"⚠️ Новый платежный модуль недоступен")
+        logging.warning("Новый платежный модуль недоступен")
         await message.answer("Платежная система временно недоступна.", reply_markup=main_menu)
         return
 
@@ -1242,20 +1495,20 @@ async def auto_delete_expired_keys():
                         None, delete_key, api_url, cert_sha256, key_id_outline
                     )
                     if not success:
-                        print(f"Failed to delete key {key_id_outline} from Outline server")
+                        logging.warning(f"Failed to delete key {key_id_outline} from Outline server")
             
             # Then delete from database
             cursor.execute("DELETE FROM keys WHERE expiry_at <= ?", (now,))
             deleted_count = cursor.rowcount
             if deleted_count > 0:
-                print(f"Deleted {deleted_count} expired keys")
+                logging.info(f"Deleted {deleted_count} expired keys")
         
         # Оптимизация памяти после очистки
         try:
             optimize_memory()
             log_memory_usage()
         except Exception as e:
-            print(f"[ERROR] Ошибка при оптимизации памяти: {e}")
+            logging.error(f"Ошибка при оптимизации памяти: {e}")
         
         await asyncio.sleep(600)
 
@@ -1342,13 +1595,23 @@ async def check_key_availability():
                         )
                     low_key_notified = False
         except Exception as e:
-            print(f"Error in check_key_availability: {e}")
+            logging.error(f"Error in check_key_availability: {e}")
 
         await asyncio.sleep(300) # Check every 5 minutes
 
 @dp.callback_query_handler(lambda c: c.data == "buy")
 async def callback_buy_button(callback_query: types.CallbackQuery):
-    await bot.send_message(callback_query.from_user.id, "Выберите тариф:", reply_markup=get_tariff_menu())
+    user_id = callback_query.from_user.id
+    # Ставим состояние ожидания выбора тарифа для сценария продления и скрываем бесплатные тарифы
+    user_states[user_id] = {
+        "state": "waiting_tariff",
+        "paid_only": True
+    }
+    await bot.send_message(user_id, "Выберите тариф для продления:", reply_markup=get_tariff_menu(paid_only=True))
+    try:
+        await callback_query.answer()
+    except Exception:
+        pass
 
 # --- Country selection helpers ---
 def get_countries():
@@ -1385,7 +1648,7 @@ async def process_pending_paid_payments():
             from payments.adapters.legacy_adapter import process_pending_paid_payments_legacy
             return await process_pending_paid_payments_legacy()
         except Exception as e:
-            print(f"⚠️ Ошибка в новом платежном модуле, используем старый: {e}")
+            logging.warning(f"Ошибка в новом платежном модуле, используем старый: {e}")
     
     # Fallback на старый код
     while True:
@@ -1518,76 +1781,88 @@ async def handle_help(message: types.Message):
     )
     await message.answer(help_text, reply_markup=help_keyboard)
 
-@dp.message_handler(lambda m: m.text == "🔙 Назад" and message.reply_markup == help_keyboard)
+@dp.message_handler(lambda m: m.text == "🔙 Назад" and m.reply_markup == help_keyboard)
 async def handle_help_back(message: types.Message):
     await message.answer("Главное меню:", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text == "Сменить приложение")
 async def handle_change_app(message: types.Message):
+    logging.debug(f"Обработчик 'Сменить приложение' вызван для пользователя {message.from_user.id}")
     user_id = message.from_user.id
     now = int(time.time())
     
-    with get_db_cursor() as cursor:
-        # Получаем все активные ключи пользователя
-        cursor.execute("""
-            SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
-            FROM keys k
-            JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ?
-            ORDER BY k.expiry_at DESC
-        """, (user_id, now))
-        outline_keys = cursor.fetchall()
-        
-        cursor.execute("""
-            SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, 'v2ray' as key_type, s.domain, s.v2ray_path
-            FROM v2ray_keys k
-            JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ?
-            ORDER BY k.expiry_at DESC
-        """, (user_id, now))
-        v2ray_keys = cursor.fetchall()
-        
-        # Объединяем все ключи
-        all_keys = []
-        for key in outline_keys:
-            all_keys.append({
-                'id': key[0],
-                'expiry_at': key[1],
-                'server_id': key[2],
-                'key_id': key[3],
-                'access_url': key[4],
-                'country': key[5],
-                'tariff_id': key[6],
-                'email': key[7],
-                'protocol': key[8],
-                'type': 'outline'
-            })
-        
-        for key in v2ray_keys:
-            all_keys.append({
-                'id': key[0],
-                'expiry_at': key[1],
-                'server_id': key[2],
-                'v2ray_uuid': key[3],
-                'country': key[4],
-                'tariff_id': key[5],
-                'email': key[6],
-                'protocol': key[7],
-                'type': key[8],
-                'domain': key[9],
-                'v2ray_path': key[10]
-            })
-        
-        if not all_keys:
-            await message.answer("У вас нет активных ключей для смены протокола.", reply_markup=main_menu)
-            return
-        
-        if len(all_keys) == 1:
-            # Если только один ключ, меняем его протокол сразу
-            await change_protocol_for_key(message, user_id, all_keys[0])
-        else:
-            # Если несколько ключей, показываем список для выбора
-            await show_protocol_change_menu(message, user_id, all_keys)
+    try:
+        with get_db_cursor() as cursor:
+            # Получаем все активные ключи пользователя
+            cursor.execute("""
+                SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.user_id = ? AND k.expiry_at > ?
+                ORDER BY k.expiry_at DESC
+            """, (user_id, now))
+            outline_keys = cursor.fetchall()
+            logging.debug(f"Найдено {len(outline_keys)} Outline ключей")
+            
+            cursor.execute("""
+                SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, 'v2ray' as key_type, s.domain, s.v2ray_path
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.user_id = ? AND k.expiry_at > ?
+                ORDER BY k.expiry_at DESC
+            """, (user_id, now))
+            v2ray_keys = cursor.fetchall()
+            logging.debug(f"Найдено {len(v2ray_keys)} V2Ray ключей")
+            
+            # Объединяем все ключи
+            all_keys = []
+            for key in outline_keys:
+                all_keys.append({
+                    'id': key[0],
+                    'expiry_at': key[1],
+                    'server_id': key[2],
+                    'key_id': key[3],
+                    'access_url': key[4],
+                    'country': key[5],
+                    'tariff_id': key[6],
+                    'email': key[7],
+                    'protocol': key[8],
+                    'type': 'outline'
+                })
+            
+            for key in v2ray_keys:
+                all_keys.append({
+                    'id': key[0],
+                    'expiry_at': key[1],
+                    'server_id': key[2],
+                    'v2ray_uuid': key[3],
+                    'country': key[4],
+                    'tariff_id': key[5],
+                    'email': key[6],
+                    'protocol': key[7],
+                    'type': key[8],
+                    'domain': key[9],
+                    'v2ray_path': key[10]
+                })
+            
+            logging.debug(f"Всего активных ключей: {len(all_keys)}")
+            
+            if not all_keys:
+                await message.answer("У вас нет активных ключей для смены протокола.", reply_markup=main_menu)
+                return
+            
+            if len(all_keys) == 1:
+                # Если только один ключ, меняем его протокол сразу
+                logging.debug(f"Меняем протокол для одного ключа: {all_keys[0]['type']}")
+                await change_protocol_for_key(message, user_id, all_keys[0])
+            else:
+                # Если несколько ключей, показываем список для выбора
+                logging.debug("Показываем меню выбора ключа для смены протокола")
+                await show_protocol_change_menu(message, user_id, all_keys)
+    
+    except Exception as e:
+        logging.error(f"Ошибка в handle_change_app: {e}")
+        await message.answer("Произошла ошибка при обработке запроса. Попробуйте позже.", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text == "Перевыпустить ключ")
 async def handle_reissue_key(message: types.Message):
@@ -1731,13 +2006,13 @@ async def delete_old_key_after_success(cursor, old_key_data: dict):
                 old_api_url, old_cert_sha256 = old_server_data
                 try:
                     await asyncio.get_event_loop().run_in_executor(None, delete_key, old_api_url, old_cert_sha256, old_key_data['key_id'])
-                    print(f"[SUCCESS] Удален старый Outline ключ {old_key_data['key_id']} с сервера")
+                    logging.info(f"Удален старый Outline ключ {old_key_data['key_id']} с сервера")
                 except Exception as e:
-                    print(f"[WARNING] Не удалось удалить старый Outline ключ с сервера: {e}")
+                    logging.warning(f"Не удалось удалить старый Outline ключ с сервера: {e}")
             
             # Удаляем старый ключ из базы
             cursor.execute("DELETE FROM keys WHERE id = ?", (old_key_data['db_id'],))
-            print(f"[SUCCESS] Удален старый Outline ключ {old_key_data['db_id']} из базы")
+            logging.info(f"Удален старый Outline ключ {old_key_data['db_id']} из базы")
             
         else:  # v2ray
             # Удаляем старый ключ из V2Ray сервера
@@ -1749,16 +2024,16 @@ async def delete_old_key_after_success(cursor, old_key_data: dict):
                 protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
                 try:
                     await protocol_client.delete_user(old_key_data['v2ray_uuid'])
-                    print(f"[SUCCESS] Удален старый V2Ray ключ {old_key_data['v2ray_uuid']} с сервера")
+                    logging.info(f"Удален старый V2Ray ключ {old_key_data['v2ray_uuid']} с сервера")
                 except Exception as e:
-                    print(f"[WARNING] Не удалось удалить старый V2Ray ключ с сервера: {e}")
+                    logging.warning(f"Не удалось удалить старый V2Ray ключ с сервера: {e}")
             
             # Удаляем старый ключ из базы
             cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (old_key_data['db_id'],))
-            print(f"[SUCCESS] Удален старый V2Ray ключ {old_key_data['db_id']} из базы")
+            logging.info(f"Удален старый V2Ray ключ {old_key_data['db_id']} из базы")
             
     except Exception as e:
-        print(f"[ERROR] Ошибка при удалении старого ключа: {e}")
+        logging.error(f"Ошибка при удалении старого ключа: {e}")
 
 async def change_protocol_for_key(message: types.Message, user_id: int, key_data: dict):
     """Меняет протокол для конкретного ключа"""
@@ -1819,7 +2094,7 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
                     await message.answer("Ошибка при создании нового Outline ключа.", reply_markup=main_menu)
                     return
             except Exception as e:
-                print(f"[ERROR] Ошибка при создании Outline ключа: {e}")
+                logging.error(f"Ошибка при создании Outline ключа: {e}")
                 await message.answer("Ошибка при создании нового ключа.", reply_markup=main_menu)
                 return
             
@@ -1863,7 +2138,7 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
                 await delete_old_key_after_success(cursor, old_key_data)
                 
             except Exception as e:
-                print(f"[ERROR] Ошибка при создании нового V2Ray ключа: {e}")
+                logging.error(f"Ошибка при создании нового V2Ray ключа: {e}")
                 error_msg = "Ошибка при создании нового ключа."
                 if "401" in str(e):
                     error_msg = "Ошибка авторизации на сервере V2Ray. Обратитесь к администратору."
@@ -1888,7 +2163,7 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
         try:
             await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
         except Exception as e:
-            print(f"[ERROR] Failed to send admin notification (protocol change): {e}")
+            logging.error(f"Failed to send admin notification (protocol change): {e}")
         
         # Ручной commit транзакции
         cursor.connection.commit()
@@ -1945,15 +2220,15 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                 old_api_url, old_cert_sha256 = old_server_data
                 try:
                     # Проверяем, что это Outline ключ и у него есть key_id
-                    print(f"[DEBUG] key_data type: {key_data.get('type')}, key_id present: {'key_id' in key_data}")
+                    logging.debug(f"key_data type: {key_data.get('type')}, key_id present: {'key_id' in key_data}")
                     if key_data['type'] == "outline" and 'key_id' in key_data:
-                        print(f"[DEBUG] Удаляем Outline ключ с ID: {key_data['key_id']} с сервера {old_server_id}")
+                        logging.debug(f"Удаляем Outline ключ с ID: {key_data['key_id']} с сервера {old_server_id}")
                         await asyncio.get_event_loop().run_in_executor(None, delete_key, old_api_url, old_cert_sha256, key_data['key_id'])
                     else:
-                        print(f"[WARNING] Пропускаем удаление Outline ключа - неверный тип или отсутствует key_id")
-                        print(f"[DEBUG] key_data keys: {list(key_data.keys())}")
+                        logging.warning(f"Пропускаем удаление Outline ключа - неверный тип или отсутствует key_id")
+                        logging.debug(f"key_data keys: {list(key_data.keys())}")
                 except Exception as e:
-                    print(f"[ERROR] Не удалось удалить старый Outline ключ: {e}")
+                    logging.error(f"Не удалось удалить старый Outline ключ: {e}")
             
             # Удаляем старый ключ из базы
             cursor.execute("DELETE FROM keys WHERE id = ?", (key_data['id'],))
@@ -1992,7 +2267,7 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                         old_protocol_client = ProtocolFactory.create_protocol(protocol, old_server_config)
                         await old_protocol_client.delete_user(old_uuid)
                 except Exception as e:
-                    print(f"[WARNING] Не удалось удалить старый V2Ray ключ (возможно уже удален): {e}")
+                    logging.warning(f"Не удалось удалить старый V2Ray ключ (возможно уже удален): {e}")
                 
                 # Удаляем старый ключ из базы
                 cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_data['id'],))
@@ -2015,15 +2290,15 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                 await message.answer(format_key_message_unified(config, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
             except Exception as e:
-                print(f"[ERROR] Ошибка при перевыпуске V2Ray ключа: {e}")
+                logging.error(f"Ошибка при перевыпуске V2Ray ключа: {e}")
                 
                 # При ошибке пытаемся удалить созданного пользователя с сервера
                 try:
                     if 'user_data' in locals() and user_data and user_data.get('uuid'):
                         await protocol_client.delete_user(user_data['uuid'])
-                        print(f"[CLEANUP] Deleted V2Ray user {user_data['uuid']} from server due to error")
+                        logging.info(f"Deleted V2Ray user {user_data['uuid']} from server due to error")
                 except Exception as cleanup_error:
-                    print(f"[ERROR] Failed to cleanup V2Ray user after error: {cleanup_error}")
+                    logging.error(f"Failed to cleanup V2Ray user after error: {cleanup_error}")
                 
                 await message.answer("Ошибка при создании нового V2Ray ключа.", reply_markup=main_menu)
                 return
@@ -2043,7 +2318,7 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
         try:
             await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
         except Exception as e:
-            print(f"[ERROR] Failed to send admin notification (reissue): {e}")
+            logging.error(f"Failed to send admin notification (reissue): {e}")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reissue_key_"))
 async def handle_reissue_key_callback(callback_query: types.CallbackQuery):
@@ -2111,7 +2386,7 @@ async def handle_reissue_key_callback(callback_query: types.CallbackQuery):
             }
     
     # Перевыпускаем ключ
-    print(f"[DEBUG] Передаем key_dict в reissue_specific_key: {list(key_dict.keys())}")
+    logging.debug(f"Передаем key_dict в reissue_specific_key: {list(key_dict.keys())}")
     await reissue_specific_key(callback_query.message, user_id, key_dict)
     await callback_query.answer()
 
@@ -2339,12 +2614,60 @@ async def handle_cancel_broadcast(callback_query: types.CallbackQuery):
     await callback_query.answer()
 
 if __name__ == "__main__":
-    from aiogram import executor
-    init_db()
-    loop = asyncio.get_event_loop()
-    # Запуск фоновой задачи автоматической выдачи ключей
-    loop.create_task(process_pending_paid_payments())
-    loop.create_task(auto_delete_expired_keys())
-    loop.create_task(notify_expiring_keys())
-    loop.create_task(check_key_availability())
-    executor.start_polling(dp, skip_updates=True)
+    import sys
+    import traceback
+    
+    # Настройка логирования с маскированием секретов
+    setup_logging(level="INFO")
+    try:
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler('bot.log', maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logging.getLogger().addHandler(file_handler)
+    except Exception:
+        pass
+    
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Инициализация базы данных
+        logger.info("Инициализация базы данных...")
+        init_db()
+        logger.info("База данных инициализирована успешно")
+        
+        # Создание event loop
+        loop = asyncio.get_event_loop()
+        
+        # Запуск фоновых задач
+        logger.info("Запуск фоновых задач...")
+        background_tasks = [
+            process_pending_paid_payments(),
+            auto_delete_expired_keys(),
+            notify_expiring_keys(),
+            check_key_availability()
+        ]
+        
+        for task in background_tasks:
+            try:
+                loop.create_task(task)
+                logger.info(f"Фоновая задача {task.__name__} запущена")
+            except Exception as e:
+                logger.error(f"Ошибка при запуске фоновой задачи {task.__name__}: {e}")
+        
+        logger.info("Запуск бота...")
+        logging.info("🚀 VeilBot запущен с оптимизацией памяти")
+        logging.info("Updates were skipped successfully.")
+        
+        # Запуск бота с обработкой ошибок
+        executor.start_polling(dp, skip_updates=True, loop=loop)
+        
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
+        logging.info("Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"Критическая ошибка при запуске бота: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        logging.critical(f"Критическая ошибка: {e}")
+        logging.error("Проверьте логи в файле bot.log")
+        sys.exit(1)

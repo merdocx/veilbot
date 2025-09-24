@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.templating import Jinja2Templates
 from starlette.status import HTTP_303_SEE_OTHER
@@ -14,12 +14,21 @@ import logging
 import re
 import secrets
 from passlib.context import CryptContext
-from dotenv import load_dotenv
 from datetime import datetime
 import json
+from payments.config import get_webhook_service, get_payment_service
+from payments.repositories.payment_repository import PaymentRepository
+from payments.models.payment import PaymentFilter
+from payments.models.enums import PaymentStatus, PaymentProvider
+from bot import bot, format_key_message_unified
+from app.repositories.tariff_repository import TariffRepository
+from app.repositories.server_repository import ServerRepository
+from app.repositories.key_repository import KeyRepository
+from app.repositories.user_repository import UserRepository
+from app.repositories.tariff_repository import TariffRepository
+from app.repositories.server_repository import ServerRepository
+from app.repositories.key_repository import KeyRepository
 
-# Load environment variables
-load_dotenv()
 
 # Add parent directory to Python path to import outline module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,11 +40,14 @@ import ssl
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Configuration
-DATABASE_PATH = os.path.join(os.path.dirname(__file__), "../vpn.db")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
-SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key")
+# Configuration (unified)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.settings import settings
+
+DATABASE_PATH = settings.DATABASE_PATH
+ADMIN_USERNAME = settings.ADMIN_USERNAME
+ADMIN_PASSWORD_HASH = settings.ADMIN_PASSWORD_HASH or ""
+SECRET_KEY = settings.SECRET_KEY or "super-secret-key"
 
 router = APIRouter()
 
@@ -164,7 +176,11 @@ def log_admin_action(request: Request, action: str, details: str = ""):
 
 # Authentication helper
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception as e:
+        logging.error(f"Invalid admin password hash format: {e}")
+        return False
 
 # Фильтр для форматирования timestamp
 def timestamp_filter(ts):
@@ -183,6 +199,7 @@ def datetime_local(ts):
 
 async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: dict) -> str:
     """Get monthly traffic for a specific key in GB"""
+    v2ray = None
     try:
         if protocol == 'v2ray':
             # Create V2Ray protocol instance
@@ -257,6 +274,10 @@ async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: d
     except Exception as e:
         logging.error(f"Error getting monthly traffic for key {key_uuid}: {e}")
         return "Error"
+    finally:
+        # Закрываем сессию V2Ray
+        if v2ray:
+            await v2ray.close()
 
 def format_bytes(bytes_value):
     """Format bytes to human readable format"""
@@ -274,7 +295,52 @@ def format_bytes(bytes_value):
 templates.env.filters["timestamp"] = timestamp_filter
 templates.env.filters["my_datetime_local"] = datetime_local
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "../vpn.db")
+# Helper to format amounts (kopecks to RUB with 2 decimals)
+def format_rub(amount_kopecks: int) -> str:
+    try:
+        rub = (int(amount_kopecks) or 0) / 100.0
+        return f"{rub:,.2f} ₽".replace(",", " ")
+    except Exception:
+        return "0.00 ₽"
+templates.env.filters["rub"] = format_rub
+
+# Status text filter (handles enum or plain string)
+def status_text(value):
+    try:
+        if hasattr(value, "value"):
+            return value.value
+        return str(value or "")
+    except Exception:
+        return ""
+templates.env.filters["status_text"] = status_text
+
+DB_PATH = DATABASE_PATH
+
+def _mask_sensitive(obj):
+    try:
+        if isinstance(obj, dict):
+            masked = {}
+            for k, v in obj.items():
+                kl = str(k).lower()
+                if kl in {"email", "phone", "card", "pan", "number"}:
+                    masked[k] = "***"
+                else:
+                    masked[k] = _mask_sensitive(v)
+            return masked
+        if isinstance(obj, list):
+            return [_mask_sensitive(v) for v in obj]
+        return obj
+    except Exception:
+        return obj
+
+def pretty_json(value: str) -> str:
+    try:
+        data = json.loads(value)
+        data = _mask_sensitive(data)
+        return json.dumps(data, ensure_ascii=False, indent=2)
+    except Exception:
+        return value
+templates.env.filters["pretty_json"] = pretty_json
 
 @router.get("/")
 async def root(request: Request):
@@ -325,26 +391,18 @@ async def dashboard(request: Request):
 
     log_admin_action(request, "DASHBOARD_ACCESS")
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
     now = int(time.time())
-    # Подсчитываем активные ключи из обеих таблиц (Outline и V2Ray)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM keys WHERE expiry_at > ?", (now,))
     outline_keys = c.fetchone()[0]
-    
     c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE expiry_at > ?", (now,))
     v2ray_keys = c.fetchone()[0]
-    
     active_keys = outline_keys + v2ray_keys
-
     c.execute("SELECT COUNT(*) FROM tariffs")
     tariff_count = c.fetchone()[0]
-
     c.execute("SELECT COUNT(*) FROM servers")
     server_count = c.fetchone()[0]
-
-    conn.close()
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
@@ -357,11 +415,7 @@ async def dashboard(request: Request):
 async def tariffs_page(request: Request):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, name, duration_sec, price_rub FROM tariffs ORDER BY price_rub ASC")
-    tariffs = c.fetchall()
-    conn.close()
+    tariffs = TariffRepository(DB_PATH).list_tariffs()
     return templates.TemplateResponse("tariffs.html", {
         "request": request, 
         "tariffs": tariffs,
@@ -385,12 +439,7 @@ async def add_tariff(request: Request, name: str = Form(...), duration_sec: int 
         # Validate input
         tariff_data = TariffForm(name=name, duration_sec=duration_sec, price_rub=price_rub)
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("INSERT INTO tariffs (name, duration_sec, traffic_limit_mb, price_rub) VALUES (?, ?, ?, ?)", 
-                  (tariff_data.name, tariff_data.duration_sec, 0, tariff_data.price_rub))
-        conn.commit()
-        conn.close()
+        TariffRepository(DB_PATH).add_tariff(tariff_data.name, tariff_data.duration_sec, tariff_data.price_rub)
         
         log_admin_action(request, "ADD_TARIFF", f"Name: {tariff_data.name}, Duration: {tariff_data.duration_sec}s, Price: {tariff_data.price_rub}₽")
         
@@ -414,19 +463,11 @@ async def delete_tariff(request: Request, tariff_id: int):
         return RedirectResponse("/login")
     
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Get tariff info for logging
-        c.execute("SELECT name FROM tariffs WHERE id = ?", (tariff_id,))
-        tariff = c.fetchone()
-        if tariff:
-            log_admin_action(request, "DELETE_TARIFF", f"ID: {tariff_id}, Name: {tariff[0]}")
-        
-        c.execute("DELETE FROM tariffs WHERE id = ?", (tariff_id,))
-        conn.commit()
-        conn.close()
-        
+        repo = TariffRepository(DB_PATH)
+        t = repo.get_tariff(tariff_id)
+        if t:
+            log_admin_action(request, "DELETE_TARIFF", f"ID: {tariff_id}, Name: {t[1]}")
+        repo.delete_tariff(tariff_id)
         return RedirectResponse(url="/tariffs", status_code=HTTP_303_SEE_OTHER)
     except Exception as e:
         log_admin_action(request, "DELETE_TARIFF_ERROR", f"ID: {tariff_id}, Error: {str(e)}")
@@ -437,11 +478,7 @@ async def edit_tariff_page(request: Request, tariff_id: int):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, name, duration_sec, price_rub FROM tariffs WHERE id = ?", (tariff_id,))
-    tariff = c.fetchone()
-    conn.close()
+    tariff = TariffRepository(DB_PATH).get_tariff(tariff_id)
     
     if not tariff:
         return RedirectResponse(url="/tariffs")
@@ -461,12 +498,7 @@ async def edit_tariff(request: Request, tariff_id: int, name: str = Form(...), d
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE tariffs SET name = ?, duration_sec = ?, price_rub = ? WHERE id = ?", 
-              (name, duration_sec, price_rub, tariff_id))
-    conn.commit()
-    conn.close()
+    TariffRepository(DB_PATH).update_tariff(tariff_id, name, duration_sec, price_rub)
     
     return RedirectResponse(url="/tariffs", status_code=HTTP_303_SEE_OTHER)
 
@@ -474,33 +506,17 @@ async def edit_tariff(request: Request, tariff_id: int, name: str = Form(...), d
 async def servers_page(request: Request):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
-    with sqlite3.connect(DATABASE_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path FROM servers")
-        servers = c.fetchall()
-        
-        # Get issued keys count for each server (both outline and v2ray)
-        server_ids = [s[0] for s in servers]
-        if server_ids:
-            q_marks = ','.join(['?'] * len(server_ids))
-            # Outline keys
-            c.execute(f"SELECT server_id, COUNT(*) FROM keys GROUP BY server_id HAVING server_id IN ({q_marks})", server_ids)
-            outline_key_counts = dict(c.fetchall())
-            
-            # V2Ray keys
-            c.execute(f"SELECT server_id, COUNT(*) FROM v2ray_keys GROUP BY server_id HAVING server_id IN ({q_marks})", server_ids)
-            v2ray_key_counts = dict(c.fetchall())
-        else:
-            outline_key_counts = {}
-            v2ray_key_counts = {}
-        
-        # Combine server info with key count
-        servers_with_counts = []
-        for s in servers:
-            outline_count = outline_key_counts.get(s[0], 0)
-            v2ray_count = v2ray_key_counts.get(s[0], 0)
-            total_count = outline_count + v2ray_count
-            servers_with_counts.append(s + (total_count,))
+    repo = ServerRepository(DATABASE_PATH)
+    servers = repo.list_servers()
+    server_ids = [s[0] for s in servers]
+    outline_key_counts = repo.outline_key_counts(server_ids)
+    v2ray_key_counts = repo.v2ray_key_counts(server_ids)
+    servers_with_counts = []
+    for s in servers:
+        outline_count = outline_key_counts.get(s[0], 0)
+        v2ray_count = v2ray_key_counts.get(s[0], 0)
+        total_count = outline_count + v2ray_count
+        servers_with_counts.append(s + (total_count,))
     
     return templates.TemplateResponse("servers.html", {
         "request": request, 
@@ -534,24 +550,17 @@ async def add_server(request: Request, name: str = Form(...), api_url: str = For
             v2ray_path=v2ray_path
         )
         
-        conn = sqlite3.connect(DATABASE_PATH)
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO servers (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            server_data.name, 
-            server_data.api_url, 
-            server_data.cert_sha256, 
-            server_data.max_keys, 
-            country,
-            server_data.protocol,
-            server_data.domain,
-            server_data.api_key,
-            server_data.v2ray_path
-        ))
-        conn.commit()
-        conn.close()
+        ServerRepository(DATABASE_PATH).add_server(
+            name=server_data.name,
+            api_url=server_data.api_url,
+            cert_sha256=server_data.cert_sha256,
+            max_keys=server_data.max_keys,
+            country=country,
+            protocol=server_data.protocol,
+            domain=server_data.domain,
+            api_key=server_data.api_key,
+            v2ray_path=server_data.v2ray_path,
+        )
         
         log_admin_action(request, "ADD_SERVER", f"Name: {server_data.name}, URL: {server_data.api_url}, Protocol: {server_data.protocol}, Country: {country}")
         
@@ -575,18 +584,11 @@ async def delete_server(request: Request, server_id: int):
         return RedirectResponse("/login")
     
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Get server info for logging
-        c.execute("SELECT name FROM servers WHERE id = ?", (server_id,))
-        server = c.fetchone()
+        repo = ServerRepository(DATABASE_PATH)
+        server = repo.get_server(server_id)
         if server:
-            log_admin_action(request, "DELETE_SERVER", f"ID: {server_id}, Name: {server[0]}")
-        
-        c.execute("DELETE FROM servers WHERE id = ?", (server_id,))
-        conn.commit()
-        conn.close()
+            log_admin_action(request, "DELETE_SERVER", f"ID: {server_id}, Name: {server[1]}")
+        repo.delete_server(server_id)
         
         return RedirectResponse(url="/servers", status_code=HTTP_303_SEE_OTHER)
     except Exception as e:
@@ -598,10 +600,7 @@ async def edit_server_page(request: Request, server_id: int):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
-    with sqlite3.connect(DATABASE_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path FROM servers WHERE id = ?", (server_id,))
-        server = c.fetchone()
+    server = ServerRepository(DATABASE_PATH).get_server(server_id)
     
     if not server:
         return RedirectResponse(url="/servers")
@@ -662,27 +661,19 @@ async def edit_server(request: Request, server_id: int):
             v2ray_path=v2ray_path
         )
         
-        with sqlite3.connect(DATABASE_PATH) as conn:
-            c = conn.cursor()
-            c.execute("""
-                UPDATE servers 
-                SET name = ?, api_url = ?, cert_sha256 = ?, max_keys = ?, active = ?, country = ?, 
-                    protocol = ?, domain = ?, api_key = ?, v2ray_path = ?
-                WHERE id = ?
-            """, (
-                server_data.name, 
-                server_data.api_url, 
-                server_data.cert_sha256, 
-                server_data.max_keys, 
-                active, 
-                country,
-                server_data.protocol,
-                server_data.domain,
-                server_data.api_key,
-                server_data.v2ray_path,
-                server_id
-            ))
-            conn.commit()
+        ServerRepository(DATABASE_PATH).update_server(
+            server_id=server_id,
+            name=server_data.name,
+            api_url=server_data.api_url,
+            cert_sha256=server_data.cert_sha256,
+            max_keys=server_data.max_keys,
+            active=active,
+            country=country,
+            protocol=server_data.protocol,
+            domain=server_data.domain,
+            api_key=server_data.api_key,
+            v2ray_path=server_data.v2ray_path,
+        )
         
         log_admin_action(request, "EDIT_SERVER", f"ID: {server_id}, Name: {server_data.name}, Protocol: {server_data.protocol}")
         
@@ -694,77 +685,84 @@ async def edit_server(request: Request, server_id: int):
     return RedirectResponse(url="/servers", status_code=303)
 
 @router.get("/keys")
-async def keys_page(request: Request):
+async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str | None = None, tariff_id: int | None = None, protocol: str | None = None, server_id: int | None = None, sort_by: str | None = None, sort_order: str | None = None, export: str | None = None):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
 
     # Debug logging
     log_admin_action(request, "KEYS_PAGE_ACCESS", f"DB_PATH: {DB_PATH}")
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # Показываем все ключи (Outline и V2Ray), привязанные к серверам, включая email и тариф
-    # Outline ключи
-    c.execute("""
-        SELECT k.id, k.key_id, k.access_url, k.created_at, k.expiry_at, s.name, k.email, t.name as tariff_name, 'outline' as protocol
-        FROM keys k
-        JOIN servers s ON k.server_id = s.id
-        LEFT JOIN tariffs t ON k.tariff_id = t.id
-    """)
-    outline_keys = c.fetchall()
-    
-    # V2Ray ключи
-    c.execute("""
-        SELECT k.id, k.v2ray_uuid as key_id, 
-               'vless://' || k.v2ray_uuid || '@' || s.domain || ':443?path=' || COALESCE(s.v2ray_path, '/v2ray') || '&security=tls&type=ws#VeilBot-V2Ray' as access_url,
-               k.created_at, k.expiry_at, s.name, k.email, t.name as tariff_name, 'v2ray' as protocol,
-               s.api_url, s.api_key
-        FROM v2ray_keys k
-        JOIN servers s ON k.server_id = s.id
-        LEFT JOIN tariffs t ON k.tariff_id = t.id
-    """)
-    v2ray_keys = c.fetchall()
-    
-    # Объединяем и сортируем по дате создания
-    keys = outline_keys + v2ray_keys
-    keys.sort(key=lambda x: x[3], reverse=True)  # Сортировка по created_at
+    key_repo = KeyRepository(DB_PATH)
+    total = key_repo.count_keys_unified(email=email, tariff_id=tariff_id, protocol=protocol, server_id=server_id)
+    # Force sorting by purchase date (created_at) descending by default
+    sort_by_eff = 'created_at'
+    sort_order_eff = 'DESC'
+    rows = key_repo.list_keys_unified(
+        email=email,
+        tariff_id=tariff_id,
+        protocol=protocol,
+        server_id=server_id,
+        sort_by=sort_by_eff,
+        sort_order=sort_order_eff,
+        limit=limit,
+        offset=(page-1)*limit,
+    )
     
     # Получаем данные о трафике для V2Ray ключей
     keys_with_traffic = []
-    for key in keys:
-        if len(key) > 8 and key[8] == 'v2ray':  # V2Ray ключ
+    for key in rows:
+        if len(key) > 8 and key[8] == 'v2ray':
             try:
-                # Получаем конфигурацию сервера
-                server_config = {
-                    'api_url': key[9] if len(key) > 9 else '',  # api_url
-                    'api_key': key[10] if len(key) > 10 else ''  # api_key
-                }
-                
-                # Получаем трафик за текущий месяц (key[1] - это UUID для V2Ray)
+                # Use api_url and api_key from columns (added in repository)
+                # Columns layout: [..., protocol(8), traffic_limit(9), api_url(10), api_key(11)]
+                api_url = key[10] if len(key) > 10 else ''
+                api_key = key[11] if len(key) > 11 else ''
+                server_config = {'api_url': api_url or '', 'api_key': api_key or ''}
                 monthly_traffic = await get_key_monthly_traffic(key[1], 'v2ray', server_config)
-                
-                # Добавляем трафик к ключу
                 key_with_traffic = list(key) + [monthly_traffic]
                 keys_with_traffic.append(key_with_traffic)
             except Exception as e:
                 logging.error(f"Error getting traffic for V2Ray key {key[1]}: {e}")
                 key_with_traffic = list(key) + ["Error"]
                 keys_with_traffic.append(key_with_traffic)
-        else:  # Outline ключ
+        else:
             key_with_traffic = list(key) + ["N/A"]
             keys_with_traffic.append(key_with_traffic)
     
-    # Debug logging
-    keys_with_email = [k for k in keys_with_traffic if k[6]]
-    log_admin_action(request, "KEYS_QUERY_RESULT", f"Total keys: {len(keys_with_traffic)}, Keys with email: {len(keys_with_email)}")
-    
-    conn.close()
+    log_admin_action(request, "KEYS_QUERY_RESULT", f"Total keys: {len(keys_with_traffic)}")
+
+    # CSV Export
+    if export and str(export).lower() in ("csv", "true", "1"):
+        try:
+            import csv
+            from io import StringIO
+            now_ts = int(time.time())
+            buffer = StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(["id","protocol","key","tariff","email","server","created_at","expiry_at","status","traffic"])
+            for k in keys_with_traffic:
+                status = "active" if (k[4] and int(k[4]) > now_ts) else "expired"
+                writer.writerow([
+                    k[0], k[8], k[2], k[7] or '', k[6] or '', k[5] or '',
+                    int(k[3] or 0), int(k[4] or 0), status, (k[-1] if len(k) else '')
+                ])
+            content = buffer.getvalue()
+            return Response(content, media_type="text/csv", headers={
+                "Content-Disposition": "attachment; filename=keys_export.csv"
+            })
+        except Exception as e:
+            logging.error(f"CSV export error: {e}")
 
     return templates.TemplateResponse("keys.html", {
         "request": request, 
         "keys": keys_with_traffic,
-        "current_time": int(time.time())
+        "current_time": int(time.time()),
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "filters": {"email": email or '', "tariff_id": tariff_id or '', "protocol": protocol or '', "server_id": server_id or ''},
+        "sort": {"by": sort_by_eff, "order": sort_order_eff},
+        "csrf_token": get_csrf_token(request),
     })
 
 @router.get("/keys/delete/{key_id}")
@@ -772,19 +770,15 @@ async def delete_key_route(request: Request, key_id: int):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/login")
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Сначала проверяем, есть ли ключ в таблице keys (Outline)
-    c.execute("SELECT user_id, key_id, server_id FROM keys WHERE id = ?", (key_id,))
-    outline_key = c.fetchone()
-    
+    key_repo = KeyRepository(DB_PATH)
+
+    # Сначала как Outline
+    outline_key = key_repo.get_outline_key_brief(key_id)
     if outline_key:
-        # Это Outline ключ
         user_id, outline_key_id, server_id = outline_key
-        
-        # Удаляем из Outline сервера
         if outline_key_id and server_id:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
             c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
             server = c.fetchone()
             if server:
@@ -797,11 +791,9 @@ async def delete_key_route(request: Request, key_id: int):
                         log_admin_action(request, "OUTLINE_DELETE_FAILED", f"Failed to delete key {outline_key_id} from server - function returned False")
                 except Exception as e:
                     log_admin_action(request, "OUTLINE_DELETE_ERROR", f"Failed to delete key {outline_key_id}: {str(e)}")
-        
-        # Удаляем из базы данных
-        c.execute("DELETE FROM keys WHERE id = ?", (key_id,))
-        
-        # Проверяем, остались ли у пользователя ещё активные ключи
+        key_repo.delete_outline_key_by_id(key_id)
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
         if user_id:
             c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
             outline_count = c.fetchone()[0]
@@ -809,23 +801,19 @@ async def delete_key_route(request: Request, key_id: int):
             v2ray_count = c.fetchone()[0]
             if outline_count == 0 and v2ray_count == 0:
                 c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
-    
-    else:
-        # Проверяем V2Ray ключи
-        c.execute("SELECT user_id, v2ray_uuid, server_id FROM v2ray_keys WHERE id = ?", (key_id,))
-        v2ray_key = c.fetchone()
-        
-        if v2ray_key:
-            # Это V2Ray ключ
-            user_id, v2ray_uuid, server_id = v2ray_key
-            
-            # Удаляем из V2Ray сервера
-            if v2ray_uuid and server_id:
+        return RedirectResponse("/keys", status_code=303)
+
+    # Затем V2Ray
+    v2ray_key = key_repo.get_v2ray_key_brief(key_id)
+    if v2ray_key:
+        user_id, v2ray_uuid, server_id = v2ray_key
+        if v2ray_uuid and server_id:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
                 c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
                 server = c.fetchone()
                 if server:
                     try:
-                        # Импортируем V2RayProtocol для удаления пользователя
                         from vpn_protocols import V2RayProtocol
                         log_admin_action(request, "V2RAY_DELETE_ATTEMPT", f"Attempting to delete user {v2ray_uuid} from server {server[0]}")
                         protocol_client = V2RayProtocol(server[0], server[1])
@@ -836,11 +824,9 @@ async def delete_key_route(request: Request, key_id: int):
                             log_admin_action(request, "V2RAY_DELETE_FAILED", f"Failed to delete user {v2ray_uuid} from server - function returned False")
                     except Exception as e:
                         log_admin_action(request, "V2RAY_DELETE_ERROR", f"Failed to delete user {v2ray_uuid}: {str(e)}")
-            
-            # Удаляем из базы данных
-            c.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_id,))
-            
-            # Проверяем, остались ли у пользователя ещё активные ключи
+        key_repo.delete_v2ray_key_by_id(key_id)
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
             if user_id:
                 c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
                 outline_count = c.fetchone()[0]
@@ -848,9 +834,7 @@ async def delete_key_route(request: Request, key_id: int):
                 v2ray_count = c.fetchone()[0]
                 if outline_count == 0 and v2ray_count == 0:
                     c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
-    
-    conn.commit()
-    conn.close()
+        return RedirectResponse("/keys", status_code=303)
 
     return RedirectResponse("/keys", status_code=303)
 
@@ -884,18 +868,10 @@ async def cleanup(request: Request, csrf_token: str = Form(...)):
     log_admin_action(request, "CLEANUP_STARTED")
     
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
+        key_repo = KeyRepository(DB_PATH)
         now = int(time.time())
-        
-        # Get expired Outline keys
-        c.execute("SELECT id, key_id, server_id FROM keys WHERE expiry_at <= ?", (now,))
-        expired_outline_keys = c.fetchall()
-        
-        # Get expired V2Ray keys
-        c.execute("SELECT id, v2ray_uuid, server_id FROM v2ray_keys WHERE expiry_at <= ?", (now,))
-        expired_v2ray_keys = c.fetchall()
+        expired_outline_keys = key_repo.get_expired_outline_keys(now)
+        expired_v2ray_keys = key_repo.get_expired_v2ray_keys(now)
         
         deleted_count = 0
         deleted_from_outline = 0
@@ -905,8 +881,9 @@ async def cleanup(request: Request, csrf_token: str = Form(...)):
         # Process expired Outline keys
         for key_id, outline_key_id, server_id in expired_outline_keys:
             try:
-                # Delete from Outline server if key exists
                 if outline_key_id and server_id:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        c = conn.cursor()
                     c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
                     server = c.fetchone()
                     if server:
@@ -915,9 +892,7 @@ async def cleanup(request: Request, csrf_token: str = Form(...)):
                             deleted_from_outline += 1
                         except Exception as e:
                             errors.append(f"Failed to delete key {outline_key_id} from Outline: {str(e)}")
-                
-                # Delete from database
-                c.execute("DELETE FROM keys WHERE id = ?", (key_id,))
+                key_repo.delete_outline_key_by_id(key_id)
                 deleted_count += 1
                 
             except Exception as e:
@@ -926,22 +901,20 @@ async def cleanup(request: Request, csrf_token: str = Form(...)):
         # Process expired V2Ray keys
         for key_id, v2ray_uuid, server_id in expired_v2ray_keys:
             try:
-                # Delete from V2Ray server if key exists
                 if v2ray_uuid and server_id:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        c = conn.cursor()
                     c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
                     server = c.fetchone()
                     if server:
                         try:
-                            # Импортируем V2RayProtocol для удаления пользователя
                             from vpn_protocols import V2RayProtocol
                             protocol_client = V2RayProtocol(server[0], server[1])
                             await protocol_client.delete_user(v2ray_uuid)
                             deleted_from_v2ray += 1
                         except Exception as e:
                             errors.append(f"Failed to delete V2Ray user {v2ray_uuid}: {str(e)}")
-                
-                # Delete from database
-                c.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_id,))
+                key_repo.delete_v2ray_key_by_id(key_id)
                 deleted_count += 1
                 
             except Exception as e:
@@ -971,24 +944,139 @@ async def cleanup(request: Request, csrf_token: str = Form(...)):
         })
 
 @router.get("/users", response_class=HTMLResponse)
-async def users_page(request: Request):
+async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | None = None):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
-    with sqlite3.connect(DATABASE_PATH) as conn:
-        c = conn.cursor()
-        # Получаем всех пользователей, которые когда-либо получали ключ
-        c.execute("SELECT DISTINCT user_id FROM keys ORDER BY user_id")
-        users = c.fetchall()
-        user_list = []
-        for (user_id,) in users:
-            # Считаем число рефералов для каждого пользователя
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
-            referral_count = c.fetchone()[0]
-            user_list.append({"user_id": user_id, "referral_count": referral_count})
+    repo = UserRepository(DATABASE_PATH)
+    offset = (max(page, 1) - 1) * limit
+    total = repo.count_users(query=q)
+    rows = repo.list_users(query=q, limit=limit, offset=offset)
+    user_list = [{"user_id": uid, "referral_count": ref_cnt} for (uid, ref_cnt) in rows]
     return templates.TemplateResponse("users.html", {
         "request": request,
-        "users": user_list
+        "users": user_list,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "q": q or "",
     })
+
+@router.get("/users/{user_id}", response_class=HTMLResponse)
+async def user_detail_page(request: Request, user_id: int, page: int = 1, limit: int = 50):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login")
+    repo = UserRepository(DATABASE_PATH)
+    overview = repo.get_user_overview(user_id)
+    total = repo.count_user_keys(user_id)
+    rows = repo.list_user_keys(user_id, limit=limit, offset=(max(page,1)-1)*limit)
+    keys = []
+    for k in rows:
+        keys.append(list(k) + ["N/A"])  # traffic placeholder
+    # Payments list (latest 100)
+    pay_repo = PaymentRepository(DB_PATH)
+    from payments.models.payment import PaymentFilter
+    payments = await pay_repo.filter(PaymentFilter(user_id=user_id, limit=100, offset=0), sort_by="created_at", sort_order="DESC")
+    return templates.TemplateResponse("user_detail.html", {
+        "request": request,
+        "user": overview,
+        "keys": keys,
+        "payments": payments,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "csrf_token": get_csrf_token(request),
+        "current_time": int(time.time()),
+    })
+
+@router.post("/users/keys/{key_id}/resend")
+async def resend_key_message(request: Request, key_id: int, csrf_token: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login")
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+
+    user_id = None
+    access_url = None
+    protocol = None
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT user_id, access_url FROM keys WHERE id = ?", (key_id,))
+            row = c.fetchone()
+            if row:
+                user_id = row[0]
+                access_url = row[1]
+                protocol = 'outline'
+            else:
+                c.execute("SELECT user_id, v2ray_uuid, server_id FROM v2ray_keys WHERE id = ?", (key_id,))
+                r = c.fetchone()
+                if r:
+                    user_id = r[0]
+                    v2_uuid = r[1]
+                    server_id = r[2]
+                    c.execute("SELECT domain, COALESCE(v2ray_path,'/v2ray') FROM servers WHERE id = ?", (server_id,))
+                    s = c.fetchone()
+                    domain = s[0] if s else ''
+                    v2path = s[1] if s else '/v2ray'
+                    access_url = f"vless://{v2_uuid}@{domain}:443?path={v2path}&security=tls&type=ws#VeilBot-V2Ray"
+                    protocol = 'v2ray'
+
+        if user_id and access_url and protocol:
+            try:
+                await bot.send_message(user_id, format_key_message_unified(access_url, protocol), disable_web_page_preview=True, parse_mode="Markdown")
+                return JSONResponse({"success": True, "user_id": user_id})
+            except Exception as e:
+                return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"success": False, "error": "Key not found"}, status_code=404)
+    finally:
+        if user_id:
+            # Redirect back to user page in browsers
+            try:
+                return RedirectResponse(url=f"/users/{user_id}", status_code=303)
+            except Exception:
+                pass
+
+@router.post("/users/keys/{key_id}/extend")
+async def extend_key_days(request: Request, key_id: int, days: int = Form(30), csrf_token: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login")
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+
+    kr = KeyRepository(DB_PATH)
+    user_id = None
+    try:
+        now_ts = int(time.time())
+        extend_sec = max(1, int(days)) * 86400
+
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            # Outline first
+            c.execute("SELECT user_id, expiry_at FROM keys WHERE id = ?", (key_id,))
+            row = c.fetchone()
+            if row:
+                user_id = row[0]
+                cur_exp = int(row[1] or 0)
+                base = cur_exp if cur_exp > now_ts else now_ts
+                new_exp = base + extend_sec
+                kr.update_outline_key_expiry(key_id, new_exp)
+            else:
+                c.execute("SELECT user_id, expiry_at FROM v2ray_keys WHERE id = ?", (key_id,))
+                r = c.fetchone()
+                if r:
+                    user_id = r[0]
+                    cur_exp = int(r[1] or 0)
+                    base = cur_exp if cur_exp > now_ts else now_ts
+                    new_exp = base + extend_sec
+                    kr.update_v2ray_key_expiry(key_id, new_exp)
+                else:
+                    return JSONResponse({"error": "Key not found"}, status_code=404)
+
+        if user_id:
+            return RedirectResponse(url=f"/users/{user_id}", status_code=303)
+        return JSONResponse({"success": True})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 @router.post("/api/keys/{key_id}/expiry")
 async def api_update_key_expiry(request: Request, key_id: int):
@@ -1002,49 +1090,512 @@ async def api_update_key_expiry(request: Request, key_id: int):
     except Exception:
         return JSONResponse({"error": "Некорректный формат даты"}, status_code=400)
     
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        
-        # Сначала проверяем, есть ли ключ в таблице keys (Outline)
-        c.execute("SELECT COUNT(*) FROM keys WHERE id = ?", (key_id,))
-        outline_exists = c.fetchone()[0] > 0
-        
-        if outline_exists:
-            # Обновляем Outline ключ
-            c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_id))
-        else:
-            # Проверяем V2Ray ключи
-            c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE id = ?", (key_id,))
-            v2ray_exists = c.fetchone()[0] > 0
-            
-            if v2ray_exists:
-                # Обновляем V2Ray ключ
-                c.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_id))
-            else:
-                return JSONResponse({"error": "Ключ не найден"}, status_code=404)
-        
-        conn.commit()
+    key_repo = KeyRepository(DB_PATH)
+    if key_repo.outline_key_exists(key_id):
+        key_repo.update_outline_key_expiry(key_id, new_expiry_ts)
+    elif key_repo.v2ray_key_exists(key_id):
+        key_repo.update_v2ray_key_expiry(key_id, new_expiry_ts)
+    else:
+        return JSONResponse({"error": "Ключ не найден"}, status_code=404)
     
     return JSONResponse({"success": True})
 
 @router.post("/yookassa/webhook")
 async def yookassa_webhook(request: Request):
     body = await request.body()
+    client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
+        request.client.host if request.client else ""
+    )
+    status_code = 200
     try:
         data = json.loads(body)
-        payment_id = data["object"]["id"]
-        status_ = data["object"].get("status")
-        if status_ == "succeeded":
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
+        event = data.get("event") or data.get("object", {}).get("status") or ""
+        service = get_webhook_service()
+        processed = await service.handle_yookassa_webhook(data)
+
+        # Persist webhook log (best-effort)
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS webhook_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        provider TEXT,
+                        event TEXT,
+                        payload TEXT,
+                        result TEXT,
+                        status_code INTEGER,
+                        ip TEXT,
+                        created_at INTEGER
+                    )
+                    """
+                )
+                c.execute(
+                    "INSERT INTO webhook_logs(provider, event, payload, result, status_code, ip, created_at) VALUES(?,?,?,?,?,?, strftime('%s','now'))",
+                    ("yookassa", str(event), json.dumps(data, ensure_ascii=False), "ok" if processed else "error", 200 if processed else 400, client_ip),
+                )
             conn.commit()
-            conn.close()
-            logging.info(f"[YOOKASSA_WEBHOOK] Payment {payment_id} marked as paid via webhook.")
-        return JSONResponse({"status": "ok"})
+        except Exception as le:
+            logging.error(f"[YOOKASSA_WEBHOOK] Log persist failed: {le}")
+
+        if processed:
+            return JSONResponse({"status": "ok"})
+        status_code = 400
+        return JSONResponse({"status": "error", "processed": False}, status_code=400)
     except Exception as e:
+        status_code = 500
         logging.error(f"[YOOKASSA_WEBHOOK] Error: {e}")
+        # Try to log even on parse error
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS webhook_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, event TEXT, payload TEXT, result TEXT, status_code INTEGER, ip TEXT, created_at INTEGER)"
+                )
+                c.execute(
+                    "INSERT INTO webhook_logs(provider, event, payload, result, status_code, ip, created_at) VALUES(?,?,?,?,?,?, strftime('%s','now'))",
+                    ("yookassa", "parse_error", body.decode(errors='ignore')[:2000], "error", 500, client_ip),
+                )
+                conn.commit()
+        except Exception:
+            pass
         return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
 
 
 
+
+@router.get("/payments", response_class=HTMLResponse)
+async def payments_page(
+    request: Request,
+    page: int = 1,
+    limit: int = 50,
+    sort_by: str | None = None,
+    sort_order: str | None = None,
+    preset: str | None = None,
+    status: str | None = None,
+    user_id: int | None = None,
+    tariff_id: int | None = None,
+    provider: str | None = None,
+    protocol: str | None = None,
+    country: str | None = None,
+    payment_id: str | None = None,
+    email: str | None = None,
+    created_after: str | None = None,   # YYYY-MM-DD
+    created_before: str | None = None,  # YYYY-MM-DD
+):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login")
+
+    repo = PaymentRepository(DB_PATH)
+
+    # If payment_id provided, shortcut to single payment
+    single_payment = None
+    if payment_id:
+        single_payment = await repo.get_by_payment_id(payment_id)
+
+    payments = []
+    total = 0
+
+    if single_payment is not None:
+        payments = [single_payment]
+        total = 1
+    else:
+        # Build filter
+        parsed_status = None
+        if status:
+            try:
+                parsed_status = PaymentStatus(status)
+            except Exception:
+                parsed_status = None
+
+        parsed_provider = None
+        if provider:
+            try:
+                parsed_provider = PaymentProvider(provider)
+            except Exception:
+                parsed_provider = None
+
+        ca_dt = None
+        cb_dt = None
+        try:
+            if created_after:
+                ca_dt = datetime.strptime(created_after, "%Y-%m-%d")
+            if created_before:
+                # include whole day end
+                cb = datetime.strptime(created_before, "%Y-%m-%d")
+                cb_dt = cb.replace(hour=23, minute=59, second=59)
+        except Exception:
+            ca_dt = None
+            cb_dt = None
+
+        filter_obj = PaymentFilter(
+            user_id=user_id,
+            tariff_id=tariff_id,
+            status=parsed_status,
+            provider=parsed_provider,
+            country=country,
+            protocol=protocol,
+            limit=limit,
+            offset=(page - 1) * limit,
+            created_after=ca_dt,
+            created_before=cb_dt,
+        )
+
+        # Presets
+        if preset == 'paid_no_keys':
+            # Используем хелпер репозитория
+            payments = await repo.get_paid_payments_without_keys()
+            total = len(payments)
+        else:
+            # errors preset → не оплаченные и не ожидающие
+            if preset == 'errors':
+                filter_obj.is_paid = False
+                filter_obj.is_pending = False
+            if preset == 'pending':
+                filter_obj.is_pending = True
+            payments = await repo.filter(filter_obj, sort_by=sort_by or "created_at", sort_order=sort_order or "DESC")
+            total = await repo.count_filtered(filter_obj)
+
+        # optional email filter in-memory
+        if email:
+            payments = [p for p in payments if (p.email or "").lower() == email.lower()]
+
+    # quick stats for header
+    paid_count = len([p for p in payments if (getattr(p, 'status', None) and str(p.status) == 'paid') or (hasattr(p, 'is_paid') and p.is_paid())])
+    pending_count = len([p for p in payments if (getattr(p, 'status', None) and str(p.status) == 'pending') or (hasattr(p, 'is_pending') and p.is_pending())])
+    failed_count = len([p for p in payments if (getattr(p, 'status', None) and str(p.status) in ['failed','cancelled','expired']) or (hasattr(p, 'is_failed') and p.is_failed())])
+
+    # Stats for charts (last 14 days)
+    daily_stats = []
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT date(created_at,'unixepoch') AS d,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN status='paid' THEN 1 ELSE 0 END) AS paid_count,
+                       SUM(CASE WHEN status='paid' THEN amount ELSE 0 END) AS paid_amount
+                FROM payments
+                WHERE created_at >= strftime('%s','now','-14 days')
+                GROUP BY d
+                ORDER BY d ASC
+                """
+            )
+            for d, total_c, paid_c, paid_amt in c.fetchall():
+                daily_stats.append({"date": d, "total": total_c or 0, "paid": paid_c or 0, "amount": (paid_amt or 0) / 100.0})
+    except Exception:
+        daily_stats = []
+
+    return templates.TemplateResponse(
+        "payments.html",
+        {
+            "request": request,
+            "payments": payments,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "sort": {"by": (sort_by or "created_at"), "order": (sort_order or "DESC")},
+            "preset": preset or "",
+            "daily_stats": daily_stats,
+            "paid_count": paid_count,
+            "pending_count": pending_count,
+            "failed_count": failed_count,
+            "filters": {
+                "status": status or "",
+                "user_id": user_id or "",
+                "tariff_id": tariff_id or "",
+                "provider": provider or "",
+                "protocol": protocol or "",
+                "country": country or "",
+                "payment_id": payment_id or "",
+                "email": email or "",
+                "created_after": created_after or "",
+                "created_before": created_before or "",
+            },
+            "csrf_token": get_csrf_token(request),
+        },
+    )
+
+
+@router.get("/payments/{pid}", response_class=HTMLResponse)
+async def payment_detail(request: Request, pid: str):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login")
+
+    repo = PaymentRepository(DB_PATH)
+    payment = None
+    # Try numeric id first
+    try:
+        payment = await repo.get_by_id(int(pid))
+    except Exception:
+        payment = None
+    if payment is None:
+        payment = await repo.get_by_payment_id(pid)
+
+    if not payment:
+        return templates.TemplateResponse(
+            "payment_detail.html",
+            {"request": request, "error": "Платеж не найден"},
+        )
+
+    # Try to get provider raw info
+    provider_info = None
+    try:
+        ps = get_payment_service()
+        provider_info = await ps.yookassa_service.get_payment_info(payment.payment_id)
+    except Exception:
+        provider_info = None
+
+    return templates.TemplateResponse(
+        "payment_detail.html",
+        {
+            "request": request,
+            "payment": payment,
+            "provider_info": provider_info,
+            "csrf_token": get_csrf_token(request),
+        },
+    )
+
+
+@router.post("/payments/reconcile")
+async def payments_reconcile(request: Request, csrf_token: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Not authorized"}, status_code=403)
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+
+    ps = get_payment_service()
+    try:
+        pending_processed = await ps.process_pending_payments()
+        issued_processed = await ps.process_paid_payments_without_keys()
+
+        # Аудит в админ-лог
+        try:
+            log_admin_action(
+                request,
+                "RECONCILE_RUN",
+                f"pending={pending_processed}, issued={issued_processed}"
+            )
+        except Exception:
+            pass
+
+        # Уведомление администратору в Telegram
+        try:
+            admin_id = settings.ADMIN_ID if hasattr(settings, 'ADMIN_ID') else None
+            if admin_id:
+                msg = (
+                    f"🧾 Реконсиляция выполнена\n"
+                    f"• Pending обработано: {pending_processed}\n"
+                    f"• Выдано ключей: {issued_processed}\n"
+                )
+                await bot.send_message(admin_id, msg)
+        except Exception:
+            pass
+
+        return JSONResponse({
+            "success": True,
+            "pending_processed": pending_processed,
+            "issued_processed": issued_processed
+        })
+    except Exception as e:
+        logging.error(f"Reconciliation error: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+@router.post("/payments/{pid}/recheck")
+async def payment_recheck(request: Request, pid: str, csrf_token: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/login")
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+
+    ps = get_payment_service()
+    try:
+        # Try to process as success (will validate with provider)
+        success = await ps.process_payment_success(pid)
+        info = await ps.yookassa_service.get_payment_info(pid)
+        return JSONResponse({"success": success, "info": info or {}})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.post("/payments/{pid}/refund")
+async def payment_refund(
+    request: Request,
+    pid: str,
+    amount: int | None = Form(None),
+    reason: str = Form("Возврат"),
+    csrf_token: str = Form(...),
+):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/login")
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+
+    repo = PaymentRepository(DB_PATH)
+    payment = await repo.get_by_payment_id(pid)
+    if not payment:
+        return JSONResponse({"error": "Платеж не найден"}, status_code=404)
+
+    refund_amount = amount if amount is not None else int(payment.amount)
+
+    ps = get_payment_service()
+    ok = await ps.refund_payment(pid, refund_amount, reason)
+    return JSONResponse({"success": ok})
+
+
+@router.post("/payments/{pid}/retry")
+async def payment_retry(request: Request, pid: str, csrf_token: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/login")
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+
+    ps = get_payment_service()
+    try:
+        # For now retry means re-running success flow
+        success = await ps.process_payment_success(pid)
+        return JSONResponse({"success": success})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/webhooks", response_class=HTMLResponse)
+async def webhook_logs_page(request: Request, page: int = 1, limit: int = 50, provider: str | None = None, event: str | None = None, payment_id: str | None = None, sort_by: str | None = None, sort_order: str | None = None):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/login")
+
+    offset = (max(page, 1) - 1) * limit
+    where = []
+    params = []
+    if provider:
+        where.append("provider = ?")
+        params.append(provider)
+    if event:
+        where.append("event = ?")
+        params.append(event)
+    if payment_id:
+        where.append("payload LIKE ?")
+        params.append(f"%{payment_id}%")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    # Sorting whitelist
+    sort_columns = {"created_at": "created_at", "status_code": "status_code", "event": "event"}
+    order_col = sort_columns.get((sort_by or "created_at").lower(), "created_at")
+    order_dir = "ASC" if (str(sort_order).upper() == "ASC") else "DESC"
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute(f"SELECT COUNT(*) FROM webhook_logs {where_sql}", params)
+        total = c.fetchone()[0] or 0
+        params_page = params + [limit, offset]
+        c.execute(
+            f"SELECT id, provider, event, payload, result, status_code, ip, created_at FROM webhook_logs {where_sql} ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?",
+            params_page,
+        )
+        rows = c.fetchall()
+
+    logs = [
+        {
+            "id": r[0],
+            "provider": r[1],
+            "event": r[2],
+            "payload": r[3],
+            "result": r[4],
+            "status_code": r[5],
+            "ip": r[6],
+            "ts": r[7],
+        }
+        for r in rows
+    ]
+
+    status_msg = request.query_params.get("status") if hasattr(request, 'query_params') else ""
+    return templates.TemplateResponse(
+        "webhooks.html",
+        {
+            "request": request,
+            "logs": logs,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "filters": {"provider": provider or "", "event": event or ""},
+            "sort": {"by": (sort_by or "created_at"), "order": (sort_order or "DESC")},
+            "payment_id": payment_id or "",
+            "csrf_token": get_csrf_token(request),
+            "status": status_msg or "",
+        },
+    )
+
+@router.post("/webhooks/{log_id}/replay")
+async def replay_webhook(request: Request, log_id: int, csrf_token: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/login")
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT provider, payload FROM webhook_logs WHERE id = ?", (log_id,))
+            row = c.fetchone()
+        if not row:
+            return JSONResponse({"error": "Log not found"}, status_code=404)
+        provider, payload = row
+        try:
+            data = json.loads(payload)
+        except Exception:
+            return JSONResponse({"error": "Invalid payload JSON"}, status_code=400)
+        # Idempotency: if same provider+payload was already processed OK (not a replay), skip
+        already_ok = 0
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT COUNT(1) FROM webhook_logs WHERE provider = ? AND payload = ? AND result = 'ok' AND event != 'replay'",
+                (provider or "", payload),
+            )
+            r = c.fetchone()
+            already_ok = int(r[0] or 0)
+        service = get_webhook_service()
+        ok = False
+        status_code = 200
+        try:
+            if already_ok:
+                ok = True
+                status_code = 200
+            elif (provider or "").lower() == "yookassa":
+                ok = await service.handle_yookassa_webhook(data)
+                status_code = 200 if ok else 400
+            else:
+                status_code = 400
+        finally:
+            # best-effort: log replay result as a new row
+            try:
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    c.execute(
+                        "INSERT INTO webhook_logs(provider, event, payload, result, status_code, ip, created_at) VALUES(?,?,?,?,?,?, strftime('%s','now'))",
+                        (provider or "", "replay", json.dumps(data, ensure_ascii=False), "ok" if ok else "error", status_code, "admin-replay"),
+                    )
+                    conn.commit()
+            except Exception:
+                pass
+        log_admin_action(request, "WEBHOOK_REPLAY", f"id={log_id}, provider={provider}, ok={ok}")
+        return RedirectResponse(url=f"/webhooks?status={'ok' if ok else 'error'}", status_code=303)
+    except Exception as e:
+        logging.error(f"Replay webhook error: {e}")
+        return RedirectResponse(url=f"/webhooks?status=error", status_code=303)
+
+
+@router.post("/payments/{pid}/issue")
+async def payment_issue(request: Request, pid: str, csrf_token: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Not authorized"}, status_code=403)
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+
+    ps = get_payment_service()
+    try:
+        ok = await ps.issue_key_for_payment(pid)
+        return JSONResponse({"success": ok})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)

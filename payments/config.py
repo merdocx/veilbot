@@ -41,13 +41,27 @@ class PaymentConfig:
     
     @classmethod
     def from_env(cls) -> 'PaymentConfig':
-        """Создание конфигурации из переменных окружения"""
+        """Создание конфигурации из окружения с fallback на app.settings.
+
+        Значения из переменных окружения имеют приоритет перед app.settings.
+        """
+        try:
+            from app.settings import settings
+        except Exception:
+            settings = None  # type: ignore
+
+        def env_or(default_key: str, settings_value: str | None, default_fallback: str = '') -> str:
+            val = os.getenv(default_key)
+            if val is not None:
+                return val
+            return settings_value or default_fallback if settings is not None else default_fallback
+
         return cls(
-            yookassa_shop_id=os.getenv('YOOKASSA_SHOP_ID', ''),
-            yookassa_api_key=os.getenv('YOOKASSA_API_KEY', ''),
-            yookassa_return_url=os.getenv('YOOKASSA_RETURN_URL', ''),
+            yookassa_shop_id=env_or('YOOKASSA_SHOP_ID', getattr(settings, 'YOOKASSA_SHOP_ID', None), ''),
+            yookassa_api_key=env_or('YOOKASSA_API_KEY', getattr(settings, 'YOOKASSA_API_KEY', None), ''),
+            yookassa_return_url=env_or('YOOKASSA_RETURN_URL', getattr(settings, 'YOOKASSA_RETURN_URL', None), ''),
             yookassa_test_mode=os.getenv('YOOKASSA_TEST_MODE', 'false').lower() == 'true',
-            database_path=os.getenv('DATABASE_PATH', 'vpn.db'),
+            database_path=os.getenv('DATABASE_PATH', getattr(settings, 'DATABASE_PATH', 'vpn.db')),
             log_level=os.getenv('PAYMENT_LOG_LEVEL', 'INFO'),
             default_currency=os.getenv('PAYMENT_DEFAULT_CURRENCY', 'RUB'),
             default_provider=os.getenv('PAYMENT_DEFAULT_PROVIDER', 'yookassa'),
@@ -120,9 +134,7 @@ class PaymentServiceFactory:
         if self._payment_repo is None:
             from .repositories.payment_repository import PaymentRepository
             
-            self._payment_repo = PaymentRepository(
-                db_path=self.config.database_path
-            )
+            self._payment_repo = PaymentRepository(db_path=self.config.database_path)
         
         return self._payment_repo
     
@@ -150,7 +162,8 @@ class PaymentServiceFactory:
         
         return WebhookService(
             payment_repo=payment_repo,
-            payment_service=payment_service
+            payment_service=payment_service,
+            webhook_secret=self.config.webhook_secret or None
         )
 
 

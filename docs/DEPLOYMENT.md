@@ -165,6 +165,8 @@ crontab -e
 curl -I https://veil-bot.ru
 ```
 
+Примечание: скрипт `setup_security.py`, упомянутый выше, отсутствует в репозитории. Инициализацию безопасности выполняйте вручную согласно `admin/config.py` (генерация `SECRET_KEY`, `ADMIN_PASSWORD_HASH`) и `docs/SECURITY.md`.
+
 ### 4. Тест бота
 Отправьте команду `/start` вашему боту в Telegram.
 

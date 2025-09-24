@@ -6,10 +6,18 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from admin_routes import router as admin_router
 import os
 import logging
 import secrets
+import sys
+
+# Ensure project root on sys.path BEFORE importing top-level packages
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.logging_config import setup_logging
+from app.settings import settings
+from admin.admin_routes import router as admin_router
+from dotenv import load_dotenv
 
 # Setup logging
 logging.basicConfig(
@@ -20,16 +28,34 @@ logging.basicConfig(
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-app = FastAPI(title="VeilBot Admin", version="1.0.0")
+app = FastAPI(title="VeilBot Admin", version="1.0.1")
+
+# Logging setup
+setup_logging("INFO")
+
+# Load environment from project root .env explicitly (systemd cwd is admin/)
+try:
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    load_dotenv(os.path.join(project_root, ".env"))
+except Exception:
+    pass
+
+# Validate configuration at startup (log-only, do not crash admin UI)
+startup_validation = settings.validate_startup()
+for err in startup_validation["errors"]:
+    logging.error(f"Config error: {err}")
+for warn in startup_validation["warnings"]:
+    logging.warning(f"Config warning: {warn}")
 
 # Rate limiting
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
-# CORS middleware
+# CORS middleware (locked down)
+allowed_origins = settings.ADMIN_ALLOWED_ORIGINS or []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this properly for production
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
@@ -45,18 +71,20 @@ async def add_security_headers(request: Request, call_next):
         "X-XSS-Protection": "1; mode=block",
         "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
         "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=()"
     }
     for header, value in security_headers.items():
         response.headers[header] = value
     return response
 
 # Session middleware with secure configuration
-SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+SECRET_KEY = settings.SECRET_KEY or secrets.token_urlsafe(32)
 app.add_middleware(
-    SessionMiddleware, 
+    SessionMiddleware,
     secret_key=SECRET_KEY,
     max_age=3600,  # 1 hour
-    same_site="lax"
+    same_site="strict",
+    https_only=settings.SESSION_SECURE,
 )
 
 # Static files

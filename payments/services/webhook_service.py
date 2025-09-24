@@ -2,6 +2,7 @@ import json
 import logging
 from typing import Dict, Any, Optional
 from fastapi import Request, HTTPException
+from yookassa.domain.common import SecurityHelper
 
 from ..repositories.payment_repository import PaymentRepository
 from ..services.payment_service import PaymentService
@@ -16,10 +17,12 @@ class WebhookService:
     def __init__(
         self,
         payment_repo: PaymentRepository,
-        payment_service: PaymentService
+        payment_service: PaymentService,
+        webhook_secret: Optional[str] = None
     ):
         self.payment_repo = payment_repo
         self.payment_service = payment_service
+        self.webhook_secret = webhook_secret
     
     async def handle_yookassa_webhook(self, data: Dict[str, Any]) -> bool:
         """
@@ -138,6 +141,27 @@ class WebhookService:
         try:
             # Получаем тело запроса
             body = await request.body()
+
+            # Безопасность: проверка источника ЮKassa
+            if provider.lower() == "yookassa":
+                client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
+                    request.client.host if request.client else ""
+                )
+                ip_trusted = False
+                try:
+                    ip_trusted = SecurityHelper().is_ip_trusted(client_ip)
+                except Exception:
+                    ip_trusted = False
+
+                # Альтернатива: кастомный секрет через заголовок
+                secret_header = request.headers.get("X-Webhook-Secret") or request.headers.get(
+                    "X-YooKassa-Webhook-Secret"
+                )
+                has_valid_secret = bool(self.webhook_secret and secret_header == self.webhook_secret)
+
+                if not (ip_trusted or has_valid_secret):
+                    logger.error(f"Untrusted webhook source: ip={client_ip}")
+                    raise HTTPException(status_code=403, detail="Untrusted webhook source")
             
             # Парсим JSON
             try:
