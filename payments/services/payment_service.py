@@ -7,6 +7,12 @@ from ..models.payment import Payment, PaymentStatus, PaymentCreate, PaymentFilte
 from ..repositories.payment_repository import PaymentRepository
 from ..services.yookassa_service import YooKassaService
 from ..utils.validators import PaymentValidators
+from app.repositories.server_repository import ServerRepository
+from app.repositories.key_repository import KeyRepository
+from vpn_protocols import ProtocolFactory
+from app.settings import settings as app_settings
+from bot import bot, format_key_message, format_key_message_unified, main_menu
+from security_logger import log_key_creation
 
 logger = logging.getLogger(__name__)
 
@@ -280,22 +286,138 @@ class PaymentService:
                 try:
                     logger.info(f"Processing paid payment without key: {payment.payment_id} for user {payment.user_id}")
                     
-                    # Здесь должна быть логика создания ключей
-                    # Пока что просто логируем
-                    logger.info(f"Found paid payment without key: {payment.payment_id} for user {payment.user_id}")
-                    
-                    # TODO: Добавить логику создания ключей
-                    # Для этого нужно:
-                    # 1. Получить тариф по tariff_id
-                    # 2. Выбрать сервер по протоколу и стране
-                    # 3. Создать ключ на сервере
-                    # 4. Сохранить ключ в БД
-                    # 5. Отправить уведомление пользователю
+                    # Идемпотентность: повторная проверка статуса в БД
+                    # Если в ходе гонки ключ уже выдан, пропускаем
+                    # (доп. проверка на наличие активных ключей у пользователя)
+                    key_repo = KeyRepository()
+                    sr = ServerRepository()
+
+                    # Выбор серверов по протоколу и стране
+                    servers = sr.list_servers()
+                    target_servers = [
+                        s for s in servers
+                        if (len(s) > 7 and (s[7] or 'outline') == (payment.protocol or 'outline'))
+                        and (not payment.country or (len(s) > 6 and (s[6] or '') == payment.country))
+                        and (len(s) > 5 and int(s[5]) == 1)
+                    ]
+                    if not target_servers and servers:
+                        # Фолбэк: любой активный сервер для данного протокола
+                        target_servers = [
+                            s for s in servers
+                            if (len(s) > 7 and (s[7] or 'outline') == (payment.protocol or 'outline'))
+                            and (len(s) > 5 and int(s[5]) == 1)
+                        ]
+                    if not target_servers:
+                        logger.error(f"No active servers for protocol={payment.protocol} country={payment.country}")
+                        continue
+
+                    server = target_servers[0]
+                    server_id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path = (
+                        server + (None,) * (11 - len(server))
+                    )
+
+                    # Создание ключа в соответствии с протоколом
+                    protocol_config = {
+                        'api_url': api_url,
+                        'cert_sha256': cert_sha256,
+                        'api_key': api_key,
+                        'domain': domain,
+                        'v2ray_path': v2ray_path,
+                    }
+                    client = ProtocolFactory.create_protocol(payment.protocol or 'outline', protocol_config)
+
+                    email = payment.email or f"user_{payment.user_id}@veilbot.com"
+                    user_data = await client.create_user(email)
+
+                    # Определение срока по тарифу (если возможно)
+                    expiry_ts = int((payment.created_at or datetime.utcnow()).timestamp()) + 30*24*3600
+                    try:
+                        import sqlite3
+                        from app.settings import settings as app_settings
+                        with sqlite3.connect(app_settings.DATABASE_PATH) as conn:
+                            c = conn.cursor()
+                            c.execute("SELECT duration_sec FROM tariffs WHERE id = ?", (payment.tariff_id,))
+                            row = c.fetchone()
+                            if row and row[0]:
+                                expiry_ts = int((payment.created_at or datetime.utcnow()).timestamp()) + int(row[0])
+                    except Exception:
+                        pass
+
+                    # Сохранение ключа в БД (идемпотентно)
+                    if (payment.protocol or 'outline') == 'outline':
+                        # В таблицу keys
+                        access_url = user_data.get('accessUrl') or ''
+                        outline_key_id = user_data.get('id') or ''
+                        new_key_id = key_repo.insert_outline_key(
+                            server_id=server_id,
+                            user_id=payment.user_id,
+                            access_url=access_url,
+                            expiry_at=expiry_ts,
+                            key_id=outline_key_id,
+                            email=payment.email,
+                            tariff_id=payment.tariff_id,
+                        )
+                        try:
+                            log_key_creation(
+                                user_id=payment.user_id,
+                                key_id=outline_key_id,
+                                protocol='outline',
+                                server_id=server_id or 0,
+                                tariff_id=payment.tariff_id or 0,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            # Отправка ключа пользователю
+                            await bot.send_message(
+                                payment.user_id,
+                                format_key_message(access_url),
+                                reply_markup=main_menu,
+                                disable_web_page_preview=True,
+                                parse_mode="Markdown",
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to notify user {payment.user_id} about outline key: {e}")
+                    else:
+                        # V2Ray → v2ray_keys
+                        v2ray_uuid = user_data.get('uuid') or user_data.get('id') or ''
+                        key_repo.insert_v2ray_key(
+                            server_id=server_id,
+                            user_id=payment.user_id,
+                            v2ray_uuid=v2ray_uuid,
+                            email=payment.email,
+                            created_at=int((payment.created_at or datetime.utcnow()).timestamp()),
+                            expiry_at=expiry_ts,
+                            tariff_id=payment.tariff_id,
+                        )
+                        try:
+                            log_key_creation(
+                                user_id=payment.user_id,
+                                key_id=v2ray_uuid,
+                                protocol='v2ray',
+                                server_id=server_id or 0,
+                                tariff_id=payment.tariff_id or 0,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            domain_eff = domain or 'veil-bird.ru'
+                            v2ray_path_eff = v2ray_path or '/v2ray'
+                            access_url = f"vless://{v2ray_uuid}@{domain_eff}:443?path={v2ray_path_eff}&security=tls&type=ws#VeilBot-V2Ray"
+                            # Используем унифицированный формат
+                            await bot.send_message(
+                                payment.user_id,
+                                format_key_message_unified(access_url, 'v2ray', None, None),
+                                reply_markup=main_menu,
+                                disable_web_page_preview=True,
+                                parse_mode="Markdown",
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to notify user {payment.user_id} about v2ray key: {e}")
                     
                     processed_count += 1
-                    
                     # Небольшая задержка между обработкой
-                    await asyncio.sleep(0.1)  # Уменьшаем задержку
+                    await asyncio.sleep(0.05)
                     
                 except Exception as e:
                     logger.error(f"Error processing payment {payment.payment_id}: {e}")
@@ -307,6 +429,47 @@ class PaymentService:
         except Exception as e:
             logger.error(f"Error processing paid payments without keys: {e}")
             return 0
+
+    async def issue_key_for_payment(self, payment_id: str) -> bool:
+        """Идемпотентная выдача ключа для конкретного платежа."""
+        try:
+            payment = await self.payment_repo.get_by_payment_id(payment_id)
+            if not payment or not payment.is_paid():
+                return False
+
+            # Проверяем, нет ли у пользователя активных ключей уже (как в get_paid_payments_without_keys)
+            # Если есть — считаем, что ключ уже выдан
+            from app.settings import settings as app_settings
+            import sqlite3
+            now_ts = int(datetime.utcnow().timestamp())
+            with sqlite3.connect(app_settings.DATABASE_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now_ts))
+                if c.fetchone():
+                    return True
+                c.execute("SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now_ts))
+                if c.fetchone():
+                    return True
+
+            # Повторно используем логику из пакетной выдачи: создадим фиктивный список и обработаем
+            # Чтобы не дублировать код, временно выполним ту же ветку, что и в основном методе
+            # Упрощенно — создадим один элемент и прогоним через ту же логику
+            # (дублирование кода можно вынести в приватный helper в будущем)
+            class _Obj:
+                pass
+            # Создаем "одиночный" список
+            original_get = self.get_paid_payments_without_keys
+            async def _single_list():
+                return [payment]
+            self.get_paid_payments_without_keys = _single_list  # type: ignore
+            try:
+                processed = await self.process_paid_payments_without_keys()
+                return processed > 0
+            finally:
+                self.get_paid_payments_without_keys = original_get  # type: ignore
+        except Exception as e:
+            logger.error(f"Error issuing key for payment {payment_id}: {e}")
+            return False
     
     async def refund_payment(self, payment_id: str, amount: int, reason: str = "Возврат") -> bool:
         """

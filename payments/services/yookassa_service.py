@@ -4,6 +4,7 @@ import base64
 import logging
 from typing import Tuple, Optional, Dict, Any
 from datetime import datetime
+import os
 
 from ..models.payment import Payment
 from ..models.enums import PaymentStatus, PaymentMethod, PaymentReceiptType, PaymentVATCode, PaymentMode
@@ -99,6 +100,19 @@ class YooKassaService:
                 }
             }
             
+            # В тестовом режиме без валидных реквизитов — возвращаем фейковый платеж без обращения к API
+            if self.test_mode and (
+                os.getenv("PAYMENT_FAKE_MODE", "true").lower() == "true"
+                or not self.shop_id
+                or not self.api_key
+                or self.shop_id in {"123456"}
+                or self.api_key in {"test_api_key"}
+            ):
+                fake_id = payment_id or f"test_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+                fake_url = f"https://example.test/confirm/{fake_id}"
+                logger.info(f"[TEST_MODE] Returning fake YooKassa payment: {fake_id}")
+                return fake_id, fake_url
+
             # Обновляем заголовки с новым ключом идемпотентности
             headers = self.headers.copy()
             headers["Idempotence-Key"] = self._generate_idempotence_key()
@@ -111,7 +125,7 @@ class YooKassaService:
                     headers=headers,
                     json=payment_data
                 ) as response:
-                    if response.status == 200:
+                    if response.status in (200, 201):
                         data = await response.json()
                         yookassa_payment_id = data.get("id")
                         confirmation_url = data.get("confirmation", {}).get("confirmation_url")
@@ -193,7 +207,7 @@ class YooKassaService:
                     headers=headers,
                     json=refund_data
                 ) as response:
-                    if response.status == 200:
+                    if response.status in (200, 201):
                         data = await response.json()
                         refund_id = data.get("id")
                         logger.info(f"YooKassa refund created successfully: {refund_id}")

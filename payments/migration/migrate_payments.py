@@ -104,21 +104,30 @@ class PaymentMigration:
         return currency_mapping.get(old_currency.upper(), PaymentCurrency.RUB)
     
     def parse_metadata(self, metadata_str: str) -> Dict[str, Any]:
-        """Парсинг метаданных"""
+        """Парсинг метаданных без выполнения кода.
+
+        Порядок: JSON -> literal_eval (безопасный) -> raw string.
+        """
         if not metadata_str:
             return {}
-        
+
+        # Сначала пробуем JSON
         try:
-            # Пытаемся выполнить как Python код (если это repr)
-            return eval(metadata_str)
-        except:
-            try:
-                # Пытаемся парсить как JSON
-                import json
-                return json.loads(metadata_str)
-            except:
-                # Возвращаем как строку
-                return {'raw_metadata': metadata_str}
+            import json
+            return json.loads(metadata_str)
+        except Exception:
+            pass
+
+        # Затем безопасный literal_eval
+        try:
+            import ast
+            value = ast.literal_eval(metadata_str)
+            if isinstance(value, dict):
+                return value
+            return {"value": value}
+        except Exception:
+            # Возвращаем как строку
+            return {"raw_metadata": metadata_str}
     
     def convert_timestamp(self, timestamp: int) -> datetime:
         """Конвертация временной метки"""

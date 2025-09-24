@@ -3,6 +3,19 @@
 {% block page_title %}Серверы{% endblock %}
 
 {% block content %}
+<!-- Messages -->
+{% if error %}
+<div class="alert alert-danger" style="margin-bottom: 1rem; padding: 1rem; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 0.375rem; color: #721c24;">
+    <strong>Ошибка:</strong> {{ error }}
+</div>
+{% endif %}
+
+{% if success %}
+<div class="alert alert-success" style="margin-bottom: 1rem; padding: 1rem; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 0.375rem; color: #155724;">
+    <strong>Успешно:</strong> {{ success }}
+</div>
+{% endif %}
+
 <!-- Servers Table -->
 <div class="table-container">
     <table class="table servers-table">
@@ -79,34 +92,22 @@
         <h2 class="card-title">Добавить новый сервер</h2>
     </div>
     
-    <!-- Step 1: Server Type Selection -->
-    <div id="server-type-selection" class="server-type-container">
-        <h3>Выберите тип сервера:</h3>
-        <div class="server-type-options">
-            <div class="server-type-option" data-type="outline">
-                <div class="server-type-icon">🔒</div>
-                <div class="server-type-title">Outline VPN</div>
-                <div class="server-type-description">Современный VPN протокол с высокой скоростью</div>
-            </div>
-            <div class="server-type-option" data-type="v2ray">
-                <div class="server-type-icon">🛡️</div>
-                <div class="server-type-title">V2Ray VLESS</div>
-                <div class="server-type-description">Продвинутый протокол с Reality и обфускацией трафика</div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Step 2: Server Configuration Form -->
-    <form id="server-form" method="post" action="/add_server" style="display: none;">
+    <form id="server-form" method="post" action="/add_server">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="protocol" id="selected-protocol">
-        
-        <div class="form-header">
-            <h3 id="form-title">Настройка сервера</h3>
-            <button type="button" id="back-to-selection" class="btn btn-secondary btn-sm">
-                <span class="material-icons">arrow_back</span>
-                Изменить тип
-            </button>
+
+        <!-- Protocol selector -->
+        <div class="form-group">
+            <label class="form-label">Протокол *</label>
+            <div style="display:flex; gap:1rem; align-items:center;">
+                <label class="form-radio">
+                    <input type="radio" name="protocol" value="outline" checked>
+                    <span>Outline</span>
+                </label>
+                <label class="form-radio">
+                    <input type="radio" name="protocol" value="v2ray">
+                    <span>V2Ray VLESS</span>
+                </label>
+            </div>
         </div>
         
         <div class="form-grid">
@@ -118,7 +119,7 @@
             
             <div class="form-group">
                 <label class="form-label">API URL *</label>
-                <input type="url" name="api_url" class="form-input" required placeholder="https://server.com:port/api">
+                <input type="url" name="api_url" class="form-input" required placeholder="https://host:port/api">
             </div>
             
             <div class="form-group">
@@ -128,43 +129,32 @@
             
             <div class="form-group">
                 <label class="form-label">Страна</label>
-                <input type="text" name="country" class="form-input" placeholder="Введите страну">
+                <input type="text" name="country" class="form-input" placeholder="Введите страну (например, Netherlands)">
             </div>
             
             <!-- Outline-specific fields -->
-            <div class="form-group outline-fields" style="display: none;">
-                <label class="form-label">SHA256 сертификата *</label>
-                <input type="text" name="cert_sha256" class="form-input" placeholder="XX:XX:XX:XX:XX:XX:XX:XX">
+            <div class="form-group outline-only">
+                <label class="form-label">SHA256 сертификата (Outline) *</label>
+                <input type="text" name="cert_sha256" class="form-input" placeholder="HEX или HEX:HEX:...">
             </div>
             
             <!-- V2Ray-specific fields -->
-            <div class="form-group v2ray-fields" style="display: none;">
-                <label class="form-label">Домен *</label>
+            <div class="form-group v2ray-only" style="display:none;">
+                <label class="form-label">Домен (V2Ray) *</label>
                 <input type="text" name="domain" class="form-input" placeholder="example.com">
             </div>
-            
-            <div class="form-group v2ray-fields" style="display: none;">
-                <label class="form-label">API Ключ *</label>
-                <input type="text" name="api_key" class="form-input" placeholder="***REMOVED***" required>
-                <small class="form-help">API ключ для аутентификации V2Ray сервера</small>
+            <div class="form-group v2ray-only" style="display:none;">
+                <label class="form-label">API Ключ (V2Ray) *</label>
+                <input type="text" name="api_key" class="form-input" placeholder="Ваш API ключ">
             </div>
-            
-            <div class="form-group v2ray-fields" style="display: none;">
-                <label class="form-label">V2Ray Путь (необязательно)</label>
+            <div class="form-group v2ray-only" style="display:none;">
+                <label class="form-label">V2Ray Путь</label>
                 <input type="text" name="v2ray_path" class="form-input" value="/v2ray" placeholder="/v2ray">
-                <small class="form-help">Путь для V2Ray API, по умолчанию /v2ray</small>
-            </div>
-            
-            <div class="form-group">
-                <label class="form-checkbox">
-                    <input type="checkbox" name="active" checked>
-                    <span>Активен</span>
-                </label>
             </div>
         </div>
         
         <div class="card-actions">
-            <button type="submit" class="btn btn-primary">
+            <button id="add-server-btn" type="submit" class="btn btn-primary">
                 <span class="material-icons">add</span>
                 Добавить сервер
             </button>
@@ -258,44 +248,63 @@
 </style>
 
 <script>
-// Server type selection
-document.querySelectorAll('.server-type-option').forEach(option => {
-    option.addEventListener('click', function() {
-        const selectedType = this.dataset.type;
-        
-        // Update UI
-        document.querySelectorAll('.server-type-option').forEach(opt => opt.classList.remove('selected'));
-        this.classList.add('selected');
-        
-        // Hide selection, show form
-        document.getElementById('server-type-selection').style.display = 'none';
-        document.getElementById('server-form').style.display = 'block';
-        
-        // Set protocol and form title
-        document.getElementById('selected-protocol').value = selectedType;
-        document.getElementById('form-title').textContent = 
-            selectedType === 'outline' ? 'Настройка Outline VPN сервера' : 'Настройка V2Ray VLESS сервера';
-        
-        // Show/hide specific fields
-        const outlineFields = document.querySelectorAll('.outline-fields');
-        const v2rayFields = document.querySelectorAll('.v2ray-fields');
-        
-        outlineFields.forEach(field => field.style.display = 'none');
-        v2rayFields.forEach(field => field.style.display = 'none');
-        
-        if (selectedType === 'outline') {
-            outlineFields.forEach(field => field.style.display = 'block');
-        } else if (selectedType === 'v2ray') {
-            v2rayFields.forEach(field => field.style.display = 'block');
-        }
-    });
+// Protocol toggle logic (no hidden steps)
+document.addEventListener('DOMContentLoaded', function() {
+    try {
+        const radios = document.querySelectorAll('input[name="protocol"]');
+        const showFor = (proto) => {
+            document.querySelectorAll('.outline-only').forEach(el => el.style.display = proto === 'outline' ? 'block' : 'none');
+            document.querySelectorAll('.v2ray-only').forEach(el => el.style.display = proto === 'v2ray' ? 'block' : 'none');
+        };
+        const current = document.querySelector('input[name="protocol"]:checked');
+        showFor(current ? current.value : 'outline');
+        radios.forEach(r => r.addEventListener('change', e => showFor(e.target.value)));
+    } catch(e) {
+        console.error('Init error:', e);
+    }
 });
 
-// Back to selection
-document.getElementById('back-to-selection').addEventListener('click', function() {
-    document.getElementById('server-type-selection').style.display = 'block';
-    document.getElementById('server-form').style.display = 'none';
-    document.querySelectorAll('.server-type-option').forEach(opt => opt.classList.remove('selected'));
+// Simple client-side validation for V2Ray required fields
+document.getElementById('server-form').addEventListener('submit', function(e) {
+    const proto = document.querySelector('input[name="protocol"]:checked')?.value || 'outline';
+    if (proto === 'v2ray') {
+        const domain = document.querySelector('input[name="domain"]').value.trim();
+        const apiKey = document.querySelector('input[name="api_key"]').value.trim();
+        if (!domain) { e.preventDefault(); alert('Домен обязателен для V2Ray'); return false; }
+        if (!apiKey) { e.preventDefault(); alert('API ключ обязателен для V2Ray'); return false; }
+    }
+});
+
+// Form submission validation
+document.getElementById('server-form').addEventListener('submit', function(e) {
+    const protocol = document.getElementById('selected-protocol').value;
+    
+    if (!protocol) {
+        e.preventDefault();
+        alert('Пожалуйста, выберите тип сервера');
+        return false;
+    }
+    
+    // Validate required fields based on protocol
+    if (protocol === 'v2ray') {
+        const domain = document.querySelector('input[name="domain"]').value;
+        const apiKey = document.querySelector('input[name="api_key"]').value;
+        
+        if (!domain.trim()) {
+            e.preventDefault();
+            alert('Поле "Домен" обязательно для V2Ray серверов');
+            return false;
+        }
+        
+        if (!apiKey.trim()) {
+            e.preventDefault();
+            alert('Поле "API Ключ" обязательно для V2Ray серверов');
+            return false;
+        }
+    }
+    
+    console.log('Form submitting with protocol:', protocol);
+    return true;
 });
 </script>
 {% endblock %}

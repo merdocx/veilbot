@@ -1,9 +1,10 @@
 import sqlite3
 import contextlib
+from config import DATABASE_PATH
 
 @contextlib.contextmanager
 def get_db_connection():
-    conn = sqlite3.connect("vpn.db")
+    conn = sqlite3.connect(DATABASE_PATH)
     try:
         yield conn
     finally:

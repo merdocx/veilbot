@@ -1,8 +1,10 @@
 # 📚 Документация API VPN сервера
 
+> Внимание: данный файл описывает планируемый внешний API. В текущей версии доступны только эндпоинты админ-панели (см. ниже «Доступные эндпоинты сейчас»). Публичные маршруты вида `/api/...` пока недоступны.
+
 ## 🌐 Базовый URL
 ```
-https://veil-bird.ru/api
+https://your-domain.com/api
 ```
 
 ## 🔐 Аутентификация
@@ -14,16 +16,11 @@ https://veil-bird.ru/api
 
 **Пример:**
 ```bash
-curl -k -H "X-API-Key: ***REMOVED***" "https://veil-bird.ru/api/keys"
+curl -k -H "X-API-Key: ***REMOVED***" "https://your-domain.com/api/keys"
 ```
 
 ### 🔑 Получение API ключа
-API ключ хранится в файле `/root/vpn-server/.env` в переменной `VPN_API_KEY`.
-
-Для генерации нового API ключа используйте:
-```bash
-python3 /root/vpn-server/generate_api_key.py
-```
+API ключ предполагается хранить в `.env` как `VPN_API_KEY` после реализации внешнего API. Скрипт генерации отсутствует в репозитории на текущий момент.
 
 ### 🔒 Безопасность
 - **HTTPS обязателен** - все соединения шифруются
@@ -74,7 +71,7 @@ Accept: application/json
 
 #### Пример:
 ```bash
-curl -X POST "https://veil-bird.ru/api/keys" \
+curl -X POST "https://your-domain.com/api/keys" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: ***REMOVED***" \
   -d '{"name": "Мой VPN ключ"}'
@@ -103,7 +100,7 @@ curl -X POST "https://veil-bird.ru/api/keys" \
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/keys" \
+curl -X GET "https://your-domain.com/api/keys" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -131,7 +128,7 @@ curl -X GET "https://veil-bird.ru/api/keys" \
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8" \
+curl -X GET "https://your-domain.com/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -154,7 +151,7 @@ curl -X GET "https://veil-bird.ru/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8"
 
 #### Пример:
 ```bash
-curl -X DELETE "https://veil-bird.ru/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8" \
+curl -X DELETE "https://your-domain.com/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -179,13 +176,13 @@ curl -X DELETE "https://veil-bird.ru/api/keys/84570736-8bf5-47af-92d4-3a08f2693e
     "is_active": true,
     "port": 10001
   },
-  "client_config": "vless://44ed718f-9f5d-4bd9-8585-e5a875cd3858@veil-bird.ru:10001?security=reality&sni=www.microsoft.com&fp=chrome&pbk=...&sid=...&type=tcp#Мой%20VPN%20ключ"
+  "client_config": "vless://44ed718f-9f5d-4bd9-8585-e5a875cd3858@your-domain.com:10001?security=reality&sni=www.microsoft.com&fp=chrome&pbk=YOUR_PUBLIC_KEY&sid=YOUR_SESSION_ID&type=tcp#Мой%20VPN%20ключ"
 }
 ```
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8/config" \
+curl -X GET "https://your-domain.com/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8/config" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -243,7 +240,7 @@ curl -X GET "https://veil-bird.ru/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8/
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/traffic/simple" \
+curl -X GET "https://your-domain.com/api/traffic/simple" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -303,7 +300,7 @@ curl -X GET "https://veil-bird.ru/api/traffic/simple" \
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/keys/11461131-0644-438d-9429-cb5e7f60fd80/traffic/simple" \
+curl -X GET "https://your-domain.com/api/keys/11461131-0644-438d-9429-cb5e7f60fd80/traffic/simple" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -329,7 +326,7 @@ curl -X GET "https://veil-bird.ru/api/keys/11461131-0644-438d-9429-cb5e7f60fd80/
 
 #### Пример:
 ```bash
-curl -X POST "https://veil-bird.ru/api/keys/11461131-0644-438d-9429-cb5e7f60fd80/traffic/simple/reset" \
+curl -X POST "https://your-domain.com/api/keys/11461131-0644-438d-9429-cb5e7f60fd80/traffic/simple/reset" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -365,7 +362,7 @@ curl -X POST "https://veil-bird.ru/api/keys/11461131-0644-438d-9429-cb5e7f60fd80
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/system/traffic/summary" \
+curl -X GET "https://your-domain.com/api/system/traffic/summary" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -412,7 +409,7 @@ curl -X GET "https://veil-bird.ru/api/system/traffic/summary" \
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/system/ports" \
+curl -X GET "https://your-domain.com/api/system/ports" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -434,7 +431,7 @@ curl -X GET "https://veil-bird.ru/api/system/ports" \
 
 #### Пример:
 ```bash
-curl -X POST "https://veil-bird.ru/api/system/ports/reset" \
+curl -X POST "https://your-domain.com/api/system/ports/reset" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -460,7 +457,7 @@ curl -X POST "https://veil-bird.ru/api/system/ports/reset" \
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/system/ports/status" \
+curl -X GET "https://your-domain.com/api/system/ports/status" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -508,7 +505,7 @@ curl -X GET "https://veil-bird.ru/api/system/ports/status" \
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/system/xray/config-status" \
+curl -X GET "https://your-domain.com/api/system/xray/config-status" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -530,7 +527,7 @@ curl -X GET "https://veil-bird.ru/api/system/xray/config-status" \
 
 #### Пример:
 ```bash
-curl -X POST "https://veil-bird.ru/api/system/xray/sync-config" \
+curl -X POST "https://your-domain.com/api/system/xray/sync-config" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -559,7 +556,7 @@ curl -X POST "https://veil-bird.ru/api/system/xray/sync-config" \
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/system/xray/validate-sync" \
+curl -X GET "https://your-domain.com/api/system/xray/validate-sync" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -567,7 +564,7 @@ curl -X GET "https://veil-bird.ru/api/system/xray/validate-sync" \
 
 ## 🔧 Системные эндпоинты
 
-### 1. Проверка и обновление настроек Reality
+### 1. Проверка и обновление настроек Reality (запланировано)
 **POST** `/api/system/verify-reality`
 
 Проверяет и обновляет настройки Reality в конфигурации Xray.
@@ -583,13 +580,13 @@ curl -X GET "https://veil-bird.ru/api/system/xray/validate-sync" \
 
 #### Пример:
 ```bash
-curl -X POST "https://veil-bird.ru/api/system/verify-reality" \
+curl -X POST "https://your-domain.com/api/system/verify-reality" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
 ---
 
-### 2. Принудительная синхронизация конфигурации
+### 2. Принудительная синхронизация конфигурации (запланировано)
 **POST** `/api/system/sync-config`
 
 Принудительно синхронизирует конфигурацию Xray с keys.json.
@@ -605,13 +602,13 @@ curl -X POST "https://veil-bird.ru/api/system/verify-reality" \
 
 #### Пример:
 ```bash
-curl -X POST "https://veil-bird.ru/api/system/sync-config" \
+curl -X POST "https://your-domain.com/api/system/sync-config" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
 ---
 
-### 3. Получение статуса синхронизации конфигурации
+### 3. Получение статуса синхронизации конфигурации (запланировано)
 **GET** `/api/system/config-status`
 
 Возвращает статус синхронизации конфигурации.
@@ -630,7 +627,7 @@ curl -X POST "https://veil-bird.ru/api/system/sync-config" \
 
 #### Пример:
 ```bash
-curl -X GET "https://veil-bird.ru/api/system/config-status" \
+curl -X GET "https://your-domain.com/api/system/config-status" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -638,10 +635,10 @@ curl -X GET "https://veil-bird.ru/api/system/config-status" \
 
 ## 📝 Примеры использования
 
-### Создание ключа и получение конфигурации
+### Создание ключа и получение конфигурации (запланировано)
 ```bash
 # Создаем ключ
-KEY_RESPONSE=$(curl -s -X POST "https://veil-bird.ru/api/keys" \
+KEY_RESPONSE=$(curl -s -X POST "https://your-domain.com/api/keys" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: ***REMOVED***" \
   -d '{"name": "Мой VPN ключ"}')
@@ -651,30 +648,30 @@ KEY_ID=$(echo $KEY_RESPONSE | python3 -c "import json, sys; print(json.load(sys.
 KEY_UUID=$(echo $KEY_RESPONSE | python3 -c "import json, sys; print(json.load(sys.stdin)['uuid'])")
 
 # Получаем конфигурацию клиента
-curl -s -X GET "https://veil-bird.ru/api/keys/$KEY_ID/config" \
+curl -s -X GET "https://your-domain.com/api/keys/$KEY_ID/config" \
   -H "X-API-Key: ***REMOVED***" | \
   python3 -c "import json, sys; print(json.load(sys.stdin)['client_config'])"
 ```
 
-### Мониторинг трафика
+### Мониторинг трафика (запланировано)
 ```bash
 # Получаем общую статистику трафика
-curl -s -X GET "https://veil-bird.ru/api/traffic/simple" \
+curl -s -X GET "https://your-domain.com/api/traffic/simple" \
   -H "X-API-Key: ***REMOVED***"
 
 # Получаем трафик конкретного ключа
-curl -s -X GET "https://veil-bird.ru/api/keys/$KEY_ID/traffic/simple" \
+curl -s -X GET "https://your-domain.com/api/keys/$KEY_ID/traffic/simple" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
-### Управление портами
+### Управление портами (запланировано)
 ```bash
 # Проверяем статус портов
-curl -s -X GET "https://veil-bird.ru/api/system/ports" \
+curl -s -X GET "https://your-domain.com/api/system/ports" \
   -H "X-API-Key: ***REMOVED***"
 
 # Сбрасываем статистику трафика
-curl -s -X POST "https://veil-bird.ru/api/keys/$KEY_ID/traffic/simple/reset" \
+curl -s -X POST "https://your-domain.com/api/keys/$KEY_ID/traffic/simple/reset" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -707,4 +704,31 @@ curl -s -X POST "https://veil-bird.ru/api/keys/$KEY_ID/traffic/simple/reset" \
 
 **Версия API:** 2.0.0  
 **Дата обновления:** 4 августа 2025  
-**Статус:** ✅ Актуально (обновлено - удалены устаревшие endpoints) 
+**Статус:** ⚠️ Проектируется (публичные `/api` эндпоинты не активны)
+
+---
+
+## Доступные эндпоинты сейчас (админ-панель)
+
+Базовый URL админ-панели на текущей установке: `http(s)://<host>/`
+
+- GET `/login` — страница логина
+- POST `/login` — вход в админку (rate limit 5/мин)
+- GET `/logout` — выход
+- GET `/dashboard` — дашборд
+- GET `/tariffs` — список тарифов
+- POST `/add_tariff` — добавить тариф
+- GET `/delete_tariff/{tariff_id}` — удалить тариф
+- GET `/tariffs/edit/{tariff_id}` — форма редактирования тарифа
+- POST `/tariffs/edit/{tariff_id}` — сохранить тариф
+- GET `/servers` — список серверов
+- POST `/add_server` — добавить сервер
+- GET `/delete_server/{server_id}` — удалить сервер
+- GET `/servers/edit/{server_id}` — форма редактирования сервера
+- POST `/servers/edit/{server_id}` — сохранить сервер
+- GET `/keys` — список ключей
+- GET `/keys/delete/{key_id}` — удалить ключ
+- GET `/cleanup` — страница очистки
+- POST `/cleanup` — выполнить очистку
+- POST `/api/keys/{key_id}/expiry` — обновить срок действия ключа (внутренний админ API)
+- POST `/yookassa/webhook` — вебхук YooKassa

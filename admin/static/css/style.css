@@ -272,6 +272,12 @@ body {
     min-width: 700px;
 }
 
+.table thead {
+    position: sticky;
+    top: 64px; /* height of .top-bar */
+    z-index: 50;
+}
+
 .table th {
     background-color: #f8fafc;
     padding: 0.5rem;
@@ -631,6 +637,19 @@ body {
 .badge-info {
     background-color: #dbeafe;
     color: #1e40af;
+}
+
+.badge-primary {
+    background-color: #dbeafe;
+    color: #1e40af;
+}
+
+/* Sticky filter helper row */
+.filter-row.sticky {
+    position: sticky;
+    top: calc(64px + 41px);
+    z-index: 40;
+    background: #f8fafc;
 }
 
 /* Code Display */

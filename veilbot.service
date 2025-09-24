@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/python3 /root/veilbot/bot.py
+ExecStart=/usr/bin/python3.11 /root/veilbot/bot.py
 WorkingDirectory=/root/veilbot
 Restart=always
 RestartSec=10

@@ -304,7 +304,14 @@ class BusinessLogicValidator:
 
 # Создаем глобальные экземпляры валидаторов
 input_validator = InputValidator()
-db_validator = DatabaseValidator("vpn.db")
+try:
+    from app.settings import settings as _settings
+    _db_path = _settings.DATABASE_PATH
+except Exception:
+    # Fallback на дефолт, если настройки недоступны при импортном времени
+    _db_path = "vpn.db"
+
+db_validator = DatabaseValidator(_db_path)
 business_validator = BusinessLogicValidator()
 
 def validate_user_input(data: Dict[str, Any]) -> Tuple[bool, List[str]]:
