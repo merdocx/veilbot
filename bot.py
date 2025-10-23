@@ -79,6 +79,7 @@ def get_protocol_selection_menu() -> ReplyKeyboardMarkup:
 help_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
 help_keyboard.add(KeyboardButton("Перевыпустить ключ"))
 help_keyboard.add(KeyboardButton("Сменить приложение"))
+help_keyboard.add(KeyboardButton("Сменить страну"))
 help_keyboard.add(KeyboardButton("🔙 Назад"))
 
 cancel_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -299,16 +300,8 @@ async def handle_my_keys_btn(message: types.Message):
 
     msg = "*Ваши активные ключи:*\n\n"
     for key in all_keys:
-        minutes = int((key['expiry'] - now) / 60)
-        hours = minutes // 60
-        days = hours // 24
-        
-        if days > 0:
-            time_str = f"{days}д {hours % 24}ч"
-        elif hours > 0:
-            time_str = f"{hours}ч {minutes % 60}мин"
-        else:
-            time_str = f"{minutes}мин"
+        remaining_seconds = key['expiry'] - now
+        time_str = format_duration(remaining_seconds)
         
         protocol_info = PROTOCOLS[key['protocol']]
         
@@ -392,6 +385,84 @@ async def handle_email_input(message: types.Message):
     except Exception as e:
         logging.error(f"Error in handle_email_input: {e}")
         await message.answer("❌ Произошла ошибка. Попробуйте еще раз.", reply_markup=cancel_keyboard)
+
+@dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "reactivation_country_selection")
+async def handle_reactivation_country_selection(message: types.Message):
+    """Обработчик выбора страны при реактивации истекшего ключа"""
+    user_id = message.from_user.id
+    text = message.text or ""
+    
+    # Проверяем, что это кнопка "Отмена"
+    if text == "🔙 Отмена":
+        user_states.pop(user_id, None)
+        await message.answer("Покупка отменена.", reply_markup=main_menu)
+        return
+    
+    # Получаем сохраненное состояние
+    state = user_states.get(user_id, {})
+    tariff = state.get("tariff")
+    email = state.get("email")
+    protocol = state.get("protocol", "outline")
+    last_country = state.get("last_country")
+    
+    if not tariff:
+        await message.answer("Ошибка: данные тарифа не найдены. Попробуйте еще раз.", reply_markup=main_menu)
+        user_states.pop(user_id, None)
+        return
+    
+    # Извлекаем название страны из текста
+    selected_country = text
+    if text.startswith("🔄 ") and "(как раньше)" in text:
+        # Убираем "🔄 " и " (как раньше)"
+        selected_country = text[2:].replace(" (как раньше)", "")
+    
+    # Проверяем, что страна доступна для выбранного протокола
+    countries = get_countries_by_protocol(protocol)
+    if selected_country not in countries:
+        await message.answer(
+            f"Пожалуйста, выберите страну из списка для {PROTOCOLS[protocol]['name']}:",
+            reply_markup=get_country_menu(countries)
+        )
+        return
+    
+    # Очищаем состояние и создаем ключ с выбранной страной
+    user_states.pop(user_id, None)
+    
+    # Создаем ключ через существующую функцию
+    with get_db_cursor(commit=True) as cursor:
+        await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, selected_country, protocol)
+
+@dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "country_change_selection")
+async def handle_country_change_selection(message: types.Message):
+    """Обработчик выбора страны для смены"""
+    user_id = message.from_user.id
+    text = message.text or ""
+    
+    # Проверяем, что это кнопка "Назад"
+    if text == "🔙 Назад":
+        user_states.pop(user_id, None)
+        await message.answer("Главное меню:", reply_markup=main_menu)
+        return
+    
+    # Извлекаем название страны из текста (убираем эмодзи)
+    if text.startswith("🌍 "):
+        selected_country = text[2:]  # Убираем "🌍 "
+    else:
+        selected_country = text
+    
+    # Получаем данные ключа из состояния
+    state = user_states.get(user_id, {})
+    key_data = state.get("key_data")
+    
+    if not key_data:
+        await message.answer("Ошибка: данные ключа не найдены. Попробуйте еще раз.", reply_markup=main_menu)
+        return
+    
+    # Очищаем состояние
+    user_states.pop(user_id, None)
+    
+    # Выполняем смену страны
+    await change_country_for_key(message, user_id, key_data, selected_country)
 
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_country")
 async def handle_country_selection(message: types.Message):
@@ -522,14 +593,22 @@ async def handle_tariff_selection_with_country(message: types.Message):
                 email_db = None
                 try:
                     now_ts = int(time.time())
-                    # Пытаемся получить email из текущего протокола, если outline
-                    if (protocol or 'outline') == 'outline':
-                        cursor.execute("SELECT email FROM keys WHERE user_id = ? AND email IS NOT NULL AND email != '' ORDER BY expiry_at DESC LIMIT 1", (user_id,))
+                    
+                    # Сначала пытаемся получить email из таблицы payments (приоритет)
+                    cursor.execute("SELECT email FROM payments WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY created_at DESC LIMIT 1", (user_id,))
+                    row = cursor.fetchone()
+                    email_db = row[0] if row and row[0] else None
+                    
+                    # Если не нашли в payments, пытаемся получить из текущего протокола, если outline
+                    # Исключаем автоматически сгенерированные email-ы вида user_123@veilbot.com
+                    if not email_db and (protocol or 'outline') == 'outline':
+                        cursor.execute("SELECT email FROM keys WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY expiry_at DESC LIMIT 1", (user_id,))
                         row = cursor.fetchone()
                         email_db = row[0] if row and row[0] else None
-                    # Фолбэк: пробуем взять из v2ray_keys
+                    
+                    # Фолбэк: пробуем взять из v2ray_keys, также исключаем автоматически сгенерированные
                     if not email_db:
-                        cursor.execute("SELECT email FROM v2ray_keys WHERE user_id = ? AND email IS NOT NULL AND email != '' ORDER BY expiry_at DESC LIMIT 1", (user_id,))
+                        cursor.execute("SELECT email FROM v2ray_keys WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY expiry_at DESC LIMIT 1", (user_id,))
                         row2 = cursor.fetchone()
                         email_db = row2[0] if row2 and row2[0] else None
                 except Exception:
@@ -709,7 +788,13 @@ def find_alternative_server(cursor, country, protocol, exclude_server_id=None):
 
 async def extend_existing_key_with_fallback(cursor, existing_key, duration, email=None, tariff_id=None, protocol='outline'):
     """Продлевает существующий ключ с fallback на альтернативный сервер"""
-    new_expiry = existing_key[1] + duration
+    now = int(time.time())
+    # Если ключ истёк, продляем от текущего времени, иначе от старого expiry_at
+    if existing_key[1] <= now:
+        new_expiry = now + duration
+        logging.info(f"Extending expired key {existing_key[0]} ({protocol}): was expired at {existing_key[1]}, new expiry: {new_expiry}")
+    else:
+        new_expiry = existing_key[1] + duration
     
     # Получаем информацию о текущем сервере в зависимости от протокола
     if protocol == 'outline':
@@ -817,7 +902,15 @@ async def extend_existing_key_with_fallback(cursor, existing_key, duration, emai
             return False
 
 def extend_existing_key(cursor, existing_key, duration, email=None, tariff_id=None):
-    new_expiry = existing_key[1] + duration
+    """Продлевает ключ. Если истёк - продляет от текущего времени."""
+    now = int(time.time())
+    # Если ключ истёк, продляем от текущего времени, иначе от старого expiry_at
+    if existing_key[1] <= now:
+        new_expiry = now + duration
+        logging.info(f"Extending expired key {existing_key[0]}: was expired at {existing_key[1]}, new expiry: {new_expiry}")
+    else:
+        new_expiry = existing_key[1] + duration
+    
     if email and tariff_id:
         cursor.execute("UPDATE keys SET expiry_at = ?, email = ?, tariff_id = ? WHERE id = ?", (new_expiry, email, tariff_id, existing_key[0]))
     elif email:
@@ -829,12 +922,19 @@ def extend_existing_key(cursor, existing_key, duration, email=None, tariff_id=No
 
 async def create_new_key_flow(cursor, message, user_id, tariff, email=None, country=None):
     now = int(time.time())
-    # Проверяем наличие активного ключа
-    cursor.execute("SELECT id, expiry_at, access_url FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (user_id, now))
+    GRACE_PERIOD = 86400  # 24 часа в секундах
+    grace_threshold = now - GRACE_PERIOD
+    
+    # Проверяем наличие активного или недавно истекшего ключа (в пределах grace period)
+    cursor.execute("SELECT id, expiry_at, access_url FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (user_id, grace_threshold))
     existing_key = cursor.fetchone()
     if existing_key:
         extend_existing_key(cursor, existing_key, tariff['duration_sec'], email, tariff['id'])
-        await message.answer(f"Ваш ключ продлён на {tariff['duration_sec']//86400} дней!\n\n{format_key_message(existing_key[2])}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+        was_expired = existing_key[1] <= now
+        if was_expired:
+            await message.answer(f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message(existing_key[2])}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+        else:
+            await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message(existing_key[2])}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
         # Уведомление админу
         admin_msg = (
             f"🔑 *Продление ключа*\n"
@@ -884,65 +984,597 @@ async def create_new_key_flow(cursor, message, user_id, tariff, email=None, coun
     except Exception as e:
         logging.error(f"Failed to send admin notification: {e}")
 
+async def switch_protocol_and_extend(cursor, message, user_id, old_key_data: dict, new_protocol: str, new_country: str, additional_duration: int, email: str, tariff: dict):
+    """Меняет протокол (и возможно страну) с продлением времени"""
+    now = int(time.time())
+    old_protocol = old_key_data['protocol']
+    old_country = old_key_data['country']
+    
+    # Если страна не указана, используем текущую страну старого ключа
+    target_country = new_country or old_country
+    
+    # Считаем оставшееся время старого ключа
+    remaining = max(0, old_key_data['expiry_at'] - now)
+    
+    # Общее время = оставшееся + новое купленное
+    total_duration = remaining + additional_duration
+    new_expiry = now + total_duration
+    
+    old_server_id = old_key_data['server_id']
+    old_email = old_key_data.get('email') or email
+    
+    logging.info(f"User {user_id}: switching protocol {old_protocol}→{new_protocol}, country {old_country}→{target_country}, remaining={remaining}s, adding={additional_duration}s")
+    
+    # Ищем сервер в целевой стране с новым протоколом
+    cursor.execute("""
+        SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key FROM servers 
+        WHERE active = 1 AND country = ? AND protocol = ?
+    """, (target_country, new_protocol))
+    servers = cursor.fetchall()
+    
+    if not servers:
+        logging.error(f"No servers found for protocol={new_protocol}, country={target_country}")
+        await message.answer(f"❌ Нет доступных серверов {PROTOCOLS[new_protocol]['name']} в стране {target_country}.", reply_markup=main_menu)
+        return False
+    
+    # Берём первый подходящий сервер
+    new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
+    
+    # Сохраняем данные старого ключа для удаления
+    old_key_for_deletion = {
+        'type': old_key_data['type'],
+        'server_id': old_server_id,
+        'key_id': old_key_data.get('key_id'),
+        'v2ray_uuid': old_key_data.get('v2ray_uuid'),
+        'db_id': old_key_data['id']
+    }
+    
+    try:
+        # Создаём новый ключ на новом протоколе
+        if new_protocol == "outline":
+            key = await asyncio.get_event_loop().run_in_executor(None, create_key, api_url, cert_sha256)
+            if not key:
+                logging.error(f"Failed to create Outline key on server {new_server_id}")
+                await message.answer("❌ Ошибка при создании ключа на новом сервере.", reply_markup=main_menu)
+                return False
+            
+            # Добавляем новый ключ
+            cursor.execute(
+                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, key["accessUrl"], new_expiry, key["id"], now, old_email, tariff['id'])
+            )
+            
+            access_url = key["accessUrl"]
+            
+            # Удаляем старый ключ
+            await delete_old_key_after_success(cursor, old_key_for_deletion)
+            
+            # Уведомление пользователю
+            time_remaining_str = format_duration(remaining)
+            time_added_str = format_duration(additional_duration)
+            time_total_str = format_duration(total_duration)
+            
+            if old_country != target_country:
+                msg = (
+                    f"🌍🔄 *Смена протокола и страны*\n\n"
+                    f"Ваш ключ перенесён:\n"
+                    f"• С *{PROTOCOLS[old_protocol]['name']}* на *{PROTOCOLS[new_protocol]['name']}*\n"
+                    f"• Из *{old_country}* в *{target_country}*\n\n"
+                    f"⏰ Оставшееся время: {time_remaining_str}\n"
+                    f"➕ Добавлено: {time_added_str}\n"
+                    f"📅 Итого: {time_total_str}\n\n"
+                    f"{format_key_message_unified(access_url, new_protocol, tariff)}"
+                )
+            else:
+                msg = (
+                    f"🔄 *Смена протокола и продление*\n\n"
+                    f"Ваш ключ перенесён с *{PROTOCOLS[old_protocol]['name']}* на *{PROTOCOLS[new_protocol]['name']}*\n"
+                    f"Страна: *{target_country}*\n\n"
+                    f"⏰ Оставшееся время: {time_remaining_str}\n"
+                    f"➕ Добавлено: {time_added_str}\n"
+                    f"📅 Итого: {time_total_str}\n\n"
+                    f"{format_key_message_unified(access_url, new_protocol, tariff)}"
+                )
+            await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            
+        elif new_protocol == "v2ray":
+            from vpn_protocols import V2RayProtocol
+            v2ray_client = V2RayProtocol(api_url, api_key)
+            user_data = await v2ray_client.create_user(old_email or f"user_{user_id}@veilbot.com")
+            
+            if not user_data or not user_data.get('uuid'):
+                logging.error(f"Failed to create V2Ray key on server {new_server_id}")
+                await message.answer("❌ Ошибка при создании V2Ray ключа на новом сервере.", reply_markup=main_menu)
+                return False
+            
+            # Добавляем новый ключ
+            cursor.execute(
+                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'])
+            )
+            
+            # Формируем access_url
+            access_url = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+            
+            # Удаляем старый ключ
+            await delete_old_key_after_success(cursor, old_key_for_deletion)
+            
+            # Уведомление пользователю
+            time_remaining_str = format_duration(remaining)
+            time_added_str = format_duration(additional_duration)
+            time_total_str = format_duration(total_duration)
+            
+            if old_country != target_country:
+                msg = (
+                    f"🌍🔄 *Смена протокола и страны*\n\n"
+                    f"Ваш ключ перенесён:\n"
+                    f"• С *{PROTOCOLS[old_protocol]['name']}* на *{PROTOCOLS[new_protocol]['name']}*\n"
+                    f"• Из *{old_country}* в *{target_country}*\n\n"
+                    f"⏰ Оставшееся время: {time_remaining_str}\n"
+                    f"➕ Добавлено: {time_added_str}\n"
+                    f"📅 Итого: {time_total_str}\n\n"
+                    f"{format_key_message_unified(access_url, new_protocol, tariff)}"
+                )
+            else:
+                msg = (
+                    f"🔄 *Смена протокола и продление*\n\n"
+                    f"Ваш ключ перенесён с *{PROTOCOLS[old_protocol]['name']}* на *{PROTOCOLS[new_protocol]['name']}*\n"
+                    f"Страна: *{target_country}*\n\n"
+                    f"⏰ Оставшееся время: {time_remaining_str}\n"
+                    f"➕ Добавлено: {time_added_str}\n"
+                    f"📅 Итого: {time_total_str}\n\n"
+                    f"{format_key_message_unified(access_url, new_protocol, tariff)}"
+                )
+            await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+        
+        # Уведомление админу
+        admin_msg = (
+            f"🔄🌍 *Автоматическая смена протокола*\n"
+            f"Пользователь: `{user_id}`\n"
+            f"Старый: *{PROTOCOLS[old_protocol]['name']}*, {old_country}\n"
+            f"Новый: *{PROTOCOLS[new_protocol]['name']}*, {target_country}\n"
+            f"Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
+            f"Старый сервер: `{old_server_id}`\n"
+            f"Новый сервер: `{new_server_id}`\n"
+            f"Оставшееся время: {format_duration(remaining)}\n"
+            f"Добавлено: {format_duration(additional_duration)}\n"
+            f"Срок действия: до <code>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(new_expiry))}</code>\n"
+        )
+        if old_email:
+            admin_msg += f"Email: `{old_email}`\n"
+        
+        try:
+            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Failed to send admin notification (protocol switch): {e}")
+        
+        # Commit транзакции
+        cursor.connection.commit()
+        
+        logging.info(f"Successfully switched protocol for user {user_id}: {old_protocol}→{new_protocol}, {old_country}→{target_country}, total={total_duration}s")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error in switch_protocol_and_extend: {e}")
+        await message.answer("❌ Произошла ошибка при смене протокола. Попробуйте позже.", reply_markup=main_menu)
+        return False
+
+async def change_country_and_extend(cursor, message, user_id, key_data: dict, new_country: str, additional_duration: int, email: str, tariff: dict):
+    """Меняет страну для ключа и добавляет новое время (при покупке нового тарифа)"""
+    now = int(time.time())
+    protocol = key_data['protocol']
+    
+    # Считаем оставшееся время старого ключа
+    remaining = max(0, key_data['expiry_at'] - now)
+    
+    # Общее время = оставшееся + новое купленное
+    total_duration = remaining + additional_duration
+    new_expiry = now + total_duration
+    
+    old_server_id = key_data['server_id']
+    old_country = key_data['country']
+    old_email = key_data['email'] or email
+    
+    # Ищем сервер в новой стране с тем же протоколом
+    cursor.execute("""
+        SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key FROM servers 
+        WHERE active = 1 AND country = ? AND protocol = ?
+    """, (new_country, protocol))
+    servers = cursor.fetchall()
+    
+    if not servers:
+        logging.error(f"No servers found for country={new_country}, protocol={protocol}")
+        await message.answer(f"❌ Нет доступных серверов {PROTOCOLS[protocol]['name']} в стране {new_country}.", reply_markup=main_menu)
+        return False
+    
+    # Берём первый подходящий сервер
+    new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
+    
+    # Сохраняем данные старого ключа для удаления
+    old_key_data = {
+        'type': key_data['type'],
+        'server_id': old_server_id,
+        'key_id': key_data.get('key_id'),
+        'v2ray_uuid': key_data.get('v2ray_uuid'),
+        'db_id': key_data['id']
+    }
+    
+    try:
+        # Создаём новый ключ в новой стране
+        if protocol == "outline":
+            key = await asyncio.get_event_loop().run_in_executor(None, create_key, api_url, cert_sha256)
+            if not key:
+                logging.error(f"Failed to create Outline key on server {new_server_id}")
+                await message.answer("❌ Ошибка при создании ключа на новом сервере.", reply_markup=main_menu)
+                return False
+            
+            # Добавляем новый ключ
+            cursor.execute(
+                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, key["accessUrl"], new_expiry, key["id"], now, old_email, tariff['id'])
+            )
+            
+            access_url = key["accessUrl"]
+            
+            # Удаляем старый ключ
+            await delete_old_key_after_success(cursor, old_key_data)
+            
+            # Уведомление пользователю
+            time_remaining_str = format_duration(remaining)
+            time_added_str = format_duration(additional_duration)
+            time_total_str = format_duration(total_duration)
+            
+            msg = (
+                f"🌍 *Смена страны и продление*\n\n"
+                f"Ваш ключ перенесён из *{old_country}* в *{new_country}*\n\n"
+                f"⏰ Оставшееся время: {time_remaining_str}\n"
+                f"➕ Добавлено: {time_added_str}\n"
+                f"📅 Итого: {time_total_str}\n\n"
+                f"{format_key_message_unified(access_url, protocol, tariff)}"
+            )
+            await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            
+        elif protocol == "v2ray":
+            from vpn_protocols import V2RayProtocol
+            v2ray_client = V2RayProtocol(api_url, api_key)
+            user_data = await v2ray_client.create_user(old_email or f"user_{user_id}@veilbot.com")
+            
+            if not user_data or not user_data.get('uuid'):
+                logging.error(f"Failed to create V2Ray key on server {new_server_id}")
+                await message.answer("❌ Ошибка при создании V2Ray ключа на новом сервере.", reply_markup=main_menu)
+                return False
+            
+            # Добавляем новый ключ
+            cursor.execute(
+                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'])
+            )
+            
+            # Формируем access_url
+            access_url = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+            
+            # Удаляем старый ключ
+            await delete_old_key_after_success(cursor, old_key_data)
+            
+            # Уведомление пользователю
+            time_remaining_str = format_duration(remaining)
+            time_added_str = format_duration(additional_duration)
+            time_total_str = format_duration(total_duration)
+            
+            msg = (
+                f"🌍 *Смена страны и продление*\n\n"
+                f"Ваш ключ перенесён из *{old_country}* в *{new_country}*\n\n"
+                f"⏰ Оставшееся время: {time_remaining_str}\n"
+                f"➕ Добавлено: {time_added_str}\n"
+                f"📅 Итого: {time_total_str}\n\n"
+                f"{format_key_message_unified(access_url, protocol, tariff)}"
+            )
+            await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+        
+        # Уведомление админу
+        admin_msg = (
+            f"🌍 *Смена страны при покупке*\n"
+            f"Пользователь: `{user_id}`\n"
+            f"Протокол: *{PROTOCOLS[protocol]['name']}*\n"
+            f"Старая страна: *{old_country}*\n"
+            f"Новая страна: *{new_country}*\n"
+            f"Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
+            f"Старый сервер: `{old_server_id}`\n"
+            f"Новый сервер: `{new_server_id}`\n"
+            f"Оставшееся время: {format_duration(remaining)}\n"
+            f"Добавлено: {format_duration(additional_duration)}\n"
+            f"Срок действия: до <code>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(new_expiry))}</code>\n"
+        )
+        if old_email:
+            admin_msg += f"Email: `{old_email}`\n"
+        
+        try:
+            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Failed to send admin notification (country change with extend): {e}")
+        
+        # Commit транзакции
+        cursor.connection.commit()
+        
+        logging.info(f"Successfully changed country and extended for user {user_id}: {old_country} -> {new_country}, +{additional_duration}s")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error in change_country_and_extend: {e}")
+        await message.answer("❌ Произошла ошибка при смене страны. Попробуйте позже.", reply_markup=main_menu)
+        return False
+
 async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email=None, country=None, protocol="outline"):
     """Создание нового ключа с поддержкой протоколов"""
     now = int(time.time())
+    GRACE_PERIOD = 86400  # 24 часа в секундах
+    grace_threshold = now - GRACE_PERIOD
     
-    # Проверяем наличие активного ключа (для обоих протоколов)
+    # Проверяем наличие активного или недавно истекшего ключа (в пределах grace period)
     if protocol == "outline":
-        cursor.execute("SELECT id, expiry_at, access_url FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (user_id, now))
+        cursor.execute("SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, grace_threshold))
         existing_key = cursor.fetchone()
         if existing_key:
-            # Используем новую функцию с fallback на альтернативный сервер
-            success = await extend_existing_key_with_fallback(cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol)
+            # Проверяем, отличается ли запрошенная страна от текущей
+            current_country = existing_key[3]  # s.country
             
-            if success:
-                # Получаем обновленную информацию о ключе
-                cursor.execute("SELECT access_url FROM keys WHERE id = ?", (existing_key[0],))
-                updated_key = cursor.fetchone()
-                access_url = updated_key[0] if updated_key else existing_key[2]
+            if country and country != current_country:
+                # Запрошена другая страна - запускаем логику смены страны с продлением
+                logging.info(f"User {user_id} requested different country: current={current_country}, requested={country}. Running country change logic.")
                 
-                # Очищаем состояние пользователя
-                user_states.pop(user_id, None)
+                # Формируем key_data для функции смены страны
+                key_data = {
+                    'id': existing_key[0],
+                    'expiry_at': existing_key[1],
+                    'access_url': existing_key[2],
+                    'country': current_country,
+                    'server_id': existing_key[4],
+                    'key_id': existing_key[5],
+                    'tariff_id': existing_key[6] or tariff['id'],
+                    'email': existing_key[7] or email,
+                    'protocol': protocol,
+                    'type': 'outline'
+                }
                 
-                await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-                return
-            else:
-                # Если не удалось продлить, создаем новый ключ
-                logging.warning(f"Failed to extend key {existing_key[0]}, creating new key for user {user_id}")
-                # Продолжаем выполнение для создания нового ключа
-    else:  # v2ray
-        cursor.execute("SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, now))
-        existing_key = cursor.fetchone()
-        if existing_key:
-            # Используем новую функцию с fallback на альтернативный сервер
-            success = await extend_existing_key_with_fallback(cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol)
-            
-            if success:
-                # Получаем обновленную информацию о ключе
-                cursor.execute("SELECT k.v2ray_uuid, s.domain, s.v2ray_path FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.id = ?", (existing_key[0],))
-                updated_key = cursor.fetchone()
+                # Вызываем функцию смены страны с продлением
+                success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff)
                 
-                if updated_key:
-                    v2ray_uuid, domain, path = updated_key
-                    # Используем новый формат Reality протокола
-                    config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                if success:
+                    user_states.pop(user_id, None)
+                    return
                 else:
-                    # Fallback к старой конфигурации
-                    v2ray_uuid = existing_key[2]
-                    domain = existing_key[3]
-                    path = existing_key[4] or '/v2ray'
-                    config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                    # Если не удалось сменить страну, создаем новый ключ
+                    logging.warning(f"Failed to change country for key {existing_key[0]}, creating new key for user {user_id}")
+                    # Продолжаем выполнение для создания нового ключа
+            else:
+                # Та же страна или страна не указана - продлеваем как обычно
+                success = await extend_existing_key_with_fallback(cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol)
+            
+                if success:
+                    # Получаем обновленную информацию о ключе
+                    cursor.execute("SELECT access_url FROM keys WHERE id = ?", (existing_key[0],))
+                    updated_key = cursor.fetchone()
+                    access_url = updated_key[0] if updated_key else existing_key[2]
+                    
+                    # Очищаем состояние пользователя
+                    user_states.pop(user_id, None)
+                    
+                    # Проверяем, был ли ключ истекшим
+                    was_expired = existing_key[1] <= now
+                    if was_expired:
+                        await message.answer(f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    else:
+                        await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    return
+                else:
+                    # Если не удалось продлить, создаем новый ключ
+                    logging.warning(f"Failed to extend key {existing_key[0]}, creating new key for user {user_id}")
+                    # Продолжаем выполнение для создания нового ключа
+    else:  # v2ray
+        cursor.execute("SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, k.tariff_id, k.email FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, grace_threshold))
+        existing_key = cursor.fetchone()
+        if existing_key:
+            # Проверяем, отличается ли запрошенная страна от текущей
+            current_country = existing_key[6]  # s.country
+            
+            if country and country != current_country:
+                # Запрошена другая страна - запускаем логику смены страны с продлением
+                logging.info(f"User {user_id} requested different country for V2Ray: current={current_country}, requested={country}. Running country change logic.")
                 
-                # Очищаем состояние пользователя
+                # Формируем key_data для функции смены страны
+                key_data = {
+                    'id': existing_key[0],
+                    'expiry_at': existing_key[1],
+                    'v2ray_uuid': existing_key[2],
+                    'domain': existing_key[3],
+                    'v2ray_path': existing_key[4],
+                    'country': current_country,
+                    'server_id': existing_key[5],
+                    'tariff_id': existing_key[7] or tariff['id'],
+                    'email': existing_key[8] or email,
+                    'protocol': protocol,
+                    'type': 'v2ray'
+                }
+                
+                # Вызываем функцию смены страны с продлением
+                success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff)
+                
+                if success:
+                    user_states.pop(user_id, None)
+                    return
+                else:
+                    # Если не удалось сменить страну, создаем новый ключ
+                    logging.warning(f"Failed to change country for V2Ray key {existing_key[0]}, creating new key for user {user_id}")
+                    # Продолжаем выполнение для создания нового ключа
+            else:
+                # Та же страна или страна не указана - продлеваем как обычно
+                success = await extend_existing_key_with_fallback(cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol)
+            
+                if success:
+                    # Получаем обновленную информацию о ключе
+                    cursor.execute("SELECT k.v2ray_uuid, s.domain, s.v2ray_path FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.id = ?", (existing_key[0],))
+                    updated_key = cursor.fetchone()
+                    
+                    if updated_key:
+                        v2ray_uuid, domain, path = updated_key
+                        # Используем новый формат Reality протокола
+                        config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                    else:
+                        # Fallback к старой конфигурации
+                        v2ray_uuid = existing_key[2]
+                        domain = existing_key[3]
+                        path = existing_key[4] or '/v2ray'
+                        config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                    
+                    # Очищаем состояние пользователя
+                    user_states.pop(user_id, None)
+                    
+                    # Проверяем, был ли ключ истекшим
+                    was_expired = existing_key[1] <= now
+                    if was_expired:
+                        await message.answer(f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    else:
+                        await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    return
+                else:
+                    # Если не удалось продлить, создаем новый ключ
+                    logging.warning(f"Failed to extend V2Ray key {existing_key[0]}, creating new key for user {user_id}")
+                    # Продолжаем выполнение для создания нового ключа
+    
+    # НОВАЯ ЛОГИКА: Если нет ключа запрошенного протокола, проверяем противоположный протокол
+    # Это важно: проверяем только если НЕ нашли ключ запрошенного протокола выше
+    if protocol == "outline":
+        # Проверяем, есть ли V2Ray ключ
+        cursor.execute("SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, k.tariff_id, k.email FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, grace_threshold))
+        opposite_key = cursor.fetchone()
+        
+        if opposite_key:
+            # Нашли V2Ray ключ, хотя покупается Outline
+            logging.info(f"User {user_id}: found V2Ray key while purchasing Outline. Switching protocol.")
+            
+            old_key_data = {
+                'id': opposite_key[0],
+                'expiry_at': opposite_key[1],
+                'v2ray_uuid': opposite_key[2],
+                'domain': opposite_key[3],
+                'v2ray_path': opposite_key[4],
+                'server_id': opposite_key[5],
+                'country': opposite_key[6],
+                'tariff_id': opposite_key[7],
+                'email': opposite_key[8],
+                'protocol': 'v2ray',
+                'type': 'v2ray'
+            }
+            
+            # Вызываем функцию смены протокола
+            success = await switch_protocol_and_extend(cursor, message, user_id, old_key_data, protocol, country, tariff['duration_sec'], email, tariff)
+            
+            if success:
                 user_states.pop(user_id, None)
-                
-                await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 return
             else:
-                # Если не удалось продлить, создаем новый ключ
-                logging.warning(f"Failed to extend V2Ray key {existing_key[0]}, creating new key for user {user_id}")
-                # Продолжаем выполнение для создания нового ключа
+                logging.warning(f"Failed to switch protocol from v2ray to outline for user {user_id}, creating new key")
+                # Продолжаем создание нового ключа
+    
+    else:  # protocol == "v2ray"
+        # Проверяем, есть ли Outline ключ
+        cursor.execute("SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, grace_threshold))
+        opposite_key = cursor.fetchone()
+        
+        if opposite_key:
+            # Нашли Outline ключ, хотя покупается V2Ray
+            logging.info(f"User {user_id}: found Outline key while purchasing V2Ray. Switching protocol.")
+            
+            old_key_data = {
+                'id': opposite_key[0],
+                'expiry_at': opposite_key[1],
+                'access_url': opposite_key[2],
+                'country': opposite_key[3],
+                'server_id': opposite_key[4],
+                'key_id': opposite_key[5],
+                'tariff_id': opposite_key[6],
+                'email': opposite_key[7],
+                'protocol': 'outline',
+                'type': 'outline'
+            }
+            
+            # Вызываем функцию смены протокола
+            success = await switch_protocol_and_extend(cursor, message, user_id, old_key_data, protocol, country, tariff['duration_sec'], email, tariff)
+            
+            if success:
+                user_states.pop(user_id, None)
+                return
+            else:
+                logging.warning(f"Failed to switch protocol from outline to v2ray for user {user_id}, creating new key")
+                # Продолжаем создание нового ключа
+    
+    # Если нет активного ключа — проверяем историю и спрашиваем про страну
+    if country is None:
+        # Ищем последний сервер пользователя (даже если ключ уже удалён)
+        last_country = None
+        if protocol == "outline":
+            cursor.execute("""
+                SELECT s.country 
+                FROM keys k 
+                JOIN servers s ON k.server_id = s.id 
+                WHERE k.user_id = ? 
+                ORDER BY k.created_at DESC 
+                LIMIT 1
+            """, (user_id,))
+        else:  # v2ray
+            cursor.execute("""
+                SELECT s.country 
+                FROM v2ray_keys k 
+                JOIN servers s ON k.server_id = s.id 
+                WHERE k.user_id = ? 
+                ORDER BY k.created_at DESC 
+                LIMIT 1
+            """, (user_id,))
+        
+        country_row = cursor.fetchone()
+        if country_row:
+            last_country = country_row[0]
+            
+        # Если у пользователя была история - спрашиваем про выбор страны
+        if last_country:
+            # Сохраняем состояние для продолжения после выбора страны
+            user_states[user_id] = {
+                'state': 'reactivation_country_selection',
+                'tariff': tariff,
+                'email': email,
+                'protocol': protocol,
+                'last_country': last_country
+            }
+            
+            # Получаем доступные страны для протокола
+            countries = get_countries_by_protocol(protocol)
+            
+            # Создаем клавиатуру с выбором стран
+            keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+            
+            # Добавляем кнопку для выбора прежней страны
+            if last_country in countries:
+                keyboard.add(KeyboardButton(f"🔄 {last_country} (как раньше)"))
+            
+            # Добавляем остальные страны
+            for country_name in countries:
+                if country_name != last_country:
+                    keyboard.add(KeyboardButton(country_name))
+            
+            keyboard.add(KeyboardButton("🔙 Отмена"))
+            
+            await message.answer(
+                f"⚠️ Ваш предыдущий ключ истёк более 24 часов назад и был удалён.\n\n"
+                f"Последний сервер был в стране: **{last_country}**\n\n"
+                f"Выберите страну для нового ключа {PROTOCOLS[protocol]['name']}:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            return
     
     # Если нет активного ключа — создаём новый
     server = select_available_server_by_protocol(cursor, country, protocol)
@@ -1476,32 +2108,64 @@ async def wait_for_payment_with_protocol(message, payment_id, server, user_id, t
         return
 
 async def auto_delete_expired_keys():
+    """Автоматическое удаление истекших ключей с grace period 24 часа"""
+    GRACE_PERIOD = 86400  # 24 часа в секундах
+    
     while True:
         with get_db_cursor(commit=True) as cursor:
             now = int(time.time())
-            # Get expired keys with server info before deleting
+            grace_threshold = now - GRACE_PERIOD
+            
+            # Get expired Outline keys (истекшие более 24 часов назад)
             cursor.execute("""
                 SELECT k.id, k.key_id, s.api_url, s.cert_sha256 
                 FROM keys k 
                 JOIN servers s ON k.server_id = s.id 
                 WHERE k.expiry_at <= ?
-            """, (now,))
-            expired_keys = cursor.fetchall()
+            """, (grace_threshold,))
+            expired_outline_keys = cursor.fetchall()
             
-            # Delete keys from Outline server first
-            for key_id_db, key_id_outline, api_url, cert_sha256 in expired_keys:
+            # Delete Outline keys from server first, then from database
+            outline_deleted = 0
+            for key_id_db, key_id_outline, api_url, cert_sha256 in expired_outline_keys:
                 if key_id_outline:
                     success = await asyncio.get_event_loop().run_in_executor(
                         None, delete_key, api_url, cert_sha256, key_id_outline
                     )
                     if not success:
-                        logging.warning(f"Failed to delete key {key_id_outline} from Outline server")
+                        logging.warning(f"Failed to delete Outline key {key_id_outline} from server")
             
-            # Then delete from database
-            cursor.execute("DELETE FROM keys WHERE expiry_at <= ?", (now,))
-            deleted_count = cursor.rowcount
-            if deleted_count > 0:
-                logging.info(f"Deleted {deleted_count} expired keys")
+            # Delete Outline keys from database
+            cursor.execute("DELETE FROM keys WHERE expiry_at <= ?", (grace_threshold,))
+            outline_deleted = cursor.rowcount
+            
+            # Get expired V2Ray keys (истекшие более 24 часов назад)
+            cursor.execute("""
+                SELECT k.id, k.v2ray_uuid, s.api_url, s.api_key 
+                FROM v2ray_keys k 
+                JOIN servers s ON k.server_id = s.id 
+                WHERE k.expiry_at <= ?
+            """, (grace_threshold,))
+            expired_v2ray_keys = cursor.fetchall()
+            
+            # Delete V2Ray keys from server first, then from database
+            v2ray_deleted = 0
+            for key_id_db, v2ray_uuid, api_url, api_key in expired_v2ray_keys:
+                if v2ray_uuid and api_url and api_key:
+                    try:
+                        from vpn_protocols import V2RayProtocol
+                        protocol_client = V2RayProtocol(api_url, api_key)
+                        await protocol_client.delete_user(v2ray_uuid)
+                    except Exception as e:
+                        logging.warning(f"Failed to delete V2Ray key {v2ray_uuid} from server: {e}")
+            
+            # Delete V2Ray keys from database
+            cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
+            v2ray_deleted = cursor.rowcount
+            
+            # Log results
+            if outline_deleted > 0 or v2ray_deleted > 0:
+                logging.info(f"Deleted expired keys (grace period 24h): {outline_deleted} Outline, {v2ray_deleted} V2Ray")
         
         # Оптимизация памяти после очистки
         try:
@@ -1535,25 +2199,23 @@ async def notify_expiring_keys():
 
                 # 1 day notification
                 if original_duration > one_day and remaining_time <= one_day and notified < 3:
-                    message = f"⏳ Ваш ключ истечет через 1 день:\n`{access_url}`\nПродлите доступ:"
+                    time_str = format_duration(remaining_time)
+                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{access_url}`\nПродлите доступ:"
                     new_notified = 3
                 # 1 hour notification
                 elif original_duration > one_hour and remaining_time <= one_hour and notified < 2:
-                    message = f"⏳ Ваш ключ истечет через 1 час:\n`{access_url}`\nПродлите доступ:"
+                    time_str = format_duration(remaining_time)
+                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{access_url}`\nПродлите доступ:"
                     new_notified = 2
                 # 10 minutes notification (универсально для всех ключей)
                 elif remaining_time > 0 and remaining_time <= 600 and notified < 4:
-                    minutes_remaining = (remaining_time % 3600) // 60
-                    message = f"⏳ Ваш ключ истечет через {minutes_remaining} мин.\n`{access_url}`\nПродлите доступ:"
+                    time_str = format_duration(remaining_time)
+                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{access_url}`\nПродлите доступ:"
                     new_notified = 4
                 # 10% notification
                 elif remaining_time > 0 and remaining_time <= ten_percent_threshold and notified < 1:
-                    hours_remaining = remaining_time // 3600
-                    minutes_remaining = (remaining_time % 3600) // 60
-                    if hours_remaining > 0:
-                        message = f"⏳ Ваш ключ истечет через {hours_remaining}ч. {minutes_remaining}мин.:\n`{access_url}`\nПродлите доступ:"
-                    else:
-                        message = f"⏳ Ваш ключ истечет через {minutes_remaining}мин.:\n`{access_url}`\nПродлите доступ:"
+                    time_str = format_duration(remaining_time)
+                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{access_url}`\nПродлите доступ:"
                     new_notified = 1
 
                 if message:
@@ -1784,6 +2446,85 @@ async def handle_help(message: types.Message):
 @dp.message_handler(lambda m: m.text == "🔙 Назад" and m.reply_markup == help_keyboard)
 async def handle_help_back(message: types.Message):
     await message.answer("Главное меню:", reply_markup=main_menu)
+
+@dp.message_handler(lambda m: m.text == "Сменить страну")
+async def handle_change_country(message: types.Message):
+    """Обработчик смены страны"""
+    user_id = message.from_user.id
+    logging.debug(f"handle_change_country called for user {user_id}")
+    
+    try:
+        with get_db_cursor() as cursor:
+            # Получаем активные ключи пользователя
+            now = int(time.time())
+            
+            # Получаем Outline ключи
+            cursor.execute("""
+                SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.user_id = ? AND k.expiry_at > ?
+            """, (user_id, now))
+            outline_keys = cursor.fetchall()
+            
+            # Получаем V2Ray ключи
+            cursor.execute("""
+                SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.user_id = ? AND k.expiry_at > ?
+            """, (user_id, now))
+            v2ray_keys = cursor.fetchall()
+            
+            # Объединяем все ключи
+            all_keys = []
+            for key in outline_keys:
+                all_keys.append({
+                    'id': key[0],
+                    'expiry_at': key[1],
+                    'server_id': key[2],
+                    'key_id': key[3],
+                    'access_url': key[4],
+                    'country': key[5],
+                    'tariff_id': key[6],
+                    'email': key[7],
+                    'protocol': key[8],
+                    'type': 'outline'
+                })
+            
+            for key in v2ray_keys:
+                all_keys.append({
+                    'id': key[0],
+                    'expiry_at': key[1],
+                    'server_id': key[2],
+                    'v2ray_uuid': key[3],
+                    'country': key[4],
+                    'tariff_id': key[5],
+                    'email': key[6],
+                    'protocol': key[7],
+                    'type': 'v2ray',
+                    'domain': key[8],
+                    'v2ray_path': key[9]
+                })
+            
+            logging.debug(f"Всего активных ключей для смены страны: {len(all_keys)}")
+            
+            if not all_keys:
+                await message.answer("У вас нет активных ключей для смены страны.", reply_markup=main_menu)
+                return
+            
+            if len(all_keys) == 1:
+                # Если только один ключ, показываем выбор страны сразу
+                logging.debug(f"Меняем страну для одного ключа: {all_keys[0]['type']}")
+                await show_country_change_menu(message, user_id, all_keys[0])
+            else:
+                # Если несколько ключей, показываем список для выбора
+                logging.debug("Показываем меню выбора ключа для смены страны")
+                await show_key_selection_for_country_change(message, user_id, all_keys)
+    
+    except Exception as e:
+        logging.error(f"Error in handle_change_country: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте еще раз.", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text == "Сменить приложение")
 async def handle_change_app(message: types.Message):
@@ -2117,6 +2858,10 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
             try:
                 user_data = await protocol_client.create_user(old_email or f"user_{user_id}@veilbot.com")
                 
+                # Проверяем, что пользователь действительно создан
+                if not user_data or not user_data.get('uuid'):
+                    raise Exception("Failed to create V2Ray user - API returned None or invalid data")
+                
                 # Добавляем новый ключ с тем же сроком действия и email
                 cursor.execute(
                     "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id) "
@@ -2164,6 +2909,193 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
             await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
         except Exception as e:
             logging.error(f"Failed to send admin notification (protocol change): {e}")
+        
+        # Ручной commit транзакции
+        cursor.connection.commit()
+
+async def show_key_selection_for_country_change(message: types.Message, user_id: int, all_keys: list):
+    """Показать меню выбора ключа для смены страны"""
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    for key in all_keys:
+        protocol_name = PROTOCOLS[key['protocol']]['name']
+        country_name = key['country']
+        expiry_date = time.strftime('%d.%m.%Y', time.localtime(key['expiry_at']))
+        
+        button_text = f"{PROTOCOLS[key['protocol']]['icon']} {protocol_name} ({country_name}) - до {expiry_date}"
+        callback_data = f"change_country_{key['type']}_{key['id']}"
+        
+        keyboard.add(InlineKeyboardButton(button_text, callback_data=callback_data))
+    
+    keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_country_change"))
+    
+    await message.answer(
+        "Выберите ключ для смены страны:",
+        reply_markup=keyboard
+    )
+
+async def show_country_change_menu(message: types.Message, user_id: int, key_data: dict):
+    """Показать меню выбора страны для смены"""
+    protocol = key_data['protocol']
+    current_country = key_data['country']
+    
+    # Получаем доступные страны для того же протокола
+    available_countries = get_countries_by_protocol(protocol)
+    
+    # Исключаем текущую страну
+    available_countries = [country for country in available_countries if country != current_country]
+    
+    if not available_countries:
+        await message.answer(
+            f"К сожалению, для протокола {PROTOCOLS[protocol]['name']} нет других доступных стран.",
+            reply_markup=help_keyboard
+        )
+        return
+    
+    # Сохраняем данные ключа в состоянии пользователя
+    user_states[user_id] = {
+        'state': 'country_change_selection',
+        'key_data': key_data
+    }
+    
+    # Создаем клавиатуру с доступными странами
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    for country in available_countries:
+        keyboard.add(KeyboardButton(f"🌍 {country}"))
+    keyboard.add(KeyboardButton("🔙 Назад"))
+    
+    await message.answer(
+        f"Текущая страна: {current_country}\n\n"
+        f"Выберите новую страну для протокола {PROTOCOLS[protocol]['name']}:",
+        reply_markup=keyboard
+    )
+
+async def change_country_for_key(message: types.Message, user_id: int, key_data: dict, new_country: str):
+    """Меняет страну для конкретного ключа"""
+    now = int(time.time())
+    
+    with get_db_cursor(commit=False) as cursor:
+        # Получаем тариф
+        cursor.execute("SELECT name, duration_sec, price_rub FROM tariffs WHERE id = ?", (key_data['tariff_id'],))
+        tariff_row = cursor.fetchone()
+        if not tariff_row:
+            await message.answer("Ошибка: тариф не найден.", reply_markup=main_menu)
+            return
+        tariff = {'id': key_data['tariff_id'], 'name': tariff_row[0], 'duration_sec': tariff_row[1], 'price_rub': tariff_row[2]}
+        
+        # Считаем оставшееся время
+        remaining = key_data['expiry_at'] - now
+        if remaining <= 0:
+            await message.answer("Срок действия ключа истёк.", reply_markup=main_menu)
+            return
+        
+        old_server_id = key_data['server_id']
+        old_country = key_data['country']
+        old_email = key_data['email']
+        protocol = key_data['protocol']
+        
+        # Ищем сервер той же страны с тем же протоколом
+        cursor.execute("""
+            SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key FROM servers 
+            WHERE active = 1 AND country = ? AND protocol = ?
+        """, (new_country, protocol))
+        servers = cursor.fetchall()
+        
+        if not servers:
+            await message.answer(f"Нет серверов {PROTOCOLS[protocol]['name']} в стране {new_country}.", reply_markup=main_menu)
+            return
+        
+        # Берём первый подходящий сервер
+        new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
+        
+        # Сохраняем данные старого ключа для удаления после успешного создания нового
+        old_key_data = {
+            'type': key_data['type'],
+            'server_id': old_server_id,
+            'key_id': key_data.get('key_id'),
+            'v2ray_uuid': key_data.get('v2ray_uuid'),
+            'db_id': key_data['id']
+        }
+        
+        # Создаём новый ключ в новой стране
+        if protocol == "outline":
+            # Создаём новый Outline ключ
+            try:
+                key = await asyncio.get_event_loop().run_in_executor(None, create_key, api_url, cert_sha256)
+                if not key:
+                    await message.answer("Ошибка при создании нового Outline ключа.", reply_markup=main_menu)
+                    return
+            except Exception as e:
+                logging.error(f"Ошибка при создании Outline ключа: {e}")
+                await message.answer("Ошибка при создании нового ключа.", reply_markup=main_menu)
+                return
+            
+            # Добавляем новый ключ с тем же сроком действия и email
+            cursor.execute(
+                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, key_data['tariff_id'])
+            )
+            
+            await message.answer(format_key_message_unified(key["accessUrl"], protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            
+            # Удаляем старый ключ после успешного создания нового
+            await delete_old_key_after_success(cursor, old_key_data)
+            
+        elif protocol == "v2ray":
+            # Создаём новый V2Ray ключ
+            try:
+                from vpn_protocols import V2RayProtocol
+                v2ray_client = V2RayProtocol(api_url, api_key)
+                user_data = await v2ray_client.create_user(old_email or f"user_{user_id}@veilbot.com")
+                
+                if not user_data or not user_data.get('uuid'):
+                    await message.answer("Ошибка при создании нового V2Ray ключа.", reply_markup=main_menu)
+                    return
+                
+                # Добавляем новый ключ с тем же сроком действия и email
+                cursor.execute(
+                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (new_server_id, user_id, user_data['uuid'], now + remaining, now, old_email, key_data['tariff_id'])
+                )
+                
+                # Формируем access_url для V2Ray
+                access_url = f"vless://{user_data['uuid']}@{domain}:443?path={v2ray_path}&security=tls&type=ws#VeilBot-V2Ray"
+                
+                await message.answer(format_key_message_unified(access_url, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                
+                # Удаляем старый ключ после успешного создания нового
+                await delete_old_key_after_success(cursor, old_key_data)
+                
+            except Exception as e:
+                logging.error(f"Ошибка при создании нового V2Ray ключа: {e}")
+                error_msg = "Ошибка при создании нового ключа."
+                if "401" in str(e):
+                    error_msg = "Ошибка авторизации на сервере V2Ray. Обратитесь к администратору."
+                elif "404" in str(e):
+                    error_msg = "Сервер V2Ray недоступен. Попробуйте позже."
+                await message.answer(error_msg, reply_markup=main_menu)
+                return
+        
+        # Уведомление админу о смене страны
+        admin_msg = (
+            f"🌍 *Смена страны*\n"
+            f"Пользователь: `{user_id}`\n"
+            f"Протокол: *{PROTOCOLS[protocol]['name']}*\n"
+            f"Старая страна: *{old_country}*\n"
+            f"Новая страна: *{new_country}*\n"
+            f"Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
+            f"Старый сервер: `{old_server_id}`\n"
+            f"Новый сервер: `{new_server_id}`\n"
+            f"Срок действия: до <code>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now + remaining))}</code>\n"
+        )
+        if old_email:
+            admin_msg += f"Email: `{old_email}`\n"
+        try:
+            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Failed to send admin notification (country change): {e}")
         
         # Ручной commit транзакции
         cursor.connection.commit()
@@ -2395,6 +3327,80 @@ async def handle_cancel_reissue(callback_query: types.CallbackQuery):
     """Обработчик отмены перевыпуска ключа"""
     await callback_query.message.edit_text("Перевыпуск ключа отменен.")
     await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith("change_country_"))
+async def handle_change_country_callback(callback_query: types.CallbackQuery):
+    """Обработчик выбора ключа для смены страны"""
+    user_id = callback_query.from_user.id
+    
+    # Парсим callback_data: change_country_{type}_{id}
+    parts = callback_query.data.split("_")
+    if len(parts) != 4:
+        await callback_query.answer("Ошибка: неверный формат данных")
+        return
+    
+    key_type = parts[2]
+    key_id = int(parts[3])
+    
+    # Получаем данные ключа
+    with get_db_cursor() as cursor:
+        if key_type == "outline":
+            cursor.execute("""
+                SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.id = ? AND k.user_id = ?
+            """, (key_id, user_id))
+        else:  # v2ray
+            cursor.execute("""
+                SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.id = ? AND k.user_id = ?
+            """, (key_id, user_id))
+        
+        key_data = cursor.fetchone()
+        if not key_data:
+            await callback_query.answer("Ключ не найден")
+            return
+        
+        # Формируем словарь с данными ключа
+        if key_type == "outline":
+            key_dict = {
+                'id': key_data[0],
+                'expiry_at': key_data[1],
+                'server_id': key_data[2],
+                'key_id': key_data[3],
+                'access_url': key_data[4],
+                'country': key_data[5],
+                'tariff_id': key_data[6],
+                'email': key_data[7],
+                'protocol': key_data[8],
+                'type': 'outline'
+            }
+        else:  # v2ray
+            key_dict = {
+                'id': key_data[0],
+                'expiry_at': key_data[1],
+                'server_id': key_data[2],
+                'v2ray_uuid': key_data[3],
+                'country': key_data[4],
+                'tariff_id': key_data[5],
+                'email': key_data[6],
+                'protocol': key_data[7],
+                'type': 'v2ray',
+                'domain': key_data[8],
+                'v2ray_path': key_data[9]
+            }
+    
+    await callback_query.answer()
+    await show_country_change_menu(callback_query.message, user_id, key_dict)
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_country_change")
+async def handle_cancel_country_change(callback_query: types.CallbackQuery):
+    """Обработчик отмены смены страны"""
+    await callback_query.answer()
+    await callback_query.message.answer("Смена страны отменена.", reply_markup=main_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("change_protocol_"))
 async def handle_change_protocol_callback(callback_query: types.CallbackQuery):

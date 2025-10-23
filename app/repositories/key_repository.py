@@ -198,6 +198,7 @@ class KeyRepository:
         sort_order: str = "DESC",
         limit: int = 50,
         offset: int = 0,
+        cursor: str | None = None,
     ) -> list[tuple]:
         # Columns: id, key_id, access_url, created_at, expiry_at, server_name, email, tariff_name, protocol, traffic_limit_mb, api_url, api_key
         sort_map = {
@@ -214,6 +215,15 @@ class KeyRepository:
             c = conn.cursor()
             parts = []
             params: list = []
+            
+            # Keyset pagination support
+            keyset_where = ""
+            keyset_params = []
+            if cursor and sort_by == "created_at":
+                from app.infra.pagination import KeysetPagination
+                keyset_where, keyset_params = KeysetPagination.build_keyset_where_clause(
+                    sort_by, sort_order, cursor, "k"
+                )
 
             def add_outline():
                 sql = (
@@ -229,6 +239,9 @@ class KeyRepository:
                     where.append("k.tariff_id = ?"); params.append(tariff_id)
                 if server_id is not None:
                     where.append("k.server_id = ?"); params.append(server_id)
+                if keyset_where:
+                    where.append(keyset_where)
+                    params.extend(keyset_params)
                 if where:
                     sql += " WHERE " + " AND ".join(where)
                 parts.append(sql)
@@ -249,6 +262,9 @@ class KeyRepository:
                     where.append("k.tariff_id = ?"); params.append(tariff_id)
                 if server_id is not None:
                     where.append("k.server_id = ?"); params.append(server_id)
+                if keyset_where:
+                    where.append(keyset_where)
+                    params.extend(keyset_params)
                 if where:
                     sql += " WHERE " + " AND ".join(where)
                 parts.append(sql)
@@ -259,10 +275,19 @@ class KeyRepository:
                 add_v2ray()
 
             union_sql = " UNION ALL ".join(parts) if parts else "SELECT 0, '', '', 0, 0, '', '', '', '' WHERE 0"
-            # Используем имена колонок для сортировки вместо индексов
-            sort_column = sort_by if sort_by in ['created_at', 'expiry_at', 'server_name', 'email', 'tariff_name'] else 'created_at'
-            final_sql = f"SELECT * FROM ( {union_sql} ) ORDER BY {sort_column} {order_dir} LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
+            
+            # Use keyset pagination for better performance
+            if cursor and sort_by == "created_at":
+                from app.infra.pagination import KeysetPagination
+                order_clause = KeysetPagination.build_keyset_order_clause(sort_by, sort_order)
+                final_sql = f"SELECT * FROM ( {union_sql} ) ORDER BY {order_clause} LIMIT ?"
+                params.extend([limit + 1])  # Fetch one extra to check if there are more
+            else:
+                # Fallback to offset pagination
+                sort_column = sort_by if sort_by in ['created_at', 'expiry_at', 'server_name', 'email', 'tariff_name'] else 'created_at'
+                final_sql = f"SELECT * FROM ( {union_sql} ) ORDER BY {sort_column} {order_dir} LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            
             c.execute(final_sql, params)
             return c.fetchall()
 
