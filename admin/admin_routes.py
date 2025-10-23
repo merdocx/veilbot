@@ -197,16 +197,39 @@ def datetime_local(ts):
     except Exception:
         return ""
 
-async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: dict) -> str:
+async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: dict, server_id: int = None) -> str:
     """Get monthly traffic for a specific key in GB"""
     v2ray = None
     try:
         if protocol == 'v2ray':
+            # Try to get from cache first
+            if server_id:
+                from app.infra.cache import get_cached_v2ray_traffic, cache_v2ray_traffic
+                cached_data = get_cached_v2ray_traffic(server_id, server_config)
+                if cached_data:
+                    # Find specific key in cached data
+                    data = cached_data.get('data', {})
+                    keys = data.get('keys', [])
+                    for key in keys:
+                        if key.get('key_uuid') == key_uuid:
+                            monthly_traffic_data = key.get('monthly_traffic', {})
+                            total_bytes = monthly_traffic_data.get('total_bytes', 0)
+                            if total_bytes == 0:
+                                return "0 GB"
+                            traffic_gb = total_bytes / (1024 * 1024 * 1024)
+                            return f"{traffic_gb:.2f} GB"
+                    return "0 GB"
+            
             # Create V2Ray protocol instance
             v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
             
             # Get monthly traffic for all keys and find specific key
             monthly_traffic = await v2ray.get_monthly_traffic()
+            
+            # Cache the result if we have server_id
+            if server_id and monthly_traffic:
+                from app.infra.cache import cache_v2ray_traffic
+                cache_v2ray_traffic(server_id, server_config, monthly_traffic, ttl=300)
             
             if monthly_traffic and monthly_traffic.get('data'):
                 data = monthly_traffic.get('data', {})
@@ -292,8 +315,230 @@ def format_bytes(bytes_value):
         unit_index += 1
     
     return f"{bytes_value:.2f} {units[unit_index]}"
+def format_duration_filter(seconds):
+    """Фильтр для форматирования длительности в человекочитаемый вид с правильным склонением"""
+    if seconds is None or seconds < 0:
+        return "истек"
+    
+    if seconds < 60:
+        return f"{int(seconds)} сек"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        return f"{minutes} мин"
+    elif seconds < 86400:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        if minutes > 0:
+            return f"{hours}ч {minutes}мин"
+        else:
+            return f"{hours}ч"
+    else:
+        days = int(seconds // 86400)
+        hours = int((seconds % 86400) // 3600)
+        minutes = int(((seconds % 86400) % 3600) // 60)
+        
+        # Если больше года, показываем годы, месяцы, дни, часы, минуты
+        if days >= 365:
+            years = days // 365
+            remaining_days = days % 365
+            months = remaining_days // 30
+            remaining_days = remaining_days % 30
+            
+            # Правильное склонение для лет
+            if years == 1:
+                years_str = "год"
+            elif years in [2, 3, 4]:
+                years_str = "года"
+            else:
+                years_str = "лет"
+            
+            # Правильное склонение для месяцев
+            if months == 1:
+                months_str = "месяц"
+            elif months in [2, 3, 4]:
+                months_str = "месяца"
+            else:
+                months_str = "месяцев"
+            
+            # Правильное склонение для дней
+            if remaining_days == 1:
+                days_str = "день"
+            elif remaining_days in [2, 3, 4]:
+                days_str = "дня"
+            else:
+                days_str = "дней"
+            
+            # Правильное склонение для часов
+            if hours == 1:
+                hours_str = "час"
+            elif hours in [2, 3, 4]:
+                hours_str = "часа"
+            else:
+                hours_str = "часов"
+            
+            # Правильное склонение для минут
+            if minutes == 1:
+                minutes_str = "минута"
+            elif minutes in [2, 3, 4]:
+                minutes_str = "минуты"
+            else:
+                minutes_str = "минут"
+            
+            # Формируем результат
+            result_parts = []
+            if years > 0:
+                result_parts.append(f"{years} {years_str}")
+            if months > 0:
+                result_parts.append(f"{months} {months_str}")
+            if remaining_days > 0:
+                result_parts.append(f"{remaining_days} {days_str}")
+            if hours > 0:
+                result_parts.append(f"{hours} {hours_str}")
+            if minutes > 0:
+                result_parts.append(f"{minutes} {minutes_str}")
+            
+            return ", ".join(result_parts)
+        
+        # Если больше месяца, показываем месяцы, дни, часы, минуты
+        elif days >= 30:
+            months = days // 30
+            remaining_days = days % 30
+            
+            # Правильное склонение для месяцев
+            if months == 1:
+                months_str = "месяц"
+            elif months in [2, 3, 4]:
+                months_str = "месяца"
+            else:
+                months_str = "месяцев"
+            
+            # Правильное склонение для дней
+            if remaining_days == 1:
+                days_str = "день"
+            elif remaining_days in [2, 3, 4]:
+                days_str = "дня"
+            else:
+                days_str = "дней"
+            
+            # Правильное склонение для часов
+            if hours == 1:
+                hours_str = "час"
+            elif hours in [2, 3, 4]:
+                hours_str = "часа"
+            else:
+                hours_str = "часов"
+            
+            # Правильное склонение для минут
+            if minutes == 1:
+                minutes_str = "минута"
+            elif minutes in [2, 3, 4]:
+                minutes_str = "минуты"
+            else:
+                minutes_str = "минут"
+            
+            # Формируем результат
+            result_parts = []
+            if months > 0:
+                result_parts.append(f"{months} {months_str}")
+            if remaining_days > 0:
+                result_parts.append(f"{remaining_days} {days_str}")
+            if hours > 0:
+                result_parts.append(f"{hours} {hours_str}")
+            if minutes > 0:
+                result_parts.append(f"{minutes} {minutes_str}")
+            
+            return ", ".join(result_parts)
+        
+        # Если больше недели, показываем недели, дни, часы, минуты
+        elif days >= 7:
+            weeks = days // 7
+            remaining_days = days % 7
+            
+            # Правильное склонение для недель
+            if weeks == 1:
+                weeks_str = "неделя"
+            elif weeks in [2, 3, 4]:
+                weeks_str = "недели"
+            else:
+                weeks_str = "недель"
+            
+            # Правильное склонение для дней
+            if remaining_days == 1:
+                days_str = "день"
+            elif remaining_days in [2, 3, 4]:
+                days_str = "дня"
+            else:
+                days_str = "дней"
+            
+            # Правильное склонение для часов
+            if hours == 1:
+                hours_str = "час"
+            elif hours in [2, 3, 4]:
+                hours_str = "часа"
+            else:
+                hours_str = "часов"
+            
+            # Правильное склонение для минут
+            if minutes == 1:
+                minutes_str = "минута"
+            elif minutes in [2, 3, 4]:
+                minutes_str = "минуты"
+            else:
+                minutes_str = "минут"
+            
+            # Формируем результат
+            result_parts = []
+            if weeks > 0:
+                result_parts.append(f"{weeks} {weeks_str}")
+            if remaining_days > 0:
+                result_parts.append(f"{remaining_days} {days_str}")
+            if hours > 0:
+                result_parts.append(f"{hours} {hours_str}")
+            if minutes > 0:
+                result_parts.append(f"{minutes} {minutes_str}")
+            
+            return ", ".join(result_parts)
+        
+        # Обычные дни - показываем дни, часы, минуты
+        else:
+            # Правильное склонение для дней
+            if days == 1:
+                days_str = "день"
+            elif days in [2, 3, 4]:
+                days_str = "дня"
+            else:
+                days_str = "дней"
+            
+            # Правильное склонение для часов
+            if hours == 1:
+                hours_str = "час"
+            elif hours in [2, 3, 4]:
+                hours_str = "часа"
+            else:
+                hours_str = "часов"
+            
+            # Правильное склонение для минут
+            if minutes == 1:
+                minutes_str = "минута"
+            elif minutes in [2, 3, 4]:
+                minutes_str = "минуты"
+            else:
+                minutes_str = "минут"
+            
+            # Формируем результат
+            result_parts = []
+            if days > 0:
+                result_parts.append(f"{days} {days_str}")
+            if hours > 0:
+                result_parts.append(f"{hours} {hours_str}")
+            if minutes > 0:
+                result_parts.append(f"{minutes} {minutes_str}")
+            
+            return ", ".join(result_parts)
+
 templates.env.filters["timestamp"] = timestamp_filter
 templates.env.filters["my_datetime_local"] = datetime_local
+templates.env.filters["format_duration"] = format_duration_filter
 
 # Helper to format amounts (kopecks to RUB with 2 decimals)
 def format_rub(amount_kopecks: int) -> str:
@@ -391,18 +636,30 @@ async def dashboard(request: Request):
 
     log_admin_action(request, "DASHBOARD_ACCESS")
 
-    now = int(time.time())
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM keys WHERE expiry_at > ?", (now,))
-    outline_keys = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE expiry_at > ?", (now,))
-    v2ray_keys = c.fetchone()[0]
-    active_keys = outline_keys + v2ray_keys
-    c.execute("SELECT COUNT(*) FROM tariffs")
-    tariff_count = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM servers")
-    server_count = c.fetchone()[0]
+    # Try to get cached dashboard data
+    from app.infra.cache import traffic_cache
+    cache_key = "dashboard_stats"
+    cached_stats = traffic_cache.get(cache_key)
+    
+    if cached_stats:
+        active_keys, tariff_count, server_count = cached_stats
+    else:
+        # Calculate fresh stats
+        now = int(time.time())
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM keys WHERE expiry_at > ?", (now,))
+        outline_keys = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE expiry_at > ?", (now,))
+        v2ray_keys = c.fetchone()[0]
+        active_keys = outline_keys + v2ray_keys
+        c.execute("SELECT COUNT(*) FROM tariffs")
+        tariff_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM servers")
+        server_count = c.fetchone()[0]
+        
+        # Cache for 60 seconds
+        traffic_cache.set(cache_key, (active_keys, tariff_count, server_count), ttl=60)
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
@@ -685,7 +942,7 @@ async def edit_server(request: Request, server_id: int):
     return RedirectResponse(url="/servers", status_code=303)
 
 @router.get("/keys")
-async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str | None = None, tariff_id: int | None = None, protocol: str | None = None, server_id: int | None = None, sort_by: str | None = None, sort_order: str | None = None, export: str | None = None):
+async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str | None = None, tariff_id: int | None = None, protocol: str | None = None, server_id: int | None = None, sort_by: str | None = None, sort_order: str | None = None, export: str | None = None, cursor: str | None = None):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
 
@@ -705,7 +962,8 @@ async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str
         sort_by=sort_by_eff,
         sort_order=sort_order_eff,
         limit=limit,
-        offset=(page-1)*limit,
+        offset=(page-1)*limit if not cursor else 0,
+        cursor=cursor,
     )
     
     # Получаем данные о трафике для V2Ray ключей
@@ -718,7 +976,18 @@ async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str
                 api_url = key[10] if len(key) > 10 else ''
                 api_key = key[11] if len(key) > 11 else ''
                 server_config = {'api_url': api_url or '', 'api_key': api_key or ''}
-                monthly_traffic = await get_key_monthly_traffic(key[1], 'v2ray', server_config)
+                # Get server_id from key data (assuming it's in position 5 or we need to fetch it)
+                server_id = None
+                if len(key) > 11:  # Check if we have server_id in the key data
+                    # We need to get server_id from the database
+                    with sqlite3.connect(DB_PATH) as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT server_id FROM v2ray_keys WHERE id = ?", (key[0],))
+                        result = c.fetchone()
+                        if result:
+                            server_id = result[0]
+                
+                monthly_traffic = await get_key_monthly_traffic(key[1], 'v2ray', server_config, server_id)
                 key_with_traffic = list(key) + [monthly_traffic]
                 keys_with_traffic.append(key_with_traffic)
             except Exception as e:

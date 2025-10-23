@@ -66,8 +66,21 @@ class UserRepository:
             outline_row = c.fetchone() or (0, None)
             c.execute("SELECT COUNT(*), MAX(created_at) FROM v2ray_keys WHERE user_id = ?", (user_id,))
             v2ray_row = c.fetchone() or (0, None)
-            c.execute("SELECT email FROM keys WHERE user_id = ? AND email IS NOT NULL AND email != '' ORDER BY created_at DESC LIMIT 1", (user_id,))
+            
+            # Сначала пытаемся получить email из payments (приоритет), исключая автоматически сгенерированные
+            c.execute("SELECT email FROM payments WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY created_at DESC LIMIT 1", (user_id,))
             email_row = c.fetchone()
+            
+            # Если не нашли в payments, ищем в keys, исключая автоматически сгенерированные
+            if not email_row:
+                c.execute("SELECT email FROM keys WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY created_at DESC LIMIT 1", (user_id,))
+                email_row = c.fetchone()
+            
+            # Фолбэк на v2ray_keys
+            if not email_row:
+                c.execute("SELECT email FROM v2ray_keys WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY created_at DESC LIMIT 1", (user_id,))
+                email_row = c.fetchone()
+            
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
             ref_cnt = c.fetchone()
             return {

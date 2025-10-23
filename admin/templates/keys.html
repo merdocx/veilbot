@@ -108,25 +108,7 @@
     font-size: 14px;
 }
 
-.badge {
-    display: inline-block;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    text-align: center;
-}
-
-.badge-outline {
-    background: #3b82f6;
-    color: white;
-}
-
-.badge-traffic {
-    background: #10b981;
-    color: white;
-    font-weight: 600;
-}
+/* Убраны стили для badge для упрощения таблицы */
 
 .email {
     font-size: 0.7rem;
@@ -150,30 +132,7 @@
     white-space: nowrap;
 }
 
-.badge-v2ray {
-    background: #8b5cf6;
-    color: white;
-}
-
-.badge-success {
-    background: #10b981;
-    color: white;
-}
-
-.badge-danger {
-    background: #ef4444;
-    color: white;
-}
-
-.badge-info {
-    background: #6b7280;
-    color: white;
-}
-
-.badge-primary {
-    background: #3b82f6;
-    color: white;
-}
+/* Все badge стили убраны для упрощения */
 
 .code {
     font-family: 'Courier New', monospace;
@@ -381,7 +340,7 @@
     
 
     <!-- Фильтры -->
-    <div class="filter-row sticky" style="display:grid; grid-template-columns: 50px 80px 1fr 80px 140px 110px 110px 110px 110px 90px 120px; gap:6px; align-items:center;">
+    <div class="filter-row sticky" style="display:grid; grid-template-columns: 50px 60px 100px 70px 110px 90px 70px 90px 90px 100px 50px 120px; gap:6px; align-items:center;">
         <input class="col-filter" data-col="0" placeholder="ID" style="width:100%;">
         <input class="col-filter" data-col="1" placeholder="Протокол" style="width:100%;">
         <input class="col-filter" data-col="2" placeholder="Ключ" style="width:100%;">
@@ -391,7 +350,8 @@
         <input class="col-filter" data-col="6" placeholder="Сервер" style="width:100%;">
         <input class="col-filter" data-col="7" placeholder="Создан" style="width:100%;">
         <input class="col-filter" data-col="8" placeholder="Истекает" style="width:100%;">
-        <input class="col-filter" data-col="9" placeholder="Статус" style="width:100%;">
+        <input class="col-filter" data-col="9" placeholder="Осталось" style="width:100%;">
+        <input class="col-filter" data-col="10" placeholder="Статус" style="width:100%;">
         <div></div>
     </div>
 
@@ -401,15 +361,16 @@
         <thead>
             <tr>
                 <th style="width: 50px;">ID</th>
-                <th style="width: 80px;">Протокол</th>
-                <th style="width: 150px;">Ключ</th>
-                <th style="width: 80px;">Тариф</th>
-                <th style="width: 120px;">Email</th>
-                <th style="width: 100px;">Трафик (месяц)</th>
-                <th style="width: 80px;">Сервер</th>
+                <th style="width: 60px;">Протокол</th>
+                <th style="width: 100px;">Ключ</th>
+                <th style="width: 70px;">Тариф</th>
+                <th style="width: 110px;">Email</th>
+                <th style="width: 90px;">Трафик</th>
+                <th style="width: 70px;">Сервер</th>
                 <th style="width: 90px;">Создан</th>
                 <th style="width: 90px;">Истекает</th>
-                <th style="width: 70px;">Статус</th>
+                <th style="width: 100px;">Осталось</th>
+                <th style="width: 50px;">Статус</th>
                 <th style="width: 120px;">Действия</th>
             </tr>
         </thead>
@@ -419,11 +380,11 @@
                 <td>{{ k[0] }}</td>
                 <td>
                     {% if k[8] == 'outline' %}
-                        <span class="badge badge-outline">🔒</span>
+                        <span>🔒</span>
                     {% elif k[8] == 'v2ray' %}
-                        <span class="badge badge-v2ray">🛡️</span>
+                        <span>🛡️</span>
                     {% else %}
-                        <span class="badge badge-info">{{ k[8] }}</span>
+                        <span>{{ k[8] }}</span>
                     {% endif %}
                 </td>
                 <td>
@@ -434,7 +395,7 @@
                 </td>
                 <td>
                     {% if k[7] %}
-                        <span class="badge badge-primary">{{ k[7] }}</span>
+                        <span>{{ k[7] }}</span>
                     {% else %}
                         <span class="text-muted">—</span>
                     {% endif %}
@@ -448,23 +409,31 @@
                 </td>
                 <td>
                     {% if k[8] == 'v2ray' %}
-                        <span class="badge badge-traffic">{{ (k[-1] if k|length > 12 else '') or '—' }}</span>
+                        <span>{{ (k[-1] if k|length > 12 else '') or '—' }}</span>
                     {% elif k[8] == 'outline' %}
-                        <span class="badge badge-traffic">{{ (k[-1] if k|length > 9 else '') or '—' }}</span>
+                        <span>{{ (k[-1] if k|length > 9 else '') or '—' }}</span>
                     {% else %}
                         <span class="text-muted">N/A</span>
                     {% endif %}
                 </td>
                 <td>
-                    <span class="badge badge-info">{{ k[5] }}</span>
+                    <span>{{ k[5] }}</span>
                 </td>
                 <td class="date-cell" title="{{ k[3]|timestamp }}">{{ (k[3]|timestamp).replace(' ', '<br>')|safe }}</td>
                 <td class="date-cell" title="{{ k[4]|timestamp }}">{{ (k[4]|timestamp).replace(' ', '<br>')|safe }}</td>
                 <td>
                     {% if k[4] > current_time %}
-                        <span class="badge badge-success">Активен</span>
+                        {% set remaining = k[4] - current_time %}
+                        <span>{{ remaining|format_duration }}</span>
                     {% else %}
-                        <span class="badge badge-danger">Истек</span>
+                        <span style="color: #ef4444;">Истек</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if k[4] > current_time %}
+                        <span title="Активен">✅</span>
+                    {% else %}
+                        <span title="Истек">❌</span>
                     {% endif %}
                 </td>
                 <td>
