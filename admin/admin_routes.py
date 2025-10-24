@@ -775,9 +775,13 @@ async def servers_page(request: Request):
         total_count = outline_count + v2ray_count
         servers_with_counts.append(s + (total_count,))
     
+    # Calculate active servers count
+    active_servers = sum(1 for s in servers if s[5])  # s[5] is the active field
+    
     return templates.TemplateResponse("servers.html", {
         "request": request, 
         "servers": servers_with_counts,
+        "active_servers": active_servers,
         "csrf_token": get_csrf_token(request)
     })
 
