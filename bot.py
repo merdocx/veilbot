@@ -261,9 +261,9 @@ async def handle_my_keys_btn(message: types.Message):
         """, (user_id, now))
         outline_keys = cursor.fetchall()
         
-        # Получаем V2Ray ключи с информацией о стране
+        # Получаем V2Ray ключи с информацией о стране и сервере
         cursor.execute("""
-            SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email
+            SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key
             FROM v2ray_keys k
             JOIN servers s ON k.server_id = s.id
             WHERE k.user_id = ? AND k.expiry_at > ?
@@ -283,15 +283,11 @@ async def handle_my_keys_btn(message: types.Message):
         })
     
     # Добавляем V2Ray ключи
-    for v2ray_uuid, exp, domain, path, country, email in v2ray_keys:
+    for v2ray_uuid, exp, domain, path, country, email, api_url, api_key in v2ray_keys:
         # Получаем реальную конфигурацию с сервера
         try:
-            # Находим сервер для этого ключа
-            cursor.execute("SELECT api_url, api_key FROM servers WHERE id = (SELECT server_id FROM v2ray_keys WHERE v2ray_uuid = ?)", (v2ray_uuid,))
-            server_data = cursor.fetchone()
-            
-            if server_data:
-                server_config = {'api_url': server_data[0], 'api_key': server_data[1]}
+            if api_url and api_key:
+                server_config = {'api_url': api_url, 'api_key': api_key}
                 protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
                 config = await protocol_client.get_user_config(v2ray_uuid, {
                     'domain': domain,
@@ -300,7 +296,7 @@ async def handle_my_keys_btn(message: types.Message):
                     'email': email or f"user_{user_id}@veilbot.com"
                 })
             else:
-                # Fallback к старому формату если не удалось получить конфигурацию
+                # Fallback к старому формату если нет данных сервера
                 config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
         except Exception as e:
             logging.error(f"Error getting V2Ray config for {v2ray_uuid}: {e}")
