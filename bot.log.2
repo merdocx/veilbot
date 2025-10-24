@@ -1,0 +1,617 @@
+2025-09-27 00:13:05,712 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:05,713 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:05,714 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:05,715 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:05,715 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:05,716 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:05,716 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:05,717 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:05,717 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:05,717 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:05,718 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:05,719 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:05,719 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:05,720 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:05,720 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:05,721 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:05,721 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:05,721 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:05,722 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:05,709 - aiogram.dispatcher.dispatcher - ERROR - Cause exception while getting updates.
+2025-09-27 00:13:15,747 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:15,749 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,749 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,750 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,752 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,752 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:15,753 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:15,753 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:15,754 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:15,755 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,756 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,756 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,757 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,758 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:15,758 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:15,759 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:15,759 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:15,760 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,761 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,762 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,762 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:15,763 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:15,763 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:15,764 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:15,747 - aiogram.dispatcher.dispatcher - ERROR - Cause exception while getting updates.
+2025-09-27 00:13:25,787 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:25,788 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,789 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,789 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,790 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,792 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:25,792 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:25,793 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:25,793 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:25,796 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,797 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,797 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,800 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,801 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:25,801 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:25,804 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:25,805 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:25,805 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,806 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,807 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,808 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:25,808 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:25,809 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:25,809 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:25,787 - aiogram.dispatcher.dispatcher - ERROR - Cause exception while getting updates.
+2025-09-27 00:13:35,847 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:35,849 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,852 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,853 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,854 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,855 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:35,856 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:35,856 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:35,858 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:35,859 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,859 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,860 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,861 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,862 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:35,862 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:35,863 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:35,863 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:35,864 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,865 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,865 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,866 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:35,866 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:35,867 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:35,867 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:35,846 - aiogram.dispatcher.dispatcher - ERROR - Cause exception while getting updates.
+2025-09-27 00:13:45,907 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:45,909 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,909 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,909 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,910 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,911 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:45,911 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:45,912 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:45,913 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:45,913 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,914 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,915 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,915 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,916 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:45,916 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:45,917 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:45,918 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:45,918 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,919 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,919 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,920 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:45,920 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:45,921 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:45,921 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:45,907 - aiogram.dispatcher.dispatcher - ERROR - Cause exception while getting updates.
+2025-09-27 00:13:55,964 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:55,967 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,967 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,968 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,969 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,969 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:55,969 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:55,970 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:55,971 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:55,971 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,972 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,972 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,973 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,973 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:55,974 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:55,974 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:55,975 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:13:55,975 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,976 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,976 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,977 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:13:55,977 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:13:55,977 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:13:55,978 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:13:55,963 - aiogram.dispatcher.dispatcher - ERROR - Cause exception while getting updates.
+2025-09-27 00:14:06,008 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:14:06,010 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,012 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,012 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,013 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,015 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:14:06,016 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:14:06,016 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:14:06,017 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:14:06,021 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,021 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,024 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,024 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,025 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:14:06,026 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:14:06,029 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:14:06,030 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:14:06,031 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,034 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,035 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,035 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:06,036 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:14:06,038 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:14:06,039 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:14:06,008 - aiogram.dispatcher.dispatcher - ERROR - Cause exception while getting updates.
+2025-09-27 00:14:16,093 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:14:16,095 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,097 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,098 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,099 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,100 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:14:16,101 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:14:16,102 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:14:16,103 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:14:16,104 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,104 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,105 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,105 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,106 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:14:16,107 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:14:16,107 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:14:16,109 - stdout - INFO - Traceback (most recent call last):
+
+2025-09-27 00:14:16,110 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/dispatcher/dispatcher.py", line 381, in start_polling
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,111 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/bot.py", line 110, in get_updates
+    result = await self.request(api.Methods.GET_UPDATES, payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,111 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/base.py", line 236, in request
+    return await api.make_request(await self.get_session(), self.server, self.__token, method, data, files,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,112 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 140, in make_request
+    return check_result(method, response.content_type, response.status, await response.text())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2025-09-27 00:14:16,112 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/bot/api.py", line 119, in check_result
+    exceptions.ConflictError.detect(description)
+
+2025-09-27 00:14:16,113 - stdout - INFO -   File "/usr/local/lib/python3.11/dist-packages/aiogram/utils/exceptions.py", line 140, in detect
+    raise err(cls.text or description)
+
+2025-09-27 00:14:16,114 - stdout - INFO - aiogram.utils.exceptions.TerminatedByOtherGetUpdates: Terminated by other getupdates request; make sure that only one bot instance is running
+
+2025-09-27 00:14:16,092 - aiogram.dispatcher.dispatcher - ERROR - Cause exception while getting updates.
+2025-09-27 00:14:18,789 - root - ERROR - [AUTO-ISSUE] Ошибка при создании Outline ключа для user_id=6358556135: tuple indices must be integers or slices, not str
+2025-09-27 00:14:18,790 - root - ERROR - [AUTO-ISSUE] Ошибка при создании Outline ключа для user_id=325344184: tuple indices must be integers or slices, not str
+2025-09-27 00:14:18,790 - root - ERROR - [AUTO-ISSUE] Нет доступных серверов outline для user_id=452472063, тариф={'id': 4, 'name': '1 месяц', 'duration_sec': 2592000, 'price_rub': 200}, страна=Россия (для доступа к Госуслугам)
