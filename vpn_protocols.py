@@ -144,74 +144,74 @@ class V2RayProtocol(VPNProtocol):
             except Exception as status_error:
                 logger.warning(f"Could not check V2Ray API status: {status_error}")
                 
-                async with session.post(
-                    f"{self.api_url}/keys",
-                    headers=self.headers,
-                    json=key_data
-                ) as response:
-                    response_text = await response.text()
-                    logger.debug(f"V2Ray create response status: {response.status}")
-                    logger.debug(f"V2Ray create response text: {response_text}")
-                    
-                    if response.status == 200:
-                        try:
-                            result = await response.json()
-                            
-                            # Проверяем, что результат - это словарь, а не список
-                            if isinstance(result, list):
-                                if len(result) > 0:
-                                    # Если это список с одним элементом, берем первый
-                                    result = result[0]
-                                else:
-                                    # Если API возвращает пустой список, попробуем альтернативный подход
-                                    print(f"V2Ray API returned empty list, trying alternative approach...")
-                                    # Попробуем создать ключ с другими параметрами
-                                    alternative_key_data = {
-                                        "name": email,
-                                        "email": email
-                                    }
+            async with session.post(
+                f"{self.api_url}/keys",
+                headers=self.headers,
+                json=key_data
+            ) as response:
+                response_text = await response.text()
+                logger.debug(f"V2Ray create response status: {response.status}")
+                logger.debug(f"V2Ray create response text: {response_text}")
+                
+                if response.status == 200:
+                    try:
+                        result = await response.json()
+                        
+                        # Проверяем, что результат - это словарь, а не список
+                        if isinstance(result, list):
+                            if len(result) > 0:
+                                # Если это список с одним элементом, берем первый
+                                result = result[0]
+                            else:
+                                # Если API возвращает пустой список, попробуем альтернативный подход
+                                print(f"V2Ray API returned empty list, trying alternative approach...")
+                                # Попробуем создать ключ с другими параметрами
+                                alternative_key_data = {
+                                    "name": email,
+                                    "email": email
+                                }
+                                
+                                async with session.post(
+                                    f"{self.api_url}/keys",
+                                    headers=self.headers,
+                                    json=alternative_key_data
+                                ) as alt_response:
+                                    alt_response_text = await alt_response.text()
+                                    logger.debug(f"Alternative V2Ray create response status: {alt_response.status}")
+                                    logger.debug(f"Alternative V2Ray create response text: {alt_response_text}")
                                     
-                                    async with session.post(
-                                        f"{self.api_url}/keys",
-                                        headers=self.headers,
-                                        json=alternative_key_data
-                                    ) as alt_response:
-                                        alt_response_text = await alt_response.text()
-                                        logger.debug(f"Alternative V2Ray create response status: {alt_response.status}")
-                                        logger.debug(f"Alternative V2Ray create response text: {alt_response_text}")
-                                        
-                                        if alt_response.status == 200:
-                                            alt_result = await alt_response.json()
-                                            if isinstance(alt_result, list) and len(alt_result) > 0:
-                                                result = alt_result[0]
-                                            elif isinstance(alt_result, dict):
-                                                result = alt_result
-                                            else:
-                                                raise Exception(f"V2Ray API still returned empty response - {alt_response_text}")
+                                    if alt_response.status == 200:
+                                        alt_result = await alt_response.json()
+                                        if isinstance(alt_result, list) and len(alt_result) > 0:
+                                            result = alt_result[0]
+                                        elif isinstance(alt_result, dict):
+                                            result = alt_result
                                         else:
-                                            raise Exception(f"V2Ray API alternative request failed: {alt_response.status} - {alt_response_text}")
-                            
-                            # Валидация ответа сервера
-                            if not result.get('id'):
-                                raise Exception(f"V2Ray API did not return key id - {response_text}")
-                            
-                            key_id = result.get('id')
-                            uuid_value = result.get('uuid')
-                            
-                            logger.info(f"Successfully created V2Ray key {key_id} with UUID {uuid_value}")
-                            
-                            return {
-                                'id': key_id,
-                                'uuid': uuid_value,
-                                'name': email,
-                                'created_at': result.get('created_at'),
-                                'is_active': result.get('is_active', True),
-                                'port': result.get('port')  # Добавляем порт из нового API
-                            }
-                        except Exception as parse_error:
-                            raise Exception(f"Failed to parse V2Ray API response: {parse_error} - Response: {response_text}")
-                    else:
-                        raise Exception(f"V2Ray API error: {response.status} - {response_text}")
+                                            raise Exception(f"V2Ray API still returned empty response - {alt_response_text}")
+                                    else:
+                                        raise Exception(f"V2Ray API alternative request failed: {alt_response.status} - {alt_response_text}")
+                        
+                        # Валидация ответа сервера
+                        if not result.get('id'):
+                            raise Exception(f"V2Ray API did not return key id - {response_text}")
+                        
+                        key_id = result.get('id')
+                        uuid_value = result.get('uuid')
+                        
+                        logger.info(f"Successfully created V2Ray key {key_id} with UUID {uuid_value}")
+                        
+                        return {
+                            'id': key_id,
+                            'uuid': uuid_value,
+                            'name': email,
+                            'created_at': result.get('created_at'),
+                            'is_active': result.get('is_active', True),
+                            'port': result.get('port')  # Добавляем порт из нового API
+                        }
+                    except Exception as parse_error:
+                        raise Exception(f"Failed to parse V2Ray API response: {parse_error} - Response: {response_text}")
+                else:
+                    raise Exception(f"V2Ray API error: {response.status} - {response_text}")
                         
         except Exception as e:
             logger.error(f"Error creating V2Ray user: {e}")
@@ -1087,13 +1087,156 @@ def get_protocol_instructions(protocol: str) -> str:
             "4. Вставьте ключ выше"
         )
 
+def get_word_declension(number: int, word_forms: tuple) -> str:
+    """
+    Правильное склонение для русского языка
+    
+    Args:
+        number: число
+        word_forms: кортеж из 3 форм ("год", "года", "лет")
+    
+    Returns:
+        Правильная форма слова
+    
+    Примеры:
+        1, 21, 31 → word_forms[0] (год, день, час)
+        2-4, 22-24 → word_forms[1] (года, дня, часа)
+        5-20, 25-30 → word_forms[2] (лет, дней, часов)
+        11-14 → word_forms[2] (исключение!)
+    """
+    n = abs(number) % 100
+    n1 = number % 10
+    
+    if n > 10 and n < 20:
+        # 11-19 → третья форма (лет, дней, часов)
+        return word_forms[2]
+    if n1 > 1 and n1 < 5:
+        # 2-4, 22-24, 32-34, ... → вторая форма (года, дня, часа)
+        return word_forms[1]
+    if n1 == 1:
+        # 1, 21, 31, 41, ... → первая форма (год, день, час)
+        return word_forms[0]
+    # Все остальное → третья форма (лет, дней, часов)
+    return word_forms[2]
+
 def format_duration(seconds: int) -> str:
-    """Форматировать длительность в человекочитаемый вид"""
+    """Форматировать длительность в человекочитаемый вид с правильным склонением"""
+    if seconds < 0:
+        return "истек"
+    
     if seconds < 60:
-        return f"{seconds} секунд"
+        return f"{seconds} сек"
     elif seconds < 3600:
-        return f"{seconds // 60} минут"
+        minutes = seconds // 60
+        minutes_str = get_word_declension(minutes, ("минута", "минуты", "минут"))
+        return f"{minutes} {minutes_str}"
     elif seconds < 86400:
-        return f"{seconds // 3600} часов"
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        
+        hours_str = get_word_declension(hours, ("час", "часа", "часов"))
+        minutes_str = get_word_declension(minutes, ("минута", "минуты", "минут"))
+        
+        if minutes > 0:
+            return f"{hours} {hours_str}, {minutes} {minutes_str}"
+        else:
+            return f"{hours} {hours_str}"
     else:
-        return f"{seconds // 86400} дней" 
+        days = seconds // 86400
+        hours = (seconds % 86400) // 3600
+        minutes = ((seconds % 86400) % 3600) // 60
+        
+        # Если больше года, показываем годы, месяцы, дни, часы, минуты
+        if days >= 365:
+            years = days // 365
+            remaining_days = days % 365
+            months = remaining_days // 30
+            remaining_days = remaining_days % 30
+            
+            # Используем функцию правильного склонения
+            years_str = get_word_declension(years, ("год", "года", "лет"))
+            months_str = get_word_declension(months, ("месяц", "месяца", "месяцев"))
+            days_str = get_word_declension(remaining_days, ("день", "дня", "дней"))
+            hours_str = get_word_declension(hours, ("час", "часа", "часов"))
+            minutes_str = get_word_declension(minutes, ("минута", "минуты", "минут"))
+            
+            # Формируем результат
+            result_parts = []
+            if years > 0:
+                result_parts.append(f"{years} {years_str}")
+            if months > 0:
+                result_parts.append(f"{months} {months_str}")
+            if remaining_days > 0:
+                result_parts.append(f"{remaining_days} {days_str}")
+            if hours > 0:
+                result_parts.append(f"{hours} {hours_str}")
+            if minutes > 0:
+                result_parts.append(f"{minutes} {minutes_str}")
+            
+            return ", ".join(result_parts)
+        
+        # Если больше месяца, показываем месяцы, дни, часы, минуты
+        elif days >= 30:
+            months = days // 30
+            remaining_days = days % 30
+            
+            # Используем функцию правильного склонения
+            months_str = get_word_declension(months, ("месяц", "месяца", "месяцев"))
+            days_str = get_word_declension(remaining_days, ("день", "дня", "дней"))
+            hours_str = get_word_declension(hours, ("час", "часа", "часов"))
+            minutes_str = get_word_declension(minutes, ("минута", "минуты", "минут"))
+            
+            # Формируем результат
+            result_parts = []
+            if months > 0:
+                result_parts.append(f"{months} {months_str}")
+            if remaining_days > 0:
+                result_parts.append(f"{remaining_days} {days_str}")
+            if hours > 0:
+                result_parts.append(f"{hours} {hours_str}")
+            if minutes > 0:
+                result_parts.append(f"{minutes} {minutes_str}")
+            
+            return ", ".join(result_parts)
+        
+        # Если больше недели, показываем недели, дни, часы, минуты
+        elif days >= 7:
+            weeks = days // 7
+            remaining_days = days % 7
+            
+            # Используем функцию правильного склонения
+            weeks_str = get_word_declension(weeks, ("неделя", "недели", "недель"))
+            days_str = get_word_declension(remaining_days, ("день", "дня", "дней"))
+            hours_str = get_word_declension(hours, ("час", "часа", "часов"))
+            minutes_str = get_word_declension(minutes, ("минута", "минуты", "минут"))
+            
+            # Формируем результат
+            result_parts = []
+            if weeks > 0:
+                result_parts.append(f"{weeks} {weeks_str}")
+            if remaining_days > 0:
+                result_parts.append(f"{remaining_days} {days_str}")
+            if hours > 0:
+                result_parts.append(f"{hours} {hours_str}")
+            if minutes > 0:
+                result_parts.append(f"{minutes} {minutes_str}")
+            
+            return ", ".join(result_parts)
+        
+        # Обычные дни - показываем дни, часы, минуты
+        else:
+            # Используем функцию правильного склонения
+            days_str = get_word_declension(days, ("день", "дня", "дней"))
+            hours_str = get_word_declension(hours, ("час", "часа", "часов"))
+            minutes_str = get_word_declension(minutes, ("минута", "минуты", "минут"))
+            
+            # Формируем результат
+            result_parts = []
+            if days > 0:
+                result_parts.append(f"{days} {days_str}")
+            if hours > 0:
+                result_parts.append(f"{hours} {hours_str}")
+            if minutes > 0:
+                result_parts.append(f"{minutes} {minutes_str}")
+            
+            return ", ".join(result_parts) 

@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 from slowapi import Limiter
@@ -51,6 +52,9 @@ for warn in startup_validation["warnings"]:
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
+# GZip compression middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # CORS middleware (locked down)
 allowed_origins = settings.ADMIN_ALLOWED_ORIGINS or []
 app.add_middleware(
@@ -87,9 +91,21 @@ app.add_middleware(
     https_only=settings.SESSION_SECURE,
 )
 
-# Static files
+# Static files with caching headers
 static_dir = os.path.join(BASE_DIR, "static")
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+class CachedStaticFiles(StaticFiles):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        # Add cache headers for static files
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        response.headers["ETag"] = f'"{hash(str(response.file_path))}"'
+        return response
+
+app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
 
 # Templates
 templates_dir = os.path.join(BASE_DIR, "templates")
