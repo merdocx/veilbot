@@ -1022,6 +1022,12 @@ async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str
         except Exception as e:
             logging.error(f"CSV export error: {e}")
 
+    # Calculate additional stats
+    active_count = sum(1 for k in keys_with_traffic if k[4] and int(k[4]) > int(time.time()))
+    expired_count = total - active_count
+    v2ray_count = sum(1 for k in keys_with_traffic if len(k) > 8 and k[8] == 'v2ray')
+    pages = (total + limit - 1) // limit
+    
     return templates.TemplateResponse("keys.html", {
         "request": request, 
         "keys": keys_with_traffic,
@@ -1029,6 +1035,14 @@ async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str
         "page": page,
         "limit": limit,
         "total": total,
+        "active_count": active_count,
+        "expired_count": expired_count,
+        "v2ray_count": v2ray_count,
+        "pages": pages,
+        "email": email or '',
+        "user_id": '',
+        "server": '',
+        "protocol": protocol or '',
         "filters": {"email": email or '', "tariff_id": tariff_id or '', "protocol": protocol or '', "server_id": server_id or ''},
         "sort": {"by": sort_by_eff, "order": sort_order_eff},
         "csrf_token": get_csrf_token(request),
@@ -1221,12 +1235,25 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
     total = repo.count_users(query=q)
     rows = repo.list_users(query=q, limit=limit, offset=offset)
     user_list = [{"user_id": uid, "referral_count": ref_cnt} for (uid, ref_cnt) in rows]
+    # Calculate additional stats
+    active_users = total  # Assuming all users are active for now
+    referral_count = sum(user["referral_count"] for user in user_list)
+    pages = (total + limit - 1) // limit
+    
+    # Add mock data for missing fields
+    for user in user_list:
+        user["last_activity"] = None
+        user["is_active"] = True
+    
     return templates.TemplateResponse("users.html", {
         "request": request,
         "users": user_list,
         "page": page,
         "limit": limit,
         "total": total,
+        "active_users": active_users,
+        "referral_count": referral_count,
+        "pages": pages,
         "q": q or "",
     })
 
@@ -1557,6 +1584,9 @@ async def payments_page(
     except Exception:
         daily_stats = []
 
+    # Calculate pages
+    pages = (total + limit - 1) // limit
+    
     return templates.TemplateResponse(
         "payments.html",
         {
@@ -1565,12 +1595,17 @@ async def payments_page(
             "page": page,
             "limit": limit,
             "total": total,
+            "pages": pages,
             "sort": {"by": (sort_by or "created_at"), "order": (sort_order or "DESC")},
             "preset": preset or "",
             "daily_stats": daily_stats,
             "paid_count": paid_count,
             "pending_count": pending_count,
             "failed_count": failed_count,
+            "email": email or "",
+            "user_id": user_id or "",
+            "payment_id": payment_id or "",
+            "status": status or "",
             "filters": {
                 "status": status or "",
                 "user_id": user_id or "",
