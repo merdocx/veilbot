@@ -1,16 +1,5 @@
-/* Reset and Base Styles */
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}
-
-body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background-color: #f8fafc;
-    color: #1e293b;
-    line-height: 1.6;
-}
+/* Import Material Design CSS */
+@import url('material-admin.css');
 
 /* Unified Table Styles - Minimalistic Design */
 .table-container {

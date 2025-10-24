@@ -1,65 +1,138 @@
 {% extends "base.html" %}
 
-{% block page_title %}Пользователи и рефералы{% endblock %}
+{% block page_title %}Пользователи{% endblock %}
 
 {% block content %}
-
-<div class="table-container">
-  <div class="table-header">
-    <h2>Пользователи</h2>
-    <div class="stats-row">
-      <div class="stat-item"><span class="stat-label">Всего:</span><span class="stat-value">{{ total }}</span></div>
+<!-- Stats Cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ total }}</div>
+        <div class="stat-label">Всего пользователей</div>
     </div>
-  </div>
-
-  <div class="filter-row">
-    <form method="get" action="/users" style="display:flex; gap:8px; align-items:center;">
-      <input type="text" name="q" placeholder="Поиск по User ID" value="{{ q }}" />
-      <button class="btn" type="submit">Искать</button>
-    </form>
-  </div>
-
-  <div style="overflow-x: auto;">
-    <table class="unified-table">
-      <thead>
-        <tr>
-          <th style="width: 200px;">User ID</th>
-          <th style="width: 160px;">Рефералов</th>
-          <th style="width: 120px;">Действия</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for user in users %}
-        <tr>
-          <td>{{ user.user_id }}</td>
-          <td>{{ user.referral_count }}</td>
-          <td>
-            <a href="/users/{{ user.user_id }}" class="btn btn-primary">Подробнее</a>
-          </td>
-        </tr>
-        {% endfor %}
-        {% if not users %}
-        <tr><td colspan="3" style="text-align:center; color:#6b7280;">Нет данных</td></tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
-
-  <div class="pagination">
-    {% set pages = (total // limit) + (1 if (total % limit) else 0) %}
-    {% if page > 1 %}
-      <a class="btn" href="/users?page={{ page-1 }}&limit={{ limit }}&q={{ q }}">←</a>
-    {% endif %}
-    {% for p in range(1, pages+1) %}
-      {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
-        <a class="btn {% if p==page %}active{% endif %}" href="/users?page={{ p }}&limit={{ limit }}&q={{ q }}">{{ p }}</a>
-      {% elif p == page-3 or p == page+3 %}
-        <span style="padding:4px 8px; color:#6b7280;">…</span>
-      {% endif %}
-    {% endfor %}
-    {% if page < pages %}
-      <a class="btn" href="/users?page={{ page+1 }}&limit={{ limit }}&q={{ q }}">→</a>
-    {% endif %}
-  </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ active_users }}</div>
+        <div class="stat-label">Активных</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ referral_count }}</div>
+        <div class="stat-label">Рефералов</div>
+    </div>
 </div>
+
+<!-- Users Table -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Пользователи</h2>
+        <p class="card-subtitle">Список всех пользователей и их рефералов</p>
+    </div>
+
+    <!-- Filters -->
+    <div class="filter-bar">
+        <form method="get" action="/users" style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" name="q" placeholder="Поиск по User ID" value="{{ q }}" class="filter-input">
+            <button type="submit" class="btn btn-primary">
+                <span class="material-icons icon-small">search</span>
+                Поиск
+            </button>
+            <a href="/users" class="btn">
+                <span class="material-icons icon-small">clear</span>
+                Сбросить
+            </a>
+        </form>
+    </div>
+
+    <!-- Table -->
+    <div style="overflow-x: auto;">
+        <table class="material-table">
+            <thead>
+                <tr>
+                    <th>User ID</th>
+                    <th>Рефералов</th>
+                    <th>Последняя активность</th>
+                    <th>Статус</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="material-icons icon-small">person</span>
+                            <span class="text-large">{{ user.user_id }}</span>
+                        </div>
+                    </td>
+                    <td>
+                        <span class="badge badge-info">
+                            <span class="material-icons icon-small">group_add</span>
+                            {{ user.referral_count }}
+                        </span>
+                    </td>
+                    <td class="text-small">
+                        {% if user.last_activity %}
+                            {{ user.last_activity|timestamp }}
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if user.is_active %}
+                            <span class="badge badge-success">
+                                <span class="material-icons icon-small">check_circle</span>
+                                Активен
+                            </span>
+                        {% else %}
+                            <span class="badge badge-error">
+                                <span class="material-icons icon-small">cancel</span>
+                                Неактивен
+                            </span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="action-buttons">
+                            <a href="/users/{{ user.user_id }}" class="btn btn-primary">
+                                <span class="material-icons icon-small">visibility</span>
+                                Подробнее
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not users %}
+                <tr>
+                    <td colspan="5" class="text-center text-muted">
+                        <span class="material-icons icon">inbox</span>
+                        <br>Нет пользователей
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Pagination -->
+{% if pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+        <a href="/users?page={{ page-1 }}&limit={{ limit }}&q={{ q }}">
+            <span class="material-icons icon-small">chevron_left</span>
+        </a>
+    {% endif %}
+    
+    {% for p in range(1, pages+1) %}
+        {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
+            <a class="{% if p==page %}active{% endif %}" href="/users?page={{ p }}&limit={{ limit }}&q={{ q }}">{{ p }}</a>
+        {% elif p == page-3 or p == page+3 %}
+            <span>...</span>
+        {% endif %}
+    {% endfor %}
+    
+    {% if page < pages %}
+        <a href="/users?page={{ page+1 }}&limit={{ limit }}&q={{ q }}">
+            <span class="material-icons icon-small">chevron_right</span>
+        </a>
+    {% endif %}
+</div>
+{% endif %}
 {% endblock %}
