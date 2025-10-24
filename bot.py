@@ -284,8 +284,29 @@ async def handle_my_keys_btn(message: types.Message):
     
     # Добавляем V2Ray ключи
     for v2ray_uuid, exp, domain, path, country, email in v2ray_keys:
-        # Используем новый формат VLESS с Reality протоколом
-        config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+        # Получаем реальную конфигурацию с сервера
+        try:
+            # Находим сервер для этого ключа
+            cursor.execute("SELECT api_url, api_key FROM servers WHERE id = (SELECT server_id FROM v2ray_keys WHERE v2ray_uuid = ?)", (v2ray_uuid,))
+            server_data = cursor.fetchone()
+            
+            if server_data:
+                server_config = {'api_url': server_data[0], 'api_key': server_data[1]}
+                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                config = await protocol_client.get_user_config(v2ray_uuid, {
+                    'domain': domain,
+                    'port': 443,
+                    'path': path or '/v2ray',
+                    'email': email or f"user_{user_id}@veilbot.com"
+                })
+            else:
+                # Fallback к старому формату если не удалось получить конфигурацию
+                config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+        except Exception as e:
+            logging.error(f"Error getting V2Ray config for {v2ray_uuid}: {e}")
+            # Fallback к старому формату при ошибке
+            config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+        
         all_keys.append({
             'type': 'v2ray',
             'config': config,
