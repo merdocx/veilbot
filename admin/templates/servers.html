@@ -5,313 +5,266 @@
 {% block content %}
 <!-- Messages -->
 {% if error %}
-<div class="alert alert-danger" style="margin-bottom: 1rem; padding: 1rem; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 0.375rem; color: #721c24;">
-    <strong>Ошибка:</strong> {{ error }}
+<div class="card" style="border-left: 4px solid #f44336; background: #ffebee;">
+    <div class="card-header">
+        <h3 style="color: #c62828; margin: 0;">
+            <span class="material-icons icon">error</span>
+            Ошибка
+        </h3>
+    </div>
+    <div style="padding: 0 24px 20px 24px;">
+        {{ error }}
+    </div>
 </div>
 {% endif %}
 
 {% if success %}
-<div class="alert alert-success" style="margin-bottom: 1rem; padding: 1rem; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 0.375rem; color: #155724;">
-    <strong>Успешно:</strong> {{ success }}
+<div class="card" style="border-left: 4px solid #4caf50; background: #e8f5e8;">
+    <div class="card-header">
+        <h3 style="color: #2e7d32; margin: 0;">
+            <span class="material-icons icon">check_circle</span>
+            Успешно
+        </h3>
+    </div>
+    <div style="padding: 0 24px 20px 24px;">
+        {{ success }}
+    </div>
 </div>
 {% endif %}
 
-<!-- Servers Table -->
-<div class="table-container">
-  <div class="table-header">
-    <h2>Серверы</h2>
-    <div class="stats-row">
-      <div class="stat-item"><span class="stat-label">Всего серверов:</span><span class="stat-value">{{ servers|length }}</span></div>
+<!-- Stats Cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ servers|length }}</div>
+        <div class="stat-label">Всего серверов</div>
     </div>
-  </div>
-
-  <div class="filter-row">
-    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-      <input type="text" id="filter-id" placeholder="Фильтр по ID" style="width: 100px;">
-      <input type="text" id="filter-name" placeholder="Фильтр по названию" style="width: 150px;">
-      <input type="text" id="filter-protocol" placeholder="Фильтр по протоколу" style="width: 120px;">
-      <input type="text" id="filter-country" placeholder="Фильтр по стране" style="width: 120px;">
-      <button class="btn" onclick="clearFilters()">Очистить</button>
+    <div class="stat-card">
+        <div class="stat-value">{{ active_servers }}</div>
+        <div class="stat-label">Активных</div>
     </div>
-  </div>
-
-  <div style="overflow-x: auto;">
-    <table class="unified-table" id="servers-table">
-        <thead>
-            <tr>
-                <th style="width: 60px;">ID</th>
-                <th style="width: 150px;">Название</th>
-                <th style="width: 100px;">Протокол</th>
-                <th style="width: 200px;">API URL</th>
-                <th style="width: 100px;">Выдано ключей</th>
-                <th style="width: 100px;">Макс. ключей</th>
-                <th style="width: 80px;">Статус</th>
-                <th style="width: 100px;">Страна</th>
-                <th style="width: 120px;">Действия</th>
-            </tr>
-        </thead>
-        <tbody id="servers-tbody">
-            {% for s in servers %}
-            <tr>
-                <td>{{ s[0] }}</td>
-                <td><strong>{{ s[1] }}</strong></td>
-                <td>
-                    {% if s[7] == 'v2ray' %}
-                        <span class="badge active">🛡️ V2Ray</span>
-                    {% else %}
-                        <span class="badge active">🔒 Outline</span>
-                    {% endif %}
-                </td>
-                <td><div class="code">{{ s[2] }}</div></td>
-                <td>{% if s[11] %}{{ s[11] }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
-                <td>{{ s[4] }}</td>
-                <td>
-                    {% if s[5] %}
-                        <span class="badge active">Активен</span>
-                    {% else %}
-                        <span class="badge expired">Неактивен</span>
-                    {% endif %}
-                </td>
-                <td><span class="badge active">{{ s[6] }}</span></td>
-                <td>
-                    <div class="action-buttons">
-                        <a href="/servers/edit/{{ s[0] }}" class="btn btn-primary" title="Редактировать">
-                            <span class="material-icons">edit</span>
-                        </a>
-                        <a href="/delete_server/{{ s[0] }}" class="btn btn-danger" 
-                           onclick="return confirm('Удалить сервер?')" title="Удалить">
-                            <span class="material-icons">delete</span>
-                        </a>
-                    </div>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="stat-card">
+        <div class="stat-value">{{ total_keys }}</div>
+        <div class="stat-label">Выдано ключей</div>
+    </div>
 </div>
 
-<!-- Пагинация -->
-<div id="pagination" style="display: flex; justify-content: center; align-items: center; margin: 1.5rem 0; gap: 0.5rem;"></div>
-
-<!-- Add Server Form -->
-<div class="form-container">
+<!-- Servers Table -->
+<div class="card">
     <div class="card-header">
-        <h2 class="card-title">Добавить новый сервер</h2>
+        <h2 class="card-title">Серверы</h2>
+        <p class="card-subtitle">Управление VPN серверами</p>
     </div>
-    
-    <form id="server-form" method="post" action="/add_server">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-        <!-- Protocol selector -->
-        <div class="form-group">
-            <label class="form-label">Протокол *</label>
-            <div style="display:flex; gap:1rem; align-items:center;">
-                <label class="form-radio">
-                    <input type="radio" name="protocol" value="outline" checked>
-                    <span>Outline</span>
-                </label>
-                <label class="form-radio">
-                    <input type="radio" name="protocol" value="v2ray">
-                    <span>V2Ray VLESS</span>
-                </label>
-            </div>
-        </div>
-        
-        <div class="form-grid">
-            <!-- Common Fields -->
-            <div class="form-group">
-                <label class="form-label">Название сервера *</label>
-                <input type="text" name="name" class="form-input" required placeholder="Введите название">
-            </div>
-            
-            <div class="form-group">
-                <label class="form-label">API URL *</label>
-                <input type="url" name="api_url" class="form-input" required placeholder="https://host:port/api">
-            </div>
-            
-            <div class="form-group">
-                <label class="form-label">Максимум ключей *</label>
-                <input type="number" name="max_keys" class="form-input" required placeholder="100" min="1">
-            </div>
-            
-            <div class="form-group">
-                <label class="form-label">Страна</label>
-                <input type="text" name="country" class="form-input" placeholder="Введите страну (например, Netherlands)">
-            </div>
-            
-            <!-- Outline-specific fields -->
-            <div class="form-group outline-only">
-                <label class="form-label">SHA256 сертификата (Outline) *</label>
-                <input type="text" name="cert_sha256" class="form-input" placeholder="HEX или HEX:HEX:...">
-            </div>
-            
-            <!-- V2Ray-specific fields -->
-            <div class="form-group v2ray-only" style="display:none;">
-                <label class="form-label">Домен (V2Ray) *</label>
-                <input type="text" name="domain" class="form-input" placeholder="example.com">
-            </div>
-            <div class="form-group v2ray-only" style="display:none;">
-                <label class="form-label">API Ключ (V2Ray) *</label>
-                <input type="text" name="api_key" class="form-input" placeholder="Ваш API ключ">
-            </div>
-            <div class="form-group v2ray-only" style="display:none;">
-                <label class="form-label">V2Ray Путь</label>
-                <input type="text" name="v2ray_path" class="form-input" value="/v2ray" placeholder="/v2ray">
-            </div>
-        </div>
-        
-        <div class="card-actions">
-            <button id="add-server-btn" type="submit" class="btn btn-primary">
-                <span class="material-icons">add</span>
-                Добавить сервер
+    <!-- Filters -->
+    <div class="filter-bar">
+        <div style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="filter-id" placeholder="Фильтр по ID" class="filter-input">
+            <input type="text" id="filter-name" placeholder="Фильтр по названию" class="filter-input">
+            <input type="text" id="filter-protocol" placeholder="Фильтр по протоколу" class="filter-input">
+            <input type="text" id="filter-country" placeholder="Фильтр по стране" class="filter-input">
+            <button class="btn" onclick="clearFilters()">
+                <span class="material-icons icon-small">clear</span>
+                Очистить
             </button>
         </div>
-    </form>
+    </div>
+
+    <!-- Table -->
+    <div style="overflow-x: auto;">
+        <table class="material-table" id="servers-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Название</th>
+                    <th>Протокол</th>
+                    <th>API URL</th>
+                    <th>Ключей</th>
+                    <th>Макс.</th>
+                    <th>Статус</th>
+                    <th>Страна</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in servers %}
+                <tr>
+                    <td>{{ s[0] }}</td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="material-icons icon-small">dns</span>
+                            <strong>{{ s[1] }}</strong>
+                        </div>
+                    </td>
+                    <td>
+                        {% if s[7] == 'v2ray' %}
+                            <span class="badge badge-info">
+                                <span class="material-icons icon-small">security</span>
+                                V2Ray
+                            </span>
+                        {% else %}
+                            <span class="badge badge-info">
+                                <span class="material-icons icon-small">lock</span>
+                                Outline
+                            </span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="code" title="{{ s[2] }}">{{ s[2]|truncate(30) }}</span>
+                    </td>
+                    <td>
+                        {% if s[11] %}
+                            <span class="badge badge-neutral">{{ s[11] }}</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ s[4] }}</td>
+                    <td>
+                        {% if s[5] %}
+                            <span class="badge badge-success">
+                                <span class="material-icons icon-small">check_circle</span>
+                                Активен
+                            </span>
+                        {% else %}
+                            <span class="badge badge-error">
+                                <span class="material-icons icon-small">cancel</span>
+                                Неактивен
+                            </span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="badge badge-info">
+                            <span class="material-icons icon-small">public</span>
+                            {{ s[6] }}
+                        </span>
+                    </td>
+                    <td>
+                        <div class="action-buttons">
+                            <a href="/servers/edit/{{ s[0] }}" class="btn btn-primary" title="Редактировать">
+                                <span class="material-icons icon-small">edit</span>
+                            </a>
+                            <a href="/delete_server/{{ s[0] }}" class="btn btn-danger" 
+                               onclick="return confirm('Удалить сервер?')" title="Удалить">
+                                <span class="material-icons icon-small">delete</span>
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 
-<style>
-.server-type-container {
-    text-align: center;
-    margin-bottom: 2rem;
-}
-
-.server-type-container h3 {
-    margin-bottom: 1.5rem;
-    color: #333;
-}
-
-.server-type-options {
-    display: flex;
-    gap: 2rem;
-    justify-content: center;
-    flex-wrap: wrap;
-}
-
-.server-type-option {
-    border: 2px solid #e0e0e0;
-    border-radius: 12px;
-    padding: 2rem;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    min-width: 200px;
-    background: white;
-}
-
-.server-type-option:hover {
-    border-color: #007bff;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.15);
-}
-
-.server-type-option.selected {
-    border-color: #007bff;
-    background: #f8f9ff;
-}
-
-.server-type-icon {
-    font-size: 3rem;
-    margin-bottom: 1rem;
-}
-
-.server-type-title {
-    font-size: 1.2rem;
-    font-weight: 600;
-    margin-bottom: 0.5rem;
-    color: #333;
-}
-
-.server-type-description {
-    font-size: 0.9rem;
-    color: #666;
-    line-height: 1.4;
-}
-
-.form-help {
-    display: block;
-    margin-top: 0.25rem;
-    font-size: 0.875rem;
-    color: #6c757d;
-}
-
-.form-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 2rem;
-    padding-bottom: 1rem;
-    border-bottom: 1px solid #e0e0e0;
-}
-
-.form-header h3 {
-    margin: 0;
-    color: #333;
-}
-
-#back-to-selection {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-</style>
+<!-- Add Server Form -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Добавить новый сервер</h2>
+        <p class="card-subtitle">Создание нового VPN сервера</p>
+    </div>
+    
+    <div style="padding: 24px;">
+        <form method="post" action="/add_server">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                <div>
+                    <label for="name" style="display: block; margin-bottom: 8px; font-weight: 500;">Название сервера:</label>
+                    <input type="text" id="name" name="name" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                
+                <div>
+                    <label for="api_url" style="display: block; margin-bottom: 8px; font-weight: 500;">API URL:</label>
+                    <input type="url" id="api_url" name="api_url" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                
+                <div>
+                    <label for="cert_sha256" style="display: block; margin-bottom: 8px; font-weight: 500;">SHA256 сертификата:</label>
+                    <input type="text" id="cert_sha256" name="cert_sha256" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                
+                <div>
+                    <label for="max_keys" style="display: block; margin-bottom: 8px; font-weight: 500;">Максимум ключей:</label>
+                    <input type="number" id="max_keys" name="max_keys" value="100" min="1" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                
+                <div>
+                    <label for="country" style="display: block; margin-bottom: 8px; font-weight: 500;">Страна:</label>
+                    <input type="text" id="country" name="country" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                
+                <div>
+                    <label for="protocol" style="display: block; margin-bottom: 8px; font-weight: 500;">Протокол:</label>
+                    <input type="text" id="protocol" name="protocol" value="outline" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                
+                <div>
+                    <label for="domain" style="display: block; margin-bottom: 8px; font-weight: 500;">Домен:</label>
+                    <input type="text" id="domain" name="domain" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                
+                <div>
+                    <label for="v2ray_path" style="display: block; margin-bottom: 8px; font-weight: 500;">V2Ray путь:</label>
+                    <input type="text" id="v2ray_path" name="v2ray_path" value="/v2ray" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                
+                <div>
+                    <label for="api_key" style="display: block; margin-bottom: 8px; font-weight: 500;">API ключ:</label>
+                    <input type="text" id="api_key" name="api_key" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+            </div>
+            
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button type="submit" class="btn btn-primary">
+                    <span class="material-icons icon-small">add</span>
+                    Добавить сервер
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
 
 <script>
-// Protocol toggle logic (no hidden steps)
+function clearFilters() {
+    document.getElementById('filter-id').value = '';
+    document.getElementById('filter-name').value = '';
+    document.getElementById('filter-protocol').value = '';
+    document.getElementById('filter-country').value = '';
+    filterTable();
+}
+
+function filterTable() {
+    const table = document.getElementById('servers-table');
+    const rows = table.getElementsByTagName('tr');
+    const idFilter = document.getElementById('filter-id').value.toLowerCase();
+    const nameFilter = document.getElementById('filter-name').value.toLowerCase();
+    const protocolFilter = document.getElementById('filter-protocol').value.toLowerCase();
+    const countryFilter = document.getElementById('filter-country').value.toLowerCase();
+
+    for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        const cells = row.getElementsByTagName('td');
+        
+        const id = cells[0].textContent.toLowerCase();
+        const name = cells[1].textContent.toLowerCase();
+        const protocol = cells[2].textContent.toLowerCase();
+        const country = cells[7].textContent.toLowerCase();
+        
+        const show = (!idFilter || id.includes(idFilter)) &&
+                    (!nameFilter || name.includes(nameFilter)) &&
+                    (!protocolFilter || protocol.includes(protocolFilter)) &&
+                    (!countryFilter || country.includes(countryFilter));
+        
+        row.style.display = show ? '' : 'none';
+    }
+}
+
+// Add event listeners
 document.addEventListener('DOMContentLoaded', function() {
-    try {
-        const radios = document.querySelectorAll('input[name="protocol"]');
-        const showFor = (proto) => {
-            document.querySelectorAll('.outline-only').forEach(el => el.style.display = proto === 'outline' ? 'block' : 'none');
-            document.querySelectorAll('.v2ray-only').forEach(el => el.style.display = proto === 'v2ray' ? 'block' : 'none');
-        };
-        const current = document.querySelector('input[name="protocol"]:checked');
-        showFor(current ? current.value : 'outline');
-        radios.forEach(r => r.addEventListener('change', e => showFor(e.target.value)));
-    } catch(e) {
-        console.error('Init error:', e);
-    }
-});
-
-// Simple client-side validation for V2Ray required fields
-document.getElementById('server-form').addEventListener('submit', function(e) {
-    const proto = document.querySelector('input[name="protocol"]:checked')?.value || 'outline';
-    if (proto === 'v2ray') {
-        const domain = document.querySelector('input[name="domain"]').value.trim();
-        const apiKey = document.querySelector('input[name="api_key"]').value.trim();
-        if (!domain) { e.preventDefault(); alert('Домен обязателен для V2Ray'); return false; }
-        if (!apiKey) { e.preventDefault(); alert('API ключ обязателен для V2Ray'); return false; }
-    }
-});
-
-// Form submission validation
-document.getElementById('server-form').addEventListener('submit', function(e) {
-    const protocol = document.getElementById('selected-protocol').value;
-    
-    if (!protocol) {
-        e.preventDefault();
-        alert('Пожалуйста, выберите тип сервера');
-        return false;
-    }
-    
-    // Validate required fields based on protocol
-    if (protocol === 'v2ray') {
-        const domain = document.querySelector('input[name="domain"]').value;
-        const apiKey = document.querySelector('input[name="api_key"]').value;
-        
-        if (!domain.trim()) {
-            e.preventDefault();
-            alert('Поле "Домен" обязательно для V2Ray серверов');
-            return false;
-        }
-        
-        if (!apiKey.trim()) {
-            e.preventDefault();
-            alert('Поле "API Ключ" обязательно для V2Ray серверов');
-            return false;
-        }
-    }
-    
-    console.log('Form submitting with protocol:', protocol);
-    return true;
+    document.getElementById('filter-id').addEventListener('input', filterTable);
+    document.getElementById('filter-name').addEventListener('input', filterTable);
+    document.getElementById('filter-protocol').addEventListener('input', filterTable);
+    document.getElementById('filter-country').addEventListener('input', filterTable);
 });
 </script>
 {% endblock %}

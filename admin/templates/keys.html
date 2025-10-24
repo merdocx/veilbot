@@ -1,263 +1,254 @@
 {% extends "base.html" %}
 
-{% block page_title %}Выданные ключи{% endblock %}
-
-{% block extra_head %}
-<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
-<style>
-  .chips { display:flex; gap:8px; flex-wrap:wrap; }
-  .chip { display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 10px; border-radius:16px; background:#f1f3f4; color:#3c4043; font-size:12px; }
-  .chip .material-icons-outlined { font-size:16px; }
-  .toolbar { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid #eaeaea; background:#fff; }
-  .search { display:flex; align-items:center; gap:8px; background:#f1f3f4; padding:0 12px; border-radius:24px; height:40px; }
-  .search input { border:none; background:transparent; outline:none; font-size:14px; width:220px; }
-  .segmented { display:inline-flex; background:#f1f3f4; border-radius:8px; overflow:hidden; }
-  .segmented a { padding:8px 12px; font-size:12px; color:#3c4043; text-decoration:none; }
-  .segmented a.active { background:#e8eaed; font-weight:600; }
-  .fab { position:fixed; bottom:24px; right:24px; width:56px; height:56px; border-radius:50%; background:#1a73e8; color:#fff; display:flex; align-items:center; justify-content:center; box-shadow:0 6px 12px rgba(0,0,0,0.2); cursor:pointer; }
-</style>
-{% endblock %}
+{% block page_title %}Ключи{% endblock %}
 
 {% block content %}
-<div class="table-container">
-  <div class="table-header">
-    <h2>Выданные ключи</h2>
-    <div class="stats-row">
-      <div class="stat-item"><span class="stat-label">Всего:</span><span class="stat-value">{{ total }}</span></div>
-      <div class="stat-item"><span class="stat-label">Активных:</span><span class="stat-value">{{ active_count }}</span></div>
-      <div class="stat-item"><span class="stat-label">Истекших:</span><span class="stat-value">{{ expired_count }}</span></div>
+<!-- Stats Cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ total }}</div>
+        <div class="stat-label">Всего ключей</div>
     </div>
-  </div>
-
-  <div class="filter-row">
-    <form method="get" action="/keys" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-      <input type="text" name="email" placeholder="Поиск по email" value="{{ email }}" />
-      <select name="tariff_id" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; background:white;">
-        <option value="">Все тарифы</option>
-        {% for tariff in tariffs %}
-        <option value="{{ tariff.id }}" {% if tariff_id == tariff.id %}selected{% endif %}>{{ tariff.name }}</option>
-        {% endfor %}
-      </select>
-      <select name="protocol" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; background:white;">
-        <option value="">Все протоколы</option>
-        <option value="outline" {% if protocol == 'outline' %}selected{% endif %}>Outline</option>
-        <option value="v2ray" {% if protocol == 'v2ray' %}selected{% endif %}>V2Ray</option>
-      </select>
-      <select name="server_id" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; background:white;">
-        <option value="">Все серверы</option>
-        {% for server in servers %}
-        <option value="{{ server.id }}" {% if server_id == server.id %}selected{% endif %}>{{ server.name }}</option>
-        {% endfor %}
-      </select>
-      <button class="btn btn-primary" type="submit">Фильтровать</button>
-      <a href="/keys" class="btn">Сбросить</a>
-    </form>
-  </div>
-
-  <div style="overflow-x:auto;">
-    <table class="unified-table">
-      <thead>
-        <tr>
-          <th style="width:60px;">ID</th>
-          <th style="width:80px;">Протокол</th>
-          <th>Ключ</th>
-          <th style="width:120px;">Тариф</th>
-          <th style="width:150px;">Email</th>
-          <th style="width:120px;">Сервер</th>
-          <th style="width:120px;">Создан</th>
-          <th style="width:120px;">Истекает</th>
-          <th style="width:100px;">Статус</th>
-          <th style="width:120px;">Действия</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for k in keys %}
-        <tr>
-          <td>{{ k[0] }}</td>
-          <td>
-            {% if k[8] == 'outline' %}
-              <span class="badge active">🔒 Outline</span>
-            {% elif k[8] == 'v2ray' %}
-              <span class="badge active">🛡️ V2Ray</span>
-            {% else %}
-              <span class="badge">{{ k[8] }}</span>
-            {% endif %}
-          </td>
-          <td>
-            <div class="key-inline">
-              <div class="code" id="code-{{ k[0] }}" title="{{ k[2] }}">{{ k[2]|truncate(30) }}</div>
-              <button class="btn" onclick="copyCode('{{ k[2] }}')" title="Скопировать">
-                <span class="material-icons">content_copy</span>
-              </button>
-            </div>
-          </td>
-          <td>
-            {% if k[7] %}
-              <span>{{ k[7] }}</span>
-            {% else %}
-              <span class="text-muted">—</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if k[6] %}
-              <span class="email">{{ k[6] }}</span>
-            {% else %}
-              <span class="text-muted">—</span>
-            {% endif %}
-          </td>
-          <td>{{ k[5] }}</td>
-          <td class="date-cell" title="{{ k[3]|timestamp }}">{{ (k[3]|timestamp).replace(' ', '<br>')|safe }}</td>
-          <td class="date-cell" title="{{ k[4]|timestamp }}">{{ (k[4]|timestamp).replace(' ', '<br>')|safe }}</td>
-          <td>
-            {% if k[4] > current_time %}
-              <span class="badge active">Активен</span>
-            {% else %}
-              <span class="badge expired">Истек</span>
-            {% endif %}
-          </td>
-          <td>
-            <div class="action-buttons">
-              <a href="/keys/delete/{{ k[0] }}" class="btn btn-danger" onclick="return confirm('Удалить ключ?')" title="Удалить">
-                <span class="material-icons">delete</span>
-              </a>
-              <button class="btn btn-primary" 
-                      data-key-id="{{ k[0] }}" 
-                      data-expiry="{{ k[4]|my_datetime_local }}" 
-                      onclick="openEditModal(this)" 
-                      title="Редактировать срок действия">
-                <span class="material-icons">edit</span>
-              </button>
-            </div>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ active_count }}</div>
+        <div class="stat-label">Активных</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ expired_count }}</div>
+        <div class="stat-label">Истекших</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ v2ray_count }}</div>
+        <div class="stat-label">V2Ray</div>
+    </div>
 </div>
 
-<!-- Пагинация -->
+<!-- Keys Table -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Выданные ключи</h2>
+        <p class="card-subtitle">Управление всеми выданными ключами</p>
+    </div>
+
+    <!-- Filters -->
+    <div class="filter-bar">
+        <form method="get" action="/keys" style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" name="email" placeholder="Поиск по email" value="{{ email }}" class="filter-input">
+            <input type="text" name="user_id" placeholder="User ID" value="{{ user_id }}" class="filter-input">
+            <input type="text" name="server" placeholder="Сервер" value="{{ server }}" class="filter-input">
+            <input type="text" name="protocol" placeholder="Протокол" value="{{ protocol }}" class="filter-input">
+            <button type="submit" class="btn btn-primary">
+                <span class="material-icons icon-small">search</span>
+                Поиск
+            </button>
+            <a href="/keys" class="btn">
+                <span class="material-icons icon-small">clear</span>
+                Сбросить
+            </a>
+        </form>
+    </div>
+
+    <!-- Table -->
+    <div style="overflow-x: auto;">
+        <table class="material-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Тип</th>
+                    <th>Ключ</th>
+                    <th>Email</th>
+                    <th>Сервер</th>
+                    <th>Создан</th>
+                    <th>Истекает</th>
+                    <th>Статус</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for k in keys %}
+                <tr>
+                    <td>{{ k[0] }}</td>
+                    <td>
+                        {% if k[8] == 'outline' %}
+                            <span class="badge badge-info">
+                                <span class="material-icons icon-small">lock</span>
+                                Outline
+                            </span>
+                        {% elif k[8] == 'v2ray' %}
+                            <span class="badge badge-info">
+                                <span class="material-icons icon-small">security</span>
+                                V2Ray
+                            </span>
+                        {% else %}
+                            <span class="badge badge-neutral">{{ k[8] }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="code" title="{{ k[2] }}">{{ k[2]|truncate(30) }}</span>
+                            <button class="btn btn-icon" onclick="copyToClipboard('{{ k[2] }}')" title="Скопировать">
+                                <span class="material-icons icon-small">content_copy</span>
+                            </button>
+                        </div>
+                    </td>
+                    <td>
+                        {% if k[6] %}
+                            <span class="text-muted">{{ k[6] }}</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ k[5] }}</td>
+                    <td class="text-small">{{ (k[3]|timestamp).replace(' ', '<br>')|safe }}</td>
+                    <td class="text-small">{{ (k[4]|timestamp).replace(' ', '<br>')|safe }}</td>
+                    <td>
+                        {% if k[4] > current_time %}
+                            <span class="badge badge-success">
+                                <span class="material-icons icon-small">check_circle</span>
+                                Активен
+                            </span>
+                        {% else %}
+                            <span class="badge badge-error">
+                                <span class="material-icons icon-small">cancel</span>
+                                Истек
+                            </span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="action-buttons">
+                            <button class="btn btn-icon" onclick="editKey({{ k[0] }}, '{{ k[4]|my_datetime_local }}')" title="Редактировать">
+                                <span class="material-icons icon-small">edit</span>
+                            </button>
+                            <a href="/keys/delete/{{ k[0] }}" class="btn btn-icon btn-danger" 
+                               onclick="return confirm('Удалить ключ?')" title="Удалить">
+                                <span class="material-icons icon-small">delete</span>
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Pagination -->
+{% if pages > 1 %}
 <div class="pagination">
-  {% set pages = (total // limit) + (1 if (total % limit) else 0) %}
-  {% if pages > 1 %}
     {% if page > 1 %}
-      <a href="?page={{ page - 1 }}{% if email %}&email={{ email }}{% endif %}{% if tariff_id %}&tariff_id={{ tariff_id }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if server_id %}&server_id={{ server_id }}{% endif %}">← Предыдущая</a>
+        <a href="?page={{ page - 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if server %}&server={{ server }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}">
+            <span class="material-icons icon-small">chevron_left</span>
+        </a>
     {% endif %}
     
     {% for p in range(1, pages + 1) %}
-      {% if p == page %}
-        <a href="#" class="active">{{ p }}</a>
-      {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
-        <a href="?page={{ p }}{% if email %}&email={{ email }}{% endif %}{% if tariff_id %}&tariff_id={{ tariff_id }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if server_id %}&server_id={{ server_id }}{% endif %}">{{ p }}</a>
-      {% elif p == 4 and page > 5 %}
-        <span>...</span>
-      {% elif p == pages - 3 and page < pages - 4 %}
-        <span>...</span>
-      {% endif %}
+        {% if p == page %}
+            <a href="#" class="active">{{ p }}</a>
+        {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
+            <a href="?page={{ p }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if server %}&server={{ server }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}">{{ p }}</a>
+        {% elif p == 4 and page > 5 %}
+            <span>...</span>
+        {% elif p == pages - 3 and page < pages - 4 %}
+            <span>...</span>
+        {% endif %}
     {% endfor %}
     
     {% if page < pages %}
-      <a href="?page={{ page + 1 }}{% if email %}&email={{ email }}{% endif %}{% if tariff_id %}&tariff_id={{ tariff_id }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if server_id %}&server_id={{ server_id }}{% endif %}">Следующая →</a>
+        <a href="?page={{ page + 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if server %}&server={{ server }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}">
+            <span class="material-icons icon-small">chevron_right</span>
+        </a>
     {% endif %}
-  {% endif %}
 </div>
+{% endif %}
 
-<!-- Modal для редактирования срока действия -->
-<div id="editModal" class="modal">
-  <div class="modal-content">
-    <h4>Редактировать срок действия</h4>
-    <form id="editForm" method="post">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <div class="input-field">
-        <label for="new_expiry">Новая дата истечения:</label>
-        <input type="datetime-local" id="new_expiry" name="new_expiry" required>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn" onclick="closeEditModal()">Отмена</button>
-        <button type="submit" class="btn btn-primary">Сохранить</button>
-      </div>
-    </form>
-  </div>
+<!-- Edit Modal -->
+<div id="editModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <h3>Редактировать срок действия</h3>
+        <form id="editForm" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <div style="margin: 16px 0;">
+                <label for="new_expiry" style="display: block; margin-bottom: 8px; font-weight: 500;">Новая дата истечения:</label>
+                <input type="datetime-local" id="new_expiry" name="new_expiry" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button type="button" class="btn" onclick="closeEditModal()">Отмена</button>
+                <button type="submit" class="btn btn-primary">Сохранить</button>
+            </div>
+        </form>
+    </div>
 </div>
-
-<script>
-function copyCode(code) {
-  navigator.clipboard.writeText(code).then(function() {
-    // Показываем уведомление
-    const notification = document.createElement('div');
-    notification.textContent = 'Ключ скопирован!';
-    notification.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:8px 16px;border-radius:6px;z-index:1000;';
-    document.body.appendChild(notification);
-    setTimeout(() => notification.remove(), 2000);
-  });
-}
-
-function openEditModal(button) {
-  const keyId = button.dataset.keyId;
-  const currentExpiry = button.dataset.expiry;
-  
-  document.getElementById('editForm').action = `/keys/edit/${keyId}`;
-  document.getElementById('new_expiry').value = currentExpiry;
-  document.getElementById('editModal').style.display = 'block';
-}
-
-function closeEditModal() {
-  document.getElementById('editModal').style.display = 'none';
-}
-
-// Закрытие модального окна при клике вне его
-window.onclick = function(event) {
-  const modal = document.getElementById('editModal');
-  if (event.target == modal) {
-    closeEditModal();
-  }
-}
-</script>
 
 <style>
 .modal {
-  display: none;
-  position: fixed;
-  z-index: 1000;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  background-color: rgba(0,0,0,0.5);
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
 }
 
 .modal-content {
-  background-color: white;
-  margin: 15% auto;
-  padding: 20px;
-  border-radius: 8px;
-  width: 400px;
-  max-width: 90%;
+    background: white;
+    padding: 24px;
+    border-radius: 8px;
+    min-width: 400px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
 
-.modal-footer {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  margin-top: 16px;
-}
-
-.input-field {
-  margin-bottom: 16px;
-}
-
-.input-field label {
-  display: block;
-  margin-bottom: 4px;
-  font-weight: 500;
-}
-
-.input-field input {
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 14px;
+.modal h3 {
+    margin: 0 0 16px 0;
+    font-size: 18px;
+    font-weight: 500;
 }
 </style>
+
+<script>
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(function() {
+        showNotification('Ключ скопирован!', 'success');
+    });
+}
+
+function editKey(keyId, currentExpiry) {
+    document.getElementById('editForm').action = `/keys/edit/${keyId}`;
+    document.getElementById('new_expiry').value = currentExpiry;
+    document.getElementById('editModal').style.display = 'flex';
+}
+
+function closeEditModal() {
+    document.getElementById('editModal').style.display = 'none';
+}
+
+function showNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: ${type === 'success' ? '#4caf50' : '#2196f3'};
+        color: white;
+        padding: 12px 16px;
+        border-radius: 4px;
+        z-index: 1001;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    `;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 3000);
+}
+
+// Close modal on outside click
+window.onclick = function(event) {
+    const modal = document.getElementById('editModal');
+    if (event.target == modal) {
+        closeEditModal();
+    }
+}
+</script>
 {% endblock %}

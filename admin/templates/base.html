@@ -1,22 +1,27 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VeilBot Admin</title>
-    {% block extra_head %}{% endblock %}
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <title>{% block page_title %}VeilBot Admin{% endblock %}</title>
+    
+    <!-- Material Design Icons -->
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/material-admin.css">
+    
+    {% block extra_head %}{% endblock %}
 </head>
 <body>
     <div class="app-container">
-        <!-- Sidebar Navigation -->
+        <!-- Sidebar -->
         <nav class="sidebar">
             <div class="sidebar-header">
                 <div class="logo">
                     <span class="material-icons">vpn_key</span>
-                    <span class="logo-text">VeilBot</span>
+                    <span>VeilBot</span>
                 </div>
             </div>
             
@@ -52,6 +57,12 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a href="/users" class="nav-link">
+                        <span class="material-icons">group</span>
+                        <span>Пользователи</span>
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a href="/webhooks" class="nav-link">
                         <span class="material-icons">notifications</span>
                         <span>Вебхуки</span>
@@ -63,12 +74,6 @@
                         <span>Очистка</span>
                     </a>
                 </li>
-                <li class="nav-item">
-                    <a href="/users" class="nav-link">
-                        <span class="material-icons">group</span>
-                        <span>Пользователи</span>
-                    </a>
-                </li>
             </ul>
         </nav>
 
@@ -77,29 +82,22 @@
             <header class="top-bar">
                 <div class="top-bar-content">
                     <h1 class="page-title">{% block page_title %}Админ панель{% endblock %}</h1>
-                    <div class="top-bar-actions">
-                        <a href="/logout" class="logout-btn">
-                            <span class="material-icons">logout</span>
-                            <span>Выйти</span>
-                        </a>
-                    </div>
+                    <a href="/logout" class="logout-btn">
+                        <span class="material-icons">logout</span>
+                        <span>Выйти</span>
+                    </a>
                 </div>
             </header>
 
             <div class="content-wrapper">
-    {% block content %}{% endblock %}
+                {% block content %}{% endblock %}
             </div>
-  </main>
+        </main>
     </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
-        // Initialize Materialize components
+        // Highlight current page in navigation
         document.addEventListener('DOMContentLoaded', function() {
-            M.AutoInit();
-            
-            // Highlight current page in navigation
             const currentPath = window.location.pathname;
             const navLinks = document.querySelectorAll('.nav-link');
             navLinks.forEach(link => {
@@ -109,5 +107,7 @@
             });
         });
     </script>
+    
+    {% block extra_scripts %}{% endblock %}
 </body>
 </html>
