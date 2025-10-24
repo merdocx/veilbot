@@ -3,24 +3,6 @@
 {% block page_title %}Пользователи и рефералы{% endblock %}
 
 {% block content %}
-<style>
-.keys-table { width: 100%; border-collapse: collapse; margin-top: 1rem; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); font-size: 0.8rem; }
-.keys-table th { background: #f8fafc; padding: 8px 6px; text-align: left; font-weight: 600; color: #374151; border-bottom: 1px solid #e5e7eb; font-size: 0.75rem; white-space: nowrap; }
-.keys-table td { padding: 8px 6px; border-bottom: 1px solid #f3f4f6; font-size: 0.75rem; vertical-align: middle; }
-.keys-table tr:hover { background-color: #f9fafb; }
-.table-container { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); overflow: hidden; }
-.table-header { padding: 1.5rem; border-bottom: 1px solid #e5e7eb; }
-.table-header h2 { margin: 0; color: #111827; font-size: 1.5rem; font-weight: 600; }
-.stats-row { display: flex; gap: 2rem; margin-top: 0.5rem; }
-.stat-item { display: flex; align-items: center; gap: 0.5rem; }
-.stat-label { color: #6b7280; font-size: 0.875rem; }
-.stat-value { font-weight: 600; color: #111827; }
-.filter-row { background: #f8fafc; padding: 12px; border-bottom: 1px solid #e5e7eb; }
-.filter-row input { width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.8rem; box-sizing: border-box; }
-.btn { padding: 6px 10px; border: 1px solid #d1d5db; background: #f3f4f6; border-radius: 4px; cursor: pointer; }
-.btn.active { background: #3b82f6; color: white; border-color: #3b82f6; }
-.pagination { display: flex; justify-content: center; align-items: center; margin: 1.5rem 0; gap: 0.5rem; }
-</style>
 
 <div class="table-container">
   <div class="table-header">
@@ -37,23 +19,27 @@
     </form>
   </div>
 
-  <div style="overflow-x: auto; margin-top: 1rem;">
-    <table class="keys-table">
+  <div style="overflow-x: auto;">
+    <table class="unified-table">
       <thead>
         <tr>
           <th style="width: 200px;">User ID</th>
           <th style="width: 160px;">Рефералов</th>
+          <th style="width: 120px;">Действия</th>
         </tr>
       </thead>
       <tbody>
         {% for user in users %}
         <tr>
-          <td><a href="/users/{{ user.user_id }}">{{ user.user_id }}</a></td>
+          <td>{{ user.user_id }}</td>
           <td>{{ user.referral_count }}</td>
+          <td>
+            <a href="/users/{{ user.user_id }}" class="btn btn-primary">Подробнее</a>
+          </td>
         </tr>
         {% endfor %}
         {% if not users %}
-        <tr><td colspan="2" style="text-align:center; color:#6b7280;">Нет данных</td></tr>
+        <tr><td colspan="3" style="text-align:center; color:#6b7280;">Нет данных</td></tr>
         {% endif %}
       </tbody>
     </table>

@@ -18,29 +18,36 @@
 
 <!-- Servers Table -->
 <div class="table-container">
-    <table class="table servers-table">
+  <div class="table-header">
+    <h2>Серверы</h2>
+    <div class="stats-row">
+      <div class="stat-item"><span class="stat-label">Всего серверов:</span><span class="stat-value">{{ servers|length }}</span></div>
+    </div>
+  </div>
+
+  <div class="filter-row">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <input type="text" id="filter-id" placeholder="Фильтр по ID" style="width: 100px;">
+      <input type="text" id="filter-name" placeholder="Фильтр по названию" style="width: 150px;">
+      <input type="text" id="filter-protocol" placeholder="Фильтр по протоколу" style="width: 120px;">
+      <input type="text" id="filter-country" placeholder="Фильтр по стране" style="width: 120px;">
+      <button class="btn" onclick="clearFilters()">Очистить</button>
+    </div>
+  </div>
+
+  <div style="overflow-x: auto;">
+    <table class="unified-table" id="servers-table">
         <thead>
             <tr>
-                <th>ID</th>
-                <th>Название</th>
-                <th>Протокол</th>
-                <th>API URL</th>
-                <th>Выдано ключей</th>
-                <th>Макс. ключей</th>
-                <th>Статус</th>
-                <th>Страна</th>
-                <th></th>
-            </tr>
-            <tr>
-                <th><input type="text" id="filter-id" placeholder="Фильтр по ID" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-                <th><input type="text" id="filter-name" placeholder="Фильтр по названию" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-                <th><input type="text" id="filter-protocol" placeholder="Фильтр по протоколу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-                <th><input type="text" id="filter-api-url" placeholder="Фильтр по API URL" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-                <th><input type="text" id="filter-issued" placeholder="Фильтр по выдано" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-                <th><input type="text" id="filter-max-keys" placeholder="Фильтр по макс." style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-                <th><input type="text" id="filter-status" placeholder="Фильтр по статусу" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-                <th><input type="text" id="filter-country" placeholder="Фильтр по стране" style="width: 100%; box-sizing: border-box; border-radius: 3px; box-shadow: none; padding: 4px 8px;"></th>
-                <th></th>
+                <th style="width: 60px;">ID</th>
+                <th style="width: 150px;">Название</th>
+                <th style="width: 100px;">Протокол</th>
+                <th style="width: 200px;">API URL</th>
+                <th style="width: 100px;">Выдано ключей</th>
+                <th style="width: 100px;">Макс. ключей</th>
+                <th style="width: 80px;">Статус</th>
+                <th style="width: 100px;">Страна</th>
+                <th style="width: 120px;">Действия</th>
             </tr>
         </thead>
         <tbody id="servers-tbody">
@@ -50,28 +57,28 @@
                 <td><strong>{{ s[1] }}</strong></td>
                 <td>
                     {% if s[7] == 'v2ray' %}
-                        <span class="badge badge-warning">🛡️ V2Ray</span>
+                        <span class="badge active">🛡️ V2Ray</span>
                     {% else %}
-                        <span class="badge badge-primary">🔒 Outline</span>
+                        <span class="badge active">🔒 Outline</span>
                     {% endif %}
                 </td>
-                <td><code class="code">{{ s[2] }}</code></td>
+                <td><div class="code">{{ s[2] }}</div></td>
                 <td>{% if s[11] %}{{ s[11] }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
                 <td>{{ s[4] }}</td>
                 <td>
                     {% if s[5] %}
-                        <span class="badge badge-success">Активен</span>
+                        <span class="badge active">Активен</span>
                     {% else %}
-                        <span class="badge badge-danger">Неактивен</span>
+                        <span class="badge expired">Неактивен</span>
                     {% endif %}
                 </td>
-                <td><span class="badge badge-info">{{ s[6] }}</span></td>
+                <td><span class="badge active">{{ s[6] }}</span></td>
                 <td>
-                    <div class="btn-group">
-                        <a href="/servers/edit/{{ s[0] }}" class="btn btn-primary btn-sm" title="Редактировать">
+                    <div class="action-buttons">
+                        <a href="/servers/edit/{{ s[0] }}" class="btn btn-primary" title="Редактировать">
                             <span class="material-icons">edit</span>
                         </a>
-                        <a href="/delete_server/{{ s[0] }}" class="btn btn-danger btn-sm" 
+                        <a href="/delete_server/{{ s[0] }}" class="btn btn-danger" 
                            onclick="return confirm('Удалить сервер?')" title="Удалить">
                             <span class="material-icons">delete</span>
                         </a>

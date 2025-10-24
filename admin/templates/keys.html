@@ -19,579 +19,245 @@
 {% endblock %}
 
 {% block content %}
-<style>
-.keys-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 1rem;
-    background: white;
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    font-size: 0.8rem;
-}
-
-.keys-table th {
-    background: #f8fafc;
-    padding: 8px 6px;
-    text-align: left;
-    font-weight: 600;
-    color: #374151;
-    border-bottom: 1px solid #e5e7eb;
-    font-size: 0.75rem;
-    white-space: nowrap;
-}
-
-.keys-table td {
-    padding: 8px 6px;
-    border-bottom: 1px solid #f3f4f6;
-    font-size: 0.75rem;
-    vertical-align: middle;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.keys-table tr:hover {
-    background-color: #f9fafb;
-}
-
-.keys-table tr:last-child td {
-    border-bottom: none;
-}
-
-.action-buttons {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    justify-content: center;
-}
-
-.btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 6px 8px;
-    border: none;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    text-decoration: none;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    min-width: 28px;
-    height: 28px;
-}
-
-.btn-danger {
-    background: #ef4444;
-    color: white;
-}
-
-.btn-danger:hover {
-    background: #dc2626;
-    transform: translateY(-1px);
-}
-
-.btn-primary {
-    background: #3b82f6;
-    color: white;
-}
-
-.btn-primary:hover {
-    background: #2563eb;
-    transform: translateY(-1px);
-}
-
-.btn .material-icons {
-    font-size: 14px;
-}
-
-/* Убраны стили для badge для упрощения таблицы */
-
-.email {
-    font-size: 0.7rem;
-    color: #374151;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    display: block;
-}
-
-.code {
-    font-family: 'Courier New', monospace;
-    font-size: 0.7rem;
-    background: #f3f4f6;
-    padding: 2px 4px;
-    border-radius: 3px;
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* Все badge стили убраны для упрощения */
-
-.code {
-    font-family: 'Courier New', monospace;
-    background: #f3f4f6;
-    padding: 4px 6px;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    word-break: break-all;
-}
-
-.email {
-    color: #3b82f6;
-    font-weight: 500;
-}
-
-.text-muted {
-    color: #9ca3af;
-}
-
-.filter-row {
-    background: #f8fafc;
-    padding: 12px;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-.filter-row input {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    font-size: 0.875rem;
-    box-sizing: border-box;
-}
-
-.filter-row input:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
-
-.pagination {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    margin: 2rem 0;
-    gap: 8px;
-}
-
-.pagination .btn {
-    min-width: 40px;
-    height: 40px;
-    background: #f3f4f6;
-    color: #374151;
-    border: 1px solid #d1d5db;
-}
-
-.pagination .btn:hover {
-    background: #e5e7eb;
-    transform: none;
-}
-
-.pagination .btn.active {
-    background: #3b82f6;
-    color: white;
-    border-color: #3b82f6;
-}
-
-.modal {
-    display: none;
-    position: fixed;
-    z-index: 10000;
-    left: 0;
-    top: 0;
-    width: 100vw;
-    height: 100vh;
-    background: rgba(0,0,0,0.5);
-    align-items: center;
-    justify-content: center;
-}
-
-.modal-content {
-    background: white;
-    padding: 2rem;
-    border-radius: 12px;
-    min-width: 400px;
-    max-width: 90vw;
-    box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
-    position: relative;
-}
-
-.modal h2 {
-    margin: 0 0 1.5rem 0;
-    color: #111827;
-}
-
-.form-group {
-    margin-bottom: 1rem;
-}
-
-.form-group label {
-    display: block;
-    margin-bottom: 0.5rem;
-    font-weight: 500;
-    color: #374151;
-}
-
-.form-input {
-    width: 100%;
-    padding: 0.75rem;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    font-size: 0.875rem;
-    box-sizing: border-box;
-}
-
-.form-input:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
-
-.modal-actions {
-    display: flex;
-    gap: 1rem;
-    margin-top: 1.5rem;
-}
-
-.close-btn {
-    position: absolute;
-    right: 1rem;
-    top: 1rem;
-    background: none;
-    border: none;
-    font-size: 1.5rem;
-    cursor: pointer;
-    color: #6b7280;
-}
-
-.close-btn:hover {
-    color: #374151;
-}
-
-.error-message {
-    color: #ef4444;
-    margin-bottom: 1rem;
-    display: none;
-}
-
-.table-container {
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    overflow: hidden;
-}
-
-.table-header {
-    padding: 1.5rem;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-.table-header h2 {
-    margin: 0;
-    color: #111827;
-    font-size: 1.5rem;
-    font-weight: 600;
-}
-
-.stats-row {
-    display: flex;
-    gap: 2rem;
-    margin-top: 1rem;
-}
-
-.stat-item {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-.stat-label {
-    color: #6b7280;
-    font-size: 0.875rem;
-}
-
-.stat-value {
-    font-weight: 600;
-    color: #111827;
-}
-.date-cell { white-space: normal; line-height: 1.1; }
-.key-inline { display:flex; align-items:center; gap:6px; }
-.key-inline .code { flex:1 1 auto; }
-</style>
-
 <div class="table-container">
-    <div class="table-header">
-        <h2>Выданные ключи</h2>
-        <div class="stats-row">
-            <div class="stat-item">
-                <span class="stat-label">Всего ключей:</span>
-                <span class="stat-value">{{ total }}</span>
+  <div class="table-header">
+    <h2>Выданные ключи</h2>
+    <div class="stats-row">
+      <div class="stat-item"><span class="stat-label">Всего:</span><span class="stat-value">{{ total }}</span></div>
+      <div class="stat-item"><span class="stat-label">Активных:</span><span class="stat-value">{{ active_count }}</span></div>
+      <div class="stat-item"><span class="stat-label">Истекших:</span><span class="stat-value">{{ expired_count }}</span></div>
+    </div>
+  </div>
+
+  <div class="filter-row">
+    <form method="get" action="/keys" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <input type="text" name="email" placeholder="Поиск по email" value="{{ email }}" />
+      <select name="tariff_id" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; background:white;">
+        <option value="">Все тарифы</option>
+        {% for tariff in tariffs %}
+        <option value="{{ tariff.id }}" {% if tariff_id == tariff.id %}selected{% endif %}>{{ tariff.name }}</option>
+        {% endfor %}
+      </select>
+      <select name="protocol" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; background:white;">
+        <option value="">Все протоколы</option>
+        <option value="outline" {% if protocol == 'outline' %}selected{% endif %}>Outline</option>
+        <option value="v2ray" {% if protocol == 'v2ray' %}selected{% endif %}>V2Ray</option>
+      </select>
+      <select name="server_id" style="padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; background:white;">
+        <option value="">Все серверы</option>
+        {% for server in servers %}
+        <option value="{{ server.id }}" {% if server_id == server.id %}selected{% endif %}>{{ server.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-primary" type="submit">Фильтровать</button>
+      <a href="/keys" class="btn">Сбросить</a>
+    </form>
+  </div>
+
+  <div style="overflow-x:auto;">
+    <table class="unified-table">
+      <thead>
+        <tr>
+          <th style="width:60px;">ID</th>
+          <th style="width:80px;">Протокол</th>
+          <th>Ключ</th>
+          <th style="width:120px;">Тариф</th>
+          <th style="width:150px;">Email</th>
+          <th style="width:120px;">Сервер</th>
+          <th style="width:120px;">Создан</th>
+          <th style="width:120px;">Истекает</th>
+          <th style="width:100px;">Статус</th>
+          <th style="width:120px;">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for k in keys %}
+        <tr>
+          <td>{{ k[0] }}</td>
+          <td>
+            {% if k[8] == 'outline' %}
+              <span class="badge active">🔒 Outline</span>
+            {% elif k[8] == 'v2ray' %}
+              <span class="badge active">🛡️ V2Ray</span>
+            {% else %}
+              <span class="badge">{{ k[8] }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="key-inline">
+              <div class="code" id="code-{{ k[0] }}" title="{{ k[2] }}">{{ k[2]|truncate(30) }}</div>
+              <button class="btn" onclick="copyCode('{{ k[2] }}')" title="Скопировать">
+                <span class="material-icons">content_copy</span>
+              </button>
             </div>
-        </div>
-    </div>
-
-    
-
-    <!-- Фильтры -->
-    <div class="filter-row sticky" style="display:grid; grid-template-columns: 50px 60px 100px 70px 110px 90px 70px 90px 90px 100px 50px 120px; gap:6px; align-items:center;">
-        <input class="col-filter" data-col="0" placeholder="ID" style="width:100%;">
-        <input class="col-filter" data-col="1" placeholder="Протокол" style="width:100%;">
-        <input class="col-filter" data-col="2" placeholder="Ключ" style="width:100%;">
-        <input class="col-filter" data-col="3" placeholder="Тариф" style="width:100%;">
-        <input class="col-filter" data-col="4" placeholder="Email" style="width:100%;">
-        <input class="col-filter" data-col="5" placeholder="Трафик" style="width:100%;">
-        <input class="col-filter" data-col="6" placeholder="Сервер" style="width:100%;">
-        <input class="col-filter" data-col="7" placeholder="Создан" style="width:100%;">
-        <input class="col-filter" data-col="8" placeholder="Истекает" style="width:100%;">
-        <input class="col-filter" data-col="9" placeholder="Осталось" style="width:100%;">
-        <input class="col-filter" data-col="10" placeholder="Статус" style="width:100%;">
-        <div></div>
-    </div>
-
-    <!-- Таблица -->
-    <div style="overflow-x: auto; margin-top: 1rem;">
-        <table class="table keys-table">
-        <thead>
-            <tr>
-                <th style="width: 50px;">ID</th>
-                <th style="width: 60px;">Протокол</th>
-                <th style="width: 100px;">Ключ</th>
-                <th style="width: 70px;">Тариф</th>
-                <th style="width: 110px;">Email</th>
-                <th style="width: 90px;">Трафик</th>
-                <th style="width: 70px;">Сервер</th>
-                <th style="width: 90px;">Создан</th>
-                <th style="width: 90px;">Истекает</th>
-                <th style="width: 100px;">Осталось</th>
-                <th style="width: 50px;">Статус</th>
-                <th style="width: 120px;">Действия</th>
-            </tr>
-        </thead>
-        <tbody id="keys-tbody">
-            {% for k in keys %}
-            <tr>
-                <td>{{ k[0] }}</td>
-                <td>
-                    {% if k[8] == 'outline' %}
-                        <span>🔒</span>
-                    {% elif k[8] == 'v2ray' %}
-                        <span>🛡️</span>
-                    {% else %}
-                        <span>{{ k[8] }}</span>
-                    {% endif %}
-                </td>
-                <td>
-                    <div class="key-inline">
-                        <div class="code" id="code-{{ k[0] }}" title="{{ k[2] }}">{{ k[2]|truncate(30) }}</div>
-                        <button class="btn" onclick="copyCode('{{ k[2] }}')" title="Скопировать"><span class="material-icons">content_copy</span></button>
-                    </div>
-                </td>
-                <td>
-                    {% if k[7] %}
-                        <span>{{ k[7] }}</span>
-                    {% else %}
-                        <span class="text-muted">—</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if k[6] %}
-                        <span class="email">{{ k[6] }}</span>
-                    {% else %}
-                        <span class="text-muted">—</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if k[8] == 'v2ray' %}
-                        <span>{{ (k[-1] if k|length > 12 else '') or '—' }}</span>
-                    {% elif k[8] == 'outline' %}
-                        <span>{{ (k[-1] if k|length > 9 else '') or '—' }}</span>
-                    {% else %}
-                        <span class="text-muted">N/A</span>
-                    {% endif %}
-                </td>
-                <td>
-                    <span>{{ k[5] }}</span>
-                </td>
-                <td class="date-cell" title="{{ k[3]|timestamp }}">{{ (k[3]|timestamp).replace(' ', '<br>')|safe }}</td>
-                <td class="date-cell" title="{{ k[4]|timestamp }}">{{ (k[4]|timestamp).replace(' ', '<br>')|safe }}</td>
-                <td>
-                    {% if k[4] > current_time %}
-                        {% set remaining = k[4] - current_time %}
-                        <span>{{ remaining|format_duration }}</span>
-                    {% else %}
-                        <span style="color: #ef4444;">Истек</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if k[4] > current_time %}
-                        <span title="Активен">✅</span>
-                    {% else %}
-                        <span title="Истек">❌</span>
-                    {% endif %}
-                </td>
-                <td>
-                    <div class="action-buttons">
-                        <a href="/keys/delete/{{ k[0] }}" class="btn btn-danger" onclick="return confirm('Удалить ключ?')" title="Удалить"><span class="material-icons">delete</span></a>
-                        <button class="btn btn-primary" 
-                                data-key-id="{{ k[0] }}" 
-                                data-expiry="{{ k[4]|my_datetime_local }}" 
-                                onclick="openEditModal(this)" 
-                                title="Редактировать срок действия">
-                            <span class="material-icons">edit</span>
-                        </button>
-                    </div>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
+          </td>
+          <td>
+            {% if k[7] %}
+              <span>{{ k[7] }}</span>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if k[6] %}
+              <span class="email">{{ k[6] }}</span>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td>{{ k[5] }}</td>
+          <td class="date-cell" title="{{ k[3]|timestamp }}">{{ (k[3]|timestamp).replace(' ', '<br>')|safe }}</td>
+          <td class="date-cell" title="{{ k[4]|timestamp }}">{{ (k[4]|timestamp).replace(' ', '<br>')|safe }}</td>
+          <td>
+            {% if k[4] > current_time %}
+              <span class="badge active">Активен</span>
+            {% else %}
+              <span class="badge expired">Истек</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="action-buttons">
+              <a href="/keys/delete/{{ k[0] }}" class="btn btn-danger" onclick="return confirm('Удалить ключ?')" title="Удалить">
+                <span class="material-icons">delete</span>
+              </a>
+              <button class="btn btn-primary" 
+                      data-key-id="{{ k[0] }}" 
+                      data-expiry="{{ k[4]|my_datetime_local }}" 
+                      onclick="openEditModal(this)" 
+                      title="Редактировать срок действия">
+                <span class="material-icons">edit</span>
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
     </table>
-    </div>
+  </div>
+</div>
 
-<!-- Пагинация (серверная) -->
+<!-- Пагинация -->
 <div class="pagination">
   {% set pages = (total // limit) + (1 if (total % limit) else 0) %}
-  {% if page > 1 %}
-    <a class="btn" href="/keys?page={{ page-1 }}&limit={{ limit }}">←</a>
-  {% endif %}
-  {% for p in range(1, pages+1) %}
-    {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
-      <a class="btn {% if p==page %}active{% endif %}" href="/keys?page={{ p }}&limit={{ limit }}">{{ p }}</a>
-    {% elif p == page-3 or p == page+3 %}
-      <span style="padding:4px 8px; color:#6b7280;">…</span>
+  {% if pages > 1 %}
+    {% if page > 1 %}
+      <a href="?page={{ page - 1 }}{% if email %}&email={{ email }}{% endif %}{% if tariff_id %}&tariff_id={{ tariff_id }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if server_id %}&server_id={{ server_id }}{% endif %}">← Предыдущая</a>
     {% endif %}
-  {% endfor %}
-  {% if page < pages %}
-    <a class="btn" href="/keys?page={{ page+1 }}&limit={{ limit }}">→</a>
+    
+    {% for p in range(1, pages + 1) %}
+      {% if p == page %}
+        <a href="#" class="active">{{ p }}</a>
+      {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
+        <a href="?page={{ p }}{% if email %}&email={{ email }}{% endif %}{% if tariff_id %}&tariff_id={{ tariff_id }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if server_id %}&server_id={{ server_id }}{% endif %}">{{ p }}</a>
+      {% elif p == 4 and page > 5 %}
+        <span>...</span>
+      {% elif p == pages - 3 and page < pages - 4 %}
+        <span>...</span>
+      {% endif %}
+    {% endfor %}
+    
+    {% if page < pages %}
+      <a href="?page={{ page + 1 }}{% if email %}&email={{ email }}{% endif %}{% if tariff_id %}&tariff_id={{ tariff_id }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if server_id %}&server_id={{ server_id }}{% endif %}">Следующая →</a>
+    {% endif %}
   {% endif %}
 </div>
 
-<!-- Модальное окно для редактирования -->
+<!-- Modal для редактирования срока действия -->
 <div id="editModal" class="modal">
-    <div class="modal-content">
-        <button class="close-btn" onclick="closeEditModal()">&times;</button>
-        <h2>Редактировать срок действия</h2>
-        <form id="editForm" onsubmit="submitEdit(event)">
-            <input type="hidden" id="editKeyId" name="key_id">
-            <div class="form-group">
-                <label for="editExpiry">Новая дата истечения</label>
-                <input type="datetime-local" id="editExpiry" name="expiry_at" class="form-input" required>
-            </div>
-            <div class="error-message" id="editError"></div>
-            <div class="modal-actions">
-                <button type="submit" class="btn btn-primary">Сохранить</button>
-                <button type="button" class="btn" onclick="closeEditModal()" style="background: #6b7280; color: white;">Отмена</button>
-            </div>
-        </form>
-    </div>
+  <div class="modal-content">
+    <h4>Редактировать срок действия</h4>
+    <form id="editForm" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <div class="input-field">
+        <label for="new_expiry">Новая дата истечения:</label>
+        <input type="datetime-local" id="new_expiry" name="new_expiry" required>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn" onclick="closeEditModal()">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </form>
+  </div>
 </div>
 
 <script>
-// Модальное окно редактирования
+function copyCode(code) {
+  navigator.clipboard.writeText(code).then(function() {
+    // Показываем уведомление
+    const notification = document.createElement('div');
+    notification.textContent = 'Ключ скопирован!';
+    notification.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:8px 16px;border-radius:6px;z-index:1000;';
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 2000);
+  });
+}
+
 function openEditModal(button) {
-    const keyId = button.getAttribute('data-key-id');
-    const expiry = button.getAttribute('data-expiry');
-    
-    document.getElementById('editKeyId').value = keyId;
-    document.getElementById('editExpiry').value = expiry;
-    document.getElementById('editError').style.display = 'none';
-    document.getElementById('editModal').style.display = 'flex';
+  const keyId = button.dataset.keyId;
+  const currentExpiry = button.dataset.expiry;
+  
+  document.getElementById('editForm').action = `/keys/edit/${keyId}`;
+  document.getElementById('new_expiry').value = currentExpiry;
+  document.getElementById('editModal').style.display = 'block';
 }
 
 function closeEditModal() {
-    document.getElementById('editModal').style.display = 'none';
+  document.getElementById('editModal').style.display = 'none';
 }
 
-async function submitEdit(event) {
-    event.preventDefault();
-    
-    const keyId = document.getElementById('editKeyId').value;
-    const expiry = document.getElementById('editExpiry').value;
-    const errorDiv = document.getElementById('editError');
-    
-    errorDiv.style.display = 'none';
-    
-    try {
-        const response = await fetch(`/api/keys/${keyId}/expiry`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ expiry_at: expiry })
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok) {
-            closeEditModal();
-            location.reload(); // Перезагружаем страницу для обновления данных
-        } else {
-            errorDiv.textContent = result.error || 'Ошибка при обновлении';
-            errorDiv.style.display = 'block';
-        }
-    } catch (error) {
-        errorDiv.textContent = 'Ошибка сети';
-        errorDiv.style.display = 'block';
-    }
-}
-
-// Инициализация
-document.addEventListener('DOMContentLoaded', function() {
-    // Закрытие модального окна по клику вне его
-    document.getElementById('editModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeEditModal();
-        }
-    });
-});
-
-function copyCode(text) {
-  try { navigator.clipboard.writeText(text); M && M.toast && M.toast({html: 'Скопировано'}); } catch (e) { alert('Скопировано'); }
-}
-function toggleFull(id, text) {
-  const el = document.getElementById('code-' + id);
-  if (!el) return;
-  if (el.innerText.length < text.length) { el.innerText = text; } else { el.innerText = text.substring(0, 30) + '…'; }
-}
-</script>
-<script>
-// Фильтры по столбцам (клиентская фильтрация)
-document.addEventListener('DOMContentLoaded', function() {
-  const inputs = document.querySelectorAll('input.col-filter');
-  const tbody = document.getElementById('keys-tbody');
-  const rows = Array.from(tbody.querySelectorAll('tr'));
-  function applyFilters() {
-    const terms = Array.from(inputs).map(i => (i.value||'').toLowerCase());
-    tbody.innerHTML = '';
-    rows.forEach(tr => {
-      const cells = tr.children;
-      let ok = true;
-      for (let i=0;i<terms.length;i++) {
-        if (!terms[i]) continue;
-        const txt = (cells[i]?.innerText||'').toLowerCase();
-        if (!txt.includes(terms[i])) { ok = false; break; }
-      }
-      if (ok) tbody.appendChild(tr.cloneNode(true));
-    });
+// Закрытие модального окна при клике вне его
+window.onclick = function(event) {
+  const modal = document.getElementById('editModal');
+  if (event.target == modal) {
+    closeEditModal();
   }
-  inputs.forEach(inp => inp.addEventListener('input', applyFilters));
-});
-</script>
-
-<div class="fab" title="Экспорт CSV" onclick="exportCsv()">
-  <span class="material-icons">download</span>
-</div>
-<script>
-function exportCsv(){
-  const url = new URL(window.location.href);
-  url.searchParams.set('export','csv');
-  window.location.href = url.toString();
 }
 </script>
+
+<style>
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0,0,0,0.5);
+}
+
+.modal-content {
+  background-color: white;
+  margin: 15% auto;
+  padding: 20px;
+  border-radius: 8px;
+  width: 400px;
+  max-width: 90%;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.input-field {
+  margin-bottom: 16px;
+}
+
+.input-field label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.input-field input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+}
+</style>
 {% endblock %}

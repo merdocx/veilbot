@@ -3,51 +3,57 @@
 {% block page_title %}Тарифы{% endblock %}
 
 {% block content %}
-<div class="tariffs-page">
-    <!-- Tariffs Table -->
-    <div class="table-container">
-        <table class="table tariffs-table">
-  <thead>
-    <tr>
-      <th>ID</th>
-      <th>Название</th>
-                    <th>Длительность</th>
-      <th>Цена (₽)</th>
-                    <th>Действия</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for t in tariffs %}
-    <tr>
-      <td>{{ t[0] }}</td>
-                    <td><strong>{{ t[1] }}</strong></td>
-                    <td>
-                        {% set duration = t[2] %}
-                        {% if duration >= 86400 %}
-                            <span class="badge badge-info">{{ (duration // 86400) }} дн.</span>
-                        {% elif duration >= 3600 %}
-                            <span class="badge badge-info">{{ (duration // 3600) }} ч.</span>
-                        {% else %}
-                            <span class="badge badge-info">{{ (duration // 60) }} мин.</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if t[3] == 0 %}
-                            <span class="badge badge-success">Бесплатно</span>
-                        {% else %}
-                            <span class="badge badge-warning">{{ t[3] }} ₽</span>
-                        {% endif %}
-                    </td>
-      <td>
-                        <div class="btn-group">
-                            <a href="/tariffs/edit/{{ t[0] }}" class="btn btn-primary btn-sm" title="Редактировать">
-                                <span class="material-icons">edit</span>
-                            </a>
-                            <a href="/delete_tariff/{{ t[0] }}" class="btn btn-danger btn-sm" 
-                               onclick="return confirm('Удалить тариф?')" title="Удалить">
-                                <span class="material-icons">delete</span>
-                            </a>
-                        </div>
+<div class="table-container">
+  <div class="table-header">
+    <h2>Тарифы</h2>
+    <div class="stats-row">
+      <div class="stat-item"><span class="stat-label">Всего тарифов:</span><span class="stat-value">{{ tariffs|length }}</span></div>
+    </div>
+  </div>
+
+  <div style="overflow-x: auto;">
+    <table class="unified-table">
+      <thead>
+        <tr>
+          <th style="width: 60px;">ID</th>
+          <th style="width: 200px;">Название</th>
+          <th style="width: 120px;">Длительность</th>
+          <th style="width: 100px;">Цена (₽)</th>
+          <th style="width: 120px;">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tariffs %}
+        <tr>
+          <td>{{ t[0] }}</td>
+          <td><strong>{{ t[1] }}</strong></td>
+          <td>
+            {% set duration = t[2] %}
+            {% if duration >= 86400 %}
+              <span class="badge active">{{ (duration // 86400) }} дн.</span>
+            {% elif duration >= 3600 %}
+              <span class="badge active">{{ (duration // 3600) }} ч.</span>
+            {% else %}
+              <span class="badge active">{{ (duration // 60) }} мин.</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if t[3] == 0 %}
+              <span class="badge active">Бесплатно</span>
+            {% else %}
+              <span class="badge pending">{{ t[3] }} ₽</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="action-buttons">
+              <a href="/tariffs/edit/{{ t[0] }}" class="btn btn-primary" title="Редактировать">
+                <span class="material-icons">edit</span>
+              </a>
+              <a href="/delete_tariff/{{ t[0] }}" class="btn btn-danger" 
+                 onclick="return confirm('Удалить тариф?')" title="Удалить">
+                <span class="material-icons">delete</span>
+              </a>
+            </div>
       </td>
     </tr>
     {% endfor %}
