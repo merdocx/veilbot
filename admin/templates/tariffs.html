@@ -4,22 +4,6 @@
 {% block page_title %}Тарифы{% endblock %}
 
 {% block content %}
-<!-- Stats Cards -->
-<div class="stats-grid">
-    <div class="stat-card">
-        <div class="stat-value">{{ tariffs|length }}</div>
-        <div class="stat-label">Всего тарифов</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">{{ free_tariffs }}</div>
-        <div class="stat-label">Бесплатных</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">{{ paid_tariffs }}</div>
-        <div class="stat-label">Платных</div>
-    </div>
-</div>
-
 <!-- Tariffs Table -->
 <div class="card">
     <div class="card-header">
