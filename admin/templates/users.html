@@ -72,17 +72,11 @@
                             <span class="text-muted">—</span>
                         {% endif %}
                     </td>
-                    <td>
+                    <td style="text-align: center;">
                         {% if user.is_active %}
-                            <span class="badge badge-success">
-                                <span class="material-icons icon-small">check_circle</span>
-                                Активен
-                            </span>
+                            <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Активен">check_circle</span>
                         {% else %}
-                            <span class="badge badge-error">
-                                <span class="material-icons icon-small">cancel</span>
-                                Неактивен
-                            </span>
+                            <span class="material-icons" style="color: #c62828; font-size: 20px;" title="Неактивен">cancel</span>
                         {% endif %}
                     </td>
                     <td>

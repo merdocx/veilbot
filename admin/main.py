@@ -17,7 +17,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.logging_config import setup_logging
 from app.settings import settings
-from admin.admin_routes import router as admin_router
 from dotenv import load_dotenv
 
 # Setup logging
@@ -29,7 +28,7 @@ logging.basicConfig(
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-app = FastAPI(title="VeilBot Admin", version="2.0.1")
+app = FastAPI(title="VeilBot Admin", version="2.1.0")
 
 # Logging setup
 setup_logging("INFO")
@@ -111,7 +110,41 @@ app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
 templates_dir = os.path.join(BASE_DIR, "templates")
 templates = Jinja2Templates(directory=templates_dir)
 
-# Routers
-app.include_router(admin_router)
+# Routers - используем новые модульные роутеры
+from admin.routes import (
+    auth_router,
+    dashboard_router,
+    tariffs_router,
+    servers_router,
+    users_router,
+    keys_router,
+    payments_router,
+    webhooks_router,
+    cleanup_router,
+)
+
+# Подключаем все модульные роутеры
+app.include_router(auth_router)
+app.include_router(dashboard_router)
+app.include_router(tariffs_router)
+app.include_router(servers_router)
+app.include_router(users_router)
+app.include_router(keys_router)
+app.include_router(payments_router)
+app.include_router(webhooks_router)
+app.include_router(cleanup_router)
+
+# Глобальная обработка ошибок
+from admin.middleware.error_handler import (
+    global_exception_handler,
+    http_exception_handler,
+    validation_exception_handler
+)
+from fastapi.exceptions import RequestValidationError
+from fastapi import HTTPException
+
+app.add_exception_handler(Exception, global_exception_handler)
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 

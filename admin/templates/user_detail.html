@@ -52,18 +52,26 @@
         {% for k in keys %}
         <tr>
           <td>{{ k[0] }}</td>
-          <td><span class="badge">{{ k[8] }}</span></td>
+          <td style="text-align: center;">
+            {% if k[8] == 'outline' %}
+              <span class="material-icons" style="color: #1565c0;" title="Outline">lock</span>
+            {% elif k[8] == 'v2ray' %}
+              <span class="material-icons" style="color: #1565c0;" title="V2Ray">security</span>
+            {% else %}
+              <span class="material-icons" style="color: #757575;" title="{{ k[8] }}">help_outline</span>
+            {% endif %}
+          </td>
           <td><div class="code" title="{{ k[2] }}">{{ k[2]|truncate(40) }}</div></td>
           <td>{{ k[7] or '—' }}</td>
           <td>{{ k[6] or '—' }}</td>
           <td>{{ k[5] }}</td>
           <td>{{ k[3]|timestamp }}</td>
           <td>{{ k[4]|timestamp }}</td>
-          <td>
+          <td style="text-align: center;">
             {% if k[4] > (namespace().now_ts if false else 0) %}
-              <span class="badge" style="background:#dcfce7; color:#166534;">Активен</span>
+              <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Активен">check_circle</span>
             {% else %}
-              <span class="badge" style="background:#fee2e2; color:#991b1b;">Истек</span>
+              <span class="material-icons" style="color: #c62828; font-size: 20px;" title="Истек">cancel</span>
             {% endif %}
           </td>
           <td>

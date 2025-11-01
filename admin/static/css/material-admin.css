@@ -42,7 +42,7 @@ body {
 
 /* Sidebar */
 .sidebar {
-    width: 240px;
+    width: 192px; /* 240px * 0.8 = 192px (уменьшено на 20%) */
     background: #ffffff;
     border-right: 1px solid var(--divider);
     position: fixed;
@@ -111,7 +111,7 @@ body {
 /* Main Content */
 .main-content {
     flex: 1;
-    margin-left: 240px;
+    margin-left: 192px; /* 240px * 0.8 = 192px (уменьшено на 20%) */
     min-height: 100vh;
     display: flex;
     flex-direction: column;
@@ -279,91 +279,266 @@ body {
     width: 100%;
     border-collapse: collapse;
     font-size: 14px;
-}
-
-/* Фиксированная ширина для таблицы keys - предотвращает переполнение */
-#keys-table {
-    table-layout: fixed;
-    min-width: 1200px;
+    table-layout: auto;
     max-width: 100%;
 }
 
-#keys-table th,
-#keys-table td {
+/* Общие стили для всех таблиц - предотвращение переполнения */
+.material-table th,
+.material-table td {
     overflow: hidden;
     text-overflow: ellipsis;
     padding: 8px 12px;
+    word-break: break-word;
 }
 
-/* Адаптивные колонки для таблицы keys */
+/* Таблица ключей - оптимизировано без пустых мест */
+#keys-table {
+    table-layout: fixed;
+    width: 100%;
+    max-width: 100%;
+}
+
 #keys-table th:nth-child(1),
 #keys-table td:nth-child(1) { 
-    width: 5%;
-    min-width: 50px;
-    max-width: 60px;
+    width: 3%; /* ID - компактный */
+    padding: 8px 4px;
 }
 
 #keys-table th:nth-child(2),
 #keys-table td:nth-child(2) { 
-    width: 8%;
-    min-width: 80px;
-    max-width: 100px;
+    width: 4%; /* Тип - только иконка */
+    padding: 8px 2px;
+    text-align: center;
 }
 
 #keys-table th:nth-child(3),
 #keys-table td:nth-child(3) { 
-    width: 25%;
-    min-width: 200px;
-    max-width: 300px;
+    width: 4%; /* Ключ - кнопка копирования */
+    text-align: center;
+    padding: 8px 2px;
 }
 
 #keys-table th:nth-child(4),
 #keys-table td:nth-child(4) { 
-    width: 12%;
-    min-width: 120px;
-    max-width: 180px;
+    width: 32%; /* Email - получил место от Тип */
 }
 
 #keys-table th:nth-child(5),
 #keys-table td:nth-child(5) { 
-    width: 10%;
-    min-width: 100px;
-    max-width: 140px;
+    width: 12%; /* Сервер */
+    padding: 8px 6px;
 }
 
 #keys-table th:nth-child(6),
 #keys-table td:nth-child(6) { 
-    width: 12%;
-    min-width: 120px;
-    max-width: 160px;
+    width: 13%; /* Создан */
+    padding: 8px 6px;
 }
 
 #keys-table th:nth-child(7),
 #keys-table td:nth-child(7) { 
-    width: 12%;
-    min-width: 120px;
-    max-width: 160px;
+    width: 13%; /* Истекает */
+    padding: 8px 6px;
 }
 
 #keys-table th:nth-child(8),
 #keys-table td:nth-child(8) { 
-    width: 8%;
-    min-width: 90px;
-    max-width: 110px;
+    width: 4%; /* Статус - только иконка */
+    padding: 8px 2px;
+    text-align: center;
 }
 
 #keys-table th:nth-child(9),
 #keys-table td:nth-child(9) { 
-    width: 8%;
-    min-width: 90px;
-    max-width: 120px;
+    width: 8%; /* Трафик - компактный */
+    padding: 8px 4px;
 }
 
 #keys-table th:nth-child(10),
 #keys-table td:nth-child(10) { 
+    width: 7%; /* Действия - компактные кнопки */
+    text-align: center;
+    padding: 8px 4px;
+}
+
+/* Таблица пользователей */
+#users-table {
+    table-layout: fixed;
+    width: 100%;
+    max-width: 100%;
+}
+
+#users-table th:nth-child(1),
+#users-table td:nth-child(1) { 
+    width: 20%;
+}
+
+#users-table th:nth-child(2),
+#users-table td:nth-child(2) { 
+    width: 15%;
+}
+
+#users-table th:nth-child(3),
+#users-table td:nth-child(3) { 
+    width: 30%;
+    white-space: normal;
+}
+
+#users-table th:nth-child(4),
+#users-table td:nth-child(4) { 
+    width: 15%;
+}
+
+#users-table th:nth-child(5),
+#users-table td:nth-child(5) { 
+    width: 20%;
+}
+
+/* Таблица серверов */
+#servers-table {
+    table-layout: fixed;
+    width: 100%;
+    max-width: 100%;
+}
+
+/* Уменьшенные отступы для таблицы серверов */
+#servers-table th {
+    padding: 10px 8px;
+}
+
+#servers-table td {
+    padding: 8px 6px;
+}
+
+#servers-table th:nth-child(1),
+#servers-table td:nth-child(1) { 
+    width: 4%;
+}
+
+#servers-table th:nth-child(2),
+#servers-table td:nth-child(2) { 
+    width: 13%;
+}
+
+/* Протокол - иконка, уменьшенная ширина */
+#servers-table th:nth-child(3),
+#servers-table td:nth-child(3) { 
+    width: 4%;
+    text-align: center;
+    padding: 8px 2px;
+}
+
+#servers-table th:nth-child(4),
+#servers-table td:nth-child(4) { 
+    width: 22%;
+    word-break: break-all;
+}
+
+#servers-table th:nth-child(5),
+#servers-table td:nth-child(5) { 
+    width: 7%;
+}
+
+#servers-table th:nth-child(6),
+#servers-table td:nth-child(6) { 
+    width: 7%;
+}
+
+/* Статус - иконка, уменьшенная ширина */
+#servers-table th:nth-child(7),
+#servers-table td:nth-child(7) { 
+    width: 4%;
+    text-align: center;
+    padding: 8px 2px;
+}
+
+/* Страна - увеличенная ширина */
+#servers-table th:nth-child(8),
+#servers-table td:nth-child(8) { 
+    width: 19%;
+}
+
+#servers-table th:nth-child(9),
+#servers-table td:nth-child(9) { 
+    width: 12%;
+}
+
+/* Таблица платежей - используем auto для гибкости, но ограничиваем ширину колонок */
+.material-table:not(#keys-table):not(#users-table):not(#servers-table) {
+    table-layout: auto;
+}
+
+/* Таблица платежей */
+#payments-table {
+    table-layout: fixed;
+    width: 100%;
+    max-width: 100%;
+}
+
+#payments-table th:nth-child(1),
+#payments-table td:nth-child(1) { 
+    width: 5%;
+}
+
+#payments-table th:nth-child(2),
+#payments-table td:nth-child(2) { 
+    width: 8%;
+}
+
+#payments-table th:nth-child(3),
+#payments-table td:nth-child(3) { 
+    width: 15%;
+    word-break: break-all;
+}
+
+#payments-table th:nth-child(4),
+#payments-table td:nth-child(4) { 
+    width: 6%;
+}
+
+#payments-table th:nth-child(5),
+#payments-table td:nth-child(5) { 
+    width: 12%;
+    word-break: break-word;
+}
+
+#payments-table th:nth-child(6),
+#payments-table td:nth-child(6) { 
+    width: 8%;
+}
+
+#payments-table th:nth-child(7),
+#payments-table td:nth-child(7) { 
+    width: 8%;
+}
+
+#payments-table th:nth-child(8),
+#payments-table td:nth-child(8) { 
+    width: 8%;
+}
+
+#payments-table th:nth-child(9),
+#payments-table td:nth-child(9) { 
+    width: 12%;
+    font-size: 12px;
+}
+
+#payments-table th:nth-child(10),
+#payments-table td:nth-child(10) { 
     width: 10%;
-    min-width: 100px;
-    max-width: 130px;
+}
+
+#payments-table th:nth-child(11),
+#payments-table td:nth-child(11) { 
+    width: 8%;
+}
+
+.material-table:not(#keys-table):not(#users-table):not(#servers-table):not(#payments-table) th,
+.material-table:not(#keys-table):not(#users-table):not(#servers-table):not(#payments-table) td {
+    max-width: 200px;
+    word-break: break-word;
+    white-space: normal;
 }
 
 .material-table th {
@@ -563,11 +738,11 @@ body {
 /* Responsive */
 @media (max-width: 768px) {
     .sidebar {
-        width: 200px;
+        width: 160px; /* 200px * 0.8 = 160px (уменьшено на 20%) */
     }
     
     .main-content {
-        margin-left: 200px;
+        margin-left: 160px; /* 200px * 0.8 = 160px (уменьшено на 20%) */
     }
     
     .content-wrapper {
