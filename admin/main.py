@@ -29,7 +29,7 @@ logging.basicConfig(
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-app = FastAPI(title="VeilBot Admin", version="1.0.1")
+app = FastAPI(title="VeilBot Admin", version="2.0.1")
 
 # Logging setup
 setup_logging("INFO")
@@ -113,3 +113,5 @@ templates = Jinja2Templates(directory=templates_dir)
 
 # Routers
 app.include_router(admin_router)
+
+

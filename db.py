@@ -323,16 +323,27 @@ def migrate_add_common_indexes():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_expiry_at ON keys(expiry_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_server_id ON keys(server_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_tariff_id ON keys(tariff_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_email ON keys(email) WHERE email IS NOT NULL")
         # v2ray_keys indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_tariff_id ON v2ray_keys(tariff_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_created_at ON v2ray_keys(created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email ON v2ray_keys(email) WHERE email IS NOT NULL")
         # servers indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_servers_active ON servers(active)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_servers_protocol ON servers(protocol)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_servers_country ON servers(country)")
         # tariffs helpful index
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tariffs_price_rub ON tariffs(price_rub)")
+        # payments indexes для улучшения производительности
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_tariff_id ON payments(tariff_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_email ON payments(email) WHERE email IS NOT NULL")
         conn.commit()
         logging.info("Созданы индексы для основных таблиц (если отсутствовали)")
     finally:
@@ -354,6 +365,65 @@ def migrate_add_unique_key_indexes():
         logging.info("Установлены уникальные индексы для keys и v2ray_keys (если отсутствовали)")
     finally:
         conn.close()
+def migrate_create_users_table():
+    """Create users table for storing all bot users"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                created_at INTEGER,
+                last_active_at INTEGER,
+                blocked INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_blocked ON users(blocked)")
+        conn.commit()
+        logging.info("Таблица users создана/проверена")
+    except sqlite3.OperationalError as e:
+        logging.info(f"Ошибка создания таблицы users: {e}")
+    finally:
+        conn.close()
+
+def migrate_backfill_users():
+    """Fill users table with existing user_id from keys and v2ray_keys"""
+    import time
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # Get all unique user_ids
+        cursor.execute("""
+            SELECT DISTINCT user_id, MIN(created_at) as earliest, MAX(COALESCE(expiry_at, created_at)) as latest
+            FROM (
+                SELECT user_id, created_at, expiry_at FROM keys
+                UNION ALL
+                SELECT user_id, created_at, expiry_at FROM v2ray_keys
+            )
+            GROUP BY user_id
+        """)
+        
+        existing_users = []
+        for row in cursor.fetchall():
+            user_id, earliest, latest = row
+            if user_id not in existing_users:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO users (user_id, created_at, last_active_at, blocked)
+                    VALUES (?, ?, ?, 0)
+                """, (user_id, earliest or int(time.time()), latest or int(time.time())))
+                existing_users.append(user_id)
+        
+        conn.commit()
+        logging.info(f"Backfill users: добавлено {len(existing_users)} пользователей")
+    except sqlite3.OperationalError as e:
+        logging.info(f"Ошибка backfill users: {e}")
+    finally:
+        conn.close()
+
 def migrate_create_webhook_logs():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
@@ -381,6 +451,7 @@ def migrate_create_webhook_logs():
         conn.close()
 
 if __name__ == "__main__":
+    import time
     init_db()
     migrate_add_key_id()
     migrate_add_email()
@@ -395,4 +466,6 @@ if __name__ == "__main__":
     migrate_add_common_indexes()
     migrate_add_unique_key_indexes()
     migrate_create_webhook_logs()
+    migrate_create_users_table()
+    migrate_backfill_users()
 
