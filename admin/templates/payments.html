@@ -57,7 +57,7 @@
 
     <!-- Table -->
     <div style="overflow-x: auto;">
-        <table class="material-table">
+        <table class="material-table" id="payments-table" style="table-layout: fixed; width: 100%; max-width: 100%;">
             <thead>
                 <tr>
                     <th>ID</th>
@@ -111,25 +111,16 @@
                     <td class="text-small">
                         {{ (p.created_at.timestamp() if p.created_at else 0) | timestamp | truncate(10) }}
                     </td>
-                    <td>
+                    <td style="text-align: center;">
                         {% set st = (p.status | status_text) %}
                         {% if st == 'paid' %}
-                            <span class="badge badge-success">
-                                <span class="material-icons icon-small">check_circle</span>
-                                Оплачен
-                            </span>
+                            <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Оплачен">check_circle</span>
                         {% elif st == 'pending' %}
-                            <span class="badge badge-warning">
-                                <span class="material-icons icon-small">schedule</span>
-                                Ожидает
-                            </span>
+                            <span class="material-icons" style="color: #ef6c00; font-size: 20px;" title="Ожидает">schedule</span>
                         {% elif st in ['failed','cancelled','expired'] %}
-                            <span class="badge badge-error">
-                                <span class="material-icons icon-small">cancel</span>
-                                {{ st }}
-                            </span>
+                            <span class="material-icons" style="color: #c62828; font-size: 20px;" title="{{ st }}">cancel</span>
                         {% else %}
-                            <span class="badge badge-neutral">{{ st }}</span>
+                            <span class="material-icons" style="color: #757575; font-size: 20px;" title="{{ st }}">help_outline</span>
                         {% endif %}
                     </td>
                     <td>

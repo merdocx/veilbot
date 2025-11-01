@@ -59,66 +59,51 @@
                 {% for k in keys %}
                 <tr data-key-id="{{ k[0] }}" data-protocol="{{ k[8] }}">
                     <td>{{ k[0] }}</td>
-                    <td>
+                    <td style="text-align: center;">
                         {% if k[8] == 'outline' %}
-                            <span class="badge badge-info">
-                                <span class="material-icons icon-small">lock</span>
-                                Outline
-                            </span>
+                            <span class="material-icons" style="color: #1565c0;" title="Outline">lock</span>
                         {% elif k[8] == 'v2ray' %}
-                            <span class="badge badge-info">
-                                <span class="material-icons icon-small">security</span>
-                                V2Ray
-                            </span>
+                            <span class="material-icons" style="color: #1565c0;" title="V2Ray">security</span>
                         {% else %}
-                            <span class="badge badge-neutral">{{ k[8] }}</span>
+                            <span class="material-icons" style="color: #757575;" title="{{ k[8] }}">help_outline</span>
                         {% endif %}
                     </td>
-                    <td style="word-break: break-all; overflow: hidden; text-overflow: ellipsis;">
-                        <div style="display: flex; align-items: center; gap: 4px;">
-                            <span class="code" title="{{ k[2] }}" style="font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ k[2]|truncate(25) }}</span>
-                            <button class="btn btn-icon" onclick="copyToClipboard('{{ k[2] }}')" title="Скопировать" style="flex-shrink: 0; padding: 4px;">
-                                <span class="material-icons icon-small">content_copy</span>
-                            </button>
-                        </div>
+                    <td style="text-align: center;">
+                        <button class="btn btn-icon" onclick="copyToClipboard('{{ k[2] }}')" title="Скопировать ключ: {{ k[2] }}">
+                            <span class="material-icons icon-small">content_copy</span>
+                        </button>
                     </td>
-                    <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;">
+                    <td>
                         {% if k[6] %}
-                            <span class="text-muted" title="{{ k[6] }}">{{ k[6]|truncate(20) }}</span>
+                            <span class="text-muted" title="{{ k[6] }}">{{ k[6]|truncate(30) }}</span>
                         {% else %}
                             <span class="text-muted">—</span>
                         {% endif %}
                     </td>
-                    <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;">{{ k[5] }}</td>
-                    <td class="text-small" style="font-size: 12px; white-space: nowrap;">{{ (k[3]|timestamp).replace(' ', '<br>')|safe }}</td>
-                    <td class="text-small" style="font-size: 12px; white-space: nowrap;">{{ (k[4]|timestamp).replace(' ', '<br>')|safe }}</td>
-                    <td>
+                    <td>{{ k[5] }}</td>
+                    <td class="text-small">{{ k[3]|timestamp }}</td>
+                    <td class="text-small">{{ k[4]|timestamp }}</td>
+                    <td style="text-align: center;">
                         {% if k[4] > current_time %}
-                            <span class="badge badge-success">
-                                <span class="material-icons icon-small">check_circle</span>
-                                Активен
-                            </span>
+                            <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Активен">check_circle</span>
                         {% else %}
-                            <span class="badge badge-error">
-                                <span class="material-icons icon-small">cancel</span>
-                                Истек
-                            </span>
+                            <span class="material-icons" style="color: #c62828; font-size: 20px;" title="Истек">cancel</span>
                         {% endif %}
                     </td>
                     <td class="traffic-cell" data-key-id="{{ k[0] }}">
                         {% if k[8] == 'v2ray' and k|length > 12 and k[12] == 'load' %}
-                            <button class="btn btn-small btn-load-traffic" onclick="loadTraffic({{ k[0] }})" title="Загрузить трафик" style="font-size: 10px; padding: 4px 6px; white-space: nowrap;">
-                                <span class="material-icons icon-small" style="font-size: 14px;">data_usage</span>
-                                <span style="font-size: 10px;">Загрузить</span>
+                            <button class="btn btn-small btn-load-traffic" onclick="loadTraffic({{ k[0] }})" title="Загрузить трафик">
+                                <span class="material-icons icon-small">data_usage</span>
+                                <span>Загрузить</span>
                             </button>
                         {% elif k[8] == 'v2ray' and k|length > 12 and k[12] != 'load' %}
-                            <span class="traffic-value" style="font-size: 12px; white-space: nowrap;">{{ k[12] }}</span>
+                            <span class="traffic-value">{{ k[12] }}</span>
                         {% else %}
-                            <span class="text-muted" style="font-size: 12px;">N/A</span>
+                            <span class="text-muted">N/A</span>
                         {% endif %}
                     </td>
                     <td>
-                        <div class="action-buttons" style="display: flex; gap: 4px; justify-content: center;">
+                        <div class="action-buttons">
                             <button class="btn btn-icon" onclick="editKey({{ k[0] }}, '{{ k[4]|my_datetime_local }}')" title="Редактировать">
                                 <span class="material-icons icon-small">edit</span>
                             </button>

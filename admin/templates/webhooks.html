@@ -34,17 +34,17 @@
   </div>
 
   <div style="overflow-x:auto; margin-top:1rem;">
-    <table class="table keys-table">
+    <table class="table keys-table" style="table-layout: fixed; width: 100%; max-width: 100%;">
       <thead>
         <tr>
-          <th style="width:60px;">#</th>
-          <th style="width:140px;">Время</th>
-          <th style="width:120px;">Провайдер</th>
-          <th style="width:120px;">Событие</th>
-          <th style="width:80px;">Код</th>
-          <th style="width:120px;">IP</th>
-          <th>Payload</th>
-          <th style="width:130px;">Действия</th>
+          <th style="width:5%; min-width: 60px;">#</th>
+          <th style="width:12%; min-width: 140px;">Время</th>
+          <th style="width:10%; min-width: 120px;">Провайдер</th>
+          <th style="width:10%; min-width: 120px;">Событие</th>
+          <th style="width:6%; min-width: 80px;">Код</th>
+          <th style="width:12%; min-width: 120px;">IP</th>
+          <th style="width:35%; min-width: 200px;">Payload</th>
+          <th style="width:10%; min-width: 130px;">Действия</th>
         </tr>
       </thead>
       <tbody>
@@ -56,7 +56,7 @@
           <td>{{ log.event }}</td>
           <td>{{ log.status_code }}</td>
           <td>{{ log.ip or '—' }}</td>
-          <td><pre class="code">{{ log.payload | pretty_json }}</pre></td>
+          <td style="word-break: break-word; overflow: hidden; text-overflow: ellipsis; max-height: 100px; overflow-y: auto;"><pre class="code" style="white-space: pre-wrap; word-break: break-word; font-size: 0.7rem;">{{ log.payload | pretty_json }}</pre></td>
           <td>
             <form method="post" action="/webhooks/{{ log.id }}/replay" onsubmit="return confirm('Повторно обработать этот вебхук?')">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>

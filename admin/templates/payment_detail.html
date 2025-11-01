@@ -18,10 +18,29 @@
             <li><b>User ID:</b> {{ payment.user_id }}</li>
             <li><b>Tariff ID:</b> {{ payment.tariff_id }}</li>
             <li><b>Сумма:</b> {{ payment.amount|rub }}</li>
-            <li><b>Статус:</b> {{ payment.status }}</li>
+            <li><b>Статус:</b> 
+                {% set st = payment.status %}
+                {% if st == 'paid' %}
+                    <span class="material-icons" style="color: #2e7d32; font-size: 20px; vertical-align: middle;" title="Оплачен">check_circle</span>
+                {% elif st == 'pending' %}
+                    <span class="material-icons" style="color: #ef6c00; font-size: 20px; vertical-align: middle;" title="Ожидает">schedule</span>
+                {% elif st in ['failed','cancelled','expired'] %}
+                    <span class="material-icons" style="color: #c62828; font-size: 20px; vertical-align: middle;" title="{{ st }}">cancel</span>
+                {% else %}
+                    <span class="material-icons" style="color: #757575; font-size: 20px; vertical-align: middle;" title="{{ st }}">help_outline</span>
+                {% endif %}
+            </li>
             <li><b>Email:</b> {{ payment.email or '—' }}</li>
             <li><b>Страна:</b> {{ payment.country or '—' }}</li>
-            <li><b>Протокол:</b> {{ payment.protocol or '—' }}</li>
+            <li><b>Протокол:</b> 
+                {% if payment.protocol == 'outline' %}
+                    <span class="material-icons" style="color: #1565c0; font-size: 20px; vertical-align: middle;" title="Outline">lock</span>
+                {% elif payment.protocol == 'v2ray' %}
+                    <span class="material-icons" style="color: #1565c0; font-size: 20px; vertical-align: middle;" title="V2Ray">security</span>
+                {% else %}
+                    {{ payment.protocol or '—' }}
+                {% endif %}
+            </li>
             <li><b>Создан:</b> {{ payment.created_at.timestamp() if payment.created_at else 0 | timestamp }}</li>
             <li><b>Оплачен:</b> {{ payment.paid_at.timestamp() if payment.paid_at else 0 | timestamp }}</li>
           </ul>

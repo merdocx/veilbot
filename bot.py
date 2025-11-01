@@ -80,6 +80,7 @@ help_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
 help_keyboard.add(KeyboardButton("Перевыпустить ключ"))
 help_keyboard.add(KeyboardButton("Сменить приложение"))
 help_keyboard.add(KeyboardButton("Сменить страну"))
+help_keyboard.add(KeyboardButton("💬 Связаться с поддержкой"))
 help_keyboard.add(KeyboardButton("🔙 Назад"))
 
 cancel_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -158,6 +159,22 @@ def is_valid_email(email: str) -> bool:
 async def handle_start(message: types.Message):
     args = message.get_args()
     user_id = message.from_user.id
+    
+    # Save or update user in users table
+    with get_db_cursor(commit=True) as cursor:
+        now = int(time.time())
+        username = message.from_user.username
+        first_name = message.from_user.first_name
+        last_name = message.from_user.last_name
+        
+        cursor.execute("""
+            INSERT OR REPLACE INTO users 
+            (user_id, username, first_name, last_name, created_at, last_active_at, blocked)
+            VALUES (?, ?, ?, ?, 
+                COALESCE((SELECT created_at FROM users WHERE user_id = ?), ?), 
+                ?, 0)
+        """, (user_id, username, first_name, last_name, user_id, now, now))
+    
     if args and args.isdigit() and int(args) != user_id:
         referrer_id = int(args)
         with get_db_cursor(commit=True) as cursor:
@@ -2460,6 +2477,32 @@ async def handle_help(message: types.Message):
     )
     await message.answer(help_text, reply_markup=help_keyboard)
 
+@dp.message_handler(lambda m: m.text == "💬 Связаться с поддержкой")
+async def handle_support(message: types.Message):
+    """Обработчик кнопки связи с поддержкой"""
+    from config import SUPPORT_USERNAME
+    
+    if SUPPORT_USERNAME:
+        # Убираем @ если пользователь добавил его
+        username = SUPPORT_USERNAME.lstrip('@')
+        support_text = (
+            f"💬 Напишите нашему специалисту поддержки:\n"
+            f"@{username}\n\n"
+            f"Мы поможем решить любую проблему!"
+        )
+        support_button = InlineKeyboardMarkup()
+        support_button.add(InlineKeyboardButton(
+            "💬 Написать в поддержку",
+            url=f"https://t.me/{username}?start"
+        ))
+        await message.answer(support_text, reply_markup=support_button)
+    else:
+        await message.answer(
+            "❌ Контакт поддержки не настроен.\n"
+            "Обратитесь к администратору бота.",
+            reply_markup=help_keyboard
+        )
+
 @dp.message_handler(lambda m: m.text == "🔙 Назад" and m.reply_markup == help_keyboard)
 async def handle_help_back(message: types.Message):
     await message.answer("Главное меню:", reply_markup=main_menu)
@@ -3544,12 +3587,11 @@ async def broadcast_message(message_text: str, admin_id: int = None):
     total_users = 0
     
     try:
-        # Получаем всех уникальных пользователей из базы данных
+        # Получаем всех пользователей из таблицы users
         with get_db_cursor() as cursor:
             cursor.execute("""
-                SELECT DISTINCT user_id FROM keys 
-                UNION 
-                SELECT DISTINCT user_id FROM v2ray_keys 
+                SELECT user_id FROM users 
+                WHERE blocked = 0
                 ORDER BY user_id
             """)
             user_ids = [row[0] for row in cursor.fetchall()]
