@@ -247,9 +247,11 @@ class KeyRepository:
                 parts.append(sql)
 
             def add_v2ray():
+                # TODO: Временная заглушка для access_url. 
+                # Реальная конфигурация будет получена с сервера в admin_routes
                 sql = (
                     "SELECT k.id, k.v2ray_uuid as key_id, "
-                    "('vless://' || k.v2ray_uuid || '@' || IFNULL(s.domain,'') || ':443?path=' || IFNULL(s.v2ray_path,'/v2ray') || '&security=tls&type=ws#VeilBot-V2Ray') as access_url, "
+                    "('PENDING_FROM_SERVER') as access_url, "
                     "k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'v2ray' as protocol, '' as traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,'') "
                     "FROM v2ray_keys k LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
                 )

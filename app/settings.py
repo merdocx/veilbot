@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Bot admin
     ADMIN_ID: int = Field(default=46701395)
 
+    # Support contact
+    SUPPORT_USERNAME: str | None = Field(default=None)
+
     # Session
     SESSION_MAX_AGE: int = Field(default=3600)
     SESSION_SECURE: bool = Field(default=True)

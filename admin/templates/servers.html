@@ -173,11 +173,6 @@
                 </div>
                 
                 <div>
-                    <label for="cert_sha256" style="display: block; margin-bottom: 8px; font-weight: 500;">SHA256 сертификата:</label>
-                    <input type="text" id="cert_sha256" name="cert_sha256" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                </div>
-                
-                <div>
                     <label for="max_keys" style="display: block; margin-bottom: 8px; font-weight: 500;">Максимум ключей:</label>
                     <input type="number" id="max_keys" name="max_keys" value="100" min="1" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
                 </div>
@@ -189,22 +184,42 @@
                 
                 <div>
                     <label for="protocol" style="display: block; margin-bottom: 8px; font-weight: 500;">Протокол:</label>
-                    <input type="text" id="protocol" name="protocol" value="outline" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    <select id="protocol" name="protocol" onchange="toggleProtocolFields()" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <option value="outline" selected>Outline</option>
+                        <option value="v2ray">V2Ray</option>
+                    </select>
                 </div>
-                
-                <div>
-                    <label for="domain" style="display: block; margin-bottom: 8px; font-weight: 500;">Домен:</label>
-                    <input type="text" id="domain" name="domain" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+            
+            <!-- Outline-specific fields -->
+            <div id="outline-fields">
+                <h3 style="margin: 24px 0 16px 0; color: #666;">Параметры Outline</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                    <div>
+                        <label for="cert_sha256" style="display: block; margin-bottom: 8px; font-weight: 500;">SHA256 сертификата (опционально):</label>
+                        <input type="text" id="cert_sha256" name="cert_sha256" placeholder="Оставьте пустым для Outline" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
                 </div>
-                
-                <div>
-                    <label for="v2ray_path" style="display: block; margin-bottom: 8px; font-weight: 500;">V2Ray путь:</label>
-                    <input type="text" id="v2ray_path" name="v2ray_path" value="/v2ray" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                </div>
-                
-                <div>
-                    <label for="api_key" style="display: block; margin-bottom: 8px; font-weight: 500;">API ключ:</label>
-                    <input type="text" id="api_key" name="api_key" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+            
+            <!-- V2Ray-specific fields -->
+            <div id="v2ray-fields" style="display: none;">
+                <h3 style="margin: 24px 0 16px 0; color: #666;">Параметры V2Ray</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                    <div>
+                        <label for="domain" style="display: block; margin-bottom: 8px; font-weight: 500;">Домен:</label>
+                        <input type="text" id="domain" name="domain" placeholder="veil-bird.ru" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    
+                    <div>
+                        <label for="v2ray_path" style="display: block; margin-bottom: 8px; font-weight: 500;">V2Ray путь:</label>
+                        <input type="text" id="v2ray_path" name="v2ray_path" value="/usr/local/bin/xray" placeholder="/usr/local/bin/xray" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    
+                    <div>
+                        <label for="api_key" style="display: block; margin-bottom: 8px; font-weight: 500;">API ключ (обязательно для V2Ray):</label>
+                        <input type="text" id="api_key" name="api_key" placeholder="Вставьте API ключ V2Ray" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
                 </div>
             </div>
             
@@ -250,6 +265,26 @@ function filterTable() {
                     (!countryFilter || country.includes(countryFilter));
         
         row.style.display = show ? '' : 'none';
+    }
+}
+
+function toggleProtocolFields() {
+    const protocol = document.getElementById('protocol').value;
+    const outlineFields = document.getElementById('outline-fields');
+    const v2rayFields = document.getElementById('v2ray-fields');
+    const certSha256 = document.getElementById('cert_sha256');
+    const apiKey = document.getElementById('api_key');
+    
+    if (protocol === 'v2ray') {
+        outlineFields.style.display = 'none';
+        v2rayFields.style.display = 'block';
+        certSha256.required = false;
+        apiKey.required = true;
+    } else {
+        outlineFields.style.display = 'block';
+        v2rayFields.style.display = 'none';
+        certSha256.required = false;
+        apiKey.required = false;
     }
 }
 
