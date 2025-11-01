@@ -13,6 +13,7 @@ import time
 import logging
 import re
 import secrets
+import asyncio
 from passlib.context import CryptContext
 from datetime import datetime
 import json
@@ -648,15 +649,15 @@ async def dashboard(request: Request):
         now = int(time.time())
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM keys WHERE expiry_at > ?", (now,))
-        outline_keys = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE expiry_at > ?", (now,))
-        v2ray_keys = c.fetchone()[0]
-        active_keys = outline_keys + v2ray_keys
-        c.execute("SELECT COUNT(*) FROM tariffs")
-        tariff_count = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM servers")
-        server_count = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM keys WHERE expiry_at > ?", (now,))
+            outline_keys = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE expiry_at > ?", (now,))
+            v2ray_keys = c.fetchone()[0]
+            active_keys = outline_keys + v2ray_keys
+            c.execute("SELECT COUNT(*) FROM tariffs")
+            tariff_count = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM servers")
+            server_count = c.fetchone()[0]
         
         # Cache for 60 seconds
         traffic_cache.set(cache_key, (active_keys, tariff_count, server_count), ttl=60)
@@ -970,37 +971,87 @@ async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str
         cursor=cursor,
     )
     
-    # Получаем данные о трафике для V2Ray ключей
+    # Получаем данные о трафике и реальную конфигурацию для V2Ray ключей
+    # Оптимизация: параллельная загрузка данных для всех V2Ray ключей
     keys_with_traffic = []
+    
+    # Сначала получаем server_id для всех V2Ray ключей одним запросом
+    v2ray_key_ids = [key[0] for key in rows if len(key) > 8 and key[8] == 'v2ray']
+    server_id_map = {}
+    if v2ray_key_ids:
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            placeholders = ','.join('?' * len(v2ray_key_ids))
+            c.execute(f"SELECT id, server_id FROM v2ray_keys WHERE id IN ({placeholders})", v2ray_key_ids)
+            for key_id, srv_id in c.fetchall():
+                server_id_map[key_id] = srv_id
+    
+    # Асинхронная функция для получения конфигурации V2Ray
+    async def fetch_v2ray_config(key_data):
+        """Fetch V2Ray config for a single key"""
+        key_id = key_data[0]
+        v2ray_uuid = key_data[1]
+        api_url = key_data[10] if len(key_data) > 10 else ''
+        api_key = key_data[11] if len(key_data) > 11 else ''
+        
+        if not (api_url and api_key and v2ray_uuid):
+            return key_id, key_data[2], "N/A"  # Return default config
+        
+        try:
+            headers = {
+                "X-API-Key": api_key,
+                "Content-Type": "application/json"
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{api_url}/keys/{v2ray_uuid}/config",
+                    headers=headers,
+                    ssl=False,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        config = result.get('client_config') or result.get('config', '')
+                        return key_id, config.strip() if config else key_data[2], None
+                    return key_id, key_data[2], None
+        except Exception as e:
+            logging.error(f"Error getting real V2Ray config for {v2ray_uuid}: {e}")
+            return key_id, key_data[2], None
+    
+    # Создаем задачи для параллельной загрузки конфигураций
+    v2ray_tasks = []
+    v2ray_keys_data = {}
+    
     for key in rows:
         if len(key) > 8 and key[8] == 'v2ray':
-            try:
-                # Use api_url and api_key from columns (added in repository)
-                # Columns layout: [..., protocol(8), traffic_limit(9), api_url(10), api_key(11)]
-                api_url = key[10] if len(key) > 10 else ''
-                api_key = key[11] if len(key) > 11 else ''
-                server_config = {'api_url': api_url or '', 'api_key': api_key or ''}
-                # Get server_id from key data (assuming it's in position 5 or we need to fetch it)
-                server_id = None
-                if len(key) > 11:  # Check if we have server_id in the key data
-                    # We need to get server_id from the database
-                    with sqlite3.connect(DB_PATH) as conn:
-                        c = conn.cursor()
-                        c.execute("SELECT server_id FROM v2ray_keys WHERE id = ?", (key[0],))
-                        result = c.fetchone()
-                        if result:
-                            server_id = result[0]
-                
-                monthly_traffic = await get_key_monthly_traffic(key[1], 'v2ray', server_config, server_id)
-                key_with_traffic = list(key) + [monthly_traffic]
-                keys_with_traffic.append(key_with_traffic)
-            except Exception as e:
-                logging.error(f"Error getting traffic for V2Ray key {key[1]}: {e}")
-                key_with_traffic = list(key) + ["Error"]
-                keys_with_traffic.append(key_with_traffic)
+            v2ray_keys_data[key[0]] = key
+            v2ray_tasks.append(fetch_v2ray_config(key))
         else:
-            key_with_traffic = list(key) + ["N/A"]
-            keys_with_traffic.append(key_with_traffic)
+            # Outline keys - сразу добавляем
+            keys_with_traffic.append(list(key) + ["N/A"])
+    
+    # Параллельно загружаем все конфигурации
+    if v2ray_tasks:
+        config_results = await asyncio.gather(*v2ray_tasks, return_exceptions=True)
+        
+        # Обрабатываем результаты и добавляем трафик
+        for result in config_results:
+            if isinstance(result, Exception):
+                logging.error(f"Error in parallel V2Ray fetch: {result}")
+                continue
+            
+            key_id, real_config, _ = result
+            key = v2ray_keys_data[key_id]
+            key_list = list(key)
+            key_list[2] = real_config  # Update access_url
+            
+            # Получаем трафик (можно оптимизировать дальше)
+            server_id = server_id_map.get(key_id)
+            api_url = key[10] if len(key) > 10 else ''
+            api_key = key[11] if len(key) > 11 else ''
+            server_config = {'api_url': api_url or '', 'api_key': api_key or ''}
+            monthly_traffic = await get_key_monthly_traffic(key[1], 'v2ray', server_config, server_id)
+            keys_with_traffic.append(key_list + [monthly_traffic])
     
     log_admin_action(request, "KEYS_QUERY_RESULT", f"Total keys: {len(keys_with_traffic)}")
 
@@ -1051,6 +1102,45 @@ async def keys_page(request: Request, page: int = 1, limit: int = 50, email: str
         "sort": {"by": sort_by_eff, "order": sort_order_eff},
         "csrf_token": get_csrf_token(request),
     })
+
+@router.post("/keys/edit/{key_id}")
+async def edit_key_route(request: Request, key_id: int):
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    form = await request.form()
+    new_expiry_str = form.get("new_expiry")
+    
+    if not new_expiry_str:
+        return JSONResponse({"error": "new_expiry is required"}, status_code=400)
+    
+    try:
+        # Parse datetime-local format (YYYY-MM-DDTHH:mm) to timestamp
+        from datetime import datetime
+        dt = datetime.strptime(new_expiry_str, "%Y-%m-%dT%H:%M")
+        new_expiry = int(dt.timestamp())
+        
+        key_repo = KeyRepository(DB_PATH)
+        
+        # Try Outline first
+        outline_key = key_repo.get_outline_key_brief(key_id)
+        if outline_key:
+            key_repo.update_outline_key_expiry(key_id, new_expiry)
+            log_admin_action(request, "EDIT_KEY", f"Outline key {key_id}, new expiry: {new_expiry}")
+            return RedirectResponse(url="/keys", status_code=303)
+        
+        # Try V2Ray
+        v2ray_key = key_repo.get_v2ray_key_brief(key_id)
+        if v2ray_key:
+            key_repo.update_v2ray_key_expiry(key_id, new_expiry)
+            log_admin_action(request, "EDIT_KEY", f"V2Ray key {key_id}, new expiry: {new_expiry}")
+            return RedirectResponse(url="/keys", status_code=303)
+        
+        return JSONResponse({"error": "Key not found"}, status_code=404)
+        
+    except Exception as e:
+        logging.error(f"Error editing key {key_id}: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @router.get("/keys/delete/{key_id}")
 async def delete_key_route(request: Request, key_id: int):
@@ -1788,20 +1878,26 @@ async def webhook_logs_page(request: Request, page: int = 1, limit: int = 50, pr
         params.append(f"%{payment_id}%")
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
-    # Sorting whitelist
+    # Sorting whitelist - безопасная валидация
     sort_columns = {"created_at": "created_at", "status_code": "status_code", "event": "event"}
     order_col = sort_columns.get((sort_by or "created_at").lower(), "created_at")
     order_dir = "ASC" if (str(sort_order).upper() == "ASC") else "DESC"
-
+    
+    # Использование параметризованных запросов для безопасности
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute(f"SELECT COUNT(*) FROM webhook_logs {where_sql}", params)
+        # COUNT запрос - безопасный, так как where_sql построен из валидированных параметров
+        count_query = "SELECT COUNT(*) FROM webhook_logs" + where_sql
+        c.execute(count_query, params)
         total = c.fetchone()[0] or 0
-        params_page = params + [limit, offset]
-        c.execute(
-            f"SELECT id, provider, event, payload, result, status_code, ip, created_at FROM webhook_logs {where_sql} ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?",
-            params_page,
+        
+        # SELECT запрос - безопасный, так как order_col валидирован через whitelist
+        select_query = (
+            "SELECT id, provider, event, payload, result, status_code, ip, created_at "
+            f"FROM webhook_logs {where_sql} ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?"
         )
+        params_page = params + [limit, offset]
+        c.execute(select_query, params_page)
         rows = c.fetchall()
 
     logs = [
