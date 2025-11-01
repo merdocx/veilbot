@@ -1129,8 +1129,23 @@ async def switch_protocol_and_extend(cursor, message, user_id, old_key_data: dic
                 (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'])
             )
             
-            # Формируем access_url
-            access_url = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+            # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+            if user_data.get('client_config'):
+                access_url = user_data['client_config']
+                logging.info(f"Using client_config from create_user response for protocol switch")
+            else:
+                # Если client_config нет, используем get_user_config или fallback
+                try:
+                    access_url = await v2ray_client.get_user_config(user_data['uuid'], {
+                        'domain': domain,
+                        'port': 443,
+                        'path': v2ray_path or '/v2ray',
+                        'email': old_email or f"user_{user_id}@veilbot.com"
+                    })
+                except Exception as e:
+                    logging.warning(f"Failed to get user config, using fallback: {e}")
+                    # Fallback к хардкодированному формату
+                    access_url = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
             
             # Удаляем старый ключ
             await delete_old_key_after_success(cursor, old_key_for_deletion)
@@ -1288,8 +1303,23 @@ async def change_country_and_extend(cursor, message, user_id, key_data: dict, ne
                 (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'])
             )
             
-            # Формируем access_url
-            access_url = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+            # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+            if user_data.get('client_config'):
+                access_url = user_data['client_config']
+                logging.info(f"Using client_config from create_user response for country change")
+            else:
+                # Если client_config нет, используем get_user_config или fallback
+                try:
+                    access_url = await v2ray_client.get_user_config(user_data['uuid'], {
+                        'domain': domain,
+                        'port': 443,
+                        'path': v2ray_path or '/v2ray',
+                        'email': old_email or f"user_{user_id}@veilbot.com"
+                    })
+                except Exception as e:
+                    logging.warning(f"Failed to get user config, using fallback: {e}")
+                    # Fallback к хардкодированному формату
+                    access_url = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
             
             # Удаляем старый ключ
             await delete_old_key_after_success(cursor, old_key_data)
@@ -1693,13 +1723,19 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (server[0], user_id, user_data['uuid'], email or f"user_{user_id}@veilbot.com", now, expiry, tariff['id']))
             
-            # Получаем конфигурацию
-            config = await protocol_client.get_user_config(user_data['uuid'], {
-                'domain': server[4],
-                'port': 443,
-                'path': server[6] or '/v2ray',
-                'email': email or f"user_{user_id}@veilbot.com"
-            })
+            # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+            if user_data.get('client_config'):
+                config = user_data['client_config']
+                logging.info(f"Using client_config from create_user response for new key")
+            else:
+                # Если client_config нет в ответе, запрашиваем через get_user_config
+                logging.debug(f"client_config not in create_user response, fetching via get_user_config")
+                config = await protocol_client.get_user_config(user_data['uuid'], {
+                    'domain': server[4],
+                    'port': 443,
+                    'path': server[6] or '/v2ray',
+                    'email': email or f"user_{user_id}@veilbot.com"
+                })
             
             # Логирование создания V2Ray ключа
             try:
@@ -2434,12 +2470,19 @@ async def process_pending_paid_payments():
                             if tariff['price_rub'] == 0:
                                 record_free_key_usage(cursor, user_id, protocol, country)
                             
-                            # Получаем конфигурацию
-                            config = await protocol_client.get_user_config(user_data['uuid'], {
-                                'domain': server.get('domain', 'veil-bot.ru'),
-                                'port': 443,
-                                'path': server.get('v2ray_path', '/v2ray')
-                            })
+                            # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+                            if user_data.get('client_config'):
+                                config = user_data['client_config']
+                                logging.info(f"Using client_config from create_user response for auto-issued key")
+                            else:
+                                # Если client_config нет в ответе, запрашиваем через get_user_config
+                                logging.debug(f"client_config not in create_user response, fetching via get_user_config")
+                                config = await protocol_client.get_user_config(user_data['uuid'], {
+                                    'domain': server.get('domain', 'veil-bot.ru'),
+                                    'port': 443,
+                                    'path': server.get('v2ray_path', '/v2ray'),
+                                    'email': email or f"user_{user_id}@veilbot.com"
+                                })
                             
                             # Уведомляем пользователя
                             try:
@@ -2922,20 +2965,27 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
                 if not user_data or not user_data.get('uuid'):
                     raise Exception("Failed to create V2Ray user - API returned None or invalid data")
                 
+                # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+                config = None
+                if user_data.get('client_config'):
+                    config = user_data['client_config']
+                    logging.info(f"Using client_config from create_user response for protocol change")
+                else:
+                    # Если client_config нет в ответе, запрашиваем через get_user_config
+                    logging.debug(f"client_config not in create_user response, fetching via get_user_config")
+                    config = await protocol_client.get_user_config(user_data['uuid'], {
+                        'domain': domain,
+                        'port': 443,
+                        'path': v2ray_path or '/v2ray',
+                        'email': old_email or f"user_{user_id}@veilbot.com"
+                    })
+                
                 # Добавляем новый ключ с тем же сроком действия и email
                 cursor.execute(
                     "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'])
                 )
-                
-                # Получаем конфигурацию
-                config = await protocol_client.get_user_config(user_data['uuid'], {
-                    'domain': domain,
-                    'port': 443,
-                    'path': v2ray_path or '/v2ray',
-                    'email': old_email or f"user_{user_id}@veilbot.com"
-                })
                 
                 await message.answer(format_key_message_unified(config, new_protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
@@ -3284,6 +3334,57 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                 if not user_data or not user_data.get('uuid'):
                     raise Exception(f"Failed to create V2Ray user - invalid response from server")
                 
+                # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+                config = None
+                old_email_val = old_email or f"user_{user_id}@veilbot.com"
+                logging.info(f"[REISSUE] Processing reissue for email: {old_email_val}, new UUID: {user_data.get('uuid')}")
+                
+                if user_data.get('client_config'):
+                    config = user_data['client_config']
+                    logging.info(f"[REISSUE] Using client_config from create_user response for email {old_email_val}")
+                    # Проверяем SNI и shortid в конфигурации
+                    if 'sni=' in config and 'sid=' in config:
+                        # Извлекаем SNI и shortid для логирования
+                        try:
+                            import urllib.parse
+                            if '?' in config:
+                                params_str = config.split('?')[1].split('#')[0]
+                                params = urllib.parse.parse_qs(params_str)
+                                sni = params.get('sni', ['N/A'])[0]
+                                sid = params.get('sid', ['N/A'])[0]
+                                logging.info(f"[REISSUE] client_config SNI={sni}, shortid={sid} for email {old_email_val}")
+                        except Exception as e:
+                            logging.debug(f"[REISSUE] Could not parse SNI/sid from config: {e}")
+                    else:
+                        logging.warning(f"[REISSUE] WARNING: client_config does not contain SNI or shortid for email {old_email_val}")
+                else:
+                    # Если client_config нет в ответе, запрашиваем через get_user_config
+                    # Увеличиваем количество попыток и задержку, так как API может генерировать конфигурацию асинхронно
+                    logging.warning(f"[REISSUE] client_config not in create_user response for email {old_email_val}, fetching via get_user_config with extended retries")
+                    import asyncio
+                    # Ждем немного перед первым запросом, чтобы дать API время сгенерировать конфигурацию
+                    await asyncio.sleep(1.0)
+                    config = await protocol_client.get_user_config(user_data['uuid'], {
+                        'domain': domain,
+                        'port': 443,
+                        'path': v2ray_path or '/v2ray',
+                        'email': old_email_val
+                    }, max_retries=5, retry_delay=1.5)
+                    # Проверяем, что полученная конфигурация содержит SNI и shortid
+                    if config and 'sni=' in config and 'sid=' in config:
+                        try:
+                            import urllib.parse
+                            if '?' in config:
+                                params_str = config.split('?')[1].split('#')[0]
+                                params = urllib.parse.parse_qs(params_str)
+                                sni = params.get('sni', ['N/A'])[0]
+                                sid = params.get('sid', ['N/A'])[0]
+                                logging.info(f"[REISSUE] get_user_config returned SNI={sni}, shortid={sid} for email {old_email_val}")
+                        except Exception as e:
+                            logging.debug(f"[REISSUE] Could not parse SNI/sid from get_user_config result: {e}")
+                    else:
+                        logging.warning(f"[REISSUE] WARNING: get_user_config returned config without SNI or shortid for email {old_email_val}")
+                
                 # Удаляем старый ключ из V2Ray сервера
                 old_uuid = key_data['v2ray_uuid']
                 try:
@@ -3307,14 +3408,6 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'])
                 )
-                
-                # Получаем конфигурацию
-                config = await protocol_client.get_user_config(user_data['uuid'], {
-                    'domain': domain,
-                    'port': 443,
-                    'path': v2ray_path or '/v2ray',
-                    'email': old_email or f"user_{user_id}@veilbot.com"
-                })
                 
                 await message.answer(format_key_message_unified(config, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
