@@ -29,22 +29,18 @@
 
     <!-- Filters -->
     <div class="filter-bar">
-        <form method="get" action="/users" style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
-            <input type="text" name="q" placeholder="Поиск по User ID" value="{{ q }}" class="filter-input">
-            <button type="submit" class="btn btn-primary">
-                <span class="material-icons icon-small">search</span>
-                Поиск
-            </button>
-            <a href="/users" class="btn">
+        <div style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="global-search" data-table-id="users-table" placeholder="Поиск по всем столбцам..." class="filter-input" style="flex: 1; min-width: 250px;">
+            <button type="button" class="btn" onclick="document.getElementById('global-search').value=''; window.VeilBotCommon?.createTableFilter('users-table', 0)('');">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
-            </a>
-        </form>
+            </button>
+        </div>
     </div>
 
     <!-- Table -->
     <div style="overflow-x: auto;">
-        <table class="material-table">
+        <table class="material-table" id="users-table">
             <thead>
                 <tr>
                     <th>User ID</th>
@@ -136,4 +132,9 @@
     {% endif %}
 </div>
 {% endif %}
+
+<script>
+// Поиск и фильтрация обрабатываются common.js автоматически
+// Дополнительный функционал для страницы users можно добавить здесь
+</script>
 {% endblock %}

@@ -281,6 +281,91 @@ body {
     font-size: 14px;
 }
 
+/* Фиксированная ширина для таблицы keys - предотвращает переполнение */
+#keys-table {
+    table-layout: fixed;
+    min-width: 1200px;
+    max-width: 100%;
+}
+
+#keys-table th,
+#keys-table td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 8px 12px;
+}
+
+/* Адаптивные колонки для таблицы keys */
+#keys-table th:nth-child(1),
+#keys-table td:nth-child(1) { 
+    width: 5%;
+    min-width: 50px;
+    max-width: 60px;
+}
+
+#keys-table th:nth-child(2),
+#keys-table td:nth-child(2) { 
+    width: 8%;
+    min-width: 80px;
+    max-width: 100px;
+}
+
+#keys-table th:nth-child(3),
+#keys-table td:nth-child(3) { 
+    width: 25%;
+    min-width: 200px;
+    max-width: 300px;
+}
+
+#keys-table th:nth-child(4),
+#keys-table td:nth-child(4) { 
+    width: 12%;
+    min-width: 120px;
+    max-width: 180px;
+}
+
+#keys-table th:nth-child(5),
+#keys-table td:nth-child(5) { 
+    width: 10%;
+    min-width: 100px;
+    max-width: 140px;
+}
+
+#keys-table th:nth-child(6),
+#keys-table td:nth-child(6) { 
+    width: 12%;
+    min-width: 120px;
+    max-width: 160px;
+}
+
+#keys-table th:nth-child(7),
+#keys-table td:nth-child(7) { 
+    width: 12%;
+    min-width: 120px;
+    max-width: 160px;
+}
+
+#keys-table th:nth-child(8),
+#keys-table td:nth-child(8) { 
+    width: 8%;
+    min-width: 90px;
+    max-width: 110px;
+}
+
+#keys-table th:nth-child(9),
+#keys-table td:nth-child(9) { 
+    width: 8%;
+    min-width: 90px;
+    max-width: 120px;
+}
+
+#keys-table th:nth-child(10),
+#keys-table td:nth-child(10) { 
+    width: 10%;
+    min-width: 100px;
+    max-width: 130px;
+}
+
 .material-table th {
     background: #f5f5f5;
     padding: 16px 12px;
@@ -531,3 +616,7 @@ body {
 .mt-1 { margin-top: 8px; }
 .mt-2 { margin-top: 16px; }
 .mt-3 { margin-top: 24px; }
+
+
+
+

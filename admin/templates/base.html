@@ -12,6 +12,9 @@
     <!-- Custom CSS -->
     <link rel="stylesheet" href="/static/css/material-admin.css">
     
+    <!-- Common JavaScript -->
+    <script src="/static/js/common.js"></script>
+    
     {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -95,18 +98,7 @@
         </main>
     </div>
 
-    <script>
-        // Highlight current page in navigation
-        document.addEventListener('DOMContentLoaded', function() {
-            const currentPath = window.location.pathname;
-            const navLinks = document.querySelectorAll('.nav-link');
-            navLinks.forEach(link => {
-                if (link.getAttribute('href') === currentPath) {
-                    link.classList.add('active');
-                }
-            });
-        });
-    </script>
+    <!-- Navigation highlighting handled by common.js -->
     
     {% block extra_scripts %}{% endblock %}
 </body>
