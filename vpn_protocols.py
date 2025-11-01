@@ -200,13 +200,53 @@ class V2RayProtocol(VPNProtocol):
                         
                         logger.info(f"Successfully created V2Ray key {key_id} with UUID {uuid_value}")
                         
+                        # Извлекаем client_config из ответа API, если он есть
+                        client_config = None
+                        logger.debug(f"Checking for client_config in API response. Keys: {list(result.keys())}")
+                        logger.debug(f"Full API response (sanitized): {str(result).replace(email, 'EMAIL')[:500]}")
+                        
+                        if result.get('client_config'):
+                            client_config = result['client_config']
+                            logger.info(f"Found client_config in result.client_config for email {email}")
+                            # Извлекаем VLESS URL из client_config
+                            if 'vless://' in client_config:
+                                lines = client_config.split('\n')
+                                for line in lines:
+                                    if line.strip().startswith('vless://'):
+                                        client_config = line.strip()
+                                        # Проверяем наличие SNI и shortid в конфигурации
+                                        if 'sni=' in client_config and 'sid=' in client_config:
+                                            logger.info(f"client_config contains SNI and shortid: sni and sid found")
+                                        else:
+                                            logger.warning(f"client_config does not contain SNI or shortid!")
+                                        break
+                            logger.debug(f"Extracted client_config: {client_config[:100]}...")
+                        elif result.get('key') and isinstance(result.get('key'), dict) and result['key'].get('client_config'):
+                            client_config = result['key']['client_config']
+                            logger.info(f"Found client_config in result.key.client_config for email {email}")
+                            if 'vless://' in client_config:
+                                lines = client_config.split('\n')
+                                for line in lines:
+                                    if line.strip().startswith('vless://'):
+                                        client_config = line.strip()
+                                        # Проверяем наличие SNI и shortid в конфигурации
+                                        if 'sni=' in client_config and 'sid=' in client_config:
+                                            logger.info(f"client_config contains SNI and shortid: sni and sid found")
+                                        else:
+                                            logger.warning(f"client_config does not contain SNI or shortid!")
+                                        break
+                            logger.debug(f"Extracted client_config from key: {client_config[:100]}...")
+                        else:
+                            logger.warning(f"No client_config found in create_user response for email {email}. Will need to fetch via get_user_config")
+                        
                         return {
                             'id': key_id,
                             'uuid': uuid_value,
                             'name': email,
                             'created_at': result.get('created_at'),
                             'is_active': result.get('is_active', True),
-                            'port': result.get('port')  # Добавляем порт из нового API
+                            'port': result.get('port'),  # Добавляем порт из нового API
+                            'client_config': client_config  # Добавляем client_config, если он есть
                         }
                     except Exception as parse_error:
                         raise Exception(f"Failed to parse V2Ray API response: {parse_error} - Response: {response_text}")
@@ -251,58 +291,111 @@ class V2RayProtocol(VPNProtocol):
             logger.error(f"Error deleting V2Ray key: {e}")
             return False
     
-    async def get_user_config(self, user_id: str, server_config: Dict) -> str:
-        """Получить конфигурацию V2Ray пользователя через новый API"""
-        try:
-            # Получаем конфигурацию через новый API
-            session = self._session
-            async with session.get(
-                    f"{self.api_url}/keys/{user_id}/config",
-                    headers=self.headers
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
+    async def get_user_config(self, user_id: str, server_config: Dict, max_retries: int = 5, retry_delay: float = 1.0) -> str:
+        """Получить конфигурацию V2Ray пользователя через новый API с повторными попытками"""
+        import asyncio
+        
+        email = server_config.get('email', 'N/A')
+        logger.info(f"[GET_CONFIG] Requesting config for UUID={user_id[:8]}..., email={email}, max_retries={max_retries}")
+        
+        for attempt in range(max_retries):
+            try:
+                # Получаем конфигурацию через новый API
+                session = self._session
+                config_url = f"{self.api_url}/keys/{user_id}/config"
+                logger.debug(f"[GET_CONFIG] Attempt {attempt + 1}/{max_retries}: GET {config_url}")
+                
+                async with session.get(
+                        config_url,
+                        headers=self.headers
+                    ) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            logger.debug(f"[GET_CONFIG] API response status 200. Keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
+                            
+                            # Проверяем новую структуру ответа
+                            if result.get('client_config'):
+                                # Извлекаем только VLESS URL из client_config
+                                client_config = result['client_config']
+                                logger.info(f"[GET_CONFIG] Found client_config in API response on attempt {attempt + 1}")
+                                # Ищем VLESS URL в конфигурации
+                                if 'vless://' in client_config:
+                                    # Извлекаем строку, начинающуюся с vless://
+                                    lines = client_config.split('\n')
+                                    for line in lines:
+                                        if line.strip().startswith('vless://'):
+                                            config_line = line.strip()
+                                            # Проверяем наличие SNI и shortid
+                                            if 'sni=' in config_line and 'sid=' in config_line:
+                                                logger.info(f"[GET_CONFIG] Successfully retrieved client_config with SNI and shortid on attempt {attempt + 1}")
+                                            else:
+                                                logger.warning(f"[GET_CONFIG] WARNING: Retrieved client_config without SNI or shortid on attempt {attempt + 1}")
+                                            return config_line
+                                # Если не нашли VLESS URL, возвращаем всю конфигурацию
+                                logger.debug(f"[GET_CONFIG] Successfully retrieved client_config (non-VLESS format) on attempt {attempt + 1}")
+                                return client_config
+                            
+                            # Если client_config не найден, проверяем альтернативную структуру
+                            if result.get('key') and result.get('client_config'):
+                                client_config = result['client_config']
+                                if 'vless://' in client_config:
+                                    lines = client_config.split('\n')
+                                    for line in lines:
+                                        if line.strip().startswith('vless://'):
+                                            logger.debug(f"Successfully retrieved client_config from key.client_config on attempt {attempt + 1}")
+                                            return line.strip()
+                                logger.debug(f"Successfully retrieved client_config from key.client_config (non-VLESS format) on attempt {attempt + 1}")
+                                return client_config
+                            
+                            # Если client_config не найден вообще, пробуем снова или используем fallback
+                            if attempt < max_retries - 1:
+                                logger.debug(f"API did not return client_config, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                                await asyncio.sleep(retry_delay)
+                                continue
+                            else:
+                                # Если все попытки исчерпаны и client_config не получен, используем fallback
+                                domain = server_config.get('domain', 'veil-bird.ru')
+                                port = server_config.get('port', 443)
+                                email = server_config.get('email', 'VeilBot-V2Ray')
+                                
+                                logger.warning(f"API did not return client_config after {max_retries} attempts, using fallback")
+                                # Используем новый формат VLESS с Reality
+                                return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
                         
-                        # Проверяем новую структуру ответа
-                        if result.get('client_config'):
-                            # Извлекаем только VLESS URL из client_config
-                            client_config = result['client_config']
-                            # Ищем VLESS URL в конфигурации
-                            if 'vless://' in client_config:
-                                # Извлекаем строку, начинающуюся с vless://
-                                lines = client_config.split('\n')
-                                for line in lines:
-                                    if line.strip().startswith('vless://'):
-                                        return line.strip()
-                            # Если не нашли VLESS URL, возвращаем всю конфигурацию
-                            return client_config
-                        
-                        # Если client_config не найден, проверяем альтернативную структуру
-                        if result.get('key') and result.get('client_config'):
-                            client_config = result['client_config']
-                            if 'vless://' in client_config:
-                                lines = client_config.split('\n')
-                                for line in lines:
-                                    if line.strip().startswith('vless://'):
-                                        return line.strip()
-                            return client_config
+                        # Если статус не 200, пробуем снова или используем fallback
+                        if attempt < max_retries - 1:
+                            logger.debug(f"API returned status {response.status}, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        else:
+                            # Если все попытки исчерпаны, используем fallback
+                            domain = server_config.get('domain', 'veil-bird.ru')
+                            port = server_config.get('port', 443)
+                            email = server_config.get('email', 'VeilBot-V2Ray')
+                            
+                            logger.warning(f"API returned status {response.status} after {max_retries} attempts, using fallback")
+                            return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
                     
-                    # Если API не работает, используем fallback
+            except Exception as e:
+                logger.error(f"Error getting V2Ray user config (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    # Fallback к базовой конфигурации после всех попыток
+                    logger.error(f"Failed to get client_config after {max_retries} attempts, using fallback")
                     domain = server_config.get('domain', 'veil-bird.ru')
                     port = server_config.get('port', 443)
                     email = server_config.get('email', 'VeilBot-V2Ray')
                     
-                    # Используем новый формат VLESS с Reality
                     return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
-                    
-        except Exception as e:
-            logger.error(f"Error getting V2Ray user config: {e}")
-            # Fallback к базовой конфигурации
-            domain = server_config.get('domain', 'veil-bird.ru')
-            port = server_config.get('port', 443)
-            email = server_config.get('email', 'VeilBot-V2Ray')
-            
-            return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
+        
+        # Fallback (на случай, если цикл не вернул значение)
+        domain = server_config.get('domain', 'veil-bird.ru')
+        port = server_config.get('port', 443)
+        email = server_config.get('email', 'VeilBot-V2Ray')
+        
+        return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
     
     async def get_traffic_stats(self) -> List[Dict]:
         """Получить статистику трафика V2Ray через новый API с простым мониторингом"""

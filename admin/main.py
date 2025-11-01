@@ -28,7 +28,7 @@ logging.basicConfig(
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-app = FastAPI(title="VeilBot Admin", version="2.1.0")
+app = FastAPI(title="VeilBot Admin", version="2.2.0")
 
 # Logging setup
 setup_logging("INFO")
