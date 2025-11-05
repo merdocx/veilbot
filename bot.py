@@ -1961,13 +1961,24 @@ async def wait_for_payment_with_protocol(message, payment_id, server, user_id, t
             
             if success:
                 logging.debug(f"New payment module confirmed payment success: {payment_id}")
+                
+                # Если есть сообщение с кнопкой "Отмена", редактируем его, убирая кнопки
+                if message:
+                    try:
+                        await message.edit_text(
+                            "✅ Платеж успешно обработан! Ваш ключ отправлен отдельным сообщением.",
+                            reply_markup=None
+                        )
+                    except Exception as e:
+                        logging.debug(f"Could not edit payment message: {e}")
+                
                 # Создаем ключ после успешного платежа
                 with get_db_cursor(commit=True) as cursor:
                     cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
                     cursor.execute("SELECT email FROM payments WHERE payment_id = ?", (payment_id,))
                     payment_data = cursor.fetchone()
                     email = payment_data[0] if payment_data else None
-                    await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
+                    await create_new_key_flow_with_protocol(cursor, None, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
                     # --- Реферальный бонус ---
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
                     ref_row = cursor.fetchone()
@@ -2024,6 +2035,16 @@ async def wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, 
             if is_paid:
                 logging.info(f"CryptoBot payment confirmed: {invoice_id}")
                 
+                # Если есть сообщение с кнопкой "Отмена", редактируем его, убирая кнопки
+                if message:
+                    try:
+                        await message.edit_text(
+                            "✅ Платеж успешно обработан! Ваш ключ отправлен отдельным сообщением.",
+                            reply_markup=None
+                        )
+                    except Exception as e:
+                        logging.debug(f"Could not edit crypto payment message: {e}")
+                
                 # Обновляем статус платежа в БД
                 with get_db_cursor(commit=True) as cursor:
                     cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (str(invoice_id),))
@@ -2031,8 +2052,8 @@ async def wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, 
                     payment_data = cursor.fetchone()
                     email = payment_data[0] if payment_data else None
                     
-                    # Создаем ключ
-                    await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
+                    # Создаем ключ (передаем None вместо message, чтобы ключ отправлялся как новое сообщение)
+                    await create_new_key_flow_with_protocol(cursor, None, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
                     
                     # Реферальный бонус (та же логика что и для обычных платежей)
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
