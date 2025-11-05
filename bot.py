@@ -2141,8 +2141,8 @@ async def auto_delete_expired_keys():
             try:
                 # Временно отключаем проверку foreign keys для удаления
                 cursor.connection.execute("PRAGMA foreign_keys=OFF")
-            cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
-            v2ray_deleted = cursor.rowcount
+                cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
+                v2ray_deleted = cursor.rowcount
                 cursor.connection.execute("PRAGMA foreign_keys=ON")
             except Exception as e:
                 logging.warning(f"Error deleting expired V2Ray keys: {e}")
