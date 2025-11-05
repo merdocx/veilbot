@@ -542,13 +542,15 @@ class PaymentService:
                             v2ray_path_eff = v2ray_path or '/v2ray'
                             access_url = f"vless://{v2ray_uuid}@{domain_eff}:443?path={v2ray_path_eff}&security=tls&type=ws#VeilBot-V2Ray"
                             # Используем унифицированный формат
-                            await bot.send_message(
-                                payment.user_id,
-                                format_key_message_unified(access_url, 'v2ray', None, None),
-                                reply_markup=main_menu,
-                                disable_web_page_preview=True,
-                                parse_mode="Markdown",
-                            )
+                            bot_instance = get_bot()
+                            if bot_instance:
+                                await bot_instance.send_message(
+                                    payment.user_id,
+                                    format_key_message_unified(access_url, 'v2ray', None, None),
+                                    reply_markup=get_main_menu(),
+                                    disable_web_page_preview=True,
+                                    parse_mode="Markdown",
+                                )
                         except Exception as e:
                             logger.error(f"Failed to notify user {payment.user_id} about v2ray key: {e}")
                     
