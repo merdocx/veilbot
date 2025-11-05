@@ -6,6 +6,7 @@ import logging
 from aiogram import Dispatcher, types
 from utils import get_db_cursor
 from bot.keyboards import get_main_menu
+from app.infra.foreign_keys import safe_foreign_keys_off
 
 async def handle_start(message: types.Message, user_states: dict):
     """
@@ -26,10 +27,7 @@ async def handle_start(message: types.Message, user_states: dict):
         last_name = message.from_user.last_name
         
         # Временно отключаем проверку foreign keys для INSERT OR REPLACE
-        # PRAGMA выполняется на уровне соединения, а не курсора
-        cursor.connection.execute("PRAGMA foreign_keys=OFF")
-        
-        try:
+        with safe_foreign_keys_off(cursor):
             cursor.execute("""
                 INSERT OR REPLACE INTO users 
                 (user_id, username, first_name, last_name, created_at, last_active_at, blocked)
@@ -37,9 +35,6 @@ async def handle_start(message: types.Message, user_states: dict):
                     COALESCE((SELECT created_at FROM users WHERE user_id = ?), ?), 
                     ?, 0)
             """, (user_id, username, first_name, last_name, user_id, now, now))
-        finally:
-            # Включаем обратно проверку foreign keys
-            cursor.connection.execute("PRAGMA foreign_keys=ON")
     
     # Обработка реферальной ссылки
     if args and args.isdigit() and int(args) != user_id:
