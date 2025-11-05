@@ -1809,12 +1809,17 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
             payment_service = get_payment_service()
             PAYMENT_MODULE_AVAILABLE = payment_service is not None
             if PAYMENT_MODULE_AVAILABLE:
-                logging.info("Платежный сервис инициализирован (lazy loading)")
+                # Проверяем, что YooKassa сервис доступен
+                if hasattr(payment_service, 'yookassa_service') and payment_service.yookassa_service:
+                    logging.info("Платежный сервис инициализирован (lazy loading) - YooKassa доступен")
+                else:
+                    logging.warning("Платежный сервис инициализирован, но YooKassa недоступен")
+                    PAYMENT_MODULE_AVAILABLE = False
             else:
                 logging.warning("Платежный сервис недоступен")
         except Exception as e:
             PAYMENT_MODULE_AVAILABLE = False
-            logging.warning(f"Ошибка инициализации платежного сервиса: {e}")
+            logging.error(f"Ошибка инициализации платежного сервиса: {e}", exc_info=True)
     
     # Логирование попытки создания платежа
     try:

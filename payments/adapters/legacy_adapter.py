@@ -187,8 +187,17 @@ async def create_payment_with_email_and_protocol_legacy(
     """
     try:
         # Получаем сервис из глобального контекста или создаем новый
-        # В реальной реализации здесь должен быть доступ к инициализированному сервису
         payment_service = get_payment_service()
+        
+        if not payment_service:
+            logger.error(f"Payment service is None for user {user_id}")
+            return None, None
+        
+        # Проверяем, что YooKassa сервис доступен
+        if not hasattr(payment_service, 'yookassa_service') or not payment_service.yookassa_service:
+            logger.error(f"YooKassa service is not available for user {user_id}")
+            return None, None
+        
         adapter = LegacyPaymentAdapter(payment_service)
         
         result = await adapter.create_payment_with_email_and_protocol(
@@ -198,13 +207,13 @@ async def create_payment_with_email_and_protocol_legacy(
         # Если новый модуль вернул None (например, email не передан), 
         # возвращаем None для fallback на старую логику
         if result == (None, None):
-            logger.info(f"New payment module returned None, falling back to old logic for user {user_id}")
+            logger.warning(f"New payment module returned None for user {user_id}, tariff={tariff.get('name')}, amount={tariff.get('price_rub')}")
             return None, None
             
         return result
         
     except Exception as e:
-        logger.error(f"Error in create_payment_with_email_and_protocol_legacy: {e}")
+        logger.error(f"Error in create_payment_with_email_and_protocol_legacy: {e}", exc_info=True)
         # В случае ошибки возвращаем None для fallback на старую логику
         return None, None
 

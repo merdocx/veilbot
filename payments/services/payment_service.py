@@ -13,8 +13,27 @@ from app.repositories.server_repository import ServerRepository
 from app.repositories.key_repository import KeyRepository
 from vpn_protocols import ProtocolFactory
 from app.settings import settings as app_settings
-from bot import bot, format_key_message, format_key_message_unified, main_menu
+# Импорты из bot.py (используем прямые импорты, чтобы избежать циклических зависимостей)
+# bot будет получен через get_bot() или передан как параметр
+from bot.utils.formatters import format_key_message, format_key_message_unified
+from bot.keyboards import get_main_menu
 from security_logger import log_key_creation
+
+# Получаем bot из глобального контекста bot.py
+def get_bot():
+    """Получение экземпляра бота из bot.py"""
+    try:
+        import sys
+        if 'bot' in sys.modules:
+            bot_module = sys.modules['bot']
+            if hasattr(bot_module, 'bot'):
+                return bot_module.bot
+        # Если не нашли, пытаемся импортировать напрямую
+        import bot as bot_module
+        return bot_module.bot
+    except Exception as e:
+        logger.error(f"Error getting bot instance: {e}")
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -485,13 +504,15 @@ class PaymentService:
                             pass
                         try:
                             # Отправка ключа пользователю
-                            await bot.send_message(
-                                payment.user_id,
-                                format_key_message(access_url),
-                                reply_markup=main_menu,
-                                disable_web_page_preview=True,
-                                parse_mode="Markdown",
-                            )
+                            bot_instance = get_bot()
+                            if bot_instance:
+                                await bot_instance.send_message(
+                                    payment.user_id,
+                                    format_key_message(access_url),
+                                    reply_markup=get_main_menu(),
+                                    disable_web_page_preview=True,
+                                    parse_mode="Markdown",
+                                )
                         except Exception as e:
                             logger.error(f"Failed to notify user {payment.user_id} about outline key: {e}")
                     else:
