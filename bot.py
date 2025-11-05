@@ -76,39 +76,13 @@ def is_valid_email(email: str) -> bool:
     """Валидация email с использованием нового валидатора"""
     return input_validator.validate_email(email)
 
-@dp.message_handler(commands=["start"])
-async def handle_start(message: types.Message):
-    args = message.get_args()
-    user_id = message.from_user.id
-    
-    # Save or update user in users table
-    with get_db_cursor(commit=True) as cursor:
-        now = int(time.time())
-        username = message.from_user.username
-        first_name = message.from_user.first_name
-        last_name = message.from_user.last_name
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO users 
-            (user_id, username, first_name, last_name, created_at, last_active_at, blocked)
-            VALUES (?, ?, ?, ?, 
-                COALESCE((SELECT created_at FROM users WHERE user_id = ?), ?), 
-                ?, 0)
-        """, (user_id, username, first_name, last_name, user_id, now, now))
-    
-    if args and args.isdigit() and int(args) != user_id:
-        referrer_id = int(args)
-        with get_db_cursor(commit=True) as cursor:
-            cursor.execute("SELECT 1 FROM referrals WHERE referred_id = ?", (user_id,))
-            if not cursor.fetchone():
-                cursor.execute(
-                    "INSERT INTO referrals (referrer_id, referred_id, created_at) VALUES (?, ?, ?)",
-                    (referrer_id, user_id, int(time.time()))
-                )
-    # Clear any existing state
-    if user_id in user_states:
-        del user_states[user_id]
-    await message.answer("Нажмите «Купить доступ» для получения доступа", reply_markup=main_menu)
+# Импортируем и регистрируем handlers
+from bot.handlers.start import register_start_handler
+from bot.handlers.keys import register_keys_handler
+
+# Регистрация handlers
+register_start_handler(dp, user_states)
+register_keys_handler(dp)
 
 @dp.message_handler(lambda m: m.text == "Купить доступ")
 @rate_limit("buy")
@@ -247,130 +221,7 @@ async def handle_cancel(message: types.Message):
         del user_states[user_id]
     await message.answer("Операция отменена. Выберите протокол:", reply_markup=get_protocol_selection_menu())
 
-@dp.message_handler(lambda m: m.text == "Мои ключи")
-@rate_limit("keys")
-async def handle_my_keys_btn(message: types.Message):
-    user_id = message.from_user.id
-    now = int(time.time())
-    
-    all_keys = []
-    keys_to_update = []  # Список ключей, для которых нужно обновить конфигурацию в БД
-    
-    with get_db_cursor() as cursor:
-        # Получаем Outline ключи с информацией о стране
-        cursor.execute("""
-            SELECT k.access_url, k.expiry_at, k.protocol, s.country
-            FROM keys k
-            JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ?
-        """, (user_id, now))
-        outline_keys = cursor.fetchall()
-        
-        # Получаем V2Ray ключи с информацией о стране и сервере, включая сохраненную конфигурацию
-        cursor.execute("""
-            SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key, k.client_config
-            FROM v2ray_keys k
-            JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ?
-        """, (user_id, now))
-        v2ray_keys = cursor.fetchall()
-    
-    # Добавляем Outline ключи
-    for access_url, exp, protocol, country in outline_keys:
-        all_keys.append({
-            'type': 'outline',
-            'config': access_url,
-            'expiry': exp,
-            'protocol': protocol or 'outline',
-            'country': country
-        })
-    
-    # Добавляем V2Ray ключи
-    for v2ray_uuid, exp, domain, path, country, email, api_url, api_key, saved_config in v2ray_keys:
-        # Используем сохраненную конфигурацию из БД, если она есть
-        if saved_config:
-            # Извлекаем VLESS URL из сохраненной конфигурации, если она многострочная
-            if 'vless://' in saved_config:
-                lines = saved_config.split('\n')
-                for line in lines:
-                    if line.strip().startswith('vless://'):
-                        config = line.strip()
-                        break
-                else:
-                    config = saved_config.strip()
-            else:
-                config = saved_config.strip()
-            logging.debug(f"Using saved client_config from DB for UUID {v2ray_uuid[:8]}...")
-        else:
-            # Если сохраненной конфигурации нет, запрашиваем с сервера (fallback)
-            try:
-                if api_url and api_key:
-                    server_config = {'api_url': api_url, 'api_key': api_key}
-                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                    config = await protocol_client.get_user_config(v2ray_uuid, {
-                        'domain': domain,
-                        'port': 443,
-                        'path': path or '/v2ray',
-                        'email': email or f"user_{user_id}@veilbot.com"
-                    })
-                    # Извлекаем VLESS URL, если конфигурация многострочная
-                    if 'vless://' in config:
-                        lines = config.split('\n')
-                        for line in lines:
-                            if line.strip().startswith('vless://'):
-                                config = line.strip()
-                                break
-                    # Сохраняем для обновления в БД
-                    keys_to_update.append((config, v2ray_uuid))
-                    logging.info(f"Retrieved client_config from server for UUID {v2ray_uuid[:8]}..., will save to DB")
-                else:
-                    # Fallback к старому формату если нет данных сервера
-                    config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
-            except Exception as e:
-                logging.error(f"Error getting V2Ray config for {v2ray_uuid}: {e}")
-                # Fallback к старому формату при ошибке
-                config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
-        
-        all_keys.append({
-            'type': 'v2ray',
-            'config': config,
-            'expiry': exp,
-            'protocol': 'v2ray',
-            'country': country
-        })
-    
-    # Обновляем конфигурации в БД, если нужно
-    if keys_to_update:
-        with get_db_cursor(commit=True) as cursor:
-            for config, v2ray_uuid in keys_to_update:
-                cursor.execute("UPDATE v2ray_keys SET client_config = ? WHERE v2ray_uuid = ?", (config, v2ray_uuid))
-
-    if not all_keys:
-        await message.answer("У вас нет активных ключей.", reply_markup=main_menu)
-        return
-
-    msg = "*Ваши активные ключи:*\n\n"
-    for key in all_keys:
-        remaining_seconds = key['expiry'] - now
-        time_str = format_duration(remaining_seconds)
-        
-        protocol_info = PROTOCOLS[key['protocol']]
-        
-        # Получаем ссылки на приложения в зависимости от протокола
-        if key['protocol'] == 'outline':
-            app_links = "📱 [App Store](https://apps.apple.com/app/outline-app/id1356177741) | [Google Play](https://play.google.com/store/apps/details?id=org.outline.android.client)"
-        else:  # v2ray
-            app_links = "📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)"
-            
-        msg += (
-            f"{protocol_info['icon']} *{protocol_info['name']}*\n"
-            f"🌍 Страна: {key['country']}\n"
-            f"`{key['config']}`\n"
-            f"⏳ Осталось времени: {time_str}\n"
-            f"{app_links}\n\n"
-        )
-    
-    await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+# Обработчик "Мои ключи" вынесен в bot/handlers/keys.py
 
 @dp.message_handler(lambda m: m.text == "🔙 Назад")
 async def back_to_main(message: types.Message):
@@ -4628,7 +4479,7 @@ if __name__ == "__main__":
         
         # Настройка централизованной обработки ошибок
         logger.info("Настройка обработчика ошибок...")
-        error_handler = setup_error_handler(bot, ADMIN_ID)
+        error_handler = setup_error_handler(dp, bot, ADMIN_ID)
         logger.info("Обработчик ошибок настроен")
         
         # Запуск бота с обработкой ошибок
