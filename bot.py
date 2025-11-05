@@ -81,11 +81,26 @@ from bot.handlers.start import register_start_handler
 from bot.handlers.keys import register_keys_handler
 from bot.handlers.purchase import register_purchase_handlers
 from bot.handlers.renewal import register_renewal_handlers
+from bot.handlers.key_management import register_key_management_handlers
 
 # Регистрация handlers
 register_start_handler(dp, user_states)
 register_keys_handler(dp)
 register_renewal_handlers(dp, user_states, bot)
+
+# Регистрация handlers управления ключами (передаем функции из bot.py)
+register_key_management_handlers(
+    dp, bot, user_states,
+    change_country_for_key,
+    change_protocol_for_key,
+    reissue_specific_key,
+    delete_old_key_after_success,
+    show_key_selection_menu,
+    show_protocol_change_menu,
+    show_key_selection_for_country_change,
+    show_country_change_menu,
+    help_keyboard
+)
 
 # Функции для передачи в purchase handlers
 async def handle_invite_friend(message: types.Message):
@@ -194,37 +209,7 @@ async def handle_reactivation_country_selection(message: types.Message):
     with get_db_cursor(commit=True) as cursor:
         await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, selected_country, protocol)
 
-@dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "country_change_selection")
-async def handle_country_change_selection(message: types.Message):
-    """Обработчик выбора страны для смены"""
-    user_id = message.from_user.id
-    text = message.text or ""
-    
-    # Проверяем, что это кнопка "Назад"
-    if text == "🔙 Назад":
-        user_states.pop(user_id, None)
-        await message.answer("Главное меню:", reply_markup=main_menu)
-        return
-    
-    # Извлекаем название страны из текста (убираем эмодзи)
-    if text.startswith("🌍 "):
-        selected_country = text[2:]  # Убираем "🌍 "
-    else:
-        selected_country = text
-    
-    # Получаем данные ключа из состояния
-    state = user_states.get(user_id, {})
-    key_data = state.get("key_data")
-    
-    if not key_data:
-        await message.answer("Ошибка: данные ключа не найдены. Попробуйте еще раз.", reply_markup=main_menu)
-        return
-    
-    # Очищаем состояние
-    user_states.pop(user_id, None)
-    
-    # Выполняем смену страны
-    await change_country_for_key(message, user_id, key_data, selected_country)
+# Обработчик country_change_selection вынесен в bot/handlers/key_management.py
 
 # Обработчики purchase (waiting_country, protocol_selected, waiting_tariff) вынесены в bot/handlers/purchase.py
 
