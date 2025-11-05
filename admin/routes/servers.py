@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
+import logging
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.repositories.server_repository import ServerRepository
@@ -110,6 +111,13 @@ async def add_server(
             available_for_purchase=1 if available_for_purchase else 0,
         )
         
+        # Инвалидируем кэш меню бота
+        try:
+            from bot import invalidate_menu_cache
+            invalidate_menu_cache()
+        except Exception as e:
+            logging.warning(f"Failed to invalidate menu cache: {e}")
+        
         log_admin_action(
             request,
             "ADD_SERVER",
@@ -153,6 +161,14 @@ async def delete_server(request: Request, server_id: int):
         if server:
             log_admin_action(request, "DELETE_SERVER", f"ID: {server_id}, Name: {server[1]}")
         repo.delete_server(server_id)
+        
+        # Инвалидируем кэш меню бота
+        try:
+            from bot import invalidate_menu_cache
+            invalidate_menu_cache()
+        except Exception as e:
+            logging.warning(f"Failed to invalidate menu cache: {e}")
+        
         return RedirectResponse(url="/servers", status_code=HTTP_303_SEE_OTHER)
     except Exception as e:
         log_admin_action(request, "DELETE_SERVER_ERROR", f"ID: {server_id}, Error: {str(e)}")
@@ -247,6 +263,13 @@ async def edit_server(
             active=1 if active else 0,
             available_for_purchase=1 if available_for_purchase else 0,
         )
+        
+        # Инвалидируем кэш меню бота
+        try:
+            from bot import invalidate_menu_cache
+            invalidate_menu_cache()
+        except Exception as e:
+            logging.warning(f"Failed to invalidate menu cache: {e}")
         
         log_admin_action(request, "EDIT_SERVER", f"ID: {server_id}")
         return RedirectResponse(url="/servers", status_code=HTTP_303_SEE_OTHER)

@@ -12,6 +12,7 @@ from db import init_db
 from outline import create_key, delete_key
 from utils import get_db_cursor
 from vpn_protocols import format_duration, ProtocolFactory, get_protocol_instructions
+from app.infra.cache import SimpleCache
 
 # Оптимизация памяти
 from memory_optimizer import (
@@ -26,6 +27,8 @@ SECURITY_LOGGER_AVAILABLE = None # Будет определено при пер
 
 # Импорты валидаторов (легкие модули)
 from validators import input_validator, db_validator, business_validator, validate_user_input, sanitize_user_input, ValidationError
+from bot_error_handler import BotErrorHandler, setup_error_handler
+from bot_rate_limiter import rate_limit
 
 # Security configuration
 SECURITY_HEADERS = {
@@ -59,6 +62,16 @@ user_states = {}  # user_id -> {"state": ..., ...}
 # Notification state for key availability
 low_key_notified = False
 
+# Кэш для меню
+_menu_cache = SimpleCache()
+
+def invalidate_menu_cache():
+    """Инвалидировать кэш меню (вызывать при изменении тарифов/серверов)"""
+    _menu_cache.delete("protocol_selection_menu")
+    # Удаляем все кэшированные меню тарифов
+    # Так как ключи могут быть разные, очищаем весь кэш меню
+    _menu_cache.clear()
+
 # Главное меню
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 main_menu.add(KeyboardButton("Купить доступ"))
@@ -69,6 +82,11 @@ main_menu.add(KeyboardButton("Помощь"))
 # Меню выбора протокола
 def get_protocol_selection_menu() -> ReplyKeyboardMarkup:
     """Создает меню выбора протокола, показывая только те протоколы, у которых есть доступные серверы"""
+    cache_key = "protocol_selection_menu"
+    cached = _menu_cache.get(cache_key)
+    if cached:
+        return cached
+    
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
     
     # Проверяем наличие доступных серверов для каждого протокола
@@ -97,6 +115,9 @@ def get_protocol_selection_menu() -> ReplyKeyboardMarkup:
     # Добавляем кнопку "Назад"
     menu.add(KeyboardButton("🔙 Назад"))
     
+    # Кэшируем на 5 минут
+    _menu_cache.set(cache_key, menu, ttl=300)
+    
     return menu
 
 # Клавиатура для помощи
@@ -118,6 +139,12 @@ def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> Repl
         paid_only: Показывать только платные тарифы
         payment_method: Способ оплаты ('yookassa' или 'cryptobot')
     """
+    # Кэш ключ включает параметры фильтрации
+    cache_key = f"tariff_menu:{paid_only}:{payment_method or 'none'}"
+    cached = _menu_cache.get(cache_key)
+    if cached:
+        return cached
+    
     with get_db_cursor() as cursor:
         if paid_only:
             cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE price_rub > 0 ORDER BY price_rub ASC")
@@ -163,6 +190,10 @@ def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> Repl
         pass
     
     menu.add(KeyboardButton("🔙 Назад"))
+    
+    # Кэшируем на 5 минут (тарифы меняются редко)
+    _menu_cache.set(cache_key, menu, ttl=300)
+    
     return menu
 
 def get_payment_method_keyboard() -> ReplyKeyboardMarkup:
@@ -262,6 +293,7 @@ async def handle_start(message: types.Message):
     await message.answer("Нажмите «Купить доступ» для получения доступа", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text == "Купить доступ")
+@rate_limit("buy")
 async def handle_buy_menu(message: types.Message):
     user_id = message.from_user.id
     if user_id in user_states:
@@ -398,6 +430,7 @@ async def handle_cancel(message: types.Message):
     await message.answer("Операция отменена. Выберите протокол:", reply_markup=get_protocol_selection_menu())
 
 @dp.message_handler(lambda m: m.text == "Мои ключи")
+@rate_limit("keys")
 async def handle_my_keys_btn(message: types.Message):
     user_id = message.from_user.id
     now = int(time.time())
@@ -750,8 +783,7 @@ async def handle_email_input(message: types.Message):
     except ValidationError as e:
         await message.answer(f"❌ Ошибка валидации: {str(e)}", reply_markup=cancel_keyboard)
     except Exception as e:
-        logging.error(f"Error in handle_email_input: {e}")
-        await message.answer("❌ Произошла ошибка. Попробуйте еще раз.", reply_markup=cancel_keyboard)
+        await BotErrorHandler.handle_error(message, e, "handle_email_input", bot, ADMIN_ID)
 
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "reactivation_country_selection")
 async def handle_reactivation_country_selection(message: types.Message):
@@ -877,8 +909,7 @@ async def handle_country_selection(message: types.Message):
     except ValidationError as e:
         await message.answer(f"❌ Ошибка валидации: {str(e)}", reply_markup=cancel_keyboard)
     except Exception as e:
-        logging.error(f"Error in handle_country_selection: {e}")
-        await message.answer("❌ Произошла ошибка. Попробуйте еще раз.", reply_markup=cancel_keyboard)
+        await BotErrorHandler.handle_error(message, e, "handle_country_selection", bot, ADMIN_ID)
 
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "protocol_selected")
 async def handle_protocol_country_selection(message: types.Message):
@@ -3037,8 +3068,15 @@ async def auto_delete_expired_keys():
                         logging.warning(f"Failed to delete V2Ray key {v2ray_uuid} from server: {e}")
             
             # Delete V2Ray keys from database
-            cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
-            v2ray_deleted = cursor.rowcount
+            try:
+                # Временно отключаем проверку foreign keys для удаления
+                cursor.connection.execute("PRAGMA foreign_keys=OFF")
+                cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
+                v2ray_deleted = cursor.rowcount
+                cursor.connection.execute("PRAGMA foreign_keys=ON")
+            except Exception as e:
+                logging.warning(f"Error deleting expired V2Ray keys: {e}")
+                v2ray_deleted = 0
             
             # Log results
             if outline_deleted > 0 or v2ray_deleted > 0:
@@ -3055,7 +3093,10 @@ async def auto_delete_expired_keys():
 
 async def notify_expiring_keys():
     while True:
-        with get_db_cursor(commit=True) as cursor:
+        updates = []  # Список для батчинга обновлений
+        notifications_to_send = []  # Список уведомлений для отправки
+        
+        with get_db_cursor() as cursor:
             now = int(time.time())
             cursor.execute("""
                 SELECT k.id, k.user_id, k.access_url, k.expiry_at, 
@@ -3064,6 +3105,7 @@ async def notify_expiring_keys():
                 WHERE k.expiry_at > ?
             """, (now,))
             rows = cursor.fetchall()
+            
             for row in rows:
                 key_id_db, user_id, access_url, expiry, created_at, notified = row
                 remaining_time = expiry - now
@@ -3096,10 +3138,26 @@ async def notify_expiring_keys():
                     new_notified = 1
 
                 if message:
+                    # Сохраняем уведомление для отправки после коммита
                     keyboard = InlineKeyboardMarkup()
                     keyboard.add(InlineKeyboardButton("🔁 Продлить", callback_data="buy"))
-                    await bot.send_message(user_id, message, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="Markdown")
-                    cursor.execute("UPDATE keys SET notified = ? WHERE id = ?", (new_notified, key_id_db))
+                    notifications_to_send.append((user_id, message, keyboard))
+                    # Добавляем обновление в батч
+                    updates.append((new_notified, key_id_db))
+        
+        # Отправляем все уведомления
+        for user_id, message, keyboard in notifications_to_send:
+            try:
+                await bot.send_message(user_id, message, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="Markdown")
+            except Exception as e:
+                logging.error(f"Error sending expiry notification to user {user_id}: {e}")
+        
+        # Батчинг обновлений в БД
+        if updates:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.executemany("UPDATE keys SET notified = ? WHERE id = ?", updates)
+                logging.debug(f"Updated {len(updates)} keys with expiry notifications")
+        
         await asyncio.sleep(60)
 
 async def check_key_availability():
@@ -3139,6 +3197,7 @@ async def check_key_availability():
         await asyncio.sleep(300) # Check every 5 minutes
 
 @dp.callback_query_handler(lambda c: c.data == "buy")
+@rate_limit("renew")
 async def callback_buy_button(callback_query: types.CallbackQuery):
     """Обработчик кнопки 'Продлить' - показывает выбор способа платежа (как при покупке)"""
     user_id = callback_query.from_user.id
@@ -4788,6 +4847,11 @@ if __name__ == "__main__":
         logger.info("Запуск бота...")
         logging.info("🚀 VeilBot запущен с оптимизацией памяти")
         logging.info("Updates were skipped successfully.")
+        
+        # Настройка централизованной обработки ошибок
+        logger.info("Настройка обработчика ошибок...")
+        error_handler = setup_error_handler(bot, ADMIN_ID)
+        logger.info("Обработчик ошибок настроен")
         
         # Запуск бота с обработкой ошибок
         executor.start_polling(dp, skip_updates=True, loop=loop)

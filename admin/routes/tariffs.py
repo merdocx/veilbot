@@ -6,6 +6,7 @@ from fastapi.responses import RedirectResponse
 from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
+import logging
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.repositories.tariff_repository import TariffRepository
@@ -72,6 +73,13 @@ async def add_tariff(
             price_crypto_usd=price_crypto
         )
         
+        # Инвалидируем кэш меню бота
+        try:
+            from bot import invalidate_menu_cache
+            invalidate_menu_cache()
+        except Exception as e:
+            logging.warning(f"Failed to invalidate menu cache: {e}")
+        
         log_admin_action(
             request,
             "ADD_TARIFF",
@@ -109,6 +117,14 @@ async def delete_tariff(request: Request, tariff_id: int):
         if t:
             log_admin_action(request, "DELETE_TARIFF", f"ID: {tariff_id}, Name: {t[1]}")
         repo.delete_tariff(tariff_id)
+        
+        # Инвалидируем кэш меню бота
+        try:
+            from bot import invalidate_menu_cache
+            invalidate_menu_cache()
+        except Exception as e:
+            logging.warning(f"Failed to invalidate menu cache: {e}")
+        
         return RedirectResponse(url="/tariffs", status_code=HTTP_303_SEE_OTHER)
     except Exception as e:
         log_admin_action(request, "DELETE_TARIFF_ERROR", f"ID: {tariff_id}, Error: {str(e)}")
@@ -155,6 +171,14 @@ async def edit_tariff(
     
     price_crypto = float(price_crypto_usd) if price_crypto_usd and price_crypto_usd != "" else None
     TariffRepository(DATABASE_PATH).update_tariff(tariff_id, name, duration_sec, price_rub, traffic_limit_mb=traffic_limit_mb, price_crypto_usd=price_crypto)
+    
+    # Инвалидируем кэш меню бота
+    try:
+        from bot import invalidate_menu_cache
+        invalidate_menu_cache()
+    except Exception as e:
+        logging.warning(f"Failed to invalidate menu cache: {e}")
+    
     log_admin_action(request, "EDIT_TARIFF", f"ID: {tariff_id}")
     
     return RedirectResponse(url="/tariffs", status_code=HTTP_303_SEE_OTHER)
