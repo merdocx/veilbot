@@ -17,10 +17,26 @@ from payments.config import get_payment_service
 # Импортируем bot из корневого модуля bot.py (не из пакета bot/)
 import importlib.util
 _bot_file = os.path.join(_root_dir, 'bot.py')
-spec = importlib.util.spec_from_file_location("bot_module", _bot_file)
-bot_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bot_module)
-bot = bot_module.bot
+if not os.path.exists(_bot_file):
+    # Альтернативный путь, если текущий не работает
+    _bot_file = os.path.abspath(os.path.join(os.path.dirname(_root_dir), 'bot.py'))
+if os.path.exists(_bot_file):
+    spec = importlib.util.spec_from_file_location("bot_module", _bot_file)
+    bot_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bot_module)
+    bot = bot_module.bot
+else:
+    # Fallback: пытаемся импортировать напрямую
+    import sys as _sys
+    _bot_package = _sys.modules.pop('bot', None)
+    try:
+        import bot as bot_module
+        bot = bot_module.bot
+    except ImportError:
+        raise ImportError(f"Не удалось найти bot.py. Искали: {_bot_file}")
+    finally:
+        if _bot_package is not None:
+            _sys.modules['bot'] = _bot_package
 from app.settings import settings
 
 from ..middleware.audit import log_admin_action
@@ -131,9 +147,16 @@ async def payments_page(
             payments = [p for p in payments if (p.email or "").lower() == email.lower()]
 
     # Быстрая статистика для заголовка
-    paid_count = len([p for p in payments if (getattr(p, 'status', None) and str(p.status) == 'paid') or (hasattr(p, 'is_paid') and p.is_paid())])
-    pending_count = len([p for p in payments if (getattr(p, 'status', None) and str(p.status) == 'pending') or (hasattr(p, 'is_pending') and p.is_pending())])
-    failed_count = len([p for p in payments if (getattr(p, 'status', None) and str(p.status) in ['failed','cancelled','expired']) or (hasattr(p, 'is_failed') and p.is_failed())])
+    try:
+        paid_count = len([p for p in payments if (getattr(p, 'status', None) and str(getattr(p.status, 'value', p.status)) == 'paid') or (hasattr(p, 'is_paid') and callable(getattr(p, 'is_paid', None)) and p.is_paid())])
+        pending_count = len([p for p in payments if (getattr(p, 'status', None) and str(getattr(p.status, 'value', p.status)) == 'pending') or (hasattr(p, 'is_pending') and callable(getattr(p, 'is_pending', None)) and p.is_pending())])
+        failed_count = len([p for p in payments if (getattr(p, 'status', None) and str(getattr(p.status, 'value', p.status)) in ['failed','cancelled','expired']) or (hasattr(p, 'is_failed') and callable(getattr(p, 'is_failed', None)) and p.is_failed())])
+    except Exception as e:
+        import logging
+        logging.error(f"Error calculating payment stats: {e}", exc_info=True)
+        paid_count = len([p for p in payments if str(getattr(p, 'status', '')) == 'paid'])
+        pending_count = len([p for p in payments if str(getattr(p, 'status', '')) == 'pending'])
+        failed_count = len([p for p in payments if str(getattr(p, 'status', '')) in ['failed','cancelled','expired']])
 
     # Статистика для графиков (последние 14 дней)
     daily_stats = []

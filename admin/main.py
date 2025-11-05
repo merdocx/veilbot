@@ -138,8 +138,21 @@ def my_datetime_local_filter(value):
     except (ValueError, TypeError, OSError):
         return ""
 
+def rub_filter(value):
+    """Конвертирует сумму в копейках в рубли с форматом"""
+    if value is None:
+        return "0.00 ₽"
+    try:
+        if isinstance(value, str):
+            value = float(value)
+        rubles = value / 100.0
+        return f"{rubles:,.2f} ₽".replace(",", " ")
+    except (ValueError, TypeError):
+        return f"{value} ₽"
+
 templates.env.filters['timestamp'] = timestamp_filter
 templates.env.filters['my_datetime_local'] = my_datetime_local_filter
+templates.env.filters['rub'] = rub_filter
 
 # Routers - используем новые модульные роутеры
 from admin.routes import (
