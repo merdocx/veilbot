@@ -8,12 +8,19 @@ import os
 import sqlite3
 from datetime import datetime
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _root_dir)
 from payments.repositories.payment_repository import PaymentRepository
 from payments.models.payment import PaymentFilter
 from payments.models.enums import PaymentStatus, PaymentProvider
 from payments.config import get_payment_service
-from bot import bot
+# Импортируем bot из корневого модуля bot.py (не из пакета bot/)
+import importlib.util
+_bot_file = os.path.join(_root_dir, 'bot.py')
+spec = importlib.util.spec_from_file_location("bot_module", _bot_file)
+bot_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bot_module)
+bot = bot_module.bot
 from app.settings import settings
 
 from ..middleware.audit import log_admin_action

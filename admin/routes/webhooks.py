@@ -195,15 +195,24 @@ async def cryptobot_webhook(request: Request):
                 }
                 
                 # Создаем ключ для пользователя
-                from bot import create_new_key_flow_with_protocol, get_db_cursor, bot, format_key_message_unified
+                import importlib.util
+                import time
+                _root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                _bot_file = os.path.join(_root_dir, 'bot.py')
+                spec = importlib.util.spec_from_file_location("bot_module", _bot_file)
+                bot_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(bot_module)
+                create_new_key_flow_with_protocol = bot_module.create_new_key_flow_with_protocol
+                select_available_server_by_protocol = bot_module.select_available_server_by_protocol
+                bot = bot_module.bot
+                from utils import get_db_cursor
+                from bot.utils.formatters import format_key_message_unified
                 from app.repositories.server_repository import ServerRepository
                 from app.repositories.key_repository import KeyRepository
                 from vpn_protocols import ProtocolFactory
-                import time
                 
                 with get_db_cursor(commit=True) as cursor:
                     # Выбираем сервер
-                    from bot import select_available_server_by_protocol
                     server = select_available_server_by_protocol(cursor, country, protocol or "outline")
                     
                     if server:
@@ -221,7 +230,7 @@ async def cryptobot_webhook(request: Request):
                             key = cursor.fetchone()
                             bonus_duration = 30 * 24 * 3600
                             if key:
-                                from bot import extend_existing_key
+                                extend_existing_key = bot_module.extend_existing_key
                                 extend_existing_key(cursor, key, bonus_duration)
                                 await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
                             else:

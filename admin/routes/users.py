@@ -9,11 +9,19 @@ import os
 import time
 import sqlite3
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _root_dir)
 from app.repositories.user_repository import UserRepository
 from app.repositories.key_repository import KeyRepository
 from app.settings import settings
-from bot import bot, format_key_message_unified
+# Импортируем bot из корневого модуля bot.py (не из пакета bot/)
+import importlib.util
+_bot_file = os.path.join(_root_dir, 'bot.py')
+spec = importlib.util.spec_from_file_location("bot_module", _bot_file)
+bot_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bot_module)
+bot = bot_module.bot
+from bot.utils.formatters import format_key_message_unified
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token
