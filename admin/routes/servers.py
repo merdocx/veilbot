@@ -113,7 +113,7 @@ async def add_server(
         
         # Инвалидируем кэш меню бота
         try:
-            from bot import invalidate_menu_cache
+            from bot.keyboards import invalidate_menu_cache
             invalidate_menu_cache()
         except Exception as e:
             logging.warning(f"Failed to invalidate menu cache: {e}")
@@ -164,7 +164,7 @@ async def delete_server(request: Request, server_id: int):
         
         # Инвалидируем кэш меню бота
         try:
-            from bot import invalidate_menu_cache
+            from bot.keyboards import invalidate_menu_cache
             invalidate_menu_cache()
         except Exception as e:
             logging.warning(f"Failed to invalidate menu cache: {e}")
@@ -266,7 +266,7 @@ async def edit_server(
         
         # Инвалидируем кэш меню бота
         try:
-            from bot import invalidate_menu_cache
+            from bot.keyboards import invalidate_menu_cache
             invalidate_menu_cache()
         except Exception as e:
             logging.warning(f"Failed to invalidate menu cache: {e}")

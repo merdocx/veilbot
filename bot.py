@@ -12,7 +12,12 @@ from db import init_db
 from outline import create_key, delete_key
 from utils import get_db_cursor
 from vpn_protocols import format_duration, ProtocolFactory, get_protocol_instructions
-from app.infra.cache import SimpleCache
+from bot.keyboards import (
+    get_main_menu, get_help_keyboard, get_cancel_keyboard,
+    get_protocol_selection_menu, get_tariff_menu, get_payment_method_keyboard,
+    get_country_menu, get_countries, get_countries_by_protocol, invalidate_menu_cache
+)
+from bot.utils import format_key_message, format_key_message_unified, format_key_message_with_protocol
 
 # Оптимизация памяти
 from memory_optimizer import (
@@ -62,197 +67,10 @@ user_states = {}  # user_id -> {"state": ..., ...}
 # Notification state for key availability
 low_key_notified = False
 
-# Кэш для меню
-_menu_cache = SimpleCache()
-
-def invalidate_menu_cache():
-    """Инвалидировать кэш меню (вызывать при изменении тарифов/серверов)"""
-    _menu_cache.delete("protocol_selection_menu")
-    # Удаляем все кэшированные меню тарифов
-    # Так как ключи могут быть разные, очищаем весь кэш меню
-    _menu_cache.clear()
-
-# Главное меню
-main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-main_menu.add(KeyboardButton("Купить доступ"))
-main_menu.add(KeyboardButton("Мои ключи"))
-main_menu.add(KeyboardButton("Получить месяц бесплатно"))
-main_menu.add(KeyboardButton("Помощь"))
-
-# Меню выбора протокола
-def get_protocol_selection_menu() -> ReplyKeyboardMarkup:
-    """Создает меню выбора протокола, показывая только те протоколы, у которых есть доступные серверы"""
-    cache_key = "protocol_selection_menu"
-    cached = _menu_cache.get(cache_key)
-    if cached:
-        return cached
-    
-    menu = ReplyKeyboardMarkup(resize_keyboard=True)
-    
-    # Проверяем наличие доступных серверов для каждого протокола
-    with get_db_cursor() as cursor:
-        # Проверяем Outline
-        cursor.execute("""
-            SELECT COUNT(*) FROM servers 
-            WHERE active = 1 AND available_for_purchase = 1 AND protocol = 'outline'
-        """)
-        outline_count = cursor.fetchone()[0]
-        
-        # Проверяем V2Ray
-        cursor.execute("""
-            SELECT COUNT(*) FROM servers 
-            WHERE active = 1 AND available_for_purchase = 1 AND protocol = 'v2ray'
-        """)
-        v2ray_count = cursor.fetchone()[0]
-    
-    # Добавляем только протоколы с доступными серверами
-    if outline_count > 0:
-        menu.add(KeyboardButton(f"{PROTOCOLS['outline']['icon']} {PROTOCOLS['outline']['name']}"))
-    
-    if v2ray_count > 0:
-        menu.add(KeyboardButton(f"{PROTOCOLS['v2ray']['icon']} {PROTOCOLS['v2ray']['name']}"))
-    
-    # Добавляем кнопку "Назад"
-    menu.add(KeyboardButton("🔙 Назад"))
-    
-    # Кэшируем на 5 минут
-    _menu_cache.set(cache_key, menu, ttl=300)
-    
-    return menu
-
-# Клавиатура для помощи
-help_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-help_keyboard.add(KeyboardButton("Перевыпустить ключ"))
-help_keyboard.add(KeyboardButton("Сменить приложение"))
-help_keyboard.add(KeyboardButton("Сменить страну"))
-help_keyboard.add(KeyboardButton("💬 Связаться с поддержкой"))
-help_keyboard.add(KeyboardButton("🔙 Назад"))
-
-cancel_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-cancel_keyboard.add(KeyboardButton("🔙 Отмена"))
-
-def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> ReplyKeyboardMarkup:
-    """
-    Получить меню тарифов с ценами в зависимости от способа оплаты
-    
-    Args:
-        paid_only: Показывать только платные тарифы
-        payment_method: Способ оплаты ('yookassa' или 'cryptobot')
-    """
-    # Кэш ключ включает параметры фильтрации
-    cache_key = f"tariff_menu:{paid_only}:{payment_method or 'none'}"
-    cached = _menu_cache.get(cache_key)
-    if cached:
-        return cached
-    
-    with get_db_cursor() as cursor:
-        if paid_only:
-            cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE price_rub > 0 ORDER BY price_rub ASC")
-        else:
-            cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs ORDER BY price_rub ASC")
-        tariffs = cursor.fetchall()
-
-    menu = ReplyKeyboardMarkup(resize_keyboard=True)
-    has_available_tariffs = False
-    
-    for _, name, price, duration, price_crypto in tariffs:
-        if price > 0:
-            # Если выбран способ оплаты, показываем соответствующую цену
-            if payment_method == "cryptobot":
-                # Для криптовалюты показываем только тарифы с крипто-ценой
-                if price_crypto:
-                    label = f"{name} — ${price_crypto:.2f}"
-                    menu.add(KeyboardButton(label))
-                    has_available_tariffs = True
-                # Если нет крипто-цены, просто не показываем тариф
-            elif payment_method == "yookassa":
-                label = f"{name} — {price}₽"
-                menu.add(KeyboardButton(label))
-                has_available_tariffs = True
-            else:
-                # Если способ оплаты не выбран, показываем обе цены
-                if price_crypto:
-                    label = f"{name} — {price}₽ / ${price_crypto:.2f}"
-                else:
-                    label = f"{name} — {price}₽"
-                menu.add(KeyboardButton(label))
-                has_available_tariffs = True
-        else:
-            # Бесплатные тарифы показываем только если не выбрана крипта
-            if payment_method != "cryptobot":
-                label = f"{name} — бесплатно"
-                menu.add(KeyboardButton(label))
-                has_available_tariffs = True
-    
-    # Если для криптовалюты нет доступных тарифов, добавляем сообщение
-    if payment_method == "cryptobot" and not has_available_tariffs:
-        # Но не добавляем кнопку, просто вернем пустое меню
-        pass
-    
-    menu.add(KeyboardButton("🔙 Назад"))
-    
-    # Кэшируем на 5 минут (тарифы меняются редко)
-    _menu_cache.set(cache_key, menu, ttl=300)
-    
-    return menu
-
-def get_payment_method_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура выбора способа оплаты"""
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(KeyboardButton("💳 Карта РФ / СБП"))
-    keyboard.add(KeyboardButton("₿ Криптовалюта (USDT)"))
-    keyboard.add(KeyboardButton("🔙 Назад"))
-    return keyboard
-
-def format_key_message(access_url: str) -> str:
-    return (
-        f"*Ваш ключ* (коснитесь, чтобы скопировать):\n"
-        f"`{access_url}`\n\n"
-        "🔧 *Как подключиться:*\n"
-        "1. Установите Outline:\n"
-        "   • [App Store](https://apps.apple.com/app/outline-app/id1356177741)\n"
-        "   • [Google Play](https://play.google.com/store/apps/details?id=org.outline.android.client)\n"
-        "2. Откройте приложение и нажмите «Добавить сервер» или «+»\n"
-        "3. Вставьте ключ выше"
-    )
-
-def format_key_message_unified(config: str, protocol: str, tariff: dict = None, remaining_time: int = None) -> str:
-    """Унифицированное форматирование сообщения с ключом для всех протоколов"""
-    protocol_info = PROTOCOLS.get(protocol, {})
-    protocol_name = protocol_info.get('name', protocol.upper())
-    protocol_icon = protocol_info.get('icon', '🔒')
-    
-    # Форматируем оставшееся время
-    if remaining_time:
-        time_str = format_duration(remaining_time)
-        time_info = f"\n⏰ *Осталось:* {time_str}"
-    else:
-        time_info = ""
-    
-    # Форматируем информацию о тарифе
-    if tariff:
-        tariff_info = f"\n📦 *Тариф:* {tariff.get('name', 'Неизвестно')}"
-        if tariff.get('price_rub', 0) > 0:
-            tariff_info += f" — {tariff['price_rub']}₽"
-        else:
-            tariff_info += " — бесплатно"
-    else:
-        tariff_info = ""
-    
-    # Получаем инструкции по подключению
-    try:
-        instructions = get_protocol_instructions(protocol)
-    except Exception as e:
-        logging.warning(f"Не удалось получить инструкции для протокола {protocol}: {e}")
-        instructions = "Инструкции по подключению временно недоступны."
-    
-    return (
-        f"{protocol_icon} *{protocol_name}*\n\n"
-        f"*Ваш ключ* (коснитесь, чтобы скопировать):\n"
-        f"`{config}`\n\n"
-        f"🔧 *Как подключиться:*\n{instructions}"
-        f"{tariff_info}{time_info}"
-    )
+# Главное меню (создаем глобальную переменную для обратной совместимости)
+main_menu = get_main_menu()
+help_keyboard = get_help_keyboard()
+cancel_keyboard = get_cancel_keyboard()
 
 def is_valid_email(email: str) -> bool:
     """Валидация email с использованием нового валидатора"""
@@ -2537,18 +2355,6 @@ def select_available_server_by_protocol(cursor, country=None, protocol='outline'
     
     return row
 
-def format_key_message_with_protocol(config: str, protocol: str, tariff: dict) -> str:
-    """Форматирование сообщения с учетом протокола"""
-    protocol_info = PROTOCOLS[protocol]
-    
-    return (
-        f"*Ваш ключ {protocol_info['icon']} {protocol_info['name']}* (коснитесь, чтобы скопировать):\n"
-        f"`{config}`\n\n"
-        f"📦 Тариф: *{tariff['name']}*\n"
-        f"⏱ Срок действия: *{format_duration(tariff['duration_sec'])}*\n\n"
-        f"🔧 *Как подключиться:*\n"
-        f"{get_protocol_instructions(protocol)}"
-    )
 
 async def handle_free_tariff_with_protocol(cursor, message, user_id, tariff, country=None, protocol="outline"):
     """Обработка бесплатного тарифа с поддержкой протоколов"""
@@ -3269,34 +3075,6 @@ async def callback_buy_button(callback_query: types.CallbackQuery):
         pass
 
 # --- Country selection helpers ---
-def get_countries():
-    """Получить список стран для покупки (только с серверами, доступными к покупке)"""
-    with get_db_cursor() as cursor:
-        cursor.execute("SELECT DISTINCT country FROM servers WHERE active = 1 AND available_for_purchase = 1 AND country IS NOT NULL AND country != ''")
-        countries = [row[0] for row in cursor.fetchall()]
-    return countries
-
-def get_countries_by_protocol(protocol):
-    """Получить страны только для указанного протокола (только с серверами, доступными к покупке)"""
-    with get_db_cursor() as cursor:
-        cursor.execute("""
-            SELECT DISTINCT country 
-            FROM servers 
-            WHERE active = 1 
-            AND available_for_purchase = 1
-            AND country IS NOT NULL 
-            AND country != '' 
-            AND protocol = ?
-        """, (protocol,))
-        countries = [row[0] for row in cursor.fetchall()]
-    return countries
-
-def get_country_menu(countries):
-    menu = ReplyKeyboardMarkup(resize_keyboard=True)
-    for country in countries:
-        menu.add(KeyboardButton(country))
-    menu.add(KeyboardButton("🔙 Назад"))
-    return menu
 
 async def process_pending_paid_payments():
     # Используем новый платежный модуль если доступен
