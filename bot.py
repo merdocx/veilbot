@@ -80,10 +80,12 @@ def is_valid_email(email: str) -> bool:
 from bot.handlers.start import register_start_handler
 from bot.handlers.keys import register_keys_handler
 from bot.handlers.purchase import register_purchase_handlers
+from bot.handlers.renewal import register_renewal_handlers
 
 # Регистрация handlers
 register_start_handler(dp, user_states)
 register_keys_handler(dp)
+register_renewal_handlers(dp, user_states, bot)
 
 # Функции для передачи в purchase handlers
 async def handle_invite_friend(message: types.Message):
@@ -138,7 +140,7 @@ async def back_to_main(message: types.Message):
 # --- Обработчик кнопки 'Пригласить друга' (теперь выше всех универсальных) ---
 @dp.message_handler(lambda m: m.text == "Получить месяц бесплатно")
 async def handle_invite_friend_handler(message: types.Message):
-    await handle_invite_friend(message)
+        await handle_invite_friend(message)
 
 # Обработчики purchase handlers вынесены в bot/handlers/purchase.py
 # (handle_buy_menu, handle_protocol_selection, handle_cancel,
@@ -465,7 +467,7 @@ async def extend_existing_key_with_fallback(cursor, existing_key, duration, emai
         
         api_url, api_key, country, is_active = server_data
         cert_sha256 = None  # Для V2Ray не используется
-        
+    
         # Если сервер неактивен, пытаемся найти альтернативный
         if not is_active:
             logging.warning(f"Server {server_id} is not active, looking for alternative for renewal")
@@ -1200,7 +1202,7 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                         except Exception as e:
                             logging.error(f"Error getting V2Ray config for {v2ray_uuid} during extension: {e}")
                             # Fallback к хардкодной конфигурации при ошибке
-                            config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                        config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
                     else:
                         # Fallback к старой конфигурации
                         v2ray_uuid = existing_key[2]
@@ -1505,12 +1507,12 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
         
         # Отправляем пользователю
         if message:
-            await message.answer(
-                format_key_message_unified(config, protocol, tariff),
-                reply_markup=main_menu,
-                disable_web_page_preview=True,
-                parse_mode="Markdown"
-            )
+        await message.answer(
+            format_key_message_unified(config, protocol, tariff),
+            reply_markup=main_menu,
+            disable_web_page_preview=True,
+            parse_mode="Markdown"
+        )
         else:
             # Если message=None (например, из webhook), отправляем напрямую через bot
             await bot.send_message(
@@ -1595,20 +1597,20 @@ def select_available_server_by_protocol(cursor, country=None, protocol='outline'
     """
     if for_renewal:
         # Для продления проверяем только active
-        if country:
-            cursor.execute("""
-                SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
-                FROM servers 
-                WHERE active = 1 AND country = ? AND protocol = ?
-                ORDER BY RANDOM() LIMIT 1
-            """, (country, protocol))
-        else:
-            cursor.execute("""
-                SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
-                FROM servers 
-                WHERE active = 1 AND protocol = ?
-                ORDER BY RANDOM() LIMIT 1
-            """, (protocol,))
+    if country:
+        cursor.execute("""
+            SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+            FROM servers 
+            WHERE active = 1 AND country = ? AND protocol = ?
+            ORDER BY RANDOM() LIMIT 1
+        """, (country, protocol))
+    else:
+        cursor.execute("""
+            SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+            FROM servers 
+            WHERE active = 1 AND protocol = ?
+            ORDER BY RANDOM() LIMIT 1
+        """, (protocol,))
     else:
         # Для покупки проверяем и active, и available_for_purchase
         if country:
@@ -1789,16 +1791,16 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
             
             await message.answer(
                 f"₿ *Оплата криптовалютой (USDT)*\n\n"
-                f"📦 Тариф: *{tariff['name']}*\n"
+        f"📦 Тариф: *{tariff['name']}*\n"
                 f"💰 Сумма: *${tariff['price_crypto_usd']:.2f} USDT*\n"
                 f"📧 Email: `{display_email}`\n\n"
                 f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n\n"
                 "Нажмите кнопку ниже для оплаты через CryptoBot:\n"
                 "⚠️ Инвойс действителен 1 час",
                 reply_markup=keyboard,
-                parse_mode="Markdown"
-            )
-            
+        parse_mode="Markdown"
+    )
+
             # Запускаем ожидание платежа (для CryptoBot это будет проверка через webhook или периодическую проверку)
             with get_db_cursor() as cursor:
                 server = select_available_server_by_protocol(cursor, country, protocol, for_renewal=for_renewal)
@@ -2154,8 +2156,8 @@ async def auto_delete_expired_keys():
             try:
                 # Временно отключаем проверку foreign keys для удаления
                 cursor.connection.execute("PRAGMA foreign_keys=OFF")
-                cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
-                v2ray_deleted = cursor.rowcount
+            cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
+            v2ray_deleted = cursor.rowcount
                 cursor.connection.execute("PRAGMA foreign_keys=ON")
             except Exception as e:
                 logging.warning(f"Error deleting expired V2Ray keys: {e}")
@@ -2231,7 +2233,7 @@ async def notify_expiring_keys():
         # Отправляем все уведомления
         for user_id, message, keyboard in notifications_to_send:
             try:
-                await bot.send_message(user_id, message, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="Markdown")
+                    await bot.send_message(user_id, message, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="Markdown")
             except Exception as e:
                 logging.error(f"Error sending expiry notification to user {user_id}: {e}")
         
@@ -2279,77 +2281,7 @@ async def check_key_availability():
 
         await asyncio.sleep(300) # Check every 5 minutes
 
-@dp.callback_query_handler(lambda c: c.data == "buy")
-@rate_limit("renew")
-async def callback_buy_button(callback_query: types.CallbackQuery):
-    """Обработчик кнопки 'Продлить' - показывает выбор способа платежа (как при покупке)"""
-    user_id = callback_query.from_user.id
-    now = int(time.time())
-    
-    # Находим активный ключ пользователя (самый новый по сроку действия)
-    with get_db_cursor() as cursor:
-        # Проверяем Outline ключи
-        cursor.execute("""
-            SELECT k.id, k.expiry_at, s.protocol, s.country
-            FROM keys k
-            JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ?
-            ORDER BY k.expiry_at DESC LIMIT 1
-        """, (user_id, now))
-        outline_key = cursor.fetchone()
-        
-        # Проверяем V2Ray ключи
-        cursor.execute("""
-            SELECT k.id, k.expiry_at, s.protocol, s.country
-            FROM v2ray_keys k
-            JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ?
-            ORDER BY k.expiry_at DESC LIMIT 1
-        """, (user_id, now))
-        v2ray_key = cursor.fetchone()
-        
-        # Выбираем самый новый ключ
-        current_key = None
-        if outline_key and v2ray_key:
-            # Сравниваем по expiry_at
-            current_key = outline_key if outline_key[1] > v2ray_key[1] else v2ray_key
-        elif outline_key:
-            current_key = outline_key
-        elif v2ray_key:
-            current_key = v2ray_key
-    
-    if not current_key:
-        await callback_query.answer("У вас нет активных ключей для продления", show_alert=True)
-        return
-    
-    # Получаем протокол и страну из найденного ключа
-    key_id, expiry_at, protocol, country = current_key
-    
-    # Устанавливаем состояние для выбора способа платежа (как при покупке)
-    user_states[user_id] = {
-        "state": "waiting_payment_method_after_country",
-        "country": country,
-        "protocol": protocol,
-        "is_renewal": True,  # Флаг, что это продление
-        "paid_only": True
-    }
-    
-    # Показываем выбор способа платежа
-    msg = f"💳 *Выберите способ оплаты*\n\n"
-    msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-    msg += f"🌍 Страна: *{country}*\n"
-    
-    await bot.send_message(
-        user_id,
-        msg,
-        reply_markup=get_payment_method_keyboard(),
-        parse_mode="Markdown"
-    )
-    
-    try:
-        await callback_query.answer()
-    except Exception:
-        pass
+# Обработчик renewal (callback_buy_button) вынесен в bot/handlers/renewal.py
 
 # --- Country selection helpers ---
 
