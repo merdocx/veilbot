@@ -26,7 +26,8 @@ async def handle_start(message: types.Message, user_states: dict):
         last_name = message.from_user.last_name
         
         # Временно отключаем проверку foreign keys для INSERT OR REPLACE
-        cursor.execute("PRAGMA foreign_keys=OFF")
+        # PRAGMA выполняется на уровне соединения, а не курсора
+        cursor.connection.execute("PRAGMA foreign_keys=OFF")
         
         try:
             cursor.execute("""
@@ -38,7 +39,7 @@ async def handle_start(message: types.Message, user_states: dict):
             """, (user_id, username, first_name, last_name, user_id, now, now))
         finally:
             # Включаем обратно проверку foreign keys
-            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.connection.execute("PRAGMA foreign_keys=ON")
     
     # Обработка реферальной ссылки
     if args and args.isdigit() and int(args) != user_id:
