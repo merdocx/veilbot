@@ -83,24 +83,16 @@ from bot.handlers.purchase import register_purchase_handlers
 from bot.handlers.renewal import register_renewal_handlers
 from bot.handlers.key_management import register_key_management_handlers
 
+# Функции управления ключами определены в bot.py (строки 2576+)
+# Они будут переданы в register_key_management_handlers после их определения
+
 # Регистрация handlers
 register_start_handler(dp, user_states)
 register_keys_handler(dp)
 register_renewal_handlers(dp, user_states, bot)
 
-# Регистрация handlers управления ключами (передаем функции из bot.py)
-register_key_management_handlers(
-    dp, bot, user_states,
-    change_country_for_key,
-    change_protocol_for_key,
-    reissue_specific_key,
-    delete_old_key_after_success,
-    show_key_selection_menu,
-    show_protocol_change_menu,
-    show_key_selection_for_country_change,
-    show_country_change_menu,
-    help_keyboard
-)
+# Регистрация handlers управления ключами и purchase handlers будет выполнена после определения функций
+# (функции определены в строках 1724+ для payment, 2484+ для key_management)
 
 # Функции для передачи в purchase handlers
 async def handle_invite_friend(message: types.Message):
@@ -127,20 +119,7 @@ def get_tariff_by_name_and_price(cursor, tariff_name, price):
         "price_crypto_usd": row[4] if len(row) > 4 else None
     }
 
-# Регистрация purchase handlers (передаем зависимости)
-register_purchase_handlers(
-    dp=dp,
-    user_states=user_states,
-    bot=bot,
-    main_menu=main_menu,
-    cancel_keyboard=cancel_keyboard,
-    is_valid_email=is_valid_email,
-    create_payment_with_email_and_protocol=create_payment_with_email_and_protocol,
-    create_new_key_flow_with_protocol=create_new_key_flow_with_protocol,
-    handle_free_tariff_with_protocol=handle_free_tariff_with_protocol,
-    handle_invite_friend=handle_invite_friend,
-    get_tariff_by_name_and_price=get_tariff_by_name_and_price
-)
+# Регистрация purchase handlers будет выполнена после определения функций (см. строку ~3327)
 
 # Обработчики покупки вынесены в bot/handlers/purchase.py
 
@@ -3332,6 +3311,34 @@ async def handle_cancel_broadcast(callback_query: types.CallbackQuery):
     
     await callback_query.message.edit_text("❌ Рассылка отменена")
     await callback_query.answer()
+
+# Регистрация purchase handlers (после определения всех функций)
+register_purchase_handlers(
+    dp=dp,
+    user_states=user_states,
+    bot=bot,
+    main_menu=main_menu,
+    cancel_keyboard=cancel_keyboard,
+    is_valid_email=is_valid_email,
+    create_payment_with_email_and_protocol=create_payment_with_email_and_protocol,
+    create_new_key_flow_with_protocol=create_new_key_flow_with_protocol,
+    handle_free_tariff_with_protocol=handle_free_tariff_with_protocol,
+    handle_invite_friend=handle_invite_friend,
+    get_tariff_by_name_and_price=get_tariff_by_name_and_price
+)
+
+# Регистрация handlers управления ключами (после определения всех функций)
+register_key_management_handlers(
+    dp, bot, user_states,
+    change_country_for_key,
+    change_protocol_for_key,
+    reissue_specific_key,
+    delete_old_key_after_success,
+    show_key_selection_menu,
+    show_protocol_change_menu,
+    show_key_selection_for_country_change,
+    show_country_change_menu
+)
 
 if __name__ == "__main__":
     import sys
