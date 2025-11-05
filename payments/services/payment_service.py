@@ -21,16 +21,10 @@ from security_logger import log_key_creation
 
 # Получаем bot из глобального контекста bot.py
 def get_bot():
-    """Получение экземпляра бота из bot.py"""
+    """Получение экземпляра бота через централизованный модуль"""
     try:
-        import sys
-        if 'bot' in sys.modules:
-            bot_module = sys.modules['bot']
-            if hasattr(bot_module, 'bot'):
-                return bot_module.bot
-        # Если не нашли, пытаемся импортировать напрямую
-        import bot as bot_module
-        return bot_module.bot
+        from bot.core import get_bot_instance
+        return get_bot_instance()
     except Exception as e:
         logger.error(f"Error getting bot instance: {e}")
         return None

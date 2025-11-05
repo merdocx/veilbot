@@ -13,6 +13,7 @@ import logging
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from payments.config import get_webhook_service
 from app.settings import settings
+from bot.core import get_bot_instance
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token, validate_csrf_token
@@ -204,7 +205,9 @@ async def cryptobot_webhook(request: Request):
                 spec.loader.exec_module(bot_module)
                 create_new_key_flow_with_protocol = bot_module.create_new_key_flow_with_protocol
                 select_available_server_by_protocol = bot_module.select_available_server_by_protocol
-                bot = bot_module.bot
+                extend_existing_key = bot_module.extend_existing_key
+                # Получаем bot через централизованный модуль
+                bot = get_bot_instance()
                 from utils import get_db_cursor
                 from bot.utils.formatters import format_key_message_unified
                 from app.repositories.server_repository import ServerRepository
@@ -230,7 +233,6 @@ async def cryptobot_webhook(request: Request):
                             key = cursor.fetchone()
                             bonus_duration = 30 * 24 * 3600
                             if key:
-                                extend_existing_key = bot_module.extend_existing_key
                                 extend_existing_key(cursor, key, bonus_duration)
                                 await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
                             else:

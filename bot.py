@@ -50,6 +50,10 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher(bot)
 
+# Регистрируем bot instance для использования в других модулях
+from bot.core import set_bot_instance
+set_bot_instance(bot)
+
 # Явная проверка конфигурации при старте
 config_validation = validate_configuration()
 if not config_validation['is_valid']:

@@ -14,14 +14,11 @@ sys.path.insert(0, _root_dir)
 from app.repositories.user_repository import UserRepository
 from app.repositories.key_repository import KeyRepository
 from app.settings import settings
-# Импортируем bot из корневого модуля bot.py (не из пакета bot/)
-import importlib.util
-_bot_file = os.path.join(_root_dir, 'bot.py')
-spec = importlib.util.spec_from_file_location("bot_module", _bot_file)
-bot_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bot_module)
-bot = bot_module.bot
+from bot.core import get_bot_instance
 from bot.utils.formatters import format_key_message_unified
+
+# Получаем bot instance через централизованный модуль
+bot = get_bot_instance()
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token

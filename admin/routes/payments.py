@@ -14,30 +14,11 @@ from payments.repositories.payment_repository import PaymentRepository
 from payments.models.payment import PaymentFilter
 from payments.models.enums import PaymentStatus, PaymentProvider
 from payments.config import get_payment_service
-# Импортируем bot из корневого модуля bot.py (не из пакета bot/)
-import importlib.util
-_bot_file = os.path.join(_root_dir, 'bot.py')
-if not os.path.exists(_bot_file):
-    # Альтернативный путь, если текущий не работает
-    _bot_file = os.path.abspath(os.path.join(os.path.dirname(_root_dir), 'bot.py'))
-if os.path.exists(_bot_file):
-    spec = importlib.util.spec_from_file_location("bot_module", _bot_file)
-    bot_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(bot_module)
-    bot = bot_module.bot
-else:
-    # Fallback: пытаемся импортировать напрямую
-    import sys as _sys
-    _bot_package = _sys.modules.pop('bot', None)
-    try:
-        import bot as bot_module
-        bot = bot_module.bot
-    except ImportError:
-        raise ImportError(f"Не удалось найти bot.py. Искали: {_bot_file}")
-    finally:
-        if _bot_package is not None:
-            _sys.modules['bot'] = _bot_package
 from app.settings import settings
+from bot.core import get_bot_instance
+
+# Получаем bot instance через централизованный модуль
+bot = get_bot_instance()
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token, validate_csrf_token
