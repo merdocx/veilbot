@@ -529,74 +529,106 @@ async def delete_key_route(request: Request, key_id: int):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/login")
 
-    key_repo = KeyRepository(DB_PATH)
+    try:
+        key_repo = KeyRepository(DB_PATH)
 
-    # Сначала как Outline
-    outline_key = key_repo.get_outline_key_brief(key_id)
-    if outline_key:
-        user_id, outline_key_id, server_id = outline_key
-        if outline_key_id and server_id:
-            with sqlite3.connect(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
-                server = c.fetchone()
-                if server:
-                    try:
-                        log_admin_action(request, "OUTLINE_DELETE_ATTEMPT", f"Attempting to delete key {outline_key_id} from server {server[0]}")
-                        result = delete_key(server[0], server[1], outline_key_id)
-                        if result:
-                            log_admin_action(request, "OUTLINE_DELETE_SUCCESS", f"Successfully deleted key {outline_key_id} from server")
-                        else:
-                            log_admin_action(request, "OUTLINE_DELETE_FAILED", f"Failed to delete key {outline_key_id} from server")
-                    except Exception as e:
-                        log_admin_action(request, "OUTLINE_DELETE_ERROR", f"Failed to delete key {outline_key_id}: {str(e)}")
-        
-        key_repo.delete_outline_key_by_id(key_id)
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            if user_id:
-                c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
-                outline_count = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
-                v2ray_count = c.fetchone()[0]
-                if outline_count == 0 and v2ray_count == 0:
-                    c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
-                    conn.commit()
+        # Сначала как Outline
+        outline_key = key_repo.get_outline_key_brief(key_id)
+        if outline_key:
+            user_id, outline_key_id, server_id = outline_key
+            if outline_key_id and server_id:
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
+                    server = c.fetchone()
+                    if server:
+                        try:
+                            log_admin_action(request, "OUTLINE_DELETE_ATTEMPT", f"Attempting to delete key {outline_key_id} from server {server[0]}")
+                            result = delete_key(server[0], server[1], outline_key_id)
+                            if result:
+                                log_admin_action(request, "OUTLINE_DELETE_SUCCESS", f"Successfully deleted key {outline_key_id} from server")
+                            else:
+                                log_admin_action(request, "OUTLINE_DELETE_FAILED", f"Failed to delete key {outline_key_id} from server")
+                        except Exception as e:
+                            logging.error(f"Error deleting Outline key {outline_key_id}: {e}", exc_info=True)
+                            log_admin_action(request, "OUTLINE_DELETE_ERROR", f"Failed to delete key {outline_key_id}: {str(e)}")
+            
+            try:
+                key_repo.delete_outline_key_by_id(key_id)
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    if user_id:
+                        c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
+                        outline_count = c.fetchone()[0]
+                        c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
+                        v2ray_count = c.fetchone()[0]
+                        if outline_count == 0 and v2ray_count == 0:
+                            c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
+                            conn.commit()
+            except Exception as e:
+                logging.error(f"Error deleting Outline key from database: {e}", exc_info=True)
+                log_admin_action(request, "OUTLINE_KEY_DELETE_DB_ERROR", f"Failed to delete key {key_id} from database: {str(e)}")
+            
+            return RedirectResponse("/keys", status_code=303)
+
+        # Затем V2Ray
+        v2ray_key = key_repo.get_v2ray_key_brief(key_id)
+        if v2ray_key:
+            user_id, v2ray_uuid, server_id = v2ray_key
+            protocol_client = None
+            if v2ray_uuid and server_id:
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
+                    server = c.fetchone()
+                    if server and server[0] and server[1]:  # Проверяем что api_url и api_key не None
+                        try:
+                            log_admin_action(request, "V2RAY_DELETE_ATTEMPT", f"Attempting to delete user {v2ray_uuid} from server {server[0]}")
+                            protocol_client = V2RayProtocol(server[0], server[1])
+                            result = await protocol_client.delete_user(v2ray_uuid)
+                            if result:
+                                log_admin_action(request, "V2RAY_DELETE_SUCCESS", f"Successfully deleted user {v2ray_uuid} from server")
+                            else:
+                                log_admin_action(request, "V2RAY_DELETE_FAILED", f"Failed to delete user {v2ray_uuid} from server")
+                        except Exception as e:
+                            logging.error(f"Error deleting V2Ray key {v2ray_uuid}: {e}", exc_info=True)
+                            log_admin_action(request, "V2RAY_DELETE_ERROR", f"Failed to delete user {v2ray_uuid}: {str(e)}")
+                        finally:
+                            # Закрываем сессию V2Ray протокола
+                            if protocol_client:
+                                try:
+                                    await protocol_client.close()
+                                except Exception as e:
+                                    logging.warning(f"Error closing V2Ray protocol client: {e}")
+                    elif server:
+                        logging.warning(f"Server {server_id} found but api_url or api_key is missing")
+                        log_admin_action(request, "V2RAY_DELETE_SERVER_CONFIG_ERROR", f"Server {server_id} configuration incomplete")
+            
+            try:
+                key_repo.delete_v2ray_key_by_id(key_id)
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    if user_id:
+                        c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
+                        outline_count = c.fetchone()[0]
+                        c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
+                        v2ray_count = c.fetchone()[0]
+                        if outline_count == 0 and v2ray_count == 0:
+                            c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
+                            conn.commit()
+            except Exception as e:
+                logging.error(f"Error deleting key from database: {e}", exc_info=True)
+                log_admin_action(request, "KEY_DELETE_DB_ERROR", f"Failed to delete key {key_id} from database: {str(e)}")
+            
+            return RedirectResponse("/keys", status_code=303)
+
+        # Если ключ не найден ни как Outline, ни как V2Ray
+        logging.warning(f"Key {key_id} not found for deletion")
+        log_admin_action(request, "KEY_DELETE_NOT_FOUND", f"Key {key_id} not found")
         return RedirectResponse("/keys", status_code=303)
 
-    # Затем V2Ray
-    v2ray_key = key_repo.get_v2ray_key_brief(key_id)
-    if v2ray_key:
-        user_id, v2ray_uuid, server_id = v2ray_key
-        if v2ray_uuid and server_id:
-            with sqlite3.connect(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
-                server = c.fetchone()
-                if server:
-                    try:
-                        log_admin_action(request, "V2RAY_DELETE_ATTEMPT", f"Attempting to delete user {v2ray_uuid} from server {server[0]}")
-                        protocol_client = V2RayProtocol(server[0], server[1])
-                        result = await protocol_client.delete_user(v2ray_uuid)
-                        if result:
-                            log_admin_action(request, "V2RAY_DELETE_SUCCESS", f"Successfully deleted user {v2ray_uuid} from server")
-                        else:
-                            log_admin_action(request, "V2RAY_DELETE_FAILED", f"Failed to delete user {v2ray_uuid} from server")
-                    except Exception as e:
-                        log_admin_action(request, "V2RAY_DELETE_ERROR", f"Failed to delete user {v2ray_uuid}: {str(e)}")
-        
-        key_repo.delete_v2ray_key_by_id(key_id)
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            if user_id:
-                c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
-                outline_count = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
-                v2ray_count = c.fetchone()[0]
-                if outline_count == 0 and v2ray_count == 0:
-                    c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
-                    conn.commit()
+    except Exception as e:
+        logging.error(f"Error deleting key {key_id}: {e}", exc_info=True)
+        log_admin_action(request, "KEY_DELETE_ERROR", f"Failed to delete key {key_id}: {str(e)}")
         return RedirectResponse("/keys", status_code=303)
-
-    return RedirectResponse("/keys", status_code=303)
 
