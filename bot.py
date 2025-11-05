@@ -1486,9 +1486,9 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                 user_id,
                 format_key_message_unified(config, protocol, tariff),
                 reply_markup=current_main_menu,
-                disable_web_page_preview=True,
-                parse_mode="Markdown"
-            )
+            disable_web_page_preview=True,
+            parse_mode="Markdown"
+        )
         
         # Уведомление админу
         admin_msg = (
@@ -2151,8 +2151,8 @@ async def auto_delete_expired_keys():
             try:
                 # Временно отключаем проверку foreign keys для удаления
                 cursor.connection.execute("PRAGMA foreign_keys=OFF")
-                cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
-                v2ray_deleted = cursor.rowcount
+            cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
+            v2ray_deleted = cursor.rowcount
                 cursor.connection.execute("PRAGMA foreign_keys=ON")
             except Exception as e:
                 logging.warning(f"Error deleting expired V2Ray keys: {e}")
@@ -3152,11 +3152,16 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                     logging.warning(f"Не удалось удалить старый V2Ray ключ (возможно уже удален): {e}")
                 
                 # Добавляем новый ключ с client_config в базу данных (до удаления старого)
-                cursor.execute(
-                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'], config)
-                )
+                # Временно отключаем foreign key проверку для INSERT
+                cursor.connection.execute("PRAGMA foreign_keys=OFF")
+                try:
+                    cursor.execute(
+                        "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'], config)
+                    )
+                finally:
+                    cursor.connection.execute("PRAGMA foreign_keys=ON")
                 
                 # Удаляем старый ключ из базы после успешного создания нового
                 cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_data['id'],))
