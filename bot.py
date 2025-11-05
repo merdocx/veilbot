@@ -1963,7 +1963,8 @@ async def wait_for_payment_with_protocol(message, payment_id, server, user_id, t
                 logging.debug(f"New payment module confirmed payment success: {payment_id}")
                 
                 # Если есть сообщение с кнопкой "Отмена", редактируем его, убирая кнопки
-                if message:
+                # Проверяем, что message - это Message объект (не CallbackQuery)
+                if message and hasattr(message, 'edit_text'):
                     try:
                         await message.edit_text(
                             "✅ Платеж успешно обработан! Ваш ключ отправлен отдельным сообщением.",
@@ -2036,7 +2037,8 @@ async def wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, 
                 logging.info(f"CryptoBot payment confirmed: {invoice_id}")
                 
                 # Если есть сообщение с кнопкой "Отмена", редактируем его, убирая кнопки
-                if message:
+                # Проверяем, что message - это Message объект (не CallbackQuery)
+                if message and hasattr(message, 'edit_text'):
                     try:
                         await message.edit_text(
                             "✅ Платеж успешно обработан! Ваш ключ отправлен отдельным сообщением.",
