@@ -4,8 +4,10 @@ from typing import Optional, Tuple, List
 from datetime import datetime, timedelta
 
 from ..models.payment import Payment, PaymentStatus, PaymentCreate, PaymentFilter
+from ..models.enums import PaymentProvider, PaymentCurrency
 from ..repositories.payment_repository import PaymentRepository
 from ..services.yookassa_service import YooKassaService
+from ..services.cryptobot_service import CryptoBotService
 from ..utils.validators import PaymentValidators
 from app.repositories.server_repository import ServerRepository
 from app.repositories.key_repository import KeyRepository
@@ -23,10 +25,12 @@ class PaymentService:
     def __init__(
         self, 
         payment_repo: PaymentRepository,
-        yookassa_service: YooKassaService
+        yookassa_service: YooKassaService,
+        cryptobot_service: Optional[CryptoBotService] = None
     ):
         self.payment_repo = payment_repo
         self.yookassa_service = yookassa_service
+        self.cryptobot_service = cryptobot_service
     
     async def create_payment(
         self,
@@ -115,6 +119,118 @@ class PaymentService:
             
         except Exception as e:
             logger.error(f"Error creating payment: {e}")
+            return None, None
+    
+    async def create_crypto_payment(
+        self,
+        user_id: int,
+        tariff_id: int,
+        amount_usd: float,
+        email: str,
+        country: Optional[str] = None,
+        protocol: str = "outline",
+        description: Optional[str] = None,
+        asset: str = "USDT",
+        network: str = "TRC20"
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Создание криптоплатежа через CryptoBot
+        
+        Args:
+            user_id: ID пользователя
+            tariff_id: ID тарифа
+            amount_usd: Сумма в USD
+            email: Email для чека
+            country: Страна
+            protocol: VPN протокол
+            description: Описание платежа
+            asset: Криптовалюта (USDT, BTC, ETH и т.д.)
+            network: Сеть (TRC20, ERC20, BEP20 для USDT)
+            
+        Returns:
+            Tuple[invoice_id, payment_url] или (None, None) при ошибке
+        """
+        try:
+            if not self.cryptobot_service:
+                logger.error("CryptoBot service is not available")
+                return None, None
+            
+            # Валидация входных данных
+            if not PaymentValidators.validate_email(email):
+                logger.error(f"Invalid email for user {user_id}: {email}")
+                return None, None
+            
+            if amount_usd <= 0:
+                logger.error(f"Invalid amount for user {user_id}: {amount_usd}")
+                return None, None
+            
+            # Создаем описание если не передано
+            if not description:
+                description = f"Покупка VPN тарифа (протокол: {protocol})"
+            
+            # Генерируем уникальный ID платежа
+            import uuid
+            payment_id = str(uuid.uuid4())
+            
+            # Создаем инвойс в CryptoBot
+            # Используем "openBot" для открытия бота после оплаты
+            # Допустимые значения: 'viewItem', 'openChannel', 'openBot', 'callback'
+            bot_username = "veilbot_bot"  # Имя бота
+            bot_url = f"https://t.me/{bot_username}"
+            
+            invoice_id, pay_url, invoice_hash = await self.cryptobot_service.create_invoice(
+                amount=amount_usd,
+                asset=asset,
+                description=description,
+                paid_btn_name="openBot",
+                paid_btn_url=bot_url,
+                expires_in=3600,  # 1 час
+                metadata={
+                    "user_id": user_id,
+                    "tariff_id": tariff_id,
+                    "country": country,
+                    "protocol": protocol,
+                    "payment_id": payment_id
+                }
+            )
+            
+            if not invoice_id:
+                logger.error(f"Failed to create CryptoBot invoice for user {user_id}")
+                return None, None
+            
+            # Создаем запись в БД
+            payment = Payment(
+                payment_id=str(invoice_id),  # Используем invoice_id как payment_id
+                user_id=user_id,
+                tariff_id=tariff_id,
+                amount=int(amount_usd * 100),  # Конвертируем в центы для единообразия
+                currency=PaymentCurrency.USD,
+                email=email,
+                country=country,
+                protocol=protocol,
+                provider=PaymentProvider.CRYPTOBOT,
+                description=description,
+                metadata={
+                    "user_id": user_id,
+                    "tariff_id": tariff_id,
+                    "country": country,
+                    "protocol": protocol,
+                    "invoice_id": invoice_id,
+                    "invoice_hash": invoice_hash,
+                    "asset": asset,
+                    "network": network,
+                    "amount_usd": amount_usd
+                }
+            )
+            
+            # Сохраняем крипто-данные в метаданные (можно добавить отдельные поля позже)
+            await self.payment_repo.create(payment)
+            
+            logger.info(f"CryptoBot payment created successfully: {invoice_id} for user {user_id}")
+            return str(invoice_id), pay_url
+            
+        except Exception as e:
+            logger.error(f"Error creating crypto payment: {e}")
             return None, None
     
     async def process_payment_success(self, payment_id: str) -> bool:

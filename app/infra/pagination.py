@@ -77,6 +77,7 @@ class KeysetPagination:
         table_alias: str = ""
     ) -> str:
         """Build ORDER BY clause for keyset pagination"""
+        # ИСПРАВЛЕНИЕ: Сортировка только по created_at и id (для стабильности), тип ключа не используется
         prefix = f"{table_alias}." if table_alias else ""
         return f"{prefix}{sort_by} {sort_order.upper()}, {prefix}id {sort_order.upper()}"
 

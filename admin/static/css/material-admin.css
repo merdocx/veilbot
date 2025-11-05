@@ -299,67 +299,76 @@ body {
     max-width: 100%;
 }
 
+/* Заголовки таблицы - запрет переноса текста */
+#keys-table th {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 #keys-table th:nth-child(1),
 #keys-table td:nth-child(1) { 
     width: 3%; /* ID - компактный */
-    padding: 8px 4px;
+    padding: 6px 2px;
 }
 
 #keys-table th:nth-child(2),
 #keys-table td:nth-child(2) { 
-    width: 4%; /* Тип - только иконка */
-    padding: 8px 2px;
+    width: 3.5%; /* Тип - только иконка */
+    padding: 6px 1px;
     text-align: center;
 }
 
 #keys-table th:nth-child(3),
 #keys-table td:nth-child(3) { 
-    width: 4%; /* Ключ - кнопка копирования */
+    width: 3.5%; /* Ключ - кнопка копирования */
     text-align: center;
-    padding: 8px 2px;
+    padding: 6px 1px;
 }
 
 #keys-table th:nth-child(4),
 #keys-table td:nth-child(4) { 
-    width: 32%; /* Email - получил место от Тип */
+    width: 30%; /* Email - оптимизировано */
+    padding: 6px 4px;
 }
 
 #keys-table th:nth-child(5),
 #keys-table td:nth-child(5) { 
-    width: 12%; /* Сервер */
-    padding: 8px 6px;
+    width: 11%; /* Сервер */
+    padding: 6px 4px;
 }
 
 #keys-table th:nth-child(6),
 #keys-table td:nth-child(6) { 
-    width: 13%; /* Создан */
-    padding: 8px 6px;
+    width: 12%; /* Создан */
+    padding: 6px 4px;
 }
 
 #keys-table th:nth-child(7),
 #keys-table td:nth-child(7) { 
-    width: 13%; /* Истекает */
-    padding: 8px 6px;
+    width: 12%; /* Истекает */
+    padding: 6px 4px;
 }
 
 #keys-table th:nth-child(8),
 #keys-table td:nth-child(8) { 
-    width: 4%; /* Статус - только иконка */
-    padding: 8px 2px;
+    width: 6%; /* Статус - увеличен для слова "СТАТУС" в одну строку */
+    padding: 6px 2px;
     text-align: center;
+    white-space: nowrap;
 }
 
 #keys-table th:nth-child(9),
 #keys-table td:nth-child(9) { 
-    width: 8%; /* Трафик - компактный */
-    padding: 8px 4px;
+    width: 7.5%; /* Трафик */
+    padding: 6px 3px;
 }
 
 #keys-table th:nth-child(10),
 #keys-table td:nth-child(10) { 
-    width: 7%; /* Действия - компактные кнопки */
+    width: 11.5%; /* Действия - компактные кнопки */
     text-align: center;
-    padding: 8px 4px;
+    padding: 6px 3px;
 }
 
 /* Таблица пользователей */

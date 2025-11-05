@@ -91,12 +91,7 @@
                         {% endif %}
                     </td>
                     <td class="traffic-cell" data-key-id="{{ k[0] }}">
-                        {% if k[8] == 'v2ray' and k|length > 12 and k[12] == 'load' %}
-                            <button class="btn btn-small btn-load-traffic" onclick="loadTraffic({{ k[0] }})" title="Загрузить трафик">
-                                <span class="material-icons icon-small">data_usage</span>
-                                <span>Загрузить</span>
-                            </button>
-                        {% elif k[8] == 'v2ray' and k|length > 12 and k[12] != 'load' %}
+                        {% if k[8] == 'v2ray' and k|length > 12 %}
                             <span class="traffic-value">{{ k[12] }}</span>
                         {% else %}
                             <span class="text-muted">N/A</span>

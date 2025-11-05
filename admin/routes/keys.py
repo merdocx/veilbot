@@ -37,122 +37,46 @@ async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: d
     v2ray = None
     try:
         if protocol == 'v2ray':
-            # Try to get from cache first
-            if server_id:
-                from app.infra.cache import get_cached_v2ray_traffic, cache_v2ray_traffic
-                cached_data = get_cached_v2ray_traffic(server_id, server_config)
-                if cached_data:
-                    # Find specific key in cached data
-                    data = cached_data.get('data', {})
-                    keys = data.get('keys', [])
-                    logging.debug(f"Searching for uuid {key_uuid} in {len(keys)} cached keys")
-                    for key in keys:
-                        # Проверяем оба варианта UUID
-                        cached_uuid = key.get('key_uuid') or key.get('uuid')
-                        if cached_uuid == key_uuid:
-                            monthly_traffic_data = key.get('monthly_traffic', {})
-                            total_bytes = monthly_traffic_data.get('total_bytes', 0) if monthly_traffic_data else 0
-                            if total_bytes == 0:
-                                return "0 GB"
-                            traffic_gb = total_bytes / (1024 * 1024 * 1024)
-                            logging.debug(f"Found cached traffic for {key_uuid}: {traffic_gb:.2f} GB")
-                            return f"{traffic_gb:.2f} GB"
-                    logging.debug(f"Key {key_uuid} not found in cache")
-                    return "0 GB"
+            # ИСПРАВЛЕНИЕ: Не используем кеш, т.к. он содержит данные из get_monthly_traffic(),
+            # а нам нужны данные из get_traffic_stats() с interface_traffic.total_bytes
             
             # Create V2Ray protocol instance
             v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
             
-            # Get monthly traffic for all keys and find specific key
-            monthly_traffic = await v2ray.get_monthly_traffic()
-            
-            # Cache the result if we have server_id
-            if server_id and monthly_traffic:
-                from app.infra.cache import cache_v2ray_traffic
-                cache_v2ray_traffic(server_id, server_config, monthly_traffic, ttl=300)
-            
-            if monthly_traffic and monthly_traffic.get('data'):
-                data = monthly_traffic.get('data', {})
-                keys = data.get('keys', [])
-                logging.debug(f"Searching for uuid {key_uuid} in {len(keys)} keys from API")
+            try:
+                # ИСПРАВЛЕНИЕ: Используем GET /api/keys/{key_id}/traffic/history
+                # Сначала получаем key_id (id из API) по UUID
+                key_info_data = await v2ray.get_key_info(key_uuid)
+                api_key_id = key_info_data.get('id') or key_info_data.get('uuid')
                 
-                # Find the specific key by UUID (проверяем оба варианта)
-                for key in keys:
-                    key_uuid_from_api = key.get('key_uuid') or key.get('uuid')
-                    if key_uuid_from_api == key_uuid:
-                        monthly_traffic_data = key.get('monthly_traffic', {})
-                        # Если monthly_traffic_data это dict, берем total_bytes из него
-                        if isinstance(monthly_traffic_data, dict):
-                            total_bytes = monthly_traffic_data.get('total_bytes', 0)
-                        else:
-                            # Если нет monthly_traffic, возможно total_bytes в корне ключа
-                            total_bytes = key.get('total_bytes', 0)
-                        
-                        logging.debug(f"Found key in API: uuid={key_uuid_from_api}, total_bytes={total_bytes}")
-                        
-                        # Convert to GB and format
-                        if total_bytes == 0:
-                            return "0 GB"
-                        
-                        traffic_gb = total_bytes / (1024 * 1024 * 1024)
-                        return f"{traffic_gb:.2f} GB"
+                if not api_key_id:
+                    logging.warning(f"[TRAFFIC] No key_id found for UUID {key_uuid}")
+                    return "0 GB"
                 
-                logging.warning(f"Key {key_uuid} not found in monthly traffic data. Available UUIDs: {[k.get('key_uuid') or k.get('uuid') for k in keys[:5]]}")
+                # Получаем traffic/history для этого ключа
+                history = await v2ray.get_key_traffic_history(str(api_key_id))
                 
-                # Key not found in monthly data, fallback to total traffic
-                traffic_history = await v2ray.get_traffic_history()
-                
-                if traffic_history and traffic_history.get('data'):
-                    data = traffic_history.get('data', {})
-                    keys = data.get('keys', [])
+                if history and history.get('data'):
+                    data = history.get('data', {})
+                    total_traffic = data.get('total_traffic', {})
                     
-                    # Find the specific key by UUID (проверяем оба варианта)
-                    for key in keys:
-                        key_uuid_from_api = key.get('key_uuid') or key.get('uuid')
-                        if key_uuid_from_api == key_uuid:
-                            total_traffic = key.get('total_traffic', {})
-                            if isinstance(total_traffic, dict):
-                                total_bytes = total_traffic.get('total_bytes', 0)
+                    if total_traffic and isinstance(total_traffic, dict):
+                        total_bytes = total_traffic.get('total_bytes', 0)
+                        
+                        if total_bytes > 0:
+                            logging.info(f"[TRAFFIC] Found traffic (traffic/history) for {key_uuid}: {total_bytes} bytes ({total_bytes/(1024**4):.2f} TB)")
+                            
+                            # Форматируем в TB если > 1TB, иначе в GB
+                            if total_bytes >= (1024 ** 4):  # >= 1TB
+                                traffic_tb = total_bytes / (1024 ** 4)
+                                return f"{traffic_tb:.2f} TB"
                             else:
-                                # Если total_traffic не dict, берем total_bytes из корня ключа
-                                total_bytes = key.get('total_bytes', 0)
-                            
-                            if total_bytes == 0:
-                                return "0 GB"
-                            
-                            traffic_gb = total_bytes / (1024 * 1024 * 1024)
-                            return f"{traffic_gb:.2f} GB"
+                                traffic_gb = total_bytes / (1024 * 1024 * 1024)
+                                return f"{traffic_gb:.2f} GB"
                 
-                # Key not found
                 return "0 GB"
-            else:
-                logging.warning(f"No monthly traffic data available. Response: {monthly_traffic}")
-                # Fallback to total traffic if monthly data not available
-                traffic_history = await v2ray.get_traffic_history()
-                
-                if traffic_history and traffic_history.get('data'):
-                    data = traffic_history.get('data', {})
-                    keys = data.get('keys', [])
-                    
-                    # Find the specific key by UUID (проверяем оба варианта)
-                    for key in keys:
-                        key_uuid_from_api = key.get('key_uuid') or key.get('uuid')
-                        if key_uuid_from_api == key_uuid:
-                            total_traffic = key.get('total_traffic', {})
-                            if isinstance(total_traffic, dict):
-                                total_bytes = total_traffic.get('total_bytes', 0)
-                            else:
-                                # Если total_traffic не dict, берем total_bytes из корня ключа
-                                total_bytes = key.get('total_bytes', 0)
-                            
-                            if total_bytes == 0:
-                                return "0 GB"
-                            
-                            traffic_gb = total_bytes / (1024 * 1024 * 1024)
-                            return f"{traffic_gb:.2f} GB"
-                
-                # Key not found
-                return "0 GB"
+            finally:
+                await v2ray.close()
         else:
             # For Outline, we don't have historical data yet
             return "N/A"
@@ -194,7 +118,8 @@ async def keys_page(
         server_id=server_id
     )
     
-    # Сортировка по дате создания по умолчанию
+    # Сортировка по дате создания по умолчанию (всегда)
+    # Игнорируем параметры sort_by и sort_order из URL, всегда используем created_at
     sort_by_eff = 'created_at'
     sort_order_eff = 'DESC'
     
@@ -222,6 +147,7 @@ async def keys_page(
     
     # Получаем данные о трафике и реальную конфигурацию для V2Ray ключей
     # Оптимизация: параллельная загрузка данных для всех V2Ray ключей
+    # ИСПРАВЛЕНИЕ: Сохраняем исходный порядок ключей из БД
     keys_with_traffic = []
     
     # Сначала получаем server_id для всех V2Ray ключей одним запросом
@@ -234,6 +160,10 @@ async def keys_page(
             c.execute(f"SELECT id, server_id FROM v2ray_keys WHERE id IN ({placeholders})", v2ray_key_ids)
             for key_id, srv_id in c.fetchall():
                 server_id_map[key_id] = srv_id
+    
+    # ИСПРАВЛЕНИЕ: Сохраняем исходный порядок из rows для правильной сортировки
+    # Создаем словарь для хранения всех ключей в исходном порядке
+    all_keys_dict = {}
     
     # Асинхронная функция для получения конфигурации V2Ray
     async def fetch_v2ray_config(key_data):
@@ -268,16 +198,22 @@ async def keys_page(
             return key_id, key_data[2], None
     
     # Создаем задачи для параллельной загрузки конфигураций
+    # ИСПРАВЛЕНИЕ: Сохраняем исходный порядок ключей
     v2ray_tasks = []
     v2ray_keys_data = {}
+    keys_order = []  # Сохраняем порядок всех ключей
     
     for key in rows:
+        key_id = key[0]
+        keys_order.append(key_id)  # Сохраняем порядок
+        
         if len(key) > 8 and key[8] == 'v2ray':
-            v2ray_keys_data[key[0]] = key
+            v2ray_keys_data[key_id] = key
             v2ray_tasks.append(fetch_v2ray_config(key))
+            all_keys_dict[key_id] = {'type': 'v2ray', 'data': key}
         else:
-            # Outline keys - сразу добавляем
-            keys_with_traffic.append(list(key) + ["N/A"])
+            # Outline keys - сохраняем данные
+            all_keys_dict[key_id] = {'type': 'outline', 'data': list(key) + ["N/A"]}
     
     # Параллельно загружаем все конфигурации
     if v2ray_tasks:
@@ -312,7 +248,7 @@ async def keys_page(
         
         # Функция для батчинга трафика по серверу
         async def fetch_server_traffic_batch(server_id: int, server_keys_list: list):
-            """Загрузить трафик для всех ключей одного сервера одним запросом"""
+            """Загрузить трафик для всех ключей одного сервера через /api/keys/{key_id}/traffic/history"""
             if not server_keys_list:
                 return {}
             
@@ -326,59 +262,66 @@ async def keys_page(
             traffic_map = {}
             
             try:
-                from app.infra.cache import get_cached_v2ray_traffic, cache_v2ray_traffic
-                cached_data = get_cached_v2ray_traffic(server_id, server_config)
-                
-                if cached_data:
-                    data = cached_data.get('data', {})
-                    keys = data.get('keys', [])
-                    uuid_to_traffic = {}
-                    for key_data in keys:
-                        uuid = key_data.get('key_uuid')
-                        if uuid:
-                            monthly_traffic_data = key_data.get('monthly_traffic', {})
-                            total_bytes = monthly_traffic_data.get('total_bytes', 0)
-                            if total_bytes > 0:
-                                traffic_gb = total_bytes / (1024 * 1024 * 1024)
-                                uuid_to_traffic[uuid] = f"{traffic_gb:.2f} GB"
-                            else:
-                                uuid_to_traffic[uuid] = "0 GB"
-                    
-                    for key_info in server_keys_list:
+                v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
+                try:
+                    # ИСПРАВЛЕНИЕ: Используем get_key_traffic_history() для каждого ключа
+                    # Сначала получаем key_id (id из API) для каждого UUID
+                    async def get_traffic_for_key(key_info):
+                        """Получить трафик для одного ключа"""
                         uuid = key_info['uuid']
-                        traffic_map[key_info['key_id']] = uuid_to_traffic.get(uuid, "0 GB")
-                else:
-                    v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
-                    try:
-                        monthly_traffic = await v2ray.get_monthly_traffic()
-                        
-                        if monthly_traffic:
-                            cache_v2ray_traffic(server_id, server_config, monthly_traffic, ttl=300)
-                        
-                        if monthly_traffic and monthly_traffic.get('data'):
-                            data = monthly_traffic.get('data', {})
-                            keys = data.get('keys', [])
-                            uuid_to_traffic = {}
+                        try:
+                            # Получаем key_id (id из API) по UUID
+                            key_info_data = await v2ray.get_key_info(uuid)
+                            api_key_id = key_info_data.get('id') or key_info_data.get('uuid')
                             
-                            for key_data in keys:
-                                uuid = key_data.get('key_uuid')
-                                if uuid:
-                                    monthly_traffic_data = key_data.get('monthly_traffic', {})
-                                    total_bytes = monthly_traffic_data.get('total_bytes', 0)
+                            if not api_key_id:
+                                logging.warning(f"[TRAFFIC BATCH] No key_id found for UUID {uuid}")
+                                return key_info['key_id'], "0 GB"
+                            
+                            # Получаем traffic/history для этого ключа
+                            history = await v2ray.get_key_traffic_history(str(api_key_id))
+                            
+                            if history and history.get('data'):
+                                data = history.get('data', {})
+                                total_traffic = data.get('total_traffic', {})
+                                
+                                if total_traffic and isinstance(total_traffic, dict):
+                                    total_bytes = total_traffic.get('total_bytes', 0)
+                                    
                                     if total_bytes > 0:
-                                        traffic_gb = total_bytes / (1024 * 1024 * 1024)
-                                        uuid_to_traffic[uuid] = f"{traffic_gb:.2f} GB"
-                                    else:
-                                        uuid_to_traffic[uuid] = "0 GB"
+                                        # Форматируем трафик
+                                        if total_bytes >= (1024 ** 4):  # >= 1TB
+                                            traffic_tb = total_bytes / (1024 ** 4)
+                                            return key_info['key_id'], f"{traffic_tb:.2f} TB"
+                                        else:
+                                            traffic_gb = total_bytes / (1024 * 1024 * 1024)
+                                            return key_info['key_id'], f"{traffic_gb:.2f} GB"
                             
-                            for key_info in server_keys_list:
-                                uuid = key_info['uuid']
-                                traffic_map[key_info['key_id']] = uuid_to_traffic.get(uuid, "0 GB")
-                        else:
-                            for key_info in server_keys_list:
-                                traffic_map[key_info['key_id']] = "0 GB"
-                    finally:
-                        await v2ray.close()
+                            return key_info['key_id'], "0 GB"
+                        except Exception as e:
+                            logging.error(f"[TRAFFIC BATCH] Error getting traffic for key {uuid}: {e}")
+                            return key_info['key_id'], "Error"
+                    
+                    # Параллельно загружаем трафик для всех ключей
+                    traffic_tasks = [get_traffic_for_key(key_info) for key_info in server_keys_list]
+                    traffic_results = await asyncio.gather(*traffic_tasks, return_exceptions=True)
+                    
+                    # Собираем результаты
+                    for result in traffic_results:
+                        if isinstance(result, Exception):
+                            logging.error(f"[TRAFFIC BATCH] Exception in traffic fetch: {result}")
+                            continue
+                        if isinstance(result, tuple) and len(result) == 2:
+                            key_id, traffic_value = result
+                            traffic_map[key_id] = traffic_value
+                    
+                    # Если какие-то ключи не обработались, устанавливаем "0 GB"
+                    for key_info in server_keys_list:
+                        if key_info['key_id'] not in traffic_map:
+                            traffic_map[key_info['key_id']] = "0 GB"
+                    
+                finally:
+                    await v2ray.close()
                 
             except Exception as e:
                 logging.error(f"Error fetching traffic batch for server {server_id}: {e}")
@@ -403,18 +346,33 @@ async def keys_page(
                 if isinstance(result, dict):
                     all_traffic_map.update(result)
             
-            # Добавляем ключи БЕЗ трафика (будет загружен по требованию через AJAX)
+            # ИСПРАВЛЕНИЕ: Добавляем ключи в исходном порядке из БД
+            # Обновляем данные в all_keys_dict с трафиком
             for key_id, (key_list, real_config) in processed_configs.items():
                 if len(key_list) > 8 and key_list[8] == 'v2ray':
-                    keys_with_traffic.append(key_list + ["load"])  # "load" = маркер для ленивой загрузки
-                else:
-                    keys_with_traffic.append(key_list + ["N/A"])
+                    # Используем загруженный трафик, если он есть
+                    traffic_value = all_traffic_map.get(key_id)
+                    
+                    # Если трафик не найден или ошибка, показываем "0 GB"
+                    if traffic_value is None or traffic_value == "Error":
+                        traffic_value = "0 GB"
+                    elif isinstance(traffic_value, str):
+                        # Если это "load", заменяем на "0 GB" (трафик уже должен был загрузиться)
+                        if traffic_value == "load":
+                            traffic_value = "0 GB"
+                    
+                    all_keys_dict[key_id] = {'type': 'v2ray', 'data': key_list + [traffic_value]}
         else:
+            # Если нет server_keys_map, все V2Ray ключи получают "0 GB"
             for key_id, (key_list, real_config) in processed_configs.items():
                 if len(key_list) > 8 and key_list[8] == 'v2ray':
-                    keys_with_traffic.append(key_list + ["load"])
-                else:
-                    keys_with_traffic.append(key_list + ["N/A"])
+                    all_keys_dict[key_id] = {'type': 'v2ray', 'data': key_list + ["0 GB"]}
+    
+    # ИСПРАВЛЕНИЕ: Восстанавливаем исходный порядок из БД
+    for key_id in keys_order:
+        key_info = all_keys_dict.get(key_id)
+        if key_info:
+            keys_with_traffic.append(key_info['data'])
     
     log_admin_action(request, "KEYS_QUERY_RESULT", f"Total keys: {len(keys_with_traffic)}")
 

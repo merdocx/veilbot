@@ -89,6 +89,203 @@ async def yookassa_webhook(request: Request):
         return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
 
 
+@router.post("/cryptobot/webhook")
+async def cryptobot_webhook(request: Request):
+    """Webhook endpoint для CryptoBot"""
+    body = await request.body()
+    client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
+        request.client.host if request.client else ""
+    )
+    status_code = 200
+    
+    try:
+        data = json.loads(body)
+        update_type = data.get("update_type", "")
+        
+        # Логируем webhook
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS webhook_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        provider TEXT,
+                        event TEXT,
+                        payload TEXT,
+                        result TEXT,
+                        status_code INTEGER,
+                        ip TEXT,
+                        created_at INTEGER
+                    )
+                    """
+                )
+                c.execute(
+                    "INSERT INTO webhook_logs(provider, event, payload, result, status_code, ip, created_at) VALUES(?,?,?,?,?,?, strftime('%s','now'))",
+                    ("cryptobot", str(update_type), json.dumps(data, ensure_ascii=False), "processing", 200, client_ip),
+                )
+                conn.commit()
+        except Exception as le:
+            logging.error(f"[CRYPTOBOT_WEBHOOK] Log persist failed: {le}")
+        
+        # Обрабатываем событие invoice_paid
+        if update_type == "invoice_paid":
+            payload = data.get("payload", {})
+            invoice_id = payload.get("invoice_id")
+            
+            if not invoice_id:
+                logging.error(f"[CRYPTOBOT_WEBHOOK] No invoice_id in payload: {data}")
+                return JSONResponse({"status": "error", "reason": "no invoice_id"}, status_code=400)
+            
+            try:
+                # Получаем платеж из БД
+                from payments.config import get_payment_service
+                payment_service = get_payment_service()
+                
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    c.execute(
+                        "SELECT user_id, tariff_id, country, protocol, email FROM payments WHERE payment_id = ? AND status = 'pending'",
+                        (str(invoice_id),)
+                    )
+                    payment_row = c.fetchone()
+                
+                if not payment_row:
+                    logging.warning(f"[CRYPTOBOT_WEBHOOK] Payment not found or already processed: {invoice_id}")
+                    # Обновляем лог
+                    try:
+                        with sqlite3.connect(DB_PATH) as conn:
+                            c = conn.cursor()
+                            c.execute(
+                                "UPDATE webhook_logs SET result = 'not_found' WHERE provider = 'cryptobot' AND event = ? AND created_at = (SELECT MAX(created_at) FROM webhook_logs WHERE provider = 'cryptobot')",
+                                (str(update_type),)
+                            )
+                            conn.commit()
+                    except Exception:
+                        pass
+                    return JSONResponse({"status": "ok", "processed": False})  # Возвращаем 200 чтобы CryptoBot не повторял
+                
+                user_id, tariff_id, country, protocol, email = payment_row
+                
+                # Обновляем статус платежа
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    c.execute(
+                        "UPDATE payments SET status = 'paid', paid_at = strftime('%s','now') WHERE payment_id = ?",
+                        (str(invoice_id),)
+                    )
+                    conn.commit()
+                
+                # Получаем данные тарифа
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT id, name, duration_sec, price_rub, price_crypto_usd FROM tariffs WHERE id = ?", (tariff_id,))
+                    tariff_row = c.fetchone()
+                
+                if not tariff_row:
+                    logging.error(f"[CRYPTOBOT_WEBHOOK] Tariff not found: {tariff_id}")
+                    return JSONResponse({"status": "error", "reason": "tariff_not_found"}, status_code=500)
+                
+                tariff = {
+                    "id": tariff_row[0],
+                    "name": tariff_row[1],
+                    "duration_sec": tariff_row[2],
+                    "price_rub": tariff_row[3],
+                    "price_crypto_usd": tariff_row[4] if len(tariff_row) > 4 else None
+                }
+                
+                # Создаем ключ для пользователя
+                from bot import create_new_key_flow_with_protocol, get_db_cursor, bot, format_key_message_unified
+                from app.repositories.server_repository import ServerRepository
+                from app.repositories.key_repository import KeyRepository
+                from vpn_protocols import ProtocolFactory
+                import time
+                
+                with get_db_cursor(commit=True) as cursor:
+                    # Выбираем сервер
+                    from bot import select_available_server_by_protocol
+                    server = select_available_server_by_protocol(cursor, country, protocol or "outline")
+                    
+                    if server:
+                        await create_new_key_flow_with_protocol(
+                            cursor, None, user_id, tariff, email, country, protocol or "outline"
+                        )
+                        
+                        # Реферальный бонус
+                        cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
+                        ref_row = cursor.fetchone()
+                        if ref_row and ref_row[0] and not ref_row[1]:
+                            referrer_id = ref_row[0]
+                            now = int(time.time())
+                            cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
+                            key = cursor.fetchone()
+                            bonus_duration = 30 * 24 * 3600
+                            if key:
+                                from bot import extend_existing_key
+                                extend_existing_key(cursor, key, bonus_duration)
+                                await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
+                            else:
+                                cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
+                                bonus_tariff = cursor.fetchone()
+                                if bonus_tariff:
+                                    bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
+                                    await create_new_key_flow_with_protocol(cursor, None, referrer_id, bonus_tariff_dict, None, None, protocol or "outline")
+                                    await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                            cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
+                
+                # Обновляем лог как успешный
+                try:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        c = conn.cursor()
+                        c.execute(
+                            "UPDATE webhook_logs SET result = 'ok' WHERE provider = 'cryptobot' AND event = ? AND created_at = (SELECT MAX(created_at) FROM webhook_logs WHERE provider = 'cryptobot')",
+                            (str(update_type),)
+                        )
+                        conn.commit()
+                except Exception:
+                    pass
+                
+                logging.info(f"[CRYPTOBOT_WEBHOOK] Payment processed successfully: {invoice_id} for user {user_id}")
+                return JSONResponse({"status": "ok"})
+                
+            except Exception as e:
+                logging.error(f"[CRYPTOBOT_WEBHOOK] Error processing payment: {e}")
+                # Обновляем лог как ошибку
+                try:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        c = conn.cursor()
+                        c.execute(
+                            "UPDATE webhook_logs SET result = 'error' WHERE provider = 'cryptobot' AND event = ? AND created_at = (SELECT MAX(created_at) FROM webhook_logs WHERE provider = 'cryptobot')",
+                            (str(update_type),)
+                        )
+                        conn.commit()
+                except Exception:
+                    pass
+                return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
+        else:
+            # Неизвестное событие - просто логируем
+            logging.info(f"[CRYPTOBOT_WEBHOOK] Unknown event type: {update_type}")
+            return JSONResponse({"status": "ok", "processed": False})
+            
+    except Exception as e:
+        status_code = 500
+        logging.error(f"[CRYPTOBOT_WEBHOOK] Error: {e}")
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS webhook_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, event TEXT, payload TEXT, result TEXT, status_code INTEGER, ip TEXT, created_at INTEGER)"
+                )
+                c.execute(
+                    "INSERT INTO webhook_logs(provider, event, payload, result, status_code, ip, created_at) VALUES(?,?,?,?,?,?, strftime('%s','now'))",
+                    ("cryptobot", "parse_error", body.decode(errors='ignore')[:2000], "error", 500, client_ip),
+                )
+                conn.commit()
+        except Exception:
+            pass
+        return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
+
+
 @router.get("/webhooks", response_class=HTMLResponse)
 async def webhook_logs_page(
     request: Request,

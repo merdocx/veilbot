@@ -110,6 +110,37 @@ app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
 templates_dir = os.path.join(BASE_DIR, "templates")
 templates = Jinja2Templates(directory=templates_dir)
 
+# Добавляем кастомные фильтры для шаблонов
+import time
+from datetime import datetime
+
+def timestamp_filter(value):
+    """Конвертирует timestamp в читаемую дату"""
+    if not value:
+        return "—"
+    try:
+        if isinstance(value, str):
+            value = float(value)
+        dt = datetime.fromtimestamp(float(value))
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except (ValueError, TypeError, OSError):
+        return "—"
+
+def my_datetime_local_filter(value):
+    """Конвертирует timestamp в формат datetime-local (YYYY-MM-DDTHH:mm)"""
+    if not value:
+        return ""
+    try:
+        if isinstance(value, str):
+            value = float(value)
+        dt = datetime.fromtimestamp(float(value))
+        return dt.strftime("%Y-%m-%dT%H:%M")
+    except (ValueError, TypeError, OSError):
+        return ""
+
+templates.env.filters['timestamp'] = timestamp_filter
+templates.env.filters['my_datetime_local'] = my_datetime_local_filter
+
 # Routers - используем новые модульные роутеры
 from admin.routes import (
     auth_router,

@@ -86,20 +86,68 @@ help_keyboard.add(KeyboardButton("🔙 Назад"))
 cancel_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
 cancel_keyboard.add(KeyboardButton("🔙 Отмена"))
 
-def get_tariff_menu(paid_only: bool = False) -> ReplyKeyboardMarkup:
+def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> ReplyKeyboardMarkup:
+    """
+    Получить меню тарифов с ценами в зависимости от способа оплаты
+    
+    Args:
+        paid_only: Показывать только платные тарифы
+        payment_method: Способ оплаты ('yookassa' или 'cryptobot')
+    """
     with get_db_cursor() as cursor:
         if paid_only:
-            cursor.execute("SELECT id, name, price_rub, duration_sec FROM tariffs WHERE price_rub > 0 ORDER BY price_rub ASC")
+            cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE price_rub > 0 ORDER BY price_rub ASC")
         else:
-            cursor.execute("SELECT id, name, price_rub, duration_sec FROM tariffs ORDER BY price_rub ASC")
+            cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs ORDER BY price_rub ASC")
         tariffs = cursor.fetchall()
 
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
-    for _, name, price, duration in tariffs:
-        label = f"{name} — {price}₽" if price > 0 else f"{name} — бесплатно"
-        menu.add(KeyboardButton(label))
+    has_available_tariffs = False
+    
+    for _, name, price, duration, price_crypto in tariffs:
+        if price > 0:
+            # Если выбран способ оплаты, показываем соответствующую цену
+            if payment_method == "cryptobot":
+                # Для криптовалюты показываем только тарифы с крипто-ценой
+                if price_crypto:
+                    label = f"{name} — ${price_crypto:.2f}"
+                    menu.add(KeyboardButton(label))
+                    has_available_tariffs = True
+                # Если нет крипто-цены, просто не показываем тариф
+            elif payment_method == "yookassa":
+                label = f"{name} — {price}₽"
+                menu.add(KeyboardButton(label))
+                has_available_tariffs = True
+            else:
+                # Если способ оплаты не выбран, показываем обе цены
+                if price_crypto:
+                    label = f"{name} — {price}₽ / ${price_crypto:.2f}"
+                else:
+                    label = f"{name} — {price}₽"
+                menu.add(KeyboardButton(label))
+                has_available_tariffs = True
+        else:
+            # Бесплатные тарифы показываем только если не выбрана крипта
+            if payment_method != "cryptobot":
+                label = f"{name} — бесплатно"
+                menu.add(KeyboardButton(label))
+                has_available_tariffs = True
+    
+    # Если для криптовалюты нет доступных тарифов, добавляем сообщение
+    if payment_method == "cryptobot" and not has_available_tariffs:
+        # Но не добавляем кнопку, просто вернем пустое меню
+        pass
+    
     menu.add(KeyboardButton("🔙 Назад"))
     return menu
+
+def get_payment_method_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура выбора способа оплаты"""
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(KeyboardButton("💳 Карта РФ / СБП"))
+    keyboard.add(KeyboardButton("₿ Криптовалюта (USDT)"))
+    keyboard.add(KeyboardButton("🔙 Назад"))
+    return keyboard
 
 def format_key_message(access_url: str) -> str:
     return (
@@ -268,6 +316,9 @@ async def handle_my_keys_btn(message: types.Message):
     user_id = message.from_user.id
     now = int(time.time())
     
+    all_keys = []
+    keys_to_update = []  # Список ключей, для которых нужно обновить конфигурацию в БД
+    
     with get_db_cursor() as cursor:
         # Получаем Outline ключи с информацией о стране
         cursor.execute("""
@@ -278,16 +329,14 @@ async def handle_my_keys_btn(message: types.Message):
         """, (user_id, now))
         outline_keys = cursor.fetchall()
         
-        # Получаем V2Ray ключи с информацией о стране и сервере
+        # Получаем V2Ray ключи с информацией о стране и сервере, включая сохраненную конфигурацию
         cursor.execute("""
-            SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key
+            SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key, k.client_config
             FROM v2ray_keys k
             JOIN servers s ON k.server_id = s.id
             WHERE k.user_id = ? AND k.expiry_at > ?
         """, (user_id, now))
         v2ray_keys = cursor.fetchall()
-
-    all_keys = []
     
     # Добавляем Outline ключи
     for access_url, exp, protocol, country in outline_keys:
@@ -300,25 +349,50 @@ async def handle_my_keys_btn(message: types.Message):
         })
     
     # Добавляем V2Ray ключи
-    for v2ray_uuid, exp, domain, path, country, email, api_url, api_key in v2ray_keys:
-        # Получаем реальную конфигурацию с сервера
-        try:
-            if api_url and api_key:
-                server_config = {'api_url': api_url, 'api_key': api_key}
-                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                config = await protocol_client.get_user_config(v2ray_uuid, {
-                    'domain': domain,
-                    'port': 443,
-                    'path': path or '/v2ray',
-                    'email': email or f"user_{user_id}@veilbot.com"
-                })
+    for v2ray_uuid, exp, domain, path, country, email, api_url, api_key, saved_config in v2ray_keys:
+        # Используем сохраненную конфигурацию из БД, если она есть
+        if saved_config:
+            # Извлекаем VLESS URL из сохраненной конфигурации, если она многострочная
+            if 'vless://' in saved_config:
+                lines = saved_config.split('\n')
+                for line in lines:
+                    if line.strip().startswith('vless://'):
+                        config = line.strip()
+                        break
+                else:
+                    config = saved_config.strip()
             else:
-                # Fallback к старому формату если нет данных сервера
+                config = saved_config.strip()
+            logging.debug(f"Using saved client_config from DB for UUID {v2ray_uuid[:8]}...")
+        else:
+            # Если сохраненной конфигурации нет, запрашиваем с сервера (fallback)
+            try:
+                if api_url and api_key:
+                    server_config = {'api_url': api_url, 'api_key': api_key}
+                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                    config = await protocol_client.get_user_config(v2ray_uuid, {
+                        'domain': domain,
+                        'port': 443,
+                        'path': path or '/v2ray',
+                        'email': email or f"user_{user_id}@veilbot.com"
+                    })
+                    # Извлекаем VLESS URL, если конфигурация многострочная
+                    if 'vless://' in config:
+                        lines = config.split('\n')
+                        for line in lines:
+                            if line.strip().startswith('vless://'):
+                                config = line.strip()
+                                break
+                    # Сохраняем для обновления в БД
+                    keys_to_update.append((config, v2ray_uuid))
+                    logging.info(f"Retrieved client_config from server for UUID {v2ray_uuid[:8]}..., will save to DB")
+                else:
+                    # Fallback к старому формату если нет данных сервера
+                    config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+            except Exception as e:
+                logging.error(f"Error getting V2Ray config for {v2ray_uuid}: {e}")
+                # Fallback к старому формату при ошибке
                 config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
-        except Exception as e:
-            logging.error(f"Error getting V2Ray config for {v2ray_uuid}: {e}")
-            # Fallback к старому формату при ошибке
-            config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
         
         all_keys.append({
             'type': 'v2ray',
@@ -327,6 +401,12 @@ async def handle_my_keys_btn(message: types.Message):
             'protocol': 'v2ray',
             'country': country
         })
+    
+    # Обновляем конфигурации в БД, если нужно
+    if keys_to_update:
+        with get_db_cursor(commit=True) as cursor:
+            for config, v2ray_uuid in keys_to_update:
+                cursor.execute("UPDATE v2ray_keys SET client_config = ? WHERE v2ray_uuid = ?", (config, v2ray_uuid))
 
     if not all_keys:
         await message.answer("У вас нет активных ключей.", reply_markup=main_menu)
@@ -376,6 +456,167 @@ async def handle_invite_friend(message: types.Message):
         reply_markup=main_menu
     )
 
+# Handle payment method selection (новый flow: после выбора страны)
+@dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_payment_method_after_country")
+async def handle_payment_method_after_country(message: types.Message):
+    """Обработка выбора способа оплаты после выбора страны (новый flow)"""
+    user_id = message.from_user.id
+    text = message.text.strip()
+    state = user_states.get(user_id, {})
+    
+    if text == "🔙 Назад":
+        # Возвращаемся к выбору страны
+        protocol = state.get("protocol", "outline")
+        countries = get_countries_by_protocol(protocol) if protocol else get_countries()
+        if protocol:
+            protocol_info = PROTOCOLS.get(protocol, {"name": protocol})
+            await message.answer(
+                f"Выберите страну для {protocol_info['name']}:",
+                reply_markup=get_country_menu(countries)
+            )
+            user_states[user_id] = {"state": "protocol_selected", "protocol": protocol}
+        else:
+            await message.answer("Выберите сервер:", reply_markup=get_country_menu(countries))
+            user_states[user_id] = {"state": "waiting_country"}
+        return
+    
+    if text == "💳 Карта РФ / СБП":
+        # Сохраняем способ оплаты и переходим к выбору тарифа
+        state["payment_method"] = "yookassa"
+        state["state"] = "waiting_tariff"
+        user_states[user_id] = state
+        
+        country = state.get("country", "")
+        protocol = state.get("protocol", "outline")
+        
+        msg = f"💳 *Оплата картой / СБП*\n\n"
+        if protocol:
+            msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+        msg += f"🌍 Страна: *{country}*\n\n"
+        msg += "📦 Выберите тариф:"
+        
+        await message.answer(
+            msg,
+            reply_markup=get_tariff_menu(payment_method="yookassa"),
+            parse_mode="Markdown"
+        )
+        return
+    
+    if text == "₿ Криптовалюта (USDT)":
+        # Проверяем, есть ли тарифы с крипто-ценами
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM tariffs WHERE price_rub > 0 AND price_crypto_usd IS NOT NULL AND price_crypto_usd > 0")
+            count = cursor.fetchone()[0]
+            
+            if count == 0:
+                await message.answer(
+                    "❌ К сожалению, в данный момент нет тарифов с оплатой криптовалютой.\n\n"
+                    "Пожалуйста, выберите другой способ оплаты или обратитесь в поддержку.",
+                    reply_markup=get_payment_method_keyboard()
+                )
+                return
+        
+        # Сохраняем способ оплаты и переходим к выбору тарифа
+        state["payment_method"] = "cryptobot"
+        state["state"] = "waiting_tariff"
+        user_states[user_id] = state
+        
+        country = state.get("country", "")
+        protocol = state.get("protocol", "outline")
+        
+        msg = f"₿ *Оплата криптовалютой (USDT)*\n\n"
+        if protocol:
+            msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+        msg += f"🌍 Страна: *{country}*\n\n"
+        msg += "📦 Выберите тариф:"
+        
+        tariff_menu = get_tariff_menu(payment_method="cryptobot")
+        
+        # Проверяем, есть ли тарифы в меню (кроме кнопки "Назад")
+        if len(tariff_menu.keyboard) <= 1:  # Только кнопка "Назад"
+            await message.answer(
+                "❌ К сожалению, в данный момент нет доступных тарифов с оплатой криптовалютой.\n\n"
+                "Пожалуйста, выберите другой способ оплаты.",
+                reply_markup=get_payment_method_keyboard()
+            )
+            return
+        
+        await message.answer(
+            msg,
+            reply_markup=tariff_menu,
+            parse_mode="Markdown"
+        )
+        return
+    
+    await message.answer(
+        "Пожалуйста, выберите способ оплаты из списка:",
+        reply_markup=get_payment_method_keyboard()
+    )
+
+# Handle payment method selection (старый flow: после выбора тарифа - для обратной совместимости)
+@dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_payment_method")
+async def handle_payment_method_input(message: types.Message):
+    """Обработка выбора способа оплаты после выбора тарифа (старый flow для обратной совместимости)"""
+    user_id = message.from_user.id
+    text = message.text.strip()
+    state = user_states.get(user_id, {})
+    
+    if text == "🔙 Назад":
+        # Возвращаемся к выбору тарифа
+        payment_method = state.get("payment_method")
+        await message.answer("Выберите тариф:", reply_markup=get_tariff_menu(payment_method=payment_method))
+        return
+    
+    if text == "💳 Карта РФ / СБП":
+        # Сохраняем способ оплаты и переходим к запросу email
+        state["payment_method"] = "yookassa"
+        user_states[user_id] = state
+        user_states[user_id]["state"] = "waiting_email"
+        
+        tariff = state.get("tariff", {})
+        protocol = state.get("protocol", "outline")
+        
+        await message.answer(
+            f"💳 *Оплата картой / СБП*\n\n"
+            f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
+            f"💰 Сумма: *{tariff.get('price_rub', 0)}₽*\n\n"
+            "📧 Пожалуйста, введите ваш email адрес для получения чека:",
+            reply_markup=cancel_keyboard,
+            parse_mode="Markdown"
+        )
+        return
+    
+    if text == "₿ Криптовалюта (USDT)":
+        tariff = state.get("tariff", {})
+        if not tariff.get('price_crypto_usd'):
+            await message.answer(
+                "❌ Крипто-оплата недоступна для этого тарифа. Выберите другой способ оплаты.",
+                reply_markup=get_payment_method_keyboard()
+            )
+            return
+        
+        # Сохраняем способ оплаты и переходим к запросу email
+        state["payment_method"] = "cryptobot"
+        user_states[user_id] = state
+        user_states[user_id]["state"] = "waiting_email"
+        
+        protocol = state.get("protocol", "outline")
+        
+        await message.answer(
+            f"₿ *Оплата криптовалютой (USDT)*\n\n"
+            f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
+            f"💰 Сумма: *${tariff.get('price_crypto_usd', 0):.2f} USDT*\n\n"
+            "📧 Пожалуйста, введите ваш email адрес для получения чека:",
+            reply_markup=cancel_keyboard,
+            parse_mode="Markdown"
+        )
+        return
+    
+    await message.answer(
+        "Пожалуйста, выберите способ оплаты из списка:",
+        reply_markup=get_payment_method_keyboard()
+    )
+
 # Handle email input
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_email")
 async def handle_email_input(message: types.Message):
@@ -409,10 +650,11 @@ async def handle_email_input(message: types.Message):
         tariff = state.get("tariff")
         country = state.get("country")
         protocol = state.get("protocol", "outline")
+        payment_method = state.get("payment_method", "yookassa")  # По умолчанию YooKassa
         del user_states[user_id]
         
         # Создаем платеж с указанным email
-        await create_payment_with_email_and_protocol(message, user_id, tariff, email, country, protocol)
+        await create_payment_with_email_and_protocol(message, user_id, tariff, email, country, protocol, payment_method=payment_method)
         
     except ValidationError as e:
         await message.answer(f"❌ Ошибка валидации: {str(e)}", reply_markup=cancel_keyboard)
@@ -529,9 +771,17 @@ async def handle_country_selection(message: types.Message):
             await message.answer("Пожалуйста, выберите сервер из списка:", reply_markup=get_country_menu(countries))
             return
         
-        # Сохраняем страну и переходим к выбору тарифа
-        user_states[user_id] = {"state": "waiting_tariff", "country": country}
-        await message.answer("Выберите тариф:", reply_markup=get_tariff_menu())
+        # Сохраняем страну и переходим к выбору способа оплаты
+        user_states[user_id] = {"state": "waiting_payment_method_after_country", "country": country}
+        
+        msg = f"💳 *Выберите способ оплаты*\n\n"
+        msg += f"🌍 Страна: *{country}*\n"
+        
+        await message.answer(
+            msg,
+            reply_markup=get_payment_method_keyboard(),
+            parse_mode="Markdown"
+        )
         
     except ValidationError as e:
         await message.answer(f"❌ Ошибка валидации: {str(e)}", reply_markup=cancel_keyboard)
@@ -571,29 +821,62 @@ async def handle_protocol_country_selection(message: types.Message):
             )
             return
         
-        # Сохраняем страну и переходим к выбору тарифа
+        # Сохраняем страну и переходим к выбору способа оплаты
         user_states[user_id] = {
-            "state": "waiting_tariff", 
+            "state": "waiting_payment_method_after_country", 
             "country": country,
             "protocol": protocol
         }
-        await message.answer("Выберите тариф:", reply_markup=get_tariff_menu())
+        
+        msg = f"💳 *Выберите способ оплаты*\n\n"
+        msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+        msg += f"🌍 Страна: *{country}*\n"
+        
+        await message.answer(
+            msg,
+            reply_markup=get_payment_method_keyboard(),
+            parse_mode="Markdown"
+        )
     except Exception as e:
         logging.error(f"Error in handle_protocol_country_selection: {e}")
         await message.answer("❌ Произошла ошибка. Попробуйте ещё раз или выберите протокол заново.", reply_markup=get_protocol_selection_menu())
 
-@dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_tariff" and "—" in m.text and any(w in m.text for w in ["₽", "бесплатно"]))
+@dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_tariff" and "—" in m.text and any(w in m.text for w in ["₽", "$", "бесплатно"]))
 async def handle_tariff_selection_with_country(message: types.Message):
     if message.text == "Получить месяц бесплатно":
         user_id = message.from_user.id
         user_states.pop(user_id, None)
         await handle_invite_friend(message)
         return
+    
+    if message.text == "🔙 Назад":
+        # Возвращаемся к выбору способа оплаты
+        user_id = message.from_user.id
+        state = user_states.get(user_id, {})
+        country = state.get("country")
+        protocol = state.get("protocol", "outline")
+        
+        state["state"] = "waiting_payment_method_after_country"
+        user_states[user_id] = state
+        
+        msg = f"💳 *Выберите способ оплаты*\n\n"
+        if protocol:
+            msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+        msg += f"🌍 Страна: *{country}*\n"
+        
+        await message.answer(
+            msg,
+            reply_markup=get_payment_method_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+    
     user_id = message.from_user.id
     label = message.text.strip()
     state = user_states.get(user_id, {})
     country = state.get("country")
-    protocol = state.get("protocol", "outline")  # Получаем выбранный протокол
+    protocol = state.get("protocol", "outline")
+    payment_method = state.get("payment_method")  # Получаем выбранный способ оплаты
     
     # Parse tariff name and price from the label
     parts = label.split("—")
@@ -602,20 +885,53 @@ async def handle_tariff_selection_with_country(message: types.Message):
         return
     tariff_name = parts[0].strip()
     price_part = parts[1].strip()
+    
     if "бесплатно" in price_part:
         # Если пользователь в сценарии продления, не разрешаем бесплатные тарифы
         if user_states.get(user_id, {}).get("paid_only"):
-            await message.answer("Для продления доступны только платные тарифы. Выберите платный тариф.", reply_markup=get_tariff_menu(paid_only=True))
+            await message.answer("Для продления доступны только платные тарифы. Выберите платный тариф.", reply_markup=get_tariff_menu(paid_only=True, payment_method=payment_method))
             return
         price = 0
+        price_crypto = None
     else:
-        try:
-            price = int(price_part.replace("₽", "").strip())
-        except ValueError:
-            await message.answer("Неверный формат цены.", reply_markup=main_menu)
-            return
+        # Парсим цену в зависимости от способа оплаты
+        if payment_method == "cryptobot":
+            # Для криптовалюты парсим цену в USD
+            try:
+                price_crypto = float(price_part.replace("$", "").strip())
+                # Для поиска тарифа используем price_crypto, но нужно найти по имени и крипто-цене
+                price = None
+            except ValueError:
+                await message.answer("Неверный формат цены.", reply_markup=main_menu)
+                return
+        else:
+            # Для карты/СБП парсим рублевую цену
+            try:
+                price = int(price_part.replace("₽", "").strip())
+                price_crypto = None
+            except ValueError:
+                await message.answer("Неверный формат цены.", reply_markup=main_menu)
+                return
+    
     with get_db_cursor(commit=True) as cursor:
-        tariff = get_tariff_by_name_and_price(cursor, tariff_name, price)
+        # Ищем тариф в зависимости от способа оплаты
+        if payment_method == "cryptobot" and price_crypto is not None:
+            # Ищем по имени и крипто-цене
+            cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND ABS(price_crypto_usd - ?) < 0.01", (tariff_name, price_crypto))
+            row = cursor.fetchone()
+            if row:
+                tariff = {
+                    "id": row[0],
+                    "name": row[1],
+                    "price_rub": row[2],
+                    "duration_sec": row[3],
+                    "price_crypto_usd": row[4] if len(row) > 4 else None
+                }
+            else:
+                await message.answer("Не удалось найти тариф с указанной ценой.", reply_markup=main_menu)
+                return
+        else:
+            tariff = get_tariff_by_name_and_price(cursor, tariff_name, price or 0)
         if not tariff:
             await message.answer("Не удалось найти тариф.", reply_markup=main_menu)
             return
@@ -651,19 +967,53 @@ async def handle_tariff_selection_with_country(message: types.Message):
                 if not email_db:
                     email_db = f"user_{user_id}@veilbot.com"
 
-                # Сразу создаем платеж без запроса email у пользователя
+                # Для продления сразу создаем платеж (YooKassa по умолчанию)
                 # Сбрасываем временное состояние выбора тарифа
                 user_states[user_id] = {}
-                await create_payment_with_email_and_protocol(message, user_id, tariff, email_db, country, protocol)
+                await create_payment_with_email_and_protocol(message, user_id, tariff, email_db, country, protocol, payment_method="yookassa")
             else:
-                await handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, country, protocol)
+                # Для новой покупки сразу переходим к запросу email (способ оплаты уже выбран)
+                user_states[user_id]["tariff"] = tariff
+                user_states[user_id]["state"] = "waiting_email"
+                
+                if payment_method == "cryptobot":
+                    if not tariff.get('price_crypto_usd'):
+                        await message.answer(
+                            "❌ Крипто-оплата недоступна для этого тарифа. Выберите другой тариф.",
+                            reply_markup=get_tariff_menu(payment_method="cryptobot")
+                        )
+                        return
+                    
+                    await message.answer(
+                        f"₿ *Оплата криптовалютой (USDT)*\n\n"
+                        f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
+                        f"💰 Сумма: *${tariff.get('price_crypto_usd', 0):.2f} USDT*\n\n"
+                        "📧 Пожалуйста, введите ваш email адрес для получения чека:",
+                        reply_markup=cancel_keyboard,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await message.answer(
+                        f"💳 *Оплата картой / СБП*\n\n"
+                        f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
+                        f"💰 Сумма: *{tariff.get('price_rub', 0)}₽*\n\n"
+                        "📧 Пожалуйста, введите ваш email адрес для получения чека:",
+                        reply_markup=cancel_keyboard,
+                        parse_mode="Markdown"
+                    )
 
 def get_tariff_by_name_and_price(cursor, tariff_name, price):
-    cursor.execute("SELECT id, name, price_rub, duration_sec FROM tariffs WHERE name = ? AND price_rub = ?", (tariff_name, price))
+    cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND price_rub = ?", (tariff_name, price))
     row = cursor.fetchone()
     if not row:
         return None
-    return {"id": row[0], "name": row[1], "price_rub": row[2], "duration_sec": row[3]}
+    return {
+        "id": row[0],
+        "name": row[1],
+        "price_rub": row[2],
+        "duration_sec": row[3],
+        "price_crypto_usd": row[4] if len(row) > 4 else None
+    }
 
 async def handle_free_tariff(cursor, message, user_id, tariff, country=None):
     if check_free_tariff_limit(cursor, user_id):
@@ -1122,30 +1472,48 @@ async def switch_protocol_and_extend(cursor, message, user_id, old_key_data: dic
                 await message.answer("❌ Ошибка при создании V2Ray ключа на новом сервере.", reply_markup=main_menu)
                 return False
             
-            # Добавляем новый ключ
-            cursor.execute(
-                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'])
-            )
-            
             # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+            config = None
             if user_data.get('client_config'):
-                access_url = user_data['client_config']
+                config = user_data['client_config']
+                # Извлекаем VLESS URL, если конфигурация многострочная
+                if 'vless://' in config:
+                    lines = config.split('\n')
+                    for line in lines:
+                        if line.strip().startswith('vless://'):
+                            config = line.strip()
+                            break
+                access_url = config
                 logging.info(f"Using client_config from create_user response for protocol switch")
             else:
                 # Если client_config нет, используем get_user_config или fallback
                 try:
-                    access_url = await v2ray_client.get_user_config(user_data['uuid'], {
+                    config = await v2ray_client.get_user_config(user_data['uuid'], {
                         'domain': domain,
                         'port': 443,
                         'path': v2ray_path or '/v2ray',
                         'email': old_email or f"user_{user_id}@veilbot.com"
                     })
+                    # Извлекаем VLESS URL, если конфигурация многострочная
+                    if 'vless://' in config:
+                        lines = config.split('\n')
+                        for line in lines:
+                            if line.strip().startswith('vless://'):
+                                config = line.strip()
+                                break
+                    access_url = config
                 except Exception as e:
                     logging.warning(f"Failed to get user config, using fallback: {e}")
                     # Fallback к хардкодированному формату
-                    access_url = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+                    config = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+                    access_url = config
+            
+            # Добавляем новый ключ с конфигурацией
+            cursor.execute(
+                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'], config)
+            )
             
             # Удаляем старый ключ
             await delete_old_key_after_success(cursor, old_key_for_deletion)
@@ -1296,30 +1664,48 @@ async def change_country_and_extend(cursor, message, user_id, key_data: dict, ne
                 await message.answer("❌ Ошибка при создании V2Ray ключа на новом сервере.", reply_markup=main_menu)
                 return False
             
-            # Добавляем новый ключ
-            cursor.execute(
-                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'])
-            )
-            
             # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+            config = None
             if user_data.get('client_config'):
-                access_url = user_data['client_config']
+                config = user_data['client_config']
+                # Извлекаем VLESS URL, если конфигурация многострочная
+                if 'vless://' in config:
+                    lines = config.split('\n')
+                    for line in lines:
+                        if line.strip().startswith('vless://'):
+                            config = line.strip()
+                            break
+                access_url = config
                 logging.info(f"Using client_config from create_user response for country change")
             else:
                 # Если client_config нет, используем get_user_config или fallback
                 try:
-                    access_url = await v2ray_client.get_user_config(user_data['uuid'], {
+                    config = await v2ray_client.get_user_config(user_data['uuid'], {
                         'domain': domain,
                         'port': 443,
                         'path': v2ray_path or '/v2ray',
                         'email': old_email or f"user_{user_id}@veilbot.com"
                     })
+                    # Извлекаем VLESS URL, если конфигурация многострочная
+                    if 'vless://' in config:
+                        lines = config.split('\n')
+                        for line in lines:
+                            if line.strip().startswith('vless://'):
+                                config = line.strip()
+                                break
+                    access_url = config
                 except Exception as e:
                     logging.warning(f"Failed to get user config, using fallback: {e}")
                     # Fallback к хардкодированному формату
-                    access_url = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+                    config = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+                    access_url = config
+            
+            # Добавляем новый ключ с конфигурацией
+            cursor.execute(
+                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'], config)
+            )
             
             # Удаляем старый ключ
             await delete_old_key_after_success(cursor, old_key_data)
@@ -1430,9 +1816,16 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                     # Проверяем, был ли ключ истекшим
                     was_expired = existing_key[1] <= now
                     if was_expired:
-                        await message.answer(f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        msg_text = f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}"
                     else:
-                        await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        msg_text = f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}"
+                    
+                    # Отправляем сообщение пользователю
+                    if message:
+                        await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    else:
+                        # Если message=None (например, из webhook), отправляем напрямую через bot
+                        await bot.send_message(user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                     return
                 else:
                     # Если не удалось продлить, создаем новый ключ
@@ -1480,13 +1873,30 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             
                 if success:
                     # Получаем обновленную информацию о ключе
-                    cursor.execute("SELECT k.v2ray_uuid, s.domain, s.v2ray_path FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.id = ?", (existing_key[0],))
+                    cursor.execute("SELECT k.v2ray_uuid, s.domain, s.v2ray_path, s.api_url, s.api_key, k.email FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.id = ?", (existing_key[0],))
                     updated_key = cursor.fetchone()
                     
                     if updated_key:
-                        v2ray_uuid, domain, path = updated_key
-                        # Используем новый формат Reality протокола
-                        config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                        v2ray_uuid, domain, path, api_url, api_key, key_email = updated_key
+                        # Получаем реальную конфигурацию с сервера (как в "мои ключи")
+                        try:
+                            if api_url and api_key:
+                                from vpn_protocols import ProtocolFactory
+                                server_config = {'api_url': api_url, 'api_key': api_key}
+                                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                                config = await protocol_client.get_user_config(v2ray_uuid, {
+                                    'domain': domain,
+                                    'port': 443,
+                                    'path': path or '/v2ray',
+                                    'email': key_email or email or f"user_{user_id}@veilbot.com"
+                                })
+                            else:
+                                # Fallback к хардкодной конфигурации если нет данных сервера
+                                config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                        except Exception as e:
+                            logging.error(f"Error getting V2Ray config for {v2ray_uuid} during extension: {e}")
+                            # Fallback к хардкодной конфигурации при ошибке
+                            config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
                     else:
                         # Fallback к старой конфигурации
                         v2ray_uuid = existing_key[2]
@@ -1500,9 +1910,16 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                     # Проверяем, был ли ключ истекшим
                     was_expired = existing_key[1] <= now
                     if was_expired:
-                        await message.answer(f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        msg_text = f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}"
                     else:
-                        await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        msg_text = f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}"
+                    
+                    # Отправляем сообщение пользователю
+                    if message:
+                        await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    else:
+                        # Если message=None (например, из webhook), отправляем напрямую через bot
+                        await bot.send_message(user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                     return
                 else:
                     # Если не удалось продлить, создаем новый ключ
@@ -1718,14 +2135,17 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                 logging.error(f"Error logging key creation: {e}")
                 
         else:  # v2ray
-            cursor.execute("""
-                INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (server[0], user_id, user_data['uuid'], email or f"user_{user_id}@veilbot.com", now, expiry, tariff['id']))
-            
             # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+            config = None
             if user_data.get('client_config'):
                 config = user_data['client_config']
+                # Извлекаем VLESS URL, если конфигурация многострочная
+                if 'vless://' in config:
+                    lines = config.split('\n')
+                    for line in lines:
+                        if line.strip().startswith('vless://'):
+                            config = line.strip()
+                            break
                 logging.info(f"Using client_config from create_user response for new key")
             else:
                 # Если client_config нет в ответе, запрашиваем через get_user_config
@@ -1736,6 +2156,19 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
                     'path': server[6] or '/v2ray',
                     'email': email or f"user_{user_id}@veilbot.com"
                 })
+                # Извлекаем VLESS URL, если конфигурация многострочная
+                if 'vless://' in config:
+                    lines = config.split('\n')
+                    for line in lines:
+                        if line.strip().startswith('vless://'):
+                            config = line.strip()
+                            break
+            
+            # Сохраняем ключ с конфигурацией в БД
+            cursor.execute("""
+                INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (server[0], user_id, user_data['uuid'], email or f"user_{user_id}@veilbot.com", now, expiry, tariff['id'], config))
             
             # Логирование создания V2Ray ключа
             try:
@@ -1767,12 +2200,22 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
         user_states.pop(user_id, None)
         
         # Отправляем пользователю
-        await message.answer(
-            format_key_message_unified(config, protocol, tariff),
-            reply_markup=main_menu,
-            disable_web_page_preview=True,
-            parse_mode="Markdown"
-        )
+        if message:
+            await message.answer(
+                format_key_message_unified(config, protocol, tariff),
+                reply_markup=main_menu,
+                disable_web_page_preview=True,
+                parse_mode="Markdown"
+            )
+        else:
+            # Если message=None (например, из webhook), отправляем напрямую через bot
+            await bot.send_message(
+                user_id,
+                format_key_message_unified(config, protocol, tariff),
+                reply_markup=main_menu,
+                disable_web_page_preview=True,
+                parse_mode="Markdown"
+            )
         
         # Уведомление админу
         admin_msg = (
@@ -1942,28 +2385,114 @@ async def handle_free_tariff_with_protocol(cursor, message, user_id, tariff, cou
         # Для бесплатного тарифа создаем ключ сразу без запроса email
         await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, None, country, protocol)
 
-async def handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, country=None, protocol="outline"):
-    """Обработка платного тарифа с поддержкой протоколов"""
-    # Сохраняем состояние и запрашиваем email
+async def handle_payment_method_selection(cursor, message, user_id, tariff, country=None, protocol="outline"):
+    """Обработка выбора способа оплаты для платного тарифа"""
+    # Сохраняем состояние и показываем выбор способа оплаты
     user_states[user_id] = {
-        "state": "waiting_email",
+        "state": "waiting_payment_method",
         "tariff": tariff,
         "country": country,
         "protocol": protocol
     }
     
+    msg = f"💳 *Выберите способ оплаты*\n\n"
+    msg += f"📦 Тариф: *{tariff['name']}*\n"
+    msg += f"💰 Сумма: *{tariff['price_rub']}₽*"
+    
+    if tariff.get('price_crypto_usd'):
+        msg += f" / *${tariff['price_crypto_usd']:.2f}* (криптовалюта)\n"
+    else:
+        msg += "\n"
+    
+    msg += f"\n{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+    
     await message.answer(
-        f"💳 *Оплата {PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}*\n\n"
-        f"📦 Тариф: *{tariff['name']}*\n"
-        f"💰 Сумма: *{tariff['price_rub']}₽*\n\n"
-        "📧 Пожалуйста, введите ваш email адрес для получения чека:",
-        reply_markup=cancel_keyboard,
+        msg,
+        reply_markup=get_payment_method_keyboard(),
         parse_mode="Markdown"
     )
 
-async def create_payment_with_email_and_protocol(message, user_id, tariff, email=None, country=None, protocol="outline"):
-    """Создание платежа с поддержкой протоколов"""
-    logging.debug(f"create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}")
+async def handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, country=None, protocol="outline"):
+    """Обработка платного тарифа с поддержкой протоколов (старая функция для совместимости)"""
+    # Перенаправляем на выбор способа оплаты
+    await handle_payment_method_selection(cursor, message, user_id, tariff, country, protocol)
+
+async def create_payment_with_email_and_protocol(message, user_id, tariff, email=None, country=None, protocol="outline", payment_method="yookassa"):
+    """Создание платежа с поддержкой протоколов и способов оплаты"""
+    logging.debug(f"create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}, payment_method={payment_method}")
+    
+    # Если выбран CryptoBot, создаем криптоплатеж
+    if payment_method == "cryptobot":
+        if not tariff.get('price_crypto_usd'):
+            await message.answer(
+                "❌ Крипто-оплата недоступна для этого тарифа. Пожалуйста, выберите другой способ оплаты.",
+                reply_markup=main_menu
+            )
+            return
+        
+        try:
+            payment_service = get_payment_service()
+            if not payment_service or not payment_service.cryptobot_service:
+                await message.answer(
+                    "❌ Сервис крипто-платежей временно недоступен. Пожалуйста, используйте другой способ оплаты.",
+                    reply_markup=main_menu
+                )
+                return
+            
+            # Создаем криптоплатеж
+            invoice_id, payment_url = await payment_service.create_crypto_payment(
+                user_id=user_id,
+                tariff_id=tariff['id'],
+                amount_usd=float(tariff['price_crypto_usd']),
+                email=email or f"user_{user_id}@veilbot.com",
+                country=country,
+                protocol=protocol,
+                description=f"VPN тариф {tariff['name']}",
+                asset="USDT",
+                network="TRC20"
+            )
+            
+            if not invoice_id or not payment_url:
+                await message.answer(
+                    "❌ Ошибка при создании платежа. Попробуйте еще раз или выберите другой способ оплаты.",
+                    reply_markup=main_menu
+                )
+                return
+            
+            # Создаем inline клавиатуру для оплаты
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(InlineKeyboardButton("₿ Оплатить USDT", url=payment_url))
+            keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_payment"))
+            
+            display_email = email if email else f"user_{user_id}@veilbot.com"
+            
+            await message.answer(
+                f"₿ *Оплата криптовалютой (USDT)*\n\n"
+                f"📦 Тариф: *{tariff['name']}*\n"
+                f"💰 Сумма: *${tariff['price_crypto_usd']:.2f} USDT*\n"
+                f"📧 Email: `{display_email}`\n\n"
+                f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n\n"
+                "Нажмите кнопку ниже для оплаты через CryptoBot:\n"
+                "⚠️ Инвойс действителен 1 час",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            
+            # Запускаем ожидание платежа (для CryptoBot это будет проверка через webhook или периодическую проверку)
+            with get_db_cursor() as cursor:
+                server = select_available_server_by_protocol(cursor, country, protocol)
+                if server:
+                    asyncio.create_task(wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, country, protocol))
+            
+            return
+            
+        except Exception as e:
+            logging.error(f"Error creating crypto payment: {e}")
+            await message.answer(
+                "❌ Ошибка при создании криптоплатежа. Попробуйте еще раз или выберите другой способ оплаты.",
+                reply_markup=main_menu
+            )
+            return
     
     # Ленивая инициализация платежного модуля
     global PAYMENT_MODULE_AVAILABLE
@@ -2176,6 +2705,72 @@ async def wait_for_payment_with_protocol(message, payment_id, server, user_id, t
         logging.warning("Новый платежный модуль недоступен")
         await message.answer("Платежная система временно недоступна.", reply_markup=main_menu)
         return
+
+async def wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, country=None, protocol="outline"):
+    """Ожидание криптоплатежа через CryptoBot"""
+    try:
+        payment_service = get_payment_service()
+        if not payment_service or not payment_service.cryptobot_service:
+            logging.error("CryptoBot service not available")
+            return
+        
+        # Проверяем статус инвойса периодически (каждые 10 секунд, максимум 1 час)
+        max_checks = 360  # 1 час = 3600 секунд / 10 секунд
+        check_interval = 10
+        
+        for check_num in range(max_checks):
+            is_paid = await payment_service.cryptobot_service.is_invoice_paid(int(invoice_id))
+            
+            if is_paid:
+                logging.info(f"CryptoBot payment confirmed: {invoice_id}")
+                
+                # Обновляем статус платежа в БД
+                with get_db_cursor(commit=True) as cursor:
+                    cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (str(invoice_id),))
+                    cursor.execute("SELECT email FROM payments WHERE payment_id = ?", (str(invoice_id),))
+                    payment_data = cursor.fetchone()
+                    email = payment_data[0] if payment_data else None
+                    
+                    # Создаем ключ
+                    await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol)
+                    
+                    # Реферальный бонус (та же логика что и для обычных платежей)
+                    cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
+                    ref_row = cursor.fetchone()
+                    if ref_row and ref_row[0] and not ref_row[1]:
+                        referrer_id = ref_row[0]
+                        now = int(time.time())
+                        cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
+                        key = cursor.fetchone()
+                        bonus_duration = 30 * 24 * 3600  # 1 месяц
+                        if key:
+                            extend_existing_key(cursor, key, bonus_duration)
+                            await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
+                        else:
+                            cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
+                            bonus_tariff = cursor.fetchone()
+                            if bonus_tariff:
+                                bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
+                                await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
+                                await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                        cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
+                
+                return
+            
+            # Проверяем, не истек ли инвойс
+            invoice_info = await payment_service.cryptobot_service.get_invoice(int(invoice_id))
+            if invoice_info and invoice_info.get("status") == "expired":
+                await message.answer("⏰ Время оплаты истекло. Создайте новый платеж.", reply_markup=main_menu)
+                return
+            
+            await asyncio.sleep(check_interval)
+        
+        # Если цикл завершился, значит таймаут
+        await message.answer("⏰ Время ожидания платежа истекло. Попробуйте создать платеж заново.", reply_markup=main_menu)
+        
+    except Exception as e:
+        logging.error(f"Error waiting for crypto payment: {e}")
+        await message.answer("Ошибка при проверке платежа. Обратитесь в поддержку.", reply_markup=main_menu)
 
 async def auto_delete_expired_keys():
     """Автоматическое удаление истекших ключей с grace period 24 часа"""
@@ -2459,20 +3054,17 @@ async def process_pending_paid_payments():
                             if not user_data or not user_data.get('uuid'):
                                 raise Exception(f"Failed to create V2Ray user - invalid response from server")
                             
-                            now = int(time.time())
-                            expiry = now + tariff['duration_sec']
-                            cursor.execute(
-                                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                (server['id'], user_id, user_data['uuid'], email or f"user_{user_id}@veilbot.com", now, expiry, tariff_id)
-                            )
-                            
-                            # Если это бесплатный тариф, записываем использование
-                            if tariff['price_rub'] == 0:
-                                record_free_key_usage(cursor, user_id, protocol, country)
-                            
                             # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+                            config = None
                             if user_data.get('client_config'):
                                 config = user_data['client_config']
+                                # Извлекаем VLESS URL, если конфигурация многострочная
+                                if 'vless://' in config:
+                                    lines = config.split('\n')
+                                    for line in lines:
+                                        if line.strip().startswith('vless://'):
+                                            config = line.strip()
+                                            break
                                 logging.info(f"Using client_config from create_user response for auto-issued key")
                             else:
                                 # Если client_config нет в ответе, запрашиваем через get_user_config
@@ -2483,6 +3075,24 @@ async def process_pending_paid_payments():
                                     'path': server.get('v2ray_path', '/v2ray'),
                                     'email': email or f"user_{user_id}@veilbot.com"
                                 })
+                                # Извлекаем VLESS URL, если конфигурация многострочная
+                                if 'vless://' in config:
+                                    lines = config.split('\n')
+                                    for line in lines:
+                                        if line.strip().startswith('vless://'):
+                                            config = line.strip()
+                                            break
+                            
+                            now = int(time.time())
+                            expiry = now + tariff['duration_sec']
+                            cursor.execute(
+                                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (server['id'], user_id, user_data['uuid'], email or f"user_{user_id}@veilbot.com", now, expiry, tariff_id, config)
+                            )
+                            
+                            # Если это бесплатный тариф, записываем использование
+                            if tariff['price_rub'] == 0:
+                                record_free_key_usage(cursor, user_id, protocol, country)
                             
                             # Уведомляем пользователя
                             try:

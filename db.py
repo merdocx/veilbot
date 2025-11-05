@@ -450,6 +450,66 @@ def migrate_create_webhook_logs():
     finally:
         conn.close()
 
+def migrate_add_crypto_pricing():
+    """Добавление поддержки крипто-цен в тарифах"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE tariffs ADD COLUMN price_crypto_usd REAL DEFAULT NULL")
+        conn.commit()
+        logging.info("Поле price_crypto_usd добавлено в tariffs")
+    except sqlite3.OperationalError:
+        logging.info("Поле price_crypto_usd уже существует в tariffs")
+    finally:
+        conn.close()
+
+def migrate_add_crypto_payment_fields():
+    """Добавление полей для криптоплатежей в payments"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # Получаем существующие колонки
+        cursor.execute("PRAGMA table_info(payments)")
+        cols = {row[1] for row in cursor.fetchall()}
+        
+        # Добавляем поля для криптоплатежей
+        crypto_fields = [
+            ("crypto_invoice_id", "TEXT"),
+            ("crypto_amount", "REAL"),
+            ("crypto_currency", "TEXT"),
+            ("crypto_network", "TEXT"),
+            ("crypto_tx_hash", "TEXT"),
+        ]
+        
+        added = 0
+        for name, decl in crypto_fields:
+            if name not in cols:
+                try:
+                    cursor.execute(f"ALTER TABLE payments ADD COLUMN {name} {decl}")
+                    added += 1
+                except sqlite3.OperationalError:
+                    pass
+        
+        conn.commit()
+        logging.info(f"Добавлено полей для криптоплатежей: {added}")
+    except Exception as e:
+        logging.error(f"Ошибка при добавлении полей для криптоплатежей: {e}")
+    finally:
+        conn.close()
+
+def migrate_add_client_config_to_v2ray_keys():
+    """Добавление поля client_config в v2ray_keys для хранения конфигурации"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN client_config TEXT DEFAULT NULL")
+        conn.commit()
+        logging.info("Поле client_config добавлено в v2ray_keys")
+    except sqlite3.OperationalError:
+        logging.info("Поле client_config уже существует в v2ray_keys")
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     import time
     init_db()
@@ -468,4 +528,7 @@ if __name__ == "__main__":
     migrate_create_webhook_logs()
     migrate_create_users_table()
     migrate_backfill_users()
+    migrate_add_crypto_pricing()
+    migrate_add_crypto_payment_fields()
+    migrate_add_client_config_to_v2ray_keys()
 

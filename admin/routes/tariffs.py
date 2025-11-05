@@ -40,7 +40,9 @@ async def add_tariff(
     request: Request,
     name: str = Form(...),
     duration_sec: int = Form(...),
+    traffic_limit_mb: int = Form(0),
     price_rub: int = Form(...),
+    price_crypto_usd: float = Form(None),
     csrf_token: str = Form(...)
 ):
     """Добавление нового тарифа"""
@@ -59,12 +61,15 @@ async def add_tariff(
     
     try:
         # Валидация входных данных
+        price_crypto = float(price_crypto_usd) if price_crypto_usd and price_crypto_usd != "" else None
         tariff_data = TariffForm(name=name, duration_sec=duration_sec, price_rub=price_rub)
         
         TariffRepository(DATABASE_PATH).add_tariff(
             tariff_data.name,
             tariff_data.duration_sec,
-            tariff_data.price_rub
+            tariff_data.price_rub,
+            traffic_limit_mb=traffic_limit_mb,
+            price_crypto_usd=price_crypto
         )
         
         log_admin_action(
@@ -127,7 +132,9 @@ async def edit_tariff_page(request: Request, tariff_id: int):
             "id": tariff[0],
             "name": tariff[1],
             "duration_sec": tariff[2],
-            "price_rub": tariff[3]
+            "price_rub": tariff[3],
+            "traffic_limit_mb": tariff[4] if len(tariff) > 4 else 0,
+            "price_crypto_usd": tariff[5] if len(tariff) > 5 else None
         }
     })
 
@@ -138,13 +145,16 @@ async def edit_tariff(
     tariff_id: int,
     name: str = Form(...),
     duration_sec: int = Form(...),
-    price_rub: int = Form(...)
+    traffic_limit_mb: int = Form(0),
+    price_rub: int = Form(...),
+    price_crypto_usd: float = Form(None)
 ):
     """Обновление тарифа"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
-    TariffRepository(DATABASE_PATH).update_tariff(tariff_id, name, duration_sec, price_rub)
+    price_crypto = float(price_crypto_usd) if price_crypto_usd and price_crypto_usd != "" else None
+    TariffRepository(DATABASE_PATH).update_tariff(tariff_id, name, duration_sec, price_rub, traffic_limit_mb=traffic_limit_mb, price_crypto_usd=price_crypto)
     log_admin_action(request, "EDIT_TARIFF", f"ID: {tariff_id}")
     
     return RedirectResponse(url="/tariffs", status_code=HTTP_303_SEE_OTHER)

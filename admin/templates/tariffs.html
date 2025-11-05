@@ -65,13 +65,21 @@
                                 <span class="material-icons icon-small">attach_money</span>
                                 {{ t[3] }} ₽
                             </span>
+                            {% if t|length > 5 and t[5] and t[5] > 0 %}
+                                <br>
+                                <span class="badge badge-info" style="margin-top: 4px;">
+                                    <span class="material-icons icon-small">currency_bitcoin</span>
+                                    ${{ "%.2f"|format(t[5]) }}
+                                </span>
+                            {% endif %}
                         {% endif %}
                     </td>
                     <td>
-                        {% if t[4] %}
+                        {% set traffic_limit = t[4] if t|length > 4 else None %}
+                        {% if traffic_limit and traffic_limit > 0 %}
                             <span class="badge badge-neutral">
                                 <span class="material-icons icon-small">data_usage</span>
-                                {{ t[4] }} МБ
+                                {{ traffic_limit }} МБ
                             </span>
                         {% else %}
                             <span class="badge badge-neutral">
@@ -138,6 +146,12 @@
                     <label for="price_rub" style="display: block; margin-bottom: 8px; font-weight: 500;">Цена (рубли):</label>
                     <input type="number" id="price_rub" name="price_rub" min="0" value="0" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
                     <small style="color: #666; font-size: 12px;">0 = бесплатный тариф</small>
+                </div>
+                
+                <div>
+                    <label for="price_crypto_usd" style="display: block; margin-bottom: 8px; font-weight: 500;">Цена в криптовалюте (USD):</label>
+                    <input type="number" id="price_crypto_usd" name="price_crypto_usd" step="0.01" min="0" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    <small style="color: #666; font-size: 12px;">Оставьте пустым, если крипто-оплата недоступна для этого тарифа</small>
                 </div>
             </div>
             

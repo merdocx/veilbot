@@ -138,6 +138,19 @@ class PaymentServiceFactory:
         
         return self._payment_repo
     
+    def create_cryptobot_service(self):
+        """Создание CryptoBot сервиса"""
+        from .services.cryptobot_service import CryptoBotService
+        from app.settings import settings as app_settings
+        
+        if not app_settings.CRYPTOBOT_API_TOKEN:
+            return None
+        
+        return CryptoBotService(
+            api_token=app_settings.CRYPTOBOT_API_TOKEN,
+            api_url=app_settings.CRYPTOBOT_API_URL
+        )
+    
     def create_payment_service(self):
         """Создание основного сервиса платежей"""
         if self._payment_service is None:
@@ -145,10 +158,12 @@ class PaymentServiceFactory:
             
             yookassa_service = self.create_yookassa_service()
             payment_repo = self.create_payment_repository()
+            cryptobot_service = self.create_cryptobot_service()
             
             self._payment_service = PaymentService(
                 payment_repo=payment_repo,
-                yookassa_service=yookassa_service
+                yookassa_service=yookassa_service,
+                cryptobot_service=cryptobot_service
             )
         
         return self._payment_service

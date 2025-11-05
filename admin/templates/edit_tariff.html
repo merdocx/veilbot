@@ -26,11 +26,29 @@
             </div>
             
             <div class="form-group">
+                <label class="form-label">Лимит трафика (МБ)</label>
+                <input type="number" name="traffic_limit_mb" class="form-input" 
+                       value="{{ tariff.traffic_limit_mb or '' }}" placeholder="0" min="0">
+                <small style="color: #64748b; font-size: 0.75rem;">
+                    0 = безлимит
+                </small>
+            </div>
+            
+            <div class="form-group">
                 <label class="form-label">Цена (₽)</label>
                 <input type="number" name="price_rub" class="form-input" required 
                        value="{{ tariff.price_rub }}" placeholder="0" min="0">
                 <small style="color: #64748b; font-size: 0.75rem;">
                     0 = бесплатный тариф
+                </small>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Цена в криптовалюте (USD)</label>
+                <input type="number" name="price_crypto_usd" class="form-input" step="0.01" 
+                       value="{{ tariff.price_crypto_usd or '' }}" placeholder="" min="0">
+                <small style="color: #64748b; font-size: 0.75rem;">
+                    Оставьте пустым, если крипто-оплата недоступна для этого тарифа
                 </small>
             </div>
         </div>

@@ -263,15 +263,30 @@ def get_payment_service() -> PaymentService:
     """Получение глобального экземпляра PaymentService"""
     global _payment_service
     if _payment_service is None:
-        # Создаем сервис с дефолтными параметрами
-        # В реальной реализации параметры должны передаваться из конфигурации
+        # Создаем сервис с параметрами из настроек
+        from app.settings import settings as app_settings
+        
         yookassa_service = YooKassaService(
-            shop_id="default_shop_id",
-            api_key="default_api_key",
-            return_url="https://t.me/default_bot"
+            shop_id=app_settings.YOOKASSA_SHOP_ID or "default_shop_id",
+            api_key=app_settings.YOOKASSA_API_KEY or "default_api_key",
+            return_url=app_settings.YOOKASSA_RETURN_URL or "https://t.me/default_bot"
         )
         payment_repo = PaymentRepository()
-        _payment_service = PaymentService(payment_repo, yookassa_service)
+        
+        # Создаем CryptoBot сервис если токен есть
+        cryptobot_service = None
+        if app_settings.CRYPTOBOT_API_TOKEN:
+            try:
+                from payments.services.cryptobot_service import CryptoBotService
+                cryptobot_service = CryptoBotService(
+                    api_token=app_settings.CRYPTOBOT_API_TOKEN,
+                    api_url=app_settings.CRYPTOBOT_API_URL
+                )
+            except Exception as e:
+                import logging
+                logging.warning(f"Не удалось создать CryptoBot сервис: {e}")
+        
+        _payment_service = PaymentService(payment_repo, yookassa_service, cryptobot_service)
     
     return _payment_service
 

@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     YOOKASSA_API_KEY: str | None = Field(default=None)
     YOOKASSA_RETURN_URL: str | None = Field(default=None)
 
+    # CryptoBot
+    CRYPTOBOT_API_TOKEN: str | None = Field(default=None, description="CryptoBot API Token")
+    CRYPTOBOT_API_URL: str = Field(default="https://pay.crypt.bot/api", description="CryptoBot API URL")
+    CRYPTOBOT_WEBHOOK_SECRET: str | None = Field(default=None, description="CryptoBot webhook secret (optional)")
+    CRYPTOBOT_DEFAULT_ASSET: str = Field(default="USDT", description="Default cryptocurrency asset")
+    CRYPTOBOT_DEFAULT_NETWORK: str = Field(default="TRC20", description="Default network for USDT")
+
     # Database
     DATABASE_PATH: str = Field(default="vpn.db")
     DB_ENCRYPTION_KEY: str | None = Field(default=None)
