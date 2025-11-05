@@ -25,13 +25,20 @@ async def handle_start(message: types.Message, user_states: dict):
         first_name = message.from_user.first_name
         last_name = message.from_user.last_name
         
-        cursor.execute("""
-            INSERT OR REPLACE INTO users 
-            (user_id, username, first_name, last_name, created_at, last_active_at, blocked)
-            VALUES (?, ?, ?, ?, 
-                COALESCE((SELECT created_at FROM users WHERE user_id = ?), ?), 
-                ?, 0)
-        """, (user_id, username, first_name, last_name, user_id, now, now))
+        # Временно отключаем проверку foreign keys для INSERT OR REPLACE
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        
+        try:
+            cursor.execute("""
+                INSERT OR REPLACE INTO users 
+                (user_id, username, first_name, last_name, created_at, last_active_at, blocked)
+                VALUES (?, ?, ?, ?, 
+                    COALESCE((SELECT created_at FROM users WHERE user_id = ?), ?), 
+                    ?, 0)
+            """, (user_id, username, first_name, last_name, user_id, now, now))
+        finally:
+            # Включаем обратно проверку foreign keys
+            cursor.execute("PRAGMA foreign_keys=ON")
     
     # Обработка реферальной ссылки
     if args and args.isdigit() and int(args) != user_id:
