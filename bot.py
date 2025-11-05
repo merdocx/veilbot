@@ -1470,10 +1470,13 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
         user_states.pop(user_id, None)
         
         # Отправляем пользователю
+        # Получаем актуальное главное меню (на случай, если оно изменилось)
+        current_main_menu = get_main_menu()
+        
         if message:
             await message.answer(
                 format_key_message_unified(config, protocol, tariff),
-                reply_markup=main_menu,
+                reply_markup=current_main_menu,
                 disable_web_page_preview=True,
                 parse_mode="Markdown"
             )
@@ -1482,7 +1485,7 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             await bot.send_message(
                 user_id,
                 format_key_message_unified(config, protocol, tariff),
-                reply_markup=main_menu,
+                reply_markup=current_main_menu,
                 disable_web_page_preview=True,
                 parse_mode="Markdown"
             )
