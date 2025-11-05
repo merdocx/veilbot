@@ -510,6 +510,19 @@ def migrate_add_client_config_to_v2ray_keys():
     finally:
         conn.close()
 
+def migrate_add_available_for_purchase_to_servers():
+    """Добавление поля available_for_purchase в servers для управления доступностью серверов к покупке"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE servers ADD COLUMN available_for_purchase INTEGER DEFAULT 1")
+        conn.commit()
+        logging.info("Поле available_for_purchase добавлено в servers")
+    except sqlite3.OperationalError:
+        logging.info("Поле available_for_purchase уже существует в servers")
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     import time
     init_db()
@@ -531,4 +544,5 @@ if __name__ == "__main__":
     migrate_add_crypto_pricing()
     migrate_add_crypto_payment_fields()
     migrate_add_client_config_to_v2ray_keys()
+    migrate_add_available_for_purchase_to_servers()
 

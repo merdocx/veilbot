@@ -90,6 +90,14 @@
                     <span>Активен</span>
                 </label>
             </div>
+            
+            <div class="form-group">
+                <label class="form-checkbox">
+                    <input type="checkbox" name="available_for_purchase" {% if server.available_for_purchase %}checked{% endif %}>
+                    <span>Доступен к покупке</span>
+                </label>
+                <small class="form-help-text">Если снято, сервер активен, но не будет показываться при покупке, смене приложения или перевыпуске ключа. Продление будет работать.</small>
+            </div>
         </div>
         
         <div class="card-actions">

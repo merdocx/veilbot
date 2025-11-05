@@ -68,11 +68,35 @@ main_menu.add(KeyboardButton("Помощь"))
 
 # Меню выбора протокола
 def get_protocol_selection_menu() -> ReplyKeyboardMarkup:
+    """Создает меню выбора протокола, показывая только те протоколы, у которых есть доступные серверы"""
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
-    menu.add(KeyboardButton(f"{PROTOCOLS['outline']['icon']} {PROTOCOLS['outline']['name']}"))
-    menu.add(KeyboardButton(f"{PROTOCOLS['v2ray']['icon']} {PROTOCOLS['v2ray']['name']}"))
-    menu.add(KeyboardButton("ℹ️ Сравнить протоколы"))
+    
+    # Проверяем наличие доступных серверов для каждого протокола
+    with get_db_cursor() as cursor:
+        # Проверяем Outline
+        cursor.execute("""
+            SELECT COUNT(*) FROM servers 
+            WHERE active = 1 AND available_for_purchase = 1 AND protocol = 'outline'
+        """)
+        outline_count = cursor.fetchone()[0]
+        
+        # Проверяем V2Ray
+        cursor.execute("""
+            SELECT COUNT(*) FROM servers 
+            WHERE active = 1 AND available_for_purchase = 1 AND protocol = 'v2ray'
+        """)
+        v2ray_count = cursor.fetchone()[0]
+    
+    # Добавляем только протоколы с доступными серверами
+    if outline_count > 0:
+        menu.add(KeyboardButton(f"{PROTOCOLS['outline']['icon']} {PROTOCOLS['outline']['name']}"))
+    
+    if v2ray_count > 0:
+        menu.add(KeyboardButton(f"{PROTOCOLS['v2ray']['icon']} {PROTOCOLS['v2ray']['name']}"))
+    
+    # Добавляем кнопку "Назад"
     menu.add(KeyboardButton("🔙 Назад"))
+    
     return menu
 
 # Клавиатура для помощи
@@ -243,6 +267,22 @@ async def handle_buy_menu(message: types.Message):
     if user_id in user_states:
         del user_states[user_id]
     
+    # Проверяем наличие доступных протоколов
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+            SELECT COUNT(DISTINCT protocol) FROM servers 
+            WHERE active = 1 AND available_for_purchase = 1
+        """)
+        available_protocols_count = cursor.fetchone()[0]
+    
+    if available_protocols_count == 0:
+        await message.answer(
+            "❌ К сожалению, сейчас нет доступных серверов для покупки. "
+            "Пожалуйста, попробуйте позже.",
+            reply_markup=main_menu
+        )
+        return
+    
     # Показываем выбор протокола
     try:
         await message.answer(
@@ -284,25 +324,6 @@ async def handle_protocol_selection(message: types.Message):
         reply_markup=get_country_menu(countries)
     )
 
-@dp.message_handler(lambda m: m.text == "ℹ️ Сравнить протоколы")
-async def handle_protocol_comparison(message: types.Message):
-    """Сравнение протоколов"""
-    comparison_text = """
-🔒 **Outline VPN**
-• Высокая скорость соединения
-• Простая настройка
-• Стабильная работа
-• Подходит для большинства задач
-
-🛡️ **V2Ray VLESS**
-• Продвинутая обфускация трафика
-• Лучшая защита от блокировок
-• Больше настроек
-• Рекомендуется для сложных случаев
-
-Выберите протокол, который подходит именно вам!
-    """
-    await message.answer(comparison_text, reply_markup=get_protocol_selection_menu(), parse_mode="Markdown")
 
 @dp.message_handler(lambda m: m.text == "🔙 Отмена")
 async def handle_cancel(message: types.Message):
@@ -495,9 +516,12 @@ async def handle_payment_method_after_country(message: types.Message):
         msg += f"🌍 Страна: *{country}*\n\n"
         msg += "📦 Выберите тариф:"
         
+        # Для продления скрываем бесплатные тарифы
+        paid_only = state.get("paid_only", False)
+        
         await message.answer(
             msg,
-            reply_markup=get_tariff_menu(payment_method="yookassa"),
+            reply_markup=get_tariff_menu(payment_method="yookassa", paid_only=paid_only),
             parse_mode="Markdown"
         )
         return
@@ -530,7 +554,9 @@ async def handle_payment_method_after_country(message: types.Message):
         msg += f"🌍 Страна: *{country}*\n\n"
         msg += "📦 Выберите тариф:"
         
-        tariff_menu = get_tariff_menu(payment_method="cryptobot")
+        # Для продления скрываем бесплатные тарифы
+        paid_only = state.get("paid_only", False)
+        tariff_menu = get_tariff_menu(payment_method="cryptobot", paid_only=paid_only)
         
         # Проверяем, есть ли тарифы в меню (кроме кнопки "Назад")
         if len(tariff_menu.keyboard) <= 1:  # Только кнопка "Назад"
@@ -967,10 +993,12 @@ async def handle_tariff_selection_with_country(message: types.Message):
                 if not email_db:
                     email_db = f"user_{user_id}@veilbot.com"
 
-                # Для продления сразу создаем платеж (YooKassa по умолчанию)
+                # Для продления сразу создаем платеж с выбранным способом оплаты
+                # Используем выбранный способ оплаты из состояния
+                renewal_payment_method = payment_method or "yookassa"  # По умолчанию YooKassa, если не указан
                 # Сбрасываем временное состояние выбора тарифа
                 user_states[user_id] = {}
-                await create_payment_with_email_and_protocol(message, user_id, tariff, email_db, country, protocol, payment_method="yookassa")
+                await create_payment_with_email_and_protocol(message, user_id, tariff, email_db, country, protocol, payment_method=renewal_payment_method, for_renewal=True)
             else:
                 # Для новой покупки сразу переходим к запросу email (способ оплаты уже выбран)
                 user_states[user_id]["tariff"] = tariff
@@ -1181,31 +1209,107 @@ async def extend_existing_key_with_fallback(cursor, existing_key, duration, emai
         new_expiry = existing_key[1] + duration
     
     # Получаем информацию о текущем сервере в зависимости от протокола
+    # При продлении проверяем только active, не проверяем available_for_purchase
     if protocol == 'outline':
         cursor.execute("SELECT server_id FROM keys WHERE id = ?", (existing_key[0],))
         server_id = cursor.fetchone()[0]
         
-        cursor.execute("SELECT api_url, cert_sha256, country FROM servers WHERE id = ?", (server_id,))
+        cursor.execute("SELECT api_url, cert_sha256, country, active FROM servers WHERE id = ?", (server_id,))
         server_data = cursor.fetchone()
         
         if not server_data:
             logging.error(f"Server {server_id} not found for key {existing_key[0]}")
             return False
         
-        api_url, cert_sha256, country = server_data
+        api_url, cert_sha256, country, is_active = server_data
+        
+        # Если сервер неактивен, пытаемся найти альтернативный
+        if not is_active:
+            logging.warning(f"Server {server_id} is not active, looking for alternative for renewal")
+            alternative_server = find_alternative_server(cursor, country, protocol, server_id)
+            
+            if not alternative_server:
+                logging.error(f"No alternative active server found for country={country}, protocol={protocol}")
+                return False
+            
+            alt_server_id, alt_name, alt_api_url, alt_cert_sha256, alt_domain, alt_api_key, alt_v2ray_path = alternative_server
+            
+            # Проверяем доступность альтернативного сервера
+            if not check_server_availability(alt_api_url, alt_cert_sha256, protocol):
+                logging.error(f"Alternative server {alt_server_id} is not available")
+                return False
+            
+            # Переходим к логике создания ключа на альтернативном сервере
+            try:
+                key = await asyncio.get_event_loop().run_in_executor(None, create_key, alt_api_url, alt_cert_sha256)
+                if not key:
+                    logging.error(f"Failed to create key on alternative server {alt_server_id}")
+                    return False
+                
+                # Обновляем ключ в базе данных
+                cursor.execute("""
+                    UPDATE keys 
+                    SET server_id = ?, access_url = ?, key_id = ?, expiry_at = ?, email = ?, tariff_id = ?
+                    WHERE id = ?
+                """, (alt_server_id, key['accessUrl'], key['id'], new_expiry, email or '', tariff_id or 0, existing_key[0]))
+                
+                logging.info(f"Key {existing_key[0]} moved to alternative active server {alt_server_id} ({alt_name}) for renewal")
+                return True
+            except Exception as e:
+                logging.error(f"Error creating key on alternative server: {e}")
+                return False
     else:  # v2ray
         server_id = existing_key[5]  # server_id из запроса
-        cursor.execute("SELECT api_url, api_key, country FROM servers WHERE id = ?", (server_id,))
+        cursor.execute("SELECT api_url, api_key, country, active FROM servers WHERE id = ?", (server_id,))
         server_data = cursor.fetchone()
         
         if not server_data:
             logging.error(f"Server {server_id} not found for V2Ray key {existing_key[0]}")
             return False
         
-        api_url, api_key, country = server_data
+        api_url, api_key, country, is_active = server_data
         cert_sha256 = None  # Для V2Ray не используется
+        
+        # Если сервер неактивен, пытаемся найти альтернативный
+        if not is_active:
+            logging.warning(f"Server {server_id} is not active, looking for alternative for renewal")
+            alternative_server = find_alternative_server(cursor, country, protocol, server_id)
+            
+            if not alternative_server:
+                logging.error(f"No alternative active server found for country={country}, protocol={protocol}")
+                return False
+            
+            alt_server_id, alt_name, alt_api_url, alt_cert_sha256, alt_domain, alt_api_key, alt_v2ray_path = alternative_server
+            
+            # Проверяем доступность альтернативного сервера
+            if not check_server_availability(alt_api_url, None, protocol):
+                logging.error(f"Alternative server {alt_server_id} is not available")
+                return False
+            
+            # Переходим к логике создания ключа на альтернативном сервере
+            try:
+                from vpn_protocols import V2RayProtocol
+                v2ray_client = V2RayProtocol(alt_api_url, alt_api_key)
+                user_data = await v2ray_client.create_user(email or f"user_{existing_key[0]}@veilbot.com")
+                
+                if not user_data or not user_data.get('uuid'):
+                    logging.error(f"Failed to create V2Ray key on alternative server {alt_server_id}")
+                    return False
+                
+                # Обновляем ключ в базе данных
+                cursor.execute("""
+                    UPDATE v2ray_keys 
+                    SET server_id = ?, v2ray_uuid = ?, expiry_at = ?, email = ?, tariff_id = ?
+                    WHERE id = ?
+                """, (alt_server_id, user_data['uuid'], new_expiry, email or '', tariff_id or 0, existing_key[0]))
+                
+                logging.info(f"V2Ray key {existing_key[0]} moved to alternative active server {alt_server_id} ({alt_name}) for renewal")
+                return True
+            except Exception as e:
+                logging.error(f"Error creating V2Ray key on alternative server: {e}")
+                return False
     
-    # Проверяем доступность текущего сервера
+    # Если сервер активен, проверяем его доступность через API
     if check_server_availability(api_url, cert_sha256, protocol):
         # Сервер доступен, просто продлеваем
         if protocol == 'outline':
@@ -1389,10 +1493,10 @@ async def switch_protocol_and_extend(cursor, message, user_id, old_key_data: dic
     
     logging.info(f"User {user_id}: switching protocol {old_protocol}→{new_protocol}, country {old_country}→{target_country}, remaining={remaining}s, adding={additional_duration}s")
     
-    # Ищем сервер в целевой стране с новым протоколом
+    # Ищем сервер в целевой стране с новым протоколом (только доступные к покупке)
     cursor.execute("""
         SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key FROM servers 
-        WHERE active = 1 AND country = ? AND protocol = ?
+        WHERE active = 1 AND available_for_purchase = 1 AND country = ? AND protocol = ?
     """, (target_country, new_protocol))
     servers = cursor.fetchall()
     
@@ -1594,10 +1698,10 @@ async def change_country_and_extend(cursor, message, user_id, key_data: dict, ne
     old_country = key_data['country']
     old_email = key_data['email'] or email
     
-    # Ищем сервер в новой стране с тем же протоколом
+    # Ищем сервер в новой стране с тем же протоколом (только доступные к покупке)
     cursor.execute("""
         SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key FROM servers 
-        WHERE active = 1 AND country = ? AND protocol = ?
+        WHERE active = 1 AND available_for_purchase = 1 AND country = ? AND protocol = ?
     """, (new_country, protocol))
     servers = cursor.fetchall()
     
@@ -1758,8 +1862,12 @@ async def change_country_and_extend(cursor, message, user_id, key_data: dict, ne
         await message.answer("❌ Произошла ошибка при смене страны. Попробуйте позже.", reply_markup=main_menu)
         return False
 
-async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email=None, country=None, protocol="outline"):
-    """Создание нового ключа с поддержкой протоколов"""
+async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email=None, country=None, protocol="outline", for_renewal=False):
+    """Создание нового ключа с поддержкой протоколов
+    
+    Args:
+        for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
+    """
     now = int(time.time())
     GRACE_PERIOD = 86400  # 24 часа в секундах
     grace_threshold = now - GRACE_PERIOD
@@ -2058,7 +2166,7 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
             return
     
     # Если нет активного ключа — создаём новый
-    server = select_available_server_by_protocol(cursor, country, protocol)
+    server = select_available_server_by_protocol(cursor, country, protocol, for_renewal=for_renewal)
     if not server:
         await message.answer(f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
         return
@@ -2280,22 +2388,47 @@ async def create_new_key_flow_with_protocol(cursor, message, user_id, tariff, em
         )
         return
 
-def select_available_server_by_protocol(cursor, country=None, protocol='outline'):
-    """Выбор сервера с учетом протокола"""
-    if country:
-        cursor.execute("""
-            SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
-            FROM servers 
-            WHERE active = 1 AND country = ? AND protocol = ?
-            ORDER BY RANDOM() LIMIT 1
-        """, (country, protocol))
+def select_available_server_by_protocol(cursor, country=None, protocol='outline', for_renewal=False):
+    """
+    Выбор сервера с учетом протокола
+    
+    Args:
+        country: Страна сервера
+        protocol: Протокол (outline или v2ray)
+        for_renewal: Если True, проверяет только active, не проверяет available_for_purchase (для продления)
+    """
+    if for_renewal:
+        # Для продления проверяем только active
+        if country:
+            cursor.execute("""
+                SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+                FROM servers 
+                WHERE active = 1 AND country = ? AND protocol = ?
+                ORDER BY RANDOM() LIMIT 1
+            """, (country, protocol))
+        else:
+            cursor.execute("""
+                SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+                FROM servers 
+                WHERE active = 1 AND protocol = ?
+                ORDER BY RANDOM() LIMIT 1
+            """, (protocol,))
     else:
-        cursor.execute("""
-            SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
-            FROM servers 
-            WHERE active = 1 AND protocol = ?
-            ORDER BY RANDOM() LIMIT 1
-        """, (protocol,))
+        # Для покупки проверяем и active, и available_for_purchase
+        if country:
+            cursor.execute("""
+                SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+                FROM servers 
+                WHERE active = 1 AND available_for_purchase = 1 AND country = ? AND protocol = ?
+                ORDER BY RANDOM() LIMIT 1
+            """, (country, protocol))
+        else:
+            cursor.execute("""
+                SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+                FROM servers 
+                WHERE active = 1 AND available_for_purchase = 1 AND protocol = ?
+                ORDER BY RANDOM() LIMIT 1
+            """, (protocol,))
     
     row = cursor.fetchone()
     if not row:
@@ -2417,9 +2550,13 @@ async def handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, cou
     # Перенаправляем на выбор способа оплаты
     await handle_payment_method_selection(cursor, message, user_id, tariff, country, protocol)
 
-async def create_payment_with_email_and_protocol(message, user_id, tariff, email=None, country=None, protocol="outline", payment_method="yookassa"):
-    """Создание платежа с поддержкой протоколов и способов оплаты"""
-    logging.debug(f"create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}, payment_method={payment_method}")
+async def create_payment_with_email_and_protocol(message, user_id, tariff, email=None, country=None, protocol="outline", payment_method="yookassa", for_renewal=False):
+    """Создание платежа с поддержкой протоколов и способов оплаты
+    
+    Args:
+        for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
+    """
+    logging.debug(f"create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}, payment_method={payment_method}, for_renewal={for_renewal}")
     
     # Если выбран CryptoBot, создаем криптоплатеж
     if payment_method == "cryptobot":
@@ -2480,9 +2617,9 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
             
             # Запускаем ожидание платежа (для CryptoBot это будет проверка через webhook или периодическую проверку)
             with get_db_cursor() as cursor:
-                server = select_available_server_by_protocol(cursor, country, protocol)
+                server = select_available_server_by_protocol(cursor, country, protocol, for_renewal=for_renewal)
                 if server:
-                    asyncio.create_task(wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, country, protocol))
+                    asyncio.create_task(wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, country, protocol, for_renewal=for_renewal))
             
             return
             
@@ -2560,7 +2697,7 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
                 
                 # Выбираем сервер с учетом протокола
                 with get_db_cursor() as cursor:
-                    server = select_available_server_by_protocol(cursor, country, protocol)
+                    server = select_available_server_by_protocol(cursor, country, protocol, for_renewal=for_renewal)
                     if not server:
                         await message.answer(f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
                         return
@@ -2584,7 +2721,7 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
                 )
                 
                 # Запускаем ожидание платежа
-                asyncio.create_task(wait_for_payment_with_protocol(message, payment_id, server, user_id, tariff, country, protocol))
+                asyncio.create_task(wait_for_payment_with_protocol(message, payment_id, server, user_id, tariff, country, protocol, for_renewal=for_renewal))
                 return
             else:
                 logging.debug("New payment module failed to create payment")
@@ -2636,11 +2773,12 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
         return
 
 def select_available_server(cursor, country=None):
+    """Выбор сервера для покупки (только доступные к покупке)"""
     now = int(time.time())
     if country:
-        servers = cursor.execute("SELECT id, api_url, cert_sha256, max_keys FROM servers WHERE active = 1 AND country = ?", (country,)).fetchall()
+        servers = cursor.execute("SELECT id, api_url, cert_sha256, max_keys FROM servers WHERE active = 1 AND available_for_purchase = 1 AND country = ?", (country,)).fetchall()
     else:
-        servers = cursor.execute("SELECT id, api_url, cert_sha256, max_keys FROM servers WHERE active = 1").fetchall()
+        servers = cursor.execute("SELECT id, api_url, cert_sha256, max_keys FROM servers WHERE active = 1 AND available_for_purchase = 1").fetchall()
     for s_id, api_url, cert_sha256, max_keys in servers:
         cursor.execute("SELECT COUNT(*) FROM keys WHERE server_id = ? AND expiry_at > ?", (s_id, now))
         active_keys = cursor.fetchone()[0]
@@ -2650,8 +2788,12 @@ def select_available_server(cursor, country=None):
 
 
 
-async def wait_for_payment_with_protocol(message, payment_id, server, user_id, tariff, country=None, protocol="outline"):
-    """Ожидание платежа с поддержкой протоколов"""
+async def wait_for_payment_with_protocol(message, payment_id, server, user_id, tariff, country=None, protocol="outline", for_renewal=False):
+    """Ожидание платежа с поддержкой протоколов
+    
+    Args:
+        for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
+    """
     
     # Используем новый платежный модуль
     if PAYMENT_MODULE_AVAILABLE:
@@ -2667,7 +2809,7 @@ async def wait_for_payment_with_protocol(message, payment_id, server, user_id, t
                     cursor.execute("SELECT email FROM payments WHERE payment_id = ?", (payment_id,))
                     payment_data = cursor.fetchone()
                     email = payment_data[0] if payment_data else None
-                    await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol)
+                    await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
                     # --- Реферальный бонус ---
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
                     ref_row = cursor.fetchone()
@@ -2706,7 +2848,7 @@ async def wait_for_payment_with_protocol(message, payment_id, server, user_id, t
         await message.answer("Платежная система временно недоступна.", reply_markup=main_menu)
         return
 
-async def wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, country=None, protocol="outline"):
+async def wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, country=None, protocol="outline", for_renewal=False):
     """Ожидание криптоплатежа через CryptoBot"""
     try:
         payment_service = get_payment_service()
@@ -2732,7 +2874,7 @@ async def wait_for_crypto_payment(message, invoice_id, server, user_id, tariff, 
                     email = payment_data[0] if payment_data else None
                     
                     # Создаем ключ
-                    await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol)
+                    await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
                     
                     # Реферальный бонус (та же логика что и для обычных платежей)
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
@@ -2928,13 +3070,70 @@ async def check_key_availability():
 
 @dp.callback_query_handler(lambda c: c.data == "buy")
 async def callback_buy_button(callback_query: types.CallbackQuery):
+    """Обработчик кнопки 'Продлить' - показывает выбор способа платежа (как при покупке)"""
     user_id = callback_query.from_user.id
-    # Ставим состояние ожидания выбора тарифа для сценария продления и скрываем бесплатные тарифы
+    now = int(time.time())
+    
+    # Находим активный ключ пользователя (самый новый по сроку действия)
+    with get_db_cursor() as cursor:
+        # Проверяем Outline ключи
+        cursor.execute("""
+            SELECT k.id, k.expiry_at, s.protocol, s.country
+            FROM keys k
+            JOIN servers s ON k.server_id = s.id
+            WHERE k.user_id = ? AND k.expiry_at > ?
+            ORDER BY k.expiry_at DESC LIMIT 1
+        """, (user_id, now))
+        outline_key = cursor.fetchone()
+        
+        # Проверяем V2Ray ключи
+        cursor.execute("""
+            SELECT k.id, k.expiry_at, s.protocol, s.country
+            FROM v2ray_keys k
+            JOIN servers s ON k.server_id = s.id
+            WHERE k.user_id = ? AND k.expiry_at > ?
+            ORDER BY k.expiry_at DESC LIMIT 1
+        """, (user_id, now))
+        v2ray_key = cursor.fetchone()
+        
+        # Выбираем самый новый ключ
+        current_key = None
+        if outline_key and v2ray_key:
+            # Сравниваем по expiry_at
+            current_key = outline_key if outline_key[1] > v2ray_key[1] else v2ray_key
+        elif outline_key:
+            current_key = outline_key
+        elif v2ray_key:
+            current_key = v2ray_key
+    
+    if not current_key:
+        await callback_query.answer("У вас нет активных ключей для продления", show_alert=True)
+        return
+    
+    # Получаем протокол и страну из найденного ключа
+    key_id, expiry_at, protocol, country = current_key
+    
+    # Устанавливаем состояние для выбора способа платежа (как при покупке)
     user_states[user_id] = {
-        "state": "waiting_tariff",
+        "state": "waiting_payment_method_after_country",
+        "country": country,
+        "protocol": protocol,
+        "is_renewal": True,  # Флаг, что это продление
         "paid_only": True
     }
-    await bot.send_message(user_id, "Выберите тариф для продления:", reply_markup=get_tariff_menu(paid_only=True))
+    
+    # Показываем выбор способа платежа
+    msg = f"💳 *Выберите способ оплаты*\n\n"
+    msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+    msg += f"🌍 Страна: *{country}*\n"
+    
+    await bot.send_message(
+        user_id,
+        msg,
+        reply_markup=get_payment_method_keyboard(),
+        parse_mode="Markdown"
+    )
+    
     try:
         await callback_query.answer()
     except Exception:
@@ -2942,18 +3141,20 @@ async def callback_buy_button(callback_query: types.CallbackQuery):
 
 # --- Country selection helpers ---
 def get_countries():
+    """Получить список стран для покупки (только с серверами, доступными к покупке)"""
     with get_db_cursor() as cursor:
-        cursor.execute("SELECT DISTINCT country FROM servers WHERE active = 1 AND country IS NOT NULL AND country != ''")
+        cursor.execute("SELECT DISTINCT country FROM servers WHERE active = 1 AND available_for_purchase = 1 AND country IS NOT NULL AND country != ''")
         countries = [row[0] for row in cursor.fetchall()]
     return countries
 
 def get_countries_by_protocol(protocol):
-    """Получить страны только для указанного протокола"""
+    """Получить страны только для указанного протокола (только с серверами, доступными к покупке)"""
     with get_db_cursor() as cursor:
         cursor.execute("""
             SELECT DISTINCT country 
             FROM servers 
             WHERE active = 1 
+            AND available_for_purchase = 1
             AND country IS NOT NULL 
             AND country != '' 
             AND protocol = ?
@@ -3516,10 +3717,10 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
         # Определяем новый протокол (противоположный текущему)
         new_protocol = "v2ray" if old_protocol == "outline" else "outline"
         
-        # Ищем сервер той же страны с новым протоколом
+        # Ищем сервер той же страны с новым протоколом (только доступные к покупке)
         cursor.execute("""
             SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key FROM servers 
-            WHERE active = 1 AND country = ? AND protocol = ?
+            WHERE active = 1 AND available_for_purchase = 1 AND country = ? AND protocol = ?
         """, (country, new_protocol))
         servers = cursor.fetchall()
         
@@ -3714,10 +3915,10 @@ async def change_country_for_key(message: types.Message, user_id: int, key_data:
         old_email = key_data['email']
         protocol = key_data['protocol']
         
-        # Ищем сервер той же страны с тем же протоколом
+        # Ищем сервер той же страны с тем же протоколом (только доступные к покупке)
         cursor.execute("""
             SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key FROM servers 
-            WHERE active = 1 AND country = ? AND protocol = ?
+            WHERE active = 1 AND available_for_purchase = 1 AND country = ? AND protocol = ?
         """, (new_country, protocol))
         servers = cursor.fetchall()
         
@@ -3766,27 +3967,60 @@ async def change_country_for_key(message: types.Message, user_id: int, key_data:
             # Создаём новый V2Ray ключ
             try:
                 from vpn_protocols import V2RayProtocol
-                v2ray_client = V2RayProtocol(api_url, api_key)
-                user_data = await v2ray_client.create_user(old_email or f"user_{user_id}@veilbot.com")
+                server_config = {'api_url': api_url, 'api_key': api_key}
+                protocol_client = ProtocolFactory.create_protocol(protocol, server_config)
+                
+                # Создаем пользователя на новом сервере
+                user_data = await protocol_client.create_user(old_email or f"user_{user_id}@veilbot.com")
                 
                 if not user_data or not user_data.get('uuid'):
-                    await message.answer("Ошибка при создании нового V2Ray ключа.", reply_markup=main_menu)
-                    return
+                    raise Exception(f"Failed to create V2Ray user - invalid response from server")
                 
-                # Добавляем новый ключ с тем же сроком действия и email
+                # Получаем client_config из ответа create_user или через get_user_config
+                config = None
+                old_email_val = old_email or f"user_{user_id}@veilbot.com"
+                logging.info(f"[REISSUE] Processing reissue for email: {old_email_val}, new UUID: {user_data.get('uuid')}")
+                
+                if user_data.get('client_config'):
+                    config = user_data['client_config']
+                    logging.info(f"[REISSUE] Using client_config from create_user response for email {old_email_val}")
+                else:
+                    # Если client_config нет в ответе, запрашиваем через get_user_config
+                    logging.warning(f"[REISSUE] client_config not in create_user response for email {old_email_val}, fetching via get_user_config")
+                    await asyncio.sleep(1.0)  # Даем API время сгенерировать конфигурацию
+                    config = await protocol_client.get_user_config(user_data['uuid'], {
+                        'domain': domain,
+                        'port': 443,
+                        'path': v2ray_path or '/v2ray',
+                        'email': old_email_val
+                    }, max_retries=5, retry_delay=1.5)
+                
+                # Удаляем старый ключ из V2Ray сервера
+                old_uuid = key_data['v2ray_uuid']
+                try:
+                    # Получаем данные старого сервера для правильного API ключа
+                    cursor.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (old_server_id,))
+                    old_server_data = cursor.fetchone()
+                    if old_server_data:
+                        old_api_url, old_api_key = old_server_data
+                        old_server_config = {'api_url': old_api_url, 'api_key': old_api_key}
+                        old_protocol_client = ProtocolFactory.create_protocol(protocol, old_server_config)
+                        await old_protocol_client.delete_user(old_uuid)
+                except Exception as e:
+                    logging.warning(f"Не удалось удалить старый V2Ray ключ (возможно уже удален): {e}")
+                
+                # Добавляем новый ключ с client_config в базу данных
                 cursor.execute(
-                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (new_server_id, user_id, user_data['uuid'], now + remaining, now, old_email, key_data['tariff_id'])
+                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (new_server_id, user_id, user_data['uuid'], now + remaining, now, old_email, key_data['tariff_id'], config)
                 )
                 
-                # Формируем access_url для V2Ray
-                access_url = f"vless://{user_data['uuid']}@{domain}:443?path={v2ray_path}&security=tls&type=ws#VeilBot-V2Ray"
+                # Используем сохраненный config для отправки пользователю
+                await message.answer(format_key_message_unified(config, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
-                await message.answer(format_key_message_unified(access_url, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-                
-                # Удаляем старый ключ после успешного создания нового
-                await delete_old_key_after_success(cursor, old_key_data)
+                # Удаляем старый ключ из базы после успешного создания нового
+                cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_data['id'],))
                 
             except Exception as e:
                 logging.error(f"Ошибка при создании нового V2Ray ключа: {e}")
@@ -3844,10 +4078,10 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
         old_email = key_data['email']
         protocol = key_data['protocol']
         
-        # Ищем другие серверы той же страны и протокола
+        # Ищем другие серверы той же страны и протокола (только доступные к покупке)
         cursor.execute("""
             SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key, max_keys FROM servers 
-            WHERE active = 1 AND country = ? AND protocol = ? AND id != ?
+            WHERE active = 1 AND available_for_purchase = 1 AND country = ? AND protocol = ? AND id != ?
         """, (country, protocol, old_server_id))
         other_servers = cursor.fetchall()
         
@@ -3855,6 +4089,13 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
         available_servers = []
         for server in other_servers:
             server_id, api_url, cert_sha256, domain, v2ray_path, api_key, max_keys = server
+            
+            # Дополнительная проверка: убеждаемся, что сервер действительно доступен к покупке
+            cursor.execute("SELECT available_for_purchase FROM servers WHERE id = ?", (server_id,))
+            purchase_status = cursor.fetchone()
+            if not purchase_status or not purchase_status[0]:
+                logging.debug(f"Server {server_id} is not available for purchase, skipping")
+                continue
             
             # Проверяем емкость сервера
             if protocol == 'outline':
@@ -3873,9 +4114,23 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
             logging.info(f"Найден другой сервер {new_server_id} для перевыпуска ключа")
         else:
             # Нет других серверов - проверяем, можно ли перевыпустить на том же сервере
-            cursor.execute("SELECT max_keys FROM servers WHERE id = ?", (old_server_id,))
-            max_keys_row = cursor.fetchone()
-            max_keys = max_keys_row[0] if max_keys_row else 100
+            # НО только если текущий сервер доступен к покупке
+            cursor.execute("SELECT max_keys, available_for_purchase FROM servers WHERE id = ?", (old_server_id,))
+            server_info = cursor.fetchone()
+            if not server_info:
+                await message.answer(f"Сервер не найден. Обратитесь к администратору.", reply_markup=main_menu)
+                return
+            
+            max_keys, available_for_purchase = server_info
+            
+            # Проверяем, доступен ли текущий сервер к покупке
+            if not available_for_purchase:
+                await message.answer(
+                    f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в вашей стране для перевыпуска ключа. "
+                    f"Текущий сервер недоступен для перевыпуска.",
+                    reply_markup=main_menu
+                )
+                return
             
             if protocol == 'outline':
                 cursor.execute("SELECT COUNT(*) FROM keys WHERE server_id = ? AND expiry_at > ?", (old_server_id, now))
@@ -3971,7 +4226,6 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                     # Если client_config нет в ответе, запрашиваем через get_user_config
                     # Увеличиваем количество попыток и задержку, так как API может генерировать конфигурацию асинхронно
                     logging.warning(f"[REISSUE] client_config not in create_user response for email {old_email_val}, fetching via get_user_config with extended retries")
-                    import asyncio
                     # Ждем немного перед первым запросом, чтобы дать API время сгенерировать конфигурацию
                     await asyncio.sleep(1.0)
                     config = await protocol_client.get_user_config(user_data['uuid'], {
@@ -4009,16 +4263,17 @@ async def reissue_specific_key(message: types.Message, user_id: int, key_data: d
                 except Exception as e:
                     logging.warning(f"Не удалось удалить старый V2Ray ключ (возможно уже удален): {e}")
                 
-                # Удаляем старый ключ из базы
-                cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_data['id'],))
-                
-                # Добавляем новый ключ с тем же сроком действия и email
+                # Добавляем новый ключ с client_config в базу данных (до удаления старого)
                 cursor.execute(
-                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'])
+                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'], config)
                 )
                 
+                # Удаляем старый ключ из базы после успешного создания нового
+                cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_data['id'],))
+                
+                # Используем сохраненный config для отправки пользователю
                 await message.answer(format_key_message_unified(config, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
             except Exception as e:

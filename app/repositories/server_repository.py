@@ -14,21 +14,21 @@ class ServerRepository:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
-                "SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path FROM servers"
+                "SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase FROM servers"
             )
             return c.fetchall()
 
     def add_server(
-        self, name: str, api_url: str, cert_sha256: str, max_keys: int, country: str, protocol: str, domain: str, api_key: str, v2ray_path: str
+        self, name: str, api_url: str, cert_sha256: str, max_keys: int, country: str, protocol: str, domain: str, api_key: str, v2ray_path: str, available_for_purchase: int = 1
     ) -> int:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
-                INSERT INTO servers (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO servers (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path, available_for_purchase)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path),
+                (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path, available_for_purchase),
             )
             conn.commit()
             return c.lastrowid
@@ -37,7 +37,7 @@ class ServerRepository:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
-                "SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path FROM servers WHERE id = ?",
+                "SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase FROM servers WHERE id = ?",
                 (server_id,),
             )
             return c.fetchone()
@@ -55,6 +55,7 @@ class ServerRepository:
         domain: str,
         api_key: str,
         v2ray_path: str,
+        available_for_purchase: int = 1,
     ) -> None:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -62,10 +63,10 @@ class ServerRepository:
                 """
                 UPDATE servers
                 SET name = ?, api_url = ?, cert_sha256 = ?, max_keys = ?, active = ?, country = ?,
-                    protocol = ?, domain = ?, api_key = ?, v2ray_path = ?
+                    protocol = ?, domain = ?, api_key = ?, v2ray_path = ?, available_for_purchase = ?
                 WHERE id = ?
                 """,
-                (name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, server_id),
+                (name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase, server_id),
             )
             conn.commit()
 

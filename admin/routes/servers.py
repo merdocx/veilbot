@@ -79,6 +79,11 @@ async def add_server(
             "csrf_token": get_csrf_token(request)
         })
     
+    # Получаем значение чекбокса напрямую из формы
+    # Чекбоксы отправляются только если отмечены, поэтому проверяем наличие поля
+    form_data = await request.form()
+    available_for_purchase = form_data.get("available_for_purchase") == "on"
+    
     try:
         # Валидация входных данных
         server_data = ServerForm(
@@ -102,6 +107,7 @@ async def add_server(
             domain=server_data.domain,
             api_key=server_data.api_key,
             v2ray_path=server_data.v2ray_path,
+            available_for_purchase=1 if available_for_purchase else 0,
         )
         
         log_admin_action(
@@ -177,7 +183,8 @@ async def edit_server_page(request: Request, server_id: int):
             "protocol": server[7] or "outline",
             "domain": server[8] or "",
             "api_key": server[9] or "",
-            "v2ray_path": server[10] if len(server) > 10 else "/v2ray"
+            "v2ray_path": server[10] if len(server) > 10 else "/v2ray",
+            "available_for_purchase": server[11] if len(server) > 11 else 1,
         },
         "csrf_token": get_csrf_token(request)
     })
@@ -208,6 +215,11 @@ async def edit_server(
         log_admin_action(request, "CSRF_ATTACK", f"Invalid CSRF token for edit_server")
         return RedirectResponse(url="/servers", status_code=HTTP_303_SEE_OTHER)
     
+    # Получаем значение чекбокса напрямую из формы
+    # Чекбоксы отправляются только если отмечены, поэтому проверяем наличие поля
+    form_data = await request.form()
+    available_for_purchase = form_data.get("available_for_purchase") == "on"
+    
     try:
         # Валидация
         server_data = ServerForm(
@@ -232,7 +244,8 @@ async def edit_server(
             domain=server_data.domain,
             api_key=server_data.api_key,
             v2ray_path=server_data.v2ray_path,
-            active=active
+            active=1 if active else 0,
+            available_for_purchase=1 if available_for_purchase else 0,
         )
         
         log_admin_action(request, "EDIT_SERVER", f"ID: {server_id}")

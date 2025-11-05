@@ -78,6 +78,7 @@
                     <th>Ключей</th>
                     <th>Макс.</th>
                     <th>Статус</th>
+                    <th>К покупке</th>
                     <th>Страна</th>
                     <th>Действия</th>
                 </tr>
@@ -100,8 +101,8 @@
                         <span class="code" title="{{ s[2] }}">{{ s[2]|truncate(30) }}</span>
                     </td>
                     <td>
-                        {% if s[11] %}
-                            <span class="badge badge-neutral">{{ s[11] }}</span>
+                        {% if s[12] %}
+                            <span class="badge badge-neutral">{{ s[12] }}</span>
                         {% else %}
                             <span class="text-muted">—</span>
                         {% endif %}
@@ -112,6 +113,14 @@
                             <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Активен">check_circle</span>
                         {% else %}
                             <span class="material-icons" style="color: #c62828; font-size: 20px;" title="Неактивен">cancel</span>
+                        {% endif %}
+                    </td>
+                    <td style="text-align: center;">
+                        {% set available_for_purchase = s[11] if s|length > 11 else 1 %}
+                        {% if available_for_purchase %}
+                            <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Доступен к покупке">check_circle</span>
+                        {% else %}
+                            <span class="material-icons" style="color: #ff9800; font-size: 20px;" title="Недоступен к покупке">remove_circle</span>
                         {% endif %}
                     </td>
                     <td>
@@ -209,6 +218,14 @@
                         <input type="text" id="api_key" name="api_key" placeholder="Вставьте API ключ V2Ray" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
                     </div>
                 </div>
+            </div>
+            
+            <div style="margin-bottom: 24px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" name="available_for_purchase" checked style="width: auto;">
+                    <span>Доступен к покупке</span>
+                </label>
+                <small style="display: block; margin-top: 4px; color: #666; margin-left: 24px;">Если снято, сервер активен, но не будет показываться при покупке, смене приложения или перевыпуске ключа. Продление будет работать.</small>
             </div>
             
             <div style="display: flex; gap: 8px; justify-content: flex-end;">
