@@ -270,12 +270,12 @@ async def handle_buy_menu(message: types.Message):
     # Проверяем наличие доступных протоколов
     with get_db_cursor() as cursor:
         cursor.execute("""
-            SELECT COUNT(DISTINCT protocol) FROM servers 
+            SELECT DISTINCT protocol FROM servers 
             WHERE active = 1 AND available_for_purchase = 1
         """)
-        available_protocols_count = cursor.fetchone()[0]
+        available_protocols = [row[0] for row in cursor.fetchall()]
     
-    if available_protocols_count == 0:
+    if len(available_protocols) == 0:
         await message.answer(
             "❌ К сожалению, сейчас нет доступных серверов для покупки. "
             "Пожалуйста, попробуйте позже.",
@@ -283,7 +283,52 @@ async def handle_buy_menu(message: types.Message):
         )
         return
     
-    # Показываем выбор протокола
+    # Если доступен только один протокол - автоматически выбираем его
+    if len(available_protocols) == 1:
+        protocol = available_protocols[0]
+        user_states[user_id] = {
+            'state': 'protocol_selected',
+            'protocol': protocol
+        }
+        
+        # Получаем страны для этого протокола
+        countries = get_countries_by_protocol(protocol)
+        
+        if not countries:
+            await message.answer(
+                f"К сожалению, для протокола {PROTOCOLS[protocol]['name']} пока нет доступных серверов.",
+                reply_markup=main_menu
+            )
+            return
+        
+        # Если доступна только одна страна - автоматически выбираем её
+        if len(countries) == 1:
+            country = countries[0]
+            user_states[user_id] = {
+                "state": "waiting_payment_method_after_country",
+                "country": country,
+                "protocol": protocol
+            }
+            
+            msg = f"💳 *Выберите способ оплаты*\n\n"
+            msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+            msg += f"🌍 Страна: *{country}*\n"
+            
+            await message.answer(
+                msg,
+                reply_markup=get_payment_method_keyboard(),
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Если несколько стран - показываем выбор
+        await message.answer(
+            "Доступные страны:",
+            reply_markup=get_country_menu(countries)
+        )
+        return
+    
+    # Если несколько протоколов - показываем выбор
     try:
         await message.answer(
             "Выберите VPN протокол:",
@@ -318,7 +363,27 @@ async def handle_protocol_selection(message: types.Message):
         )
         return
     
-    # Показываем список стран
+    # Если доступна только одна страна - автоматически выбираем её
+    if len(countries) == 1:
+        country = countries[0]
+        user_states[user_id] = {
+            "state": "waiting_payment_method_after_country",
+            "country": country,
+            "protocol": protocol
+        }
+        
+        msg = f"💳 *Выберите способ оплаты*\n\n"
+        msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+        msg += f"🌍 Страна: *{country}*\n"
+        
+        await message.answer(
+            msg,
+            reply_markup=get_payment_method_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Если несколько стран - показываем выбор
     await message.answer(
         "Доступные страны:",
         reply_markup=get_country_menu(countries)
@@ -838,6 +903,11 @@ async def handle_protocol_country_selection(message: types.Message):
         
         # Получаем страны только для выбранного протокола
         countries = get_countries_by_protocol(protocol)
+        
+        # Если доступна только одна страна и она не выбрана явно - автоматически выбираем её
+        if len(countries) == 1 and country not in countries:
+            country = countries[0]
+            logging.info(f"Auto-selecting single available country: {country} for protocol {protocol}")
         
         if country not in countries:
             protocol_info = PROTOCOLS.get(protocol, {"name": protocol})
