@@ -3388,7 +3388,7 @@ if __name__ == "__main__":
         
         # Настройка централизованной обработки ошибок
         logger.info("Настройка обработчика ошибок...")
-        error_handler = setup_error_handler(dp, bot, ADMIN_ID)
+        error_handler = setup_error_handler(dp, bot)
         logger.info("Обработчик ошибок настроен")
         
         # Запуск бота с обработкой ошибок
