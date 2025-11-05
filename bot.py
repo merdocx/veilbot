@@ -1582,20 +1582,20 @@ def select_available_server_by_protocol(cursor, country=None, protocol='outline'
     """
     if for_renewal:
         # Для продления проверяем только active
-    if country:
-        cursor.execute("""
-            SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
-            FROM servers 
-            WHERE active = 1 AND country = ? AND protocol = ?
-            ORDER BY RANDOM() LIMIT 1
-        """, (country, protocol))
-    else:
-        cursor.execute("""
-            SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
-            FROM servers 
-            WHERE active = 1 AND protocol = ?
-            ORDER BY RANDOM() LIMIT 1
-        """, (protocol,))
+        if country:
+            cursor.execute("""
+                SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+                FROM servers 
+                WHERE active = 1 AND country = ? AND protocol = ?
+                ORDER BY RANDOM() LIMIT 1
+            """, (country, protocol))
+        else:
+            cursor.execute("""
+                SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
+                FROM servers 
+                WHERE active = 1 AND protocol = ?
+                ORDER BY RANDOM() LIMIT 1
+            """, (protocol,))
     else:
         # Для покупки проверяем и active, и available_for_purchase
         if country:
