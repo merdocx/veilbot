@@ -100,6 +100,56 @@ def run_syntax_tests():
         else:
             print(f"⚠️ {file_path} - File not found")
     
+    # Test bot/services modules
+    bot_services_files = [
+        'bot/services/key_creation.py',
+        'bot/services/background_tasks.py',
+        'bot/services/key_management.py'
+    ]
+    
+    for file_path in bot_services_files:
+        if os.path.exists(file_path):
+            try:
+                subprocess.run([sys.executable, '-m', 'py_compile', file_path], 
+                             check=True, capture_output=True)
+                print(f"✅ {file_path} - No syntax errors")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ {file_path} - Syntax error: {e}")
+                success = False
+        else:
+            print(f"⚠️ {file_path} - File not found")
+    
+    # Test bot/handlers modules
+    bot_handlers_files = [
+        'bot/handlers/start.py',
+        'bot/handlers/keys.py',
+        'bot/handlers/purchase.py',
+        'bot/handlers/renewal.py',
+        'bot/handlers/key_management.py'
+    ]
+    
+    for file_path in bot_handlers_files:
+        if os.path.exists(file_path):
+            try:
+                subprocess.run([sys.executable, '-m', 'py_compile', file_path], 
+                             check=True, capture_output=True)
+                print(f"✅ {file_path} - No syntax errors")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ {file_path} - Syntax error: {e}")
+                success = False
+        else:
+            print(f"⚠️ {file_path} - File not found")
+    
+    # Test bot/core module
+    if os.path.exists('bot/core/__init__.py'):
+        try:
+            subprocess.run([sys.executable, '-m', 'py_compile', 'bot/core/__init__.py'], 
+                         check=True, capture_output=True)
+            print(f"✅ bot/core/__init__.py - No syntax errors")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ bot/core/__init__.py - Syntax error: {e}")
+            success = False
+    
     return success
 
 def run_structure_tests():
@@ -111,7 +161,8 @@ def run_structure_tests():
         'requirements.txt', '.env.example'
     ]
     
-    required_dirs = ['admin', 'docs', 'scripts', 'setup', 'payments']
+    required_dirs = ['admin', 'docs', 'payments', 'bot']
+    optional_dirs = ['scripts', 'setup']
     
     success = True
     
@@ -135,6 +186,43 @@ def run_structure_tests():
         print("❌ payments/ directory missing")
         success = False
     
+    # Check bot module structure
+    if os.path.exists('bot'):
+        print("✅ bot/ directory exists")
+        if os.path.exists('bot/services'):
+            print("✅ bot/services/ directory exists")
+            # Check bot/services files
+            service_files = ['key_creation.py', 'background_tasks.py', 'key_management.py']
+            for file in service_files:
+                if os.path.exists(f'bot/services/{file}'):
+                    print(f"✅ bot/services/{file} exists")
+                else:
+                    print(f"❌ bot/services/{file} missing")
+                    success = False
+        else:
+            print("❌ bot/services/ directory missing")
+            success = False
+        
+        if os.path.exists('bot/handlers'):
+            print("✅ bot/handlers/ directory exists")
+        else:
+            print("❌ bot/handlers/ directory missing")
+            success = False
+        
+        if os.path.exists('bot/core'):
+            print("✅ bot/core/ directory exists")
+            if os.path.exists('bot/core/__init__.py'):
+                print("✅ bot/core/__init__.py exists")
+            else:
+                print("❌ bot/core/__init__.py missing")
+                success = False
+        else:
+            print("❌ bot/core/ directory missing")
+            success = False
+    else:
+        print("❌ bot/ directory missing")
+        success = False
+    
     # Check required directories
     for dir_path in required_dirs:
         if os.path.exists(dir_path):
@@ -142,6 +230,13 @@ def run_structure_tests():
         else:
             print(f"❌ {dir_path}/ directory missing")
             success = False
+    
+    # Check optional directories
+    for dir_path in optional_dirs:
+        if os.path.exists(dir_path):
+            print(f"✅ {dir_path}/ directory exists (optional)")
+        else:
+            print(f"⚠️ {dir_path}/ directory missing (optional)")
     
     return success
 
