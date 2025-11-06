@@ -399,3 +399,4 @@ CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status)
 *Обновлено: 2025-11-06*  
 *Следующий пересмотр: После завершения Фазы 1 (если будет выполняться)*
 
+

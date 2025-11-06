@@ -67,14 +67,31 @@ app.add_middleware(
 # Security headers middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    # Генерируем nonce для CSP ДО обработки запроса, чтобы он был доступен в шаблонах
+    if not hasattr(request.state, 'csp_nonce'):
+        request.state.csp_nonce = secrets.token_urlsafe(16)
+    
     response = await call_next(request)
+    
+    csp_nonce = getattr(request.state, 'csp_nonce', secrets.token_urlsafe(16))
+    
     security_headers = {
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
         "X-XSS-Protection": "1; mode=block",
         "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
         "Referrer-Policy": "strict-origin-when-cross-origin",
-        "Permissions-Policy": "geolocation=(), microphone=(), camera=()"
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+        # Улучшенный CSP с nonce для inline скриптов
+        # ВАЖНО: Для полного удаления unsafe-inline нужно вынести все inline скрипты в отдельные файлы
+        # или использовать nonce в шаблонах: <script nonce="{{ csp_nonce }}">...</script>
+        "Content-Security-Policy": (
+            "default-src 'self'; "
+            f"script-src 'self' 'nonce-{csp_nonce}' 'unsafe-inline' cdnjs.cloudflare.com; "
+            "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
+            "font-src fonts.gstatic.com; "
+            "img-src 'self' data:;"
+        )
     }
     for header, value in security_headers.items():
         response.headers[header] = value

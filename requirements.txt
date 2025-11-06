@@ -33,3 +33,7 @@ psutil==5.9.8
 # Test dependencies (used by payments tests under Python 3.11)
 pytest==8.3.3
 pytest-asyncio==0.23.8
+pytest-cov==5.0.0
+pytest-mock==3.14.0
+mypy==1.11.2
+ruff==0.6.4

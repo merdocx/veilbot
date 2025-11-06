@@ -5,7 +5,8 @@
 import asyncio
 import time
 import logging
-from typing import Optional, Tuple
+import sqlite3
+from typing import Optional, Tuple, Dict, Any, Callable
 from aiogram import types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
@@ -23,7 +24,12 @@ logger = logging.getLogger(__name__)
 VPN_PROTOCOLS_AVAILABLE = None
 
 
-def select_available_server_by_protocol(cursor, country=None, protocol='outline', for_renewal=False):
+def select_available_server_by_protocol(
+    cursor: sqlite3.Cursor, 
+    country: Optional[str] = None, 
+    protocol: str = 'outline', 
+    for_renewal: bool = False
+) -> Optional[Tuple]:
     """
     Выбор сервера с учетом протокола
     
@@ -77,20 +83,20 @@ def select_available_server_by_protocol(cursor, country=None, protocol='outline'
 
 
 async def create_new_key_flow_with_protocol(
-    cursor, 
+    cursor: sqlite3.Cursor, 
     message: Optional[types.Message], 
     user_id: int, 
-    tariff: dict, 
+    tariff: Dict[str, Any], 
     email: Optional[str] = None, 
     country: Optional[str] = None, 
     protocol: str = "outline", 
     for_renewal: bool = False,
-    user_states: Optional[dict] = None,
-    extend_existing_key_with_fallback=None,
-    change_country_and_extend=None,
-    switch_protocol_and_extend=None,
-    record_free_key_usage=None
-):
+    user_states: Optional[Dict[int, Dict[str, Any]]] = None,
+    extend_existing_key_with_fallback: Optional[Callable] = None,
+    change_country_and_extend: Optional[Callable] = None,
+    switch_protocol_and_extend: Optional[Callable] = None,
+    record_free_key_usage: Optional[Callable] = None
+) -> None:
     """
     Создание нового ключа с поддержкой протоколов
     
@@ -127,16 +133,21 @@ async def create_new_key_flow_with_protocol(
             except Exception as e:
                 logging.error(f"Error importing key_management functions: {e}", exc_info=True)
         
-        # Импортируем record_free_key_usage и user_states из bot.py
-        if record_free_key_usage is None or user_states is None:
+        # Импортируем record_free_key_usage из free_tariff.py
+        if record_free_key_usage is None:
+            try:
+                from bot.services.free_tariff import record_free_key_usage as free_tariff_record
+                record_free_key_usage = free_tariff_record
+            except Exception as e:
+                logging.error(f"Error importing record_free_key_usage from free_tariff: {e}", exc_info=True)
+        
+        # Импортируем user_states из bot.py
+        if user_states is None:
             try:
                 bot_module = importlib.import_module('bot')
-                if record_free_key_usage is None:
-                    record_free_key_usage = getattr(bot_module, 'record_free_key_usage', None)
-                if user_states is None:
-                    user_states = getattr(bot_module, 'user_states', {})
+                user_states = getattr(bot_module, 'user_states', {})
             except Exception as e:
-                logging.error(f"Error importing bot module functions: {e}", exc_info=True)
+                logging.error(f"Error importing user_states from bot module: {e}", exc_info=True)
         
         # Проверяем, что все необходимые функции загружены
         if extend_existing_key_with_fallback is None:
@@ -745,12 +756,12 @@ async def wait_for_payment_with_protocol(
     payment_id: str, 
     server: Tuple, 
     user_id: int, 
-    tariff: dict, 
+    tariff: Dict[str, Any], 
     country: Optional[str] = None, 
     protocol: str = "outline", 
     for_renewal: bool = False,
-    extend_existing_key=None
-):
+    extend_existing_key: Optional[Callable] = None
+) -> None:
     """
     Ожидание платежа с поддержкой протоколов
     
@@ -950,12 +961,12 @@ async def wait_for_crypto_payment(
     invoice_id: str, 
     server: Tuple, 
     user_id: int, 
-    tariff: dict, 
+    tariff: Dict[str, Any], 
     country: Optional[str] = None, 
     protocol: str = "outline", 
     for_renewal: bool = False,
-    extend_existing_key=None
-):
+    extend_existing_key: Optional[Callable] = None
+) -> None:
     """
     Ожидание криптоплатежа через CryptoBot
     

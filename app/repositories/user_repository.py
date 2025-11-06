@@ -67,19 +67,24 @@ class UserRepository:
             c.execute("SELECT COUNT(*), MAX(created_at) FROM v2ray_keys WHERE user_id = ?", (user_id,))
             v2ray_row = c.fetchone() or (0, None)
             
-            # Сначала пытаемся получить email из payments (приоритет), исключая автоматически сгенерированные
-            c.execute("SELECT email FROM payments WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY created_at DESC LIMIT 1", (user_id,))
+            # Оптимизированный запрос: объединяем 3 запроса в один с UNION ALL
+            # Приоритет: payments > keys > v2ray_keys
+            c.execute("""
+                SELECT email FROM (
+                    SELECT email, 1 as priority, created_at as sort_date
+                    FROM payments 
+                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                    UNION ALL
+                    SELECT email, 2 as priority, expiry_at as sort_date
+                    FROM keys 
+                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                    UNION ALL
+                    SELECT email, 3 as priority, expiry_at as sort_date
+                    FROM v2ray_keys 
+                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                ) ORDER BY priority ASC, sort_date DESC LIMIT 1
+            """, (user_id, user_id, user_id))
             email_row = c.fetchone()
-            
-            # Если не нашли в payments, ищем в keys, исключая автоматически сгенерированные
-            if not email_row:
-                c.execute("SELECT email FROM keys WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY created_at DESC LIMIT 1", (user_id,))
-                email_row = c.fetchone()
-            
-            # Фолбэк на v2ray_keys
-            if not email_row:
-                c.execute("SELECT email FROM v2ray_keys WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY created_at DESC LIMIT 1", (user_id,))
-                email_row = c.fetchone()
             
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
             ref_cnt = c.fetchone()

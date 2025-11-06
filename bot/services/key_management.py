@@ -5,7 +5,8 @@
 import asyncio
 import time
 import logging
-from typing import Optional, Dict, Any
+import sqlite3
+from typing import Optional, Dict, Any, Tuple
 from aiogram import types
 
 from utils import get_db_cursor
@@ -24,8 +25,18 @@ logger = logging.getLogger(__name__)
 # Вспомогательные функции
 # ============================================================================
 
-def check_server_availability(api_url, cert_sha256, protocol='outline'):
-    """Проверяет доступность сервера"""
+def check_server_availability(api_url: str, cert_sha256: str, protocol: str = 'outline') -> bool:
+    """
+    Проверяет доступность VPN сервера
+    
+    Args:
+        api_url: URL API сервера
+        cert_sha256: SHA256 сертификата сервера (не используется, но оставлен для совместимости)
+        protocol: Протокол VPN ('outline' или 'v2ray')
+    
+    Returns:
+        True если сервер доступен, False в противном случае
+    """
     try:
         if protocol == 'outline':
             # Для Outline проверяем доступность API
@@ -43,8 +54,25 @@ def check_server_availability(api_url, cert_sha256, protocol='outline'):
         return False
 
 
-def find_alternative_server(cursor, country, protocol, exclude_server_id=None):
-    """Находит альтернативный сервер той же страны и протокола"""
+def find_alternative_server(
+    cursor: sqlite3.Cursor, 
+    country: Optional[str], 
+    protocol: str, 
+    exclude_server_id: Optional[int] = None
+) -> Optional[Tuple]:
+    """
+    Находит альтернативный сервер той же страны и протокола
+    
+    Args:
+        cursor: Курсор базы данных
+        country: Страна сервера (опционально)
+        protocol: Протокол VPN ('outline' или 'v2ray')
+        exclude_server_id: ID сервера, который нужно исключить из поиска
+    
+    Returns:
+        Tuple с данными сервера (id, name, api_url, cert_sha256, domain, api_key, v2ray_path) 
+        или None, если альтернативный сервер не найден
+    """
     if country:
         cursor.execute("""
             SELECT id, name, api_url, cert_sha256, domain, api_key, v2ray_path 
@@ -71,8 +99,26 @@ def find_alternative_server(cursor, country, protocol, exclude_server_id=None):
 # Функции продления ключей
 # ============================================================================
 
-def extend_existing_key(cursor, existing_key, duration, email=None, tariff_id=None):
-    """Продлевает ключ. Если истёк - продляет от текущего времени."""
+def extend_existing_key(
+    cursor: sqlite3.Cursor, 
+    existing_key: Tuple, 
+    duration: int, 
+    email: Optional[str] = None, 
+    tariff_id: Optional[int] = None
+) -> None:
+    """
+    Продлевает существующий ключ на указанное время
+    
+    Если ключ истёк, продление начинается от текущего времени.
+    Если ключ ещё активен, время добавляется к текущему сроку действия.
+    
+    Args:
+        cursor: Курсор базы данных
+        existing_key: Tuple с данными ключа (id, expiry_at, ...)
+        duration: Продолжительность продления в секундах
+        email: Email пользователя (опционально, для обновления)
+        tariff_id: ID тарифа (опционально, для обновления)
+    """
     now = int(time.time())
     # Если ключ истёк, продляем от текущего времени, иначе от старого expiry_at
     if existing_key[1] <= now:
@@ -91,8 +137,28 @@ def extend_existing_key(cursor, existing_key, duration, email=None, tariff_id=No
         cursor.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry, existing_key[0]))
 
 
-async def extend_existing_key_with_fallback(cursor, existing_key, duration, email=None, tariff_id=None, protocol='outline'):
-    """Продлевает существующий ключ с fallback на альтернативный сервер"""
+async def extend_existing_key_with_fallback(
+    cursor: sqlite3.Cursor, 
+    existing_key: Tuple, 
+    duration: int, 
+    email: Optional[str] = None, 
+    tariff_id: Optional[int] = None, 
+    protocol: str = 'outline'
+) -> None:
+    """
+    Продлевает существующий ключ с fallback на альтернативный сервер
+    
+    Если текущий сервер недоступен, пытается использовать альтернативный сервер
+    той же страны и протокола. Если ключ истёк, продление начинается от текущего времени.
+    
+    Args:
+        cursor: Курсор базы данных
+        existing_key: Tuple с данными ключа (id, expiry_at, server_id, ...)
+        duration: Продолжительность продления в секундах
+        email: Email пользователя (опционально, для обновления)
+        tariff_id: ID тарифа (опционально, для обновления)
+        protocol: Протокол VPN ('outline' или 'v2ray')
+    """
     now = int(time.time())
     # Если ключ истёк, продляем от текущего времени, иначе от старого expiry_at
     if existing_key[1] <= now:
@@ -287,8 +353,25 @@ async def extend_existing_key_with_fallback(cursor, existing_key, duration, emai
 # Функции удаления ключей
 # ============================================================================
 
-async def delete_old_key_after_success(cursor, old_key_data: dict):
-    """Удаляет старый ключ после успешного создания нового"""
+async def delete_old_key_after_success(
+    cursor: sqlite3.Cursor, 
+    old_key_data: Dict[str, Any]
+) -> None:
+    """
+    Удаляет старый ключ после успешного создания нового
+    
+    Удаляет ключ как с VPN сервера (Outline или V2Ray), так и из базы данных.
+    Поддерживает оба протокола: Outline и V2Ray.
+    
+    Args:
+        cursor: Курсор базы данных
+        old_key_data: Словарь с данными старого ключа, должен содержать:
+            - type: Тип ключа ('outline' или 'v2ray')
+            - server_id: ID сервера
+            - key_id: ID ключа на сервере (для Outline)
+            - v2ray_uuid: UUID ключа (для V2Ray)
+            - db_id: ID записи в базе данных
+    """
     try:
         key_type = old_key_data.get('type')
         logging.debug(f"[DELETE OLD KEY] type={key_type}, db_id={old_key_data.get('db_id')}, v2ray_uuid={old_key_data.get('v2ray_uuid')}, key_id={old_key_data.get('key_id')}")
@@ -360,8 +443,34 @@ async def delete_old_key_after_success(cursor, old_key_data: dict):
 # Функции смены протокола и страны
 # ============================================================================
 
-async def switch_protocol_and_extend(cursor, message, user_id, old_key_data: dict, new_protocol: str, new_country: str, additional_duration: int, email: str, tariff: dict):
-    """Меняет протокол (и возможно страну) с продлением времени"""
+async def switch_protocol_and_extend(
+    cursor: sqlite3.Cursor, 
+    message: types.Message, 
+    user_id: int, 
+    old_key_data: Dict[str, Any], 
+    new_protocol: str, 
+    new_country: str, 
+    additional_duration: int, 
+    email: str, 
+    tariff: Dict[str, Any]
+) -> None:
+    """
+    Меняет протокол (и возможно страну) с продлением времени
+    
+    Создает новый ключ с новым протоколом и страной, сохраняя оставшееся время
+    старого ключа и добавляя новое купленное время. Старый ключ удаляется.
+    
+    Args:
+        cursor: Курсор базы данных
+        message: Telegram сообщение для отправки уведомлений пользователю
+        user_id: ID пользователя
+        old_key_data: Словарь с данными старого ключа
+        new_protocol: Новый протокол ('outline' или 'v2ray')
+        new_country: Новая страна сервера
+        additional_duration: Дополнительное время в секундах (продление)
+        email: Email пользователя
+        tariff: Словарь с данными тарифа
+    """
     bot = get_bot_instance()
     main_menu = get_main_menu()
     
@@ -574,8 +683,32 @@ async def switch_protocol_and_extend(cursor, message, user_id, old_key_data: dic
         return False
 
 
-async def change_country_and_extend(cursor, message, user_id, key_data: dict, new_country: str, additional_duration: int, email: str, tariff: dict):
-    """Меняет страну для ключа и добавляет новое время (при покупке нового тарифа)"""
+async def change_country_and_extend(
+    cursor: sqlite3.Cursor, 
+    message: types.Message, 
+    user_id: int, 
+    key_data: Dict[str, Any], 
+    new_country: str, 
+    additional_duration: int, 
+    email: str, 
+    tariff: Dict[str, Any]
+) -> None:
+    """
+    Меняет страну для ключа и добавляет новое время (при покупке нового тарифа)
+    
+    Создает новый ключ на сервере в новой стране, сохраняя оставшееся время
+    старого ключа и добавляя новое купленное время. Старый ключ удаляется.
+    
+    Args:
+        cursor: Курсор базы данных
+        message: Telegram сообщение для отправки уведомлений пользователю
+        user_id: ID пользователя
+        key_data: Словарь с данными текущего ключа
+        new_country: Новая страна сервера
+        additional_duration: Дополнительное время в секундах (продление)
+        email: Email пользователя
+        tariff: Словарь с данными тарифа
+    """
     bot = get_bot_instance()
     main_menu = get_main_menu()
     
@@ -762,8 +895,28 @@ async def change_country_and_extend(cursor, message, user_id, key_data: dict, ne
 # Функции смены протокола и страны для конкретного ключа
 # ============================================================================
 
-async def change_protocol_for_key(message: types.Message, user_id: int, key_data: dict):
-    """Меняет протокол для конкретного ключа"""
+async def change_protocol_for_key(
+    message: types.Message, 
+    user_id: int, 
+    key_data: Dict[str, Any]
+) -> None:
+    """
+    Меняет протокол для конкретного ключа
+    
+    Позволяет пользователю сменить протокол VPN (Outline ↔ V2Ray) для существующего ключа,
+    сохраняя оставшееся время действия. Создает новый ключ с новым протоколом и удаляет старый.
+    
+    Args:
+        message: Telegram сообщение для отправки уведомлений пользователю
+        user_id: ID пользователя
+        key_data: Словарь с данными ключа, должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Текущий протокол
+            - country: Страна сервера
+            - expiry_at: Время истечения ключа
+            - server_id: ID сервера
+    """
     bot = get_bot_instance()
     main_menu = get_main_menu()
     
@@ -914,8 +1067,31 @@ async def change_protocol_for_key(message: types.Message, user_id: int, key_data
         cursor.connection.commit()
 
 
-async def change_country_for_key(message: types.Message, user_id: int, key_data: dict, new_country: str):
-    """Меняет страну для конкретного ключа"""
+async def change_country_for_key(
+    message: types.Message, 
+    user_id: int, 
+    key_data: Dict[str, Any], 
+    new_country: str
+) -> None:
+    """
+    Меняет страну для конкретного ключа
+    
+    Позволяет пользователю сменить страну сервера для существующего ключа,
+    сохраняя оставшееся время действия и протокол. Создает новый ключ на сервере
+    в новой стране и удаляет старый.
+    
+    Args:
+        message: Telegram сообщение для отправки уведомлений пользователю
+        user_id: ID пользователя
+        key_data: Словарь с данными ключа, должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Протокол VPN
+            - country: Текущая страна сервера
+            - expiry_at: Время истечения ключа
+            - server_id: ID сервера
+        new_country: Новая страна сервера
+    """
     bot = get_bot_instance()
     main_menu = get_main_menu()
     
@@ -1124,8 +1300,30 @@ async def change_country_for_key(message: types.Message, user_id: int, key_data:
         cursor.connection.commit()
 
 
-async def reissue_specific_key(message: types.Message, user_id: int, key_data: dict):
-    """Улучшенная функция перевыпуска конкретного ключа"""
+async def reissue_specific_key(
+    message: types.Message, 
+    user_id: int, 
+    key_data: Dict[str, Any]
+) -> None:
+    """
+    Перевыпускает конкретный ключ
+    
+    Создает новый ключ с теми же параметрами (протокол, страна, срок действия),
+    что и старый ключ. Используется для решения проблем с доступом к VPN.
+    Старый ключ удаляется после успешного создания нового.
+    
+    Args:
+        message: Telegram сообщение для отправки уведомлений пользователю
+        user_id: ID пользователя
+        key_data: Словарь с данными ключа, должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Протокол VPN
+            - country: Страна сервера
+            - expiry_at: Время истечения ключа
+            - server_id: ID сервера
+            - email: Email пользователя (опционально)
+    """
     bot = get_bot_instance()
     main_menu = get_main_menu()
     

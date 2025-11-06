@@ -174,7 +174,7 @@ async def edit_tariff(
     
     # Инвалидируем кэш меню бота
     try:
-        from bot import invalidate_menu_cache
+        from bot.keyboards import invalidate_menu_cache
         invalidate_menu_cache()
     except Exception as e:
         logging.warning(f"Failed to invalidate menu cache: {e}")

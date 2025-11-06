@@ -4,7 +4,8 @@
 import asyncio
 import time
 import logging
-from aiogram import Dispatcher, types
+from typing import Dict, Any, Callable
+from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from config import PROTOCOLS, ADMIN_ID
 from utils import get_db_cursor
@@ -13,20 +14,21 @@ from vpn_protocols import ProtocolFactory
 from bot.keyboards import get_main_menu, get_country_menu, get_countries_by_protocol
 from bot.utils import format_key_message_unified
 from bot_error_handler import BotErrorHandler
+from bot_rate_limiter import rate_limit
 
 def register_key_management_handlers(
     dp: Dispatcher,
-    bot,
-    user_states: dict,
-    change_country_for_key,
-    change_protocol_for_key,
-    reissue_specific_key,
-    delete_old_key_after_success,
-    show_key_selection_menu,
-    show_protocol_change_menu,
-    show_key_selection_for_country_change,
-    show_country_change_menu
-):
+    bot: Bot,
+    user_states: Dict[int, Dict[str, Any]],
+    change_country_for_key: Callable,
+    change_protocol_for_key: Callable,
+    reissue_specific_key: Callable,
+    delete_old_key_after_success: Callable,
+    show_key_selection_menu: Callable,
+    show_protocol_change_menu: Callable,
+    show_key_selection_for_country_change: Callable,
+    show_country_change_menu: Callable
+) -> None:
     """
     Регистрация обработчиков управления ключами
     
@@ -45,6 +47,7 @@ def register_key_management_handlers(
     """
     
     @dp.message_handler(lambda m: m.text == "Перевыпустить ключ")
+    @rate_limit("reissue")
     async def handle_reissue_key(message: types.Message):
         user_id = message.from_user.id
         now = int(time.time())
@@ -112,6 +115,7 @@ def register_key_management_handlers(
                 await show_key_selection_menu(message, user_id, all_keys)
     
     @dp.message_handler(lambda m: m.text == "Сменить страну")
+    @rate_limit("change_country")
     async def handle_change_country(message: types.Message):
         """Обработчик смены страны"""
         user_id = message.from_user.id
@@ -188,11 +192,10 @@ def register_key_management_handlers(
                     await show_key_selection_for_country_change(message, user_id, all_keys)
         
         except Exception as e:
-            logging.error(f"Error in handle_change_country: {e}")
             await BotErrorHandler.handle_error(message, e, "handle_change_country", bot, ADMIN_ID)
-            await message.answer("❌ Произошла ошибка. Попробуйте еще раз.", reply_markup=get_main_menu())
     
     @dp.message_handler(lambda m: m.text == "Сменить приложение")
+    @rate_limit("change_protocol")
     async def handle_change_app(message: types.Message):
         logging.debug(f"Обработчик 'Сменить приложение' вызван для пользователя {message.from_user.id}")
         user_id = message.from_user.id
@@ -268,11 +271,10 @@ def register_key_management_handlers(
                     await show_protocol_change_menu(message, user_id, all_keys)
         
         except Exception as e:
-            logging.error(f"Ошибка в handle_change_app: {e}")
             await BotErrorHandler.handle_error(message, e, "handle_change_app", bot, ADMIN_ID)
-            await message.answer("Произошла ошибка при обработке запроса. Попробуйте позже.", reply_markup=get_main_menu())
     
     @dp.callback_query_handler(lambda c: c.data.startswith("reissue_key_"))
+    @rate_limit("reissue")
     async def handle_reissue_key_callback(callback_query: types.CallbackQuery):
         """Обработчик выбора ключа для перевыпуска"""
         user_id = callback_query.from_user.id
@@ -349,6 +351,7 @@ def register_key_management_handlers(
         await callback_query.answer()
     
     @dp.callback_query_handler(lambda c: c.data.startswith("change_country_"))
+    @rate_limit("change_country")
     async def handle_change_country_callback(callback_query: types.CallbackQuery):
         """Обработчик выбора ключа для смены страны"""
         user_id = callback_query.from_user.id
@@ -423,6 +426,7 @@ def register_key_management_handlers(
         await callback_query.message.answer("Смена страны отменена.", reply_markup=get_main_menu())
     
     @dp.callback_query_handler(lambda c: c.data.startswith("change_protocol_"))
+    @rate_limit("change_protocol")
     async def handle_change_protocol_callback(callback_query: types.CallbackQuery):
         """Обработчик выбора ключа для смены протокола"""
         user_id = callback_query.from_user.id

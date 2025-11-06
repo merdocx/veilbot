@@ -3,12 +3,13 @@
 """
 import time
 import logging
+from typing import Dict, Any
 from aiogram import Dispatcher, types
 from utils import get_db_cursor
 from bot.keyboards import get_main_menu
 from app.infra.foreign_keys import safe_foreign_keys_off
 
-async def handle_start(message: types.Message, user_states: dict):
+async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, Any]]) -> None:
     """
     Обработчик команды /start
     
@@ -54,7 +55,7 @@ async def handle_start(message: types.Message, user_states: dict):
     main_menu = get_main_menu()
     await message.answer("Нажмите «Купить доступ» для получения доступа", reply_markup=main_menu)
 
-def register_start_handler(dp: Dispatcher, user_states: dict):
+def register_start_handler(dp: Dispatcher, user_states: Dict[int, Dict[str, Any]]) -> None:
     """Регистрация обработчика команды /start"""
     @dp.message_handler(commands=["start"])
     async def start_handler(message: types.Message):

@@ -2,8 +2,10 @@
 Настройка шаблонов Jinja2
 """
 import os
-from starlette.templating import Jinja2Templates
 from datetime import datetime
+
+from starlette.requests import Request
+from starlette.templating import Jinja2Templates
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
@@ -102,4 +104,14 @@ templates.env.filters['safe_truncate'] = safe_truncate_filter
 def get_templates() -> Jinja2Templates:
     """Получить объект шаблонов"""
     return templates
+
+
+def add_csp_nonce_to_context(request: Request) -> dict:
+    """Добавляет CSP nonce в контекст шаблонов"""
+    csp_nonce = getattr(request.state, 'csp_nonce', None)
+    if not csp_nonce:
+        import secrets
+        csp_nonce = secrets.token_urlsafe(16)
+        request.state.csp_nonce = csp_nonce
+    return {"csp_nonce": csp_nonce}
 

@@ -3,7 +3,8 @@
 """
 import time
 import logging
-from aiogram import Dispatcher, types
+from typing import Dict, Any, Callable, Optional
+from aiogram import Dispatcher, types, Bot
 from config import PROTOCOLS, ADMIN_ID
 from utils import get_db_cursor
 from validators import input_validator, ValidationError
@@ -22,17 +23,17 @@ from bot_error_handler import BotErrorHandler
 
 def register_purchase_handlers(
     dp: Dispatcher,
-    user_states: dict,
-    bot,
-    main_menu,
-    cancel_keyboard,
-    is_valid_email,
-    create_payment_with_email_and_protocol,
-    create_new_key_flow_with_protocol,
-    handle_free_tariff_with_protocol,
-    handle_invite_friend,
-    get_tariff_by_name_and_price
-):
+    user_states: Dict[int, Dict[str, Any]],
+    bot: Bot,
+    main_menu: Any,
+    cancel_keyboard: Any,
+    is_valid_email: Callable[[str], bool],
+    create_payment_with_email_and_protocol: Callable,
+    create_new_key_flow_with_protocol: Callable,
+    handle_free_tariff_with_protocol: Callable,
+    handle_invite_friend: Callable,
+    get_tariff_by_name_and_price: Callable
+) -> None:
     """
     Регистрация всех обработчиков покупки
     
@@ -125,8 +126,7 @@ def register_purchase_handlers(
                 reply_markup=get_protocol_selection_menu()
             )
         except Exception as e:
-            logging.error(f"Error showing protocol selection: {e}")
-            await message.answer("❌ Не удалось отобразить выбор протокола. Попробуйте ещё раз.", reply_markup=main_menu)
+            await BotErrorHandler.handle_error(message, e, "handle_buy_menu", bot, ADMIN_ID)
     
     @dp.message_handler(lambda m: m.text in [f"{PROTOCOLS['outline']['icon']} {PROTOCOLS['outline']['name']}", 
                                             f"{PROTOCOLS['v2ray']['icon']} {PROTOCOLS['v2ray']['name']}"])
@@ -495,8 +495,7 @@ def register_purchase_handlers(
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logging.error(f"Error in handle_protocol_country_selection: {e}")
-            await message.answer("❌ Произошла ошибка. Попробуйте ещё раз или выберите протокол заново.", reply_markup=get_protocol_selection_menu())
+            await BotErrorHandler.handle_error(message, e, "handle_protocol_country_selection", bot, ADMIN_ID)
     
     @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_tariff" and "—" in m.text and any(w in m.text for w in ["₽", "$", "бесплатно"]))
     async def handle_tariff_selection_with_country(message: types.Message):
@@ -601,23 +600,41 @@ def register_purchase_handlers(
                     try:
                         now_ts = int(time.time())
                         
-                        # Сначала пытаемся получить email из таблицы payments (приоритет)
-                        cursor.execute("SELECT email FROM payments WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY created_at DESC LIMIT 1", (user_id,))
+                        # Оптимизированный запрос: объединяем 3 запроса в один с UNION ALL
+                        # Приоритет: payments > keys (если outline) > v2ray_keys
+                        # Если протокол outline, проверяем keys, иначе только payments и v2ray_keys
+                        if (protocol or 'outline') == 'outline':
+                            cursor.execute("""
+                                SELECT email FROM (
+                                    SELECT email, 1 as priority, created_at as sort_date
+                                    FROM payments 
+                                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                                    UNION ALL
+                                    SELECT email, 2 as priority, expiry_at as sort_date
+                                    FROM keys 
+                                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                                    UNION ALL
+                                    SELECT email, 3 as priority, expiry_at as sort_date
+                                    FROM v2ray_keys 
+                                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                                ) ORDER BY priority ASC, sort_date DESC LIMIT 1
+                            """, (user_id, user_id, user_id))
+                        else:
+                            # Для v2ray протокола не проверяем keys
+                            cursor.execute("""
+                                SELECT email FROM (
+                                    SELECT email, 1 as priority, created_at as sort_date
+                                    FROM payments 
+                                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                                    UNION ALL
+                                    SELECT email, 2 as priority, expiry_at as sort_date
+                                    FROM v2ray_keys 
+                                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                                ) ORDER BY priority ASC, sort_date DESC LIMIT 1
+                            """, (user_id, user_id))
+                        
                         row = cursor.fetchone()
                         email_db = row[0] if row and row[0] else None
-                        
-                        # Если не нашли в payments, пытаемся получить из текущего протокола, если outline
-                        # Исключаем автоматически сгенерированные email-ы вида user_123@veilbot.com
-                        if not email_db and (protocol or 'outline') == 'outline':
-                            cursor.execute("SELECT email FROM keys WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY expiry_at DESC LIMIT 1", (user_id,))
-                            row = cursor.fetchone()
-                            email_db = row[0] if row and row[0] else None
-                        
-                        # Фолбэк: пробуем взять из v2ray_keys, также исключаем автоматически сгенерированные
-                        if not email_db:
-                            cursor.execute("SELECT email FROM v2ray_keys WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com' ORDER BY expiry_at DESC LIMIT 1", (user_id,))
-                            row2 = cursor.fetchone()
-                            email_db = row2[0] if row2 and row2[0] else None
                     except Exception:
                         email_db = None
 

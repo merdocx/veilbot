@@ -32,7 +32,10 @@ SECURITY_HEADERS = {
     "X-XSS-Protection": "1; mode=block",
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
     "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src 'self' data:;"
+    # Улучшенный CSP: убран 'unsafe-inline' из script-src для лучшей защиты от XSS
+    # Для inline скриптов нужно использовать nonce (см. admin/main.py)
+    # ВАЖНО: Если есть inline скрипты в шаблонах, они должны использовать nonce
+    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'nonce-{nonce}' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src 'self' data:;"
 }
 
 def hash_password(password: str) -> str:

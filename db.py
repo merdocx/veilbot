@@ -340,6 +340,19 @@ def migrate_add_common_indexes():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_email ON payments(email) WHERE email IS NOT NULL")
+        
+        # Композитные индексы для частых комбинаций запросов
+        # Индексы для запросов по user_id и expiry_at (очень частый паттерн)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_user_expiry ON keys(user_id, expiry_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_expiry ON v2ray_keys(user_id, expiry_at)")
+        
+        # Индекс для запросов по user_id и status в payments
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status)")
+        
+        # Индекс для запросов по server_id и expiry_at (для фоновых задач)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_server_expiry ON keys(server_id, expiry_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_expiry ON v2ray_keys(server_id, expiry_at)")
+        
         conn.commit()
         logging.info("Созданы индексы для основных таблиц (если отсутствовали)")
     finally:

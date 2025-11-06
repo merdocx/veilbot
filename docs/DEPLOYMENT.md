@@ -147,6 +147,52 @@ crontab -e
 0 2 * * * /path/to/veilbot/backup_db.sh
 ```
 
+### 3. Проверка бэкапа
+```bash
+./backup_db.sh --check
+```
+
+Если используется systemd timer, убедитесь, что каталог `db_backups/` сохраняется на отдельном диске или в объектном хранилище.
+
+## Восстановление после сбоя
+
+1. **Остановить сервисы**
+   ```bash
+   ./manage_services.sh stop
+   ```
+
+2. **Восстановить конфигурацию**
+   - Вернуть `.env` и `config.py` из резервной копии.
+   - Проверить актуальность `SECRET_KEY`, `ADMIN_PASSWORD_HASH`, токенов бота.
+
+3. **Восстановить базу данных**
+   ```bash
+   cp db_backups/vpn.db.YYYYMMDD_HHMMSS.sqlite3 vpn.db
+   sqlite3 vpn.db "PRAGMA integrity_check;"
+   ```
+
+4. **Обновить зависимости и миграции (при необходимости)**
+   ```bash
+   pip install -r requirements.txt
+   python scripts/apply_indexes.py
+   ```
+
+5. **Запустить сервисы**
+   ```bash
+   ./manage_services.sh start
+   ```
+
+6. **Проверить фоновые задачи**
+   - `journalctl -u veilbot.service -f | grep background_tasks`
+   - Убедиться, что задачи `auto_delete_expired_keys`, `notify_expiring_keys`, `check_key_availability`, `process_pending_paid_payments` не повторяют ошибки.
+
+7. **Проверить доступность**
+   - `/start` в Telegram
+   - `/admin` в браузере
+   - `systemctl status nginx`
+
+При повторяющихся ошибках фоновых задач администратор получит уведомление в Telegram (встроенный троттлинг — не чаще одного раза в 30 минут на задачу).
+
 ## Проверка работоспособности
 
 ### 1. Статус сервисов
@@ -227,6 +273,17 @@ git pull origin main
 ### 3. Обновление зависимостей
 ```bash
 pip install -r requirements.txt
+```
+
+### 4. Линтеры и статический анализ
+Перед перезапуском сервисов рекомендуется запустить локально:
+```bash
+ruff check --respect-gitignore .
+python -m mypy --config-file mypy.ini --follow-imports=skip \
+    bot/handlers/common.py \
+    bot/services/free_tariff.py \
+    bot/services/tariff_service.py
+pytest tests/ -q
 ```
 
 ### 4. Запуск сервисов

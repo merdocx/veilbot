@@ -3,6 +3,7 @@
 """
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+import logging
 import sys
 import os
 import sqlite3

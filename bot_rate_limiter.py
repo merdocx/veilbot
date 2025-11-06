@@ -112,6 +112,7 @@ _rate_limiter = RateLimiter()
 def rate_limit(action: str = "default", max_requests: int = None, window_seconds: int = None):
     """
     Декоратор для rate limiting обработчиков бота
+    Поддерживает как message handlers, так и callback_query handlers
     
     Args:
         action: Тип действия (для разных лимитов)
@@ -122,11 +123,29 @@ def rate_limit(action: str = "default", max_requests: int = None, window_seconds
         @rate_limit("buy")
         async def handle_buy_menu(message: types.Message):
             ...
+        
+        @rate_limit("reissue")
+        async def handle_callback(callback_query: types.CallbackQuery):
+            ...
     """
     def decorator(func):
         @wraps(func)
-        async def wrapper(message: types.Message, *args, **kwargs):
-            user_id = message.from_user.id
+        async def wrapper(*args, **kwargs):
+            # Определяем тип аргумента (message или callback_query)
+            first_arg = args[0] if args else None
+            
+            if isinstance(first_arg, types.CallbackQuery):
+                # Это callback_query handler
+                callback_query = first_arg
+                user_id = callback_query.from_user.id
+                message = callback_query.message
+            elif isinstance(first_arg, types.Message):
+                # Это message handler
+                message = first_arg
+                user_id = message.from_user.id
+            else:
+                # Неизвестный тип, пропускаем rate limiting
+                return await func(*args, **kwargs)
             
             # Если указаны кастомные лимиты, создаем временный лимитер
             if max_requests is not None and window_seconds is not None:
@@ -146,13 +165,15 @@ def rate_limit(action: str = "default", max_requests: int = None, window_seconds
                 else:
                     time_str = f"{seconds} сек."
                 
-                await message.answer(
-                    f"⏱️ Слишком много запросов. Попробуйте через {time_str}.",
-                    reply_markup=None
-                )
+                error_msg = f"⏱️ Слишком много запросов. Попробуйте через {time_str}."
+                
+                if isinstance(first_arg, types.CallbackQuery):
+                    await callback_query.answer(error_msg, show_alert=True)
+                else:
+                    await message.answer(error_msg, reply_markup=None)
                 return
             
-            return await func(message, *args, **kwargs)
+            return await func(*args, **kwargs)
         
         return wrapper
     return decorator

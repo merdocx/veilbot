@@ -4,6 +4,7 @@ import sqlite3
 import re
 import logging
 from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple
 from app.logging_config import setup_logging
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -34,6 +35,19 @@ from bot.services.key_management import (
     change_country_for_key,
     reissue_specific_key
 )
+from bot.services.free_tariff import (
+    handle_free_tariff,
+    handle_free_tariff_with_protocol,
+    check_free_tariff_limit,
+    check_free_tariff_limit_by_protocol,
+    check_free_tariff_limit_by_protocol_and_country,
+    record_free_key_usage
+)
+from bot.services.tariff_service import (
+    get_tariff_by_name_and_price,
+    handle_payment_method_selection,
+    handle_paid_tariff_with_protocol
+)
 
 # Оптимизация памяти
 from memory_optimizer import (
@@ -60,30 +74,13 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "strict-origin-when-cross-origin"
 }
 
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN is not set in config.py")
-
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-dp = Dispatcher(bot)
-
-# Регистрируем bot instance для использования в других модулях
-from bot.core import set_bot_instance
-set_bot_instance(bot)
-
-# Явная проверка конфигурации при старте
-config_validation = validate_configuration()
-if not config_validation['is_valid']:
-    for err in config_validation['errors']:
-        logging.error(f"Config error: {err}")
-    raise RuntimeError("Invalid configuration. Check environment variables.")
-for warn in config_validation['warnings']:
-    logging.warning(f"Config warning: {warn}")
-
-# Инициализация будет выполнена при первом использовании через lazy loading
-logging.info("🚀 VeilBot запущен с оптимизацией памяти")
+# Инициализация bot и dp перенесена в bot/main.py
+# Эти переменные будут созданы при запуске через bot/main.py
+bot = None
+dp = None
 
 # Simple state management for email collection
-user_states = {}  # user_id -> {"state": ..., ...}
+user_states: Dict[int, Dict[str, Any]] = {}  # user_id -> {"state": ..., ...}
 
 # Notification state for key availability перенесена в bot/services/background_tasks.py
 
@@ -93,7 +90,15 @@ help_keyboard = get_help_keyboard()
 cancel_keyboard = get_cancel_keyboard()
 
 def is_valid_email(email: str) -> bool:
-    """Валидация email с использованием нового валидатора"""
+    """
+    Валидация email адреса
+    
+    Args:
+        email: Email адрес для проверки
+    
+    Returns:
+        True если email валиден, False в противном случае
+    """
     return input_validator.validate_email(email)
 
 # Импортируем и регистрируем handlers
@@ -101,60 +106,42 @@ from bot.handlers.start import register_start_handler
 from bot.handlers.keys import register_keys_handler
 from bot.handlers.purchase import register_purchase_handlers
 from bot.handlers.renewal import register_renewal_handlers
+from bot.handlers.common import register_common_handlers
 from bot.handlers.key_management import register_key_management_handlers
 
 # Функции управления ключами определены в bot.py (строки 2576+)
 # Они будут переданы в register_key_management_handlers после их определения
 
-# Регистрация handlers
-register_start_handler(dp, user_states)
-register_keys_handler(dp)
-register_renewal_handlers(dp, user_states, bot)
+# Регистрация handlers перенесена в bot/main.py
+# Handlers регистрируются при запуске через bot/main.py
 
 # Регистрация handlers управления ключами и purchase handlers будет выполнена после определения функций
 # (функции определены в строках 1724+ для payment, 2484+ для key_management)
 
 # Функции для передачи в purchase handlers
-async def handle_invite_friend(message: types.Message):
-    logging.debug(f"handle_invite_friend called: user_id={message.from_user.id}")
-    user_id = message.from_user.id
-    bot_username = (await bot.get_me()).username
-    invite_link = f"https://t.me/{bot_username}?start={user_id}"
-    await bot.send_message(
-        message.chat.id,
-        f"Пригласите друга по этой ссылке:\n{invite_link}\n\nЕсли друг купит доступ, вы получите месяц бесплатно!",
-        reply_markup=main_menu
-    )
+# ВАЖНО: handle_invite_friend перенесена в bot/handlers/common.py
+# Оставлена здесь для обратной совместимости (используется в purchase handlers)
+async def handle_invite_friend(message: types.Message) -> None:
+    """Функция для обратной совместимости - делегирует в common.py"""
+    from bot.handlers.common import handle_invite_friend as common_handle_invite_friend
+    await common_handle_invite_friend(message)
 
-def get_tariff_by_name_and_price(cursor, tariff_name, price):
-    cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND price_rub = ?", (tariff_name, price))
-    row = cursor.fetchone()
-    if not row:
-        return None
-    return {
-        "id": row[0],
-        "name": row[1],
-        "price_rub": row[2],
-        "duration_sec": row[3],
-        "price_crypto_usd": row[4] if len(row) > 4 else None
-    }
+# Функция get_tariff_by_name_and_price перенесена в bot/services/tariff_service.py
 
 # Регистрация purchase handlers будет выполнена после определения функций (см. строку ~3327)
 
 # Обработчики покупки вынесены в bot/handlers/purchase.py
 
 @dp.message_handler(lambda m: m.text == "🔙 Назад")
-async def back_to_main(message: types.Message):
+async def back_to_main(message: types.Message) -> None:
     # Clear any existing state
     user_id = message.from_user.id
     if user_id in user_states:
         del user_states[user_id]
     await message.answer("Главное меню:", reply_markup=main_menu)
 
-# --- Обработчик кнопки 'Пригласить друга' (теперь выше всех универсальных) ---
-@dp.message_handler(lambda m: m.text == "Получить месяц бесплатно")
-async def handle_invite_friend_handler(message: types.Message):
-        await handle_invite_friend(message)
+# --- Обработчик кнопки 'Пригласить друга' перенесен в bot/handlers/common.py ---
+# Регистрируется через register_common_handlers()
 
 # Обработчики purchase handlers вынесены в bot/handlers/purchase.py
 # (handle_buy_menu, handle_protocol_selection, handle_cancel,
@@ -163,7 +150,7 @@ async def handle_invite_friend_handler(message: types.Message):
 #  handle_tariff_selection_with_country)
 
 @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "reactivation_country_selection")
-async def handle_reactivation_country_selection(message: types.Message):
+async def handle_reactivation_country_selection(message: types.Message) -> None:
     """Обработчик выбора страны при реактивации истекшего ключа"""
     user_id = message.from_user.id
     text = message.text or ""
@@ -212,132 +199,10 @@ async def handle_reactivation_country_selection(message: types.Message):
 
 # Обработчики purchase (waiting_country, protocol_selected, waiting_tariff) вынесены в bot/handlers/purchase.py
 
-def get_tariff_by_name_and_price(cursor, tariff_name, price):
-    cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND price_rub = ?", (tariff_name, price))
-    row = cursor.fetchone()
-    if not row:
-        return None
-    return {
-        "id": row[0],
-        "name": row[1],
-        "price_rub": row[2],
-        "duration_sec": row[3],
-        "price_crypto_usd": row[4] if len(row) > 4 else None
-    }
+# Функция get_tariff_by_name_and_price перенесена в bot/services/tariff_service.py
 
-async def handle_free_tariff(cursor, message, user_id, tariff, country=None):
-    if check_free_tariff_limit(cursor, user_id):
-        await message.answer("Вы уже получали бесплатный тариф ранее. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
-        return
-    now = int(time.time())
-    # Проверяем наличие активного ключа и его тип
-    cursor.execute("""
-        SELECT k.id, k.expiry_at, t.price_rub
-        FROM keys k
-        JOIN tariffs t ON k.tariff_id = t.id
-        WHERE k.user_id = ? AND k.expiry_at > ?
-        ORDER BY k.expiry_at DESC LIMIT 1
-    """, (user_id, now))
-    existing_key = cursor.fetchone()
-    if existing_key:
-        if existing_key[2] > 0:
-            await message.answer("У вас уже есть активный платный ключ. Бесплатный ключ можно получить только если нет активных платных ключей.", reply_markup=main_menu)
-            return
-        else:
-            await message.answer("У вас уже есть активный бесплатный ключ. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
-            return
-    else:
-        await create_new_key_flow(cursor, message, user_id, tariff, None, country)
-
-def check_free_tariff_limit(cursor, user_id):
-    """Проверка лимита бесплатных ключей - один раз навсегда (для обратной совместимости)"""
-    return check_free_tariff_limit_by_protocol_and_country(cursor, user_id, "outline")
-
-def check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol="outline", country=None):
-    """Проверка лимита бесплатных ключей для конкретного протокола и страны - один раз навсегда"""
-    
-    # Проверяем в таблице free_key_usage - это основная проверка
-    # Сначала проверяем, получал ли пользователь бесплатный ключ для этого протокола вообще
-    cursor.execute("""
-        SELECT created_at FROM free_key_usage 
-        WHERE user_id = ? AND protocol = ?
-    """, (user_id, protocol))
-    
-    row = cursor.fetchone()
-    if row:
-        return True  # Пользователь уже получал бесплатный ключ для этого протокола
-    
-    # Если указана конкретная страна, дополнительно проверяем для неё
-    if country:
-        cursor.execute("""
-            SELECT created_at FROM free_key_usage 
-            WHERE user_id = ? AND protocol = ? AND country = ?
-        """, (user_id, protocol, country))
-        
-        row = cursor.fetchone()
-        if row:
-            return True  # Пользователь уже получал бесплатный ключ для этого протокола и страны
-    
-    # Дополнительная проверка в таблицах ключей (для обратной совместимости)
-    if protocol == "outline":
-        if country:
-            cursor.execute("""
-                SELECT k.created_at FROM keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
-                ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id, country))
-        else:
-            cursor.execute("""
-                SELECT k.created_at FROM keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.user_id = ? AND t.price_rub = 0
-                ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id,))
-    else:  # v2ray
-        if country:
-            cursor.execute("""
-                SELECT k.created_at FROM v2ray_keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
-                ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id, country))
-        else:
-            cursor.execute("""
-                SELECT k.created_at FROM v2ray_keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.user_id = ? AND t.price_rub = 0
-                ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id,))
-    
-    row = cursor.fetchone()
-    # Если найден любой бесплатный ключ — нельзя (только один раз навсегда)
-    if row:
-        return True
-    # Иначе можно
-    return False
-
-def check_free_tariff_limit_by_protocol(cursor, user_id, protocol="outline"):
-    """Проверка лимита бесплатных ключей для конкретного протокола - один раз навсегда (для обратной совместимости)"""
-    return check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol)
-
-def record_free_key_usage(cursor, user_id, protocol="outline", country=None):
-    """Записывает использование бесплатного ключа пользователем"""
-    now = int(time.time())
-    try:
-        cursor.execute("""
-            INSERT INTO free_key_usage (user_id, protocol, country, created_at)
-            VALUES (?, ?, ?, ?)
-        """, (user_id, protocol, country, now))
-        return True
-    except sqlite3.IntegrityError:
-        # Запись уже существует (UNIQUE constraint)
-        return False
-    except Exception as e:
-        logging.error(f"Failed to record free key usage: {e}")
-        return False
+# Функции работы с бесплатными тарифами перенесены в bot/services/free_tariff.py
+# Импортируем их оттуда (см. импорты выше)
 
 # Функции управления ключами перенесены в bot/services/key_management.py
 # Импортируем их оттуда (см. импорты выше)
@@ -355,7 +220,28 @@ def record_free_key_usage(cursor, user_id, protocol="outline", country=None):
 # Функции управления ключами перенесены в bot/services/key_management.py
 # Старые версии функций удалены
 
-async def create_new_key_flow(cursor, message, user_id, tariff, email=None, country=None):
+async def create_new_key_flow(
+    cursor: sqlite3.Cursor, 
+    message: types.Message, 
+    user_id: int, 
+    tariff: Dict[str, Any], 
+    email: Optional[str] = None, 
+    country: Optional[str] = None
+) -> None:
+    """
+    Создает новый VPN ключ или продлевает существующий (старая версия без протоколов)
+    
+    Если у пользователя есть активный или недавно истекший ключ (в пределах grace period 24 часа),
+    ключ продлевается. Иначе создается новый ключ.
+    
+    Args:
+        cursor: Курсор базы данных
+        message: Telegram сообщение для отправки уведомлений пользователю
+        user_id: ID пользователя
+        tariff: Словарь с данными тарифа (name, price_rub, duration_sec, id)
+        email: Email пользователя (опционально)
+        country: Страна сервера (опционально)
+    """
     now = int(time.time())
     GRACE_PERIOD = 86400  # 24 часа в секундах
     grace_threshold = now - GRACE_PERIOD
@@ -427,111 +313,35 @@ async def create_new_key_flow(cursor, message, user_id, tariff, email=None, coun
 # Старая реализация удалена (было ~527 строк)
 # Функция select_available_server_by_protocol перенесена в bot/services/key_creation.py
 
-async def handle_free_tariff_with_protocol(cursor, message, user_id, tariff, country=None, protocol="outline"):
-    """Обработка бесплатного тарифа с поддержкой протоколов"""
-    
-    # Проверяем лимит бесплатных ключей для выбранного протокола и страны
-    if check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol, country):
-        if country:
-            await message.answer(f"Вы уже получали бесплатный тариф {PROTOCOLS[protocol]['name']} для страны {country} ранее. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
-        else:
-            await message.answer(f"Вы уже получали бесплатный тариф {PROTOCOLS[protocol]['name']} ранее. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
-        return
-    
-    now = int(time.time())
-    
-    # Проверяем наличие активного ключа для конкретной страны и протокола
-    if protocol == "outline":
-        if country:
-            cursor.execute("""
-                SELECT k.id, k.expiry_at, t.price_rub
-                FROM keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ? AND s.country = ?
-                ORDER BY k.expiry_at DESC LIMIT 1
-            """, (user_id, now, country))
-        else:
-            cursor.execute("""
-                SELECT k.id, k.expiry_at, t.price_rub
-                FROM keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
-                ORDER BY k.expiry_at DESC LIMIT 1
-            """, (user_id, now))
-    else:  # v2ray
-        if country:
-            cursor.execute("""
-                SELECT k.id, k.expiry_at, t.price_rub
-                FROM v2ray_keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ? AND s.country = ?
-                ORDER BY k.expiry_at DESC LIMIT 1
-            """, (user_id, now, country))
-        else:
-            cursor.execute("""
-                SELECT k.id, k.expiry_at, t.price_rub
-                FROM v2ray_keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
-                ORDER BY k.expiry_at DESC LIMIT 1
-            """, (user_id, now))
-    
-    existing_key = cursor.fetchone()
-    if existing_key:
-        if existing_key[2] > 0:
-            if country:
-                await message.answer(f"У вас уже есть активный платный ключ {PROTOCOLS[protocol]['name']} для страны {country}. Бесплатный ключ можно получить только если нет активных платных ключей.", reply_markup=main_menu)
-            else:
-                await message.answer(f"У вас уже есть активный платный ключ {PROTOCOLS[protocol]['name']}. Бесплатный ключ можно получить только если нет активных платных ключей.", reply_markup=main_menu)
-            return
-        else:
-            if country:
-                await message.answer(f"У вас уже есть активный бесплатный ключ {PROTOCOLS[protocol]['name']} для страны {country}. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
-            else:
-                await message.answer(f"У вас уже есть активный бесплатный ключ {PROTOCOLS[protocol]['name']}. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
-            return
-    else:
-        # Для бесплатного тарифа создаем ключ сразу без запроса email
-        await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, None, country, protocol)
+# Функция handle_free_tariff_with_protocol перенесена в bot/services/free_tariff.py
 
-async def handle_payment_method_selection(cursor, message, user_id, tariff, country=None, protocol="outline"):
-    """Обработка выбора способа оплаты для платного тарифа"""
-    # Сохраняем состояние и показываем выбор способа оплаты
-    user_states[user_id] = {
-        "state": "waiting_payment_method",
-        "tariff": tariff,
-        "country": country,
-        "protocol": protocol
-    }
-    
-    msg = f"💳 *Выберите способ оплаты*\n\n"
-    msg += f"📦 Тариф: *{tariff['name']}*\n"
-    msg += f"💰 Сумма: *{tariff['price_rub']}₽*"
-    
-    if tariff.get('price_crypto_usd'):
-        msg += f" / *${tariff['price_crypto_usd']:.2f}* (криптовалюта)\n"
-    else:
-        msg += "\n"
-    
-    msg += f"\n{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-    
-    await message.answer(
-        msg,
-        reply_markup=get_payment_method_keyboard(),
-        parse_mode="Markdown"
-    )
+# Функции handle_payment_method_selection и handle_paid_tariff_with_protocol 
+# перенесены в bot/services/tariff_service.py
 
-async def handle_paid_tariff_with_protocol(cursor, message, user_id, tariff, country=None, protocol="outline"):
-    """Обработка платного тарифа с поддержкой протоколов (старая функция для совместимости)"""
-    # Перенаправляем на выбор способа оплаты
-    await handle_payment_method_selection(cursor, message, user_id, tariff, country, protocol)
-
-async def create_payment_with_email_and_protocol(message, user_id, tariff, email=None, country=None, protocol="outline", payment_method="yookassa", for_renewal=False):
-    """Создание платежа с поддержкой протоколов и способов оплаты
+async def create_payment_with_email_and_protocol(
+    message: types.Message, 
+    user_id: int, 
+    tariff: Dict[str, Any], 
+    email: Optional[str] = None, 
+    country: Optional[str] = None, 
+    protocol: str = "outline", 
+    payment_method: str = "yookassa", 
+    for_renewal: bool = False
+) -> None:
+    """
+    Создание платежа с поддержкой протоколов и способов оплаты
+    
+    Создает платеж через YooKassa или CryptoBot в зависимости от выбранного способа оплаты.
+    После успешной оплаты автоматически создается VPN ключ.
     
     Args:
+        message: Telegram сообщение для отправки уведомлений пользователю
+        user_id: ID пользователя
+        tariff: Словарь с данными тарифа (name, price_rub, duration_sec, id, price_crypto_usd)
+        email: Email пользователя (опционально)
+        country: Страна сервера (опционально)
+        protocol: Протокол VPN ('outline' или 'v2ray')
+        payment_method: Способ оплаты ('yookassa' или 'cryptobot')
         for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
     """
     logging.debug(f"create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}, payment_method={payment_method}, for_renewal={for_renewal}")
@@ -755,8 +565,23 @@ async def create_payment_with_email_and_protocol(message, user_id, tariff, email
         await message.answer("Платежная система временно недоступна.", reply_markup=main_menu)
         return
 
-def select_available_server(cursor, country=None):
-    """Выбор сервера для покупки (только доступные к покупке)"""
+def select_available_server(
+    cursor: sqlite3.Cursor, 
+    country: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Выбор доступного сервера для покупки
+    
+    Выбирает сервер, который активен, доступен для покупки и имеет свободные слоты для ключей.
+    
+    Args:
+        cursor: Курсор базы данных
+        country: Страна сервера (опционально, если указана, выбирается сервер из этой страны)
+    
+    Returns:
+        Словарь с данными сервера {'id': int, 'api_url': str, 'cert_sha256': str} 
+        или None, если доступный сервер не найден
+    """
     now = int(time.time())
     if country:
         servers = cursor.execute("SELECT id, api_url, cert_sha256, max_keys FROM servers WHERE active = 1 AND available_for_purchase = 1 AND country = ?", (country,)).fetchall()
@@ -793,51 +618,32 @@ from bot.services.background_tasks import (
 
 # --- Country selection helpers ---
 
-@dp.message_handler(lambda m: m.text == "Помощь")
-async def handle_help(message: types.Message):
-    help_text = (
-        "Если VPN не работает:\n"
-        "- возможно был заблокирован сервер, поможет перевыпуск ключа;\n"
-        "- сломалось приложение, поможет его смена.\n\n"
-        "Оплаченный срок действия ключа сохранится!\n\n"
-        "Выберите вариант ниже:"
-    )
-    await message.answer(help_text, reply_markup=help_keyboard)
-
-@dp.message_handler(lambda m: m.text == "💬 Связаться с поддержкой")
-async def handle_support(message: types.Message):
-    """Обработчик кнопки связи с поддержкой"""
-    from config import SUPPORT_USERNAME
-    
-    if SUPPORT_USERNAME:
-        # Убираем @ если пользователь добавил его
-        username = SUPPORT_USERNAME.lstrip('@')
-        support_text = (
-            f"💬 Напишите нашему специалисту поддержки:\n"
-            f"@{username}\n\n"
-            f"Мы поможем решить любую проблему!"
-        )
-        support_button = InlineKeyboardMarkup()
-        support_button.add(InlineKeyboardButton(
-            "💬 Написать в поддержку",
-            url=f"https://t.me/{username}?start"
-        ))
-        await message.answer(support_text, reply_markup=support_button)
-    else:
-        await message.answer(
-            "❌ Контакт поддержки не настроен.\n"
-            "Обратитесь к администратору бота.",
-            reply_markup=help_keyboard
-        )
-
-@dp.message_handler(lambda m: m.text == "🔙 Назад" and m.reply_markup == help_keyboard)
-async def handle_help_back(message: types.Message):
-    await message.answer("Главное меню:", reply_markup=main_menu)
+# Обработчики help/support/broadcast перенесены в bot/handlers/common.py
 
 # Handlers управления ключами вынесены в bot/handlers/key_management.py
 
-async def show_key_selection_menu(message: types.Message, user_id: int, keys: list):
-    """Показывает меню выбора ключа для перевыпуска"""
+async def show_key_selection_menu(
+    message: types.Message, 
+    user_id: int, 
+    keys: List[Dict[str, Any]]
+) -> None:
+    """
+    Показывает меню выбора ключа для перевыпуска
+    
+    Отображает список доступных ключей пользователя с возможностью выбора
+    конкретного ключа для перевыпуска.
+    
+    Args:
+        message: Telegram сообщение для отправки меню
+        user_id: ID пользователя
+        keys: Список словарей с данными ключей, каждый должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Протокол VPN
+            - country: Страна сервера
+            - expiry_at: Время истечения ключа
+            - tariff_id: ID тарифа
+    """
     
     # Создаем клавиатуру для выбора ключа
     keyboard = InlineKeyboardMarkup(row_width=1)
@@ -868,8 +674,28 @@ async def show_key_selection_menu(message: types.Message, user_id: int, keys: li
         reply_markup=keyboard
     )
 
-async def show_protocol_change_menu(message: types.Message, user_id: int, keys: list):
-    """Показывает меню выбора ключа для смены протокола"""
+async def show_protocol_change_menu(
+    message: types.Message, 
+    user_id: int, 
+    keys: List[Dict[str, Any]]
+) -> None:
+    """
+    Показывает меню выбора ключа для смены протокола
+    
+    Отображает список доступных ключей пользователя с возможностью выбора
+    конкретного ключа для смены протокола VPN (Outline ↔ V2Ray).
+    
+    Args:
+        message: Telegram сообщение для отправки меню
+        user_id: ID пользователя
+        keys: Список словарей с данными ключей, каждый должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Протокол VPN
+            - country: Страна сервера
+            - expiry_at: Время истечения ключа
+            - tariff_id: ID тарифа
+    """
     
     # Создаем клавиатуру для выбора ключа
     keyboard = InlineKeyboardMarkup(row_width=1)
@@ -903,8 +729,27 @@ async def show_protocol_change_menu(message: types.Message, user_id: int, keys: 
 # Функции delete_old_key_after_success, change_protocol_for_key, change_country_for_key и reissue_specific_key перенесены в bot/services/key_management.py
 # Старые версии функций удалены
 
-async def show_key_selection_for_country_change(message: types.Message, user_id: int, all_keys: list):
-    """Показать меню выбора ключа для смены страны"""
+async def show_key_selection_for_country_change(
+    message: types.Message, 
+    user_id: int, 
+    all_keys: List[Dict[str, Any]]
+) -> None:
+    """
+    Показывает меню выбора ключа для смены страны
+    
+    Отображает список доступных ключей пользователя с возможностью выбора
+    конкретного ключа для смены страны сервера.
+    
+    Args:
+        message: Telegram сообщение для отправки меню
+        user_id: ID пользователя
+        all_keys: Список словарей с данными ключей, каждый должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Протокол VPN
+            - country: Страна сервера
+            - expiry_at: Время истечения ключа
+    """
     keyboard = InlineKeyboardMarkup(row_width=1)
     
     for key in all_keys:
@@ -924,8 +769,27 @@ async def show_key_selection_for_country_change(message: types.Message, user_id:
         reply_markup=keyboard
     )
 
-async def show_country_change_menu(message: types.Message, user_id: int, key_data: dict, user_states_dict: dict = None):
-    """Показать меню выбора страны для смены"""
+async def show_country_change_menu(
+    message: types.Message, 
+    user_id: int, 
+    key_data: Dict[str, Any], 
+    user_states_dict: Optional[Dict[int, Dict[str, Any]]] = None
+) -> None:
+    """
+    Показывает меню выбора страны для смены
+    
+    Отображает список доступных стран для выбранного протокола VPN,
+    позволяя пользователю выбрать новую страну для своего ключа.
+    
+    Args:
+        message: Telegram сообщение для отправки меню
+        user_id: ID пользователя
+        key_data: Словарь с данными ключа, должен содержать:
+            - protocol: Протокол VPN ('outline' или 'v2ray')
+            - country: Текущая страна сервера
+        user_states_dict: Словарь состояний пользователей (опционально,
+            если не указан, используется глобальный user_states)
+    """
     try:
         # Используем переданный user_states или глобальный
         if user_states_dict is None:
@@ -978,236 +842,8 @@ async def show_country_change_menu(message: types.Message, user_id: int, key_dat
 
 # Callback handlers управления ключами вынесены в bot/handlers/key_management.py
 
-async def broadcast_message(message_text: str, admin_id: int = None):
-    """
-    Функция для рассылки сообщений всем пользователям бота
-    
-    Args:
-        message_text (str): Текст сообщения для рассылки
-        admin_id (int): ID администратора для уведомлений о результатах рассылки
-    """
-    success_count = 0
-    failed_count = 0
-    total_users = 0
-    
-    try:
-        # Получаем всех пользователей из таблицы users
-        with get_db_cursor() as cursor:
-            cursor.execute("""
-                SELECT user_id FROM users 
-                WHERE blocked = 0
-                ORDER BY user_id
-            """)
-            user_ids = [row[0] for row in cursor.fetchall()]
-            total_users = len(user_ids)
-        
-        if total_users == 0:
-            if admin_id:
-                await bot.send_message(admin_id, "❌ Нет пользователей для рассылки")
-            return
-        
-        # Отправляем сообщение каждому пользователю
-        for user_id in user_ids:
-            try:
-                await bot.send_message(user_id, message_text, parse_mode='Markdown')
-                success_count += 1
-                # Небольшая задержка, чтобы не превысить лимиты Telegram
-                await asyncio.sleep(0.05)
-            except Exception as e:
-                failed_count += 1
-                logging.error(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
-                continue
-        
-        # Отправляем отчет администратору
-        if admin_id:
-            report = (
-                f"📊 *Отчет о рассылке*\n\n"
-                f"✅ Успешно отправлено: {success_count}\n"
-                f"❌ Ошибок: {failed_count}\n"
-                f"📈 Всего пользователей: {total_users}\n"
-                f"📊 Процент успеха: {(success_count/total_users*100):.1f}%"
-            )
-            await bot.send_message(admin_id, report, parse_mode='Markdown')
-            
-    except Exception as e:
-        error_msg = f"❌ Ошибка при рассылке: {e}"
-        logging.error(error_msg)
-        if admin_id:
-            await bot.send_message(admin_id, error_msg)
+# Функции broadcast_message, handle_broadcast_command, handle_confirm_broadcast, 
+# handle_cancel_broadcast перенесены в bot/handlers/common.py
 
-@dp.message_handler(commands=["broadcast"])
-async def handle_broadcast_command(message: types.Message):
-    """
-    Обработчик команды /broadcast для администратора
-    Использование: /broadcast <текст сообщения>
-    """
-    # Проверяем, что команда отправлена администратором
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ У вас нет прав для выполнения этой команды")
-        return
-    
-    # Получаем текст сообщения (убираем команду /broadcast)
-    command_parts = message.text.split(' ', 1)
-    if len(command_parts) < 2:
-        await message.answer(
-            "❌ Неверный формат команды\n"
-            "Использование: /broadcast <текст сообщения>\n\n"
-            "Пример:\n"
-            "/broadcast 🔔 Важное обновление! Добавлены новые серверы."
-        )
-        return
-    
-    broadcast_text = command_parts[1]
-    
-    # Сохраняем текст в временное хранилище
-    text_hash = hash(broadcast_text)
-    broadcast_texts[text_hash] = broadcast_text
-    
-    # Подтверждение рассылки
-    confirm_keyboard = InlineKeyboardMarkup()
-    confirm_keyboard.add(
-        InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm_broadcast:{text_hash}"),
-        InlineKeyboardButton("❌ Отменить", callback_data="cancel_broadcast")
-    )
-    
-    await message.answer(
-        f"📢 *Предварительный просмотр рассылки:*\n\n"
-        f"{broadcast_text}\n\n"
-        f"⚠️ Это сообщение будет отправлено всем пользователям бота!",
-        reply_markup=confirm_keyboard,
-        parse_mode='Markdown'
-    )
-
-# Временное хранилище для текстов рассылки
-broadcast_texts = {}
-
-@dp.callback_query_handler(lambda c: c.data.startswith("confirm_broadcast:"))
-async def handle_confirm_broadcast(callback_query: types.CallbackQuery):
-    """Обработчик подтверждения рассылки"""
-    if callback_query.from_user.id != ADMIN_ID:
-        await callback_query.answer("❌ У вас нет прав для выполнения этой команды")
-        return
-    
-    # Получаем хеш сообщения из callback_data
-    message_hash = int(callback_query.data.split(":")[1])
-    
-    # Получаем оригинальный текст из временного хранилища
-    original_text = broadcast_texts.get(message_hash)
-    if not original_text:
-        await callback_query.answer("❌ Ошибка: текст рассылки не найден")
-        return
-    
-    await callback_query.message.edit_text(
-        "📤 *Рассылка запущена...*\n\n"
-        "⏳ Пожалуйста, подождите. Отчет будет отправлен по завершении.",
-        parse_mode='Markdown'
-    )
-    
-    # Запускаем рассылку с оригинальным текстом
-    await broadcast_message(original_text, ADMIN_ID)
-    
-    # Очищаем временное хранилище
-    del broadcast_texts[message_hash]
-
-@dp.callback_query_handler(lambda c: c.data == "cancel_broadcast")
-async def handle_cancel_broadcast(callback_query: types.CallbackQuery):
-    """Обработчик отмены рассылки"""
-    if callback_query.from_user.id != ADMIN_ID:
-        await callback_query.answer("❌ У вас нет прав для выполнения этой команды")
-        return
-    
-    await callback_query.message.edit_text("❌ Рассылка отменена")
-    await callback_query.answer()
-
-# Регистрация purchase handlers (после определения всех функций)
-register_purchase_handlers(
-    dp=dp,
-    user_states=user_states,
-    bot=bot,
-    main_menu=main_menu,
-    cancel_keyboard=cancel_keyboard,
-    is_valid_email=is_valid_email,
-    create_payment_with_email_and_protocol=create_payment_with_email_and_protocol,
-    create_new_key_flow_with_protocol=create_new_key_flow_with_protocol,
-    handle_free_tariff_with_protocol=handle_free_tariff_with_protocol,
-    handle_invite_friend=handle_invite_friend,
-    get_tariff_by_name_and_price=get_tariff_by_name_and_price
-)
-
-# Регистрация handlers управления ключами (после определения всех функций)
-register_key_management_handlers(
-    dp, bot, user_states,
-    change_country_for_key,
-    change_protocol_for_key,
-    reissue_specific_key,
-    delete_old_key_after_success,
-    show_key_selection_menu,
-    show_protocol_change_menu,
-    show_key_selection_for_country_change,
-    show_country_change_menu
-)
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-    
-    # Настройка логирования с маскированием секретов
-    setup_logging(level="INFO")
-    try:
-        from logging.handlers import RotatingFileHandler
-        file_handler = RotatingFileHandler('bot.log', maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        logging.getLogger().addHandler(file_handler)
-    except Exception:
-        pass
-    
-    logger = logging.getLogger(__name__)
-    
-    try:
-        # Инициализация базы данных
-        logger.info("Инициализация базы данных...")
-        from db import init_db_with_migrations
-        init_db_with_migrations()
-        logger.info("База данных инициализирована успешно")
-        
-        # Создание event loop
-        loop = asyncio.get_event_loop()
-        
-        # Запуск фоновых задач
-        logger.info("Запуск фоновых задач...")
-        background_tasks = [
-            process_pending_paid_payments(),
-            auto_delete_expired_keys(),
-            notify_expiring_keys(),
-            check_key_availability()
-        ]
-        
-        for task in background_tasks:
-            try:
-                loop.create_task(task)
-                logger.info(f"Фоновая задача {task.__name__} запущена")
-            except Exception as e:
-                logger.error(f"Ошибка при запуске фоновой задачи {task.__name__}: {e}")
-        
-        logger.info("Запуск бота...")
-        logging.info("🚀 VeilBot запущен с оптимизацией памяти")
-        logging.info("Updates were skipped successfully.")
-        
-        # Настройка централизованной обработки ошибок
-        logger.info("Настройка обработчика ошибок...")
-        error_handler = setup_error_handler(dp, bot)
-        logger.info("Обработчик ошибок настроен")
-        
-        # Запуск бота с обработкой ошибок
-        executor.start_polling(dp, skip_updates=True, loop=loop)
-        
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
-        logging.info("Бот остановлен пользователем")
-    except Exception as e:
-        logger.error(f"Критическая ошибка при запуске бота: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        logging.critical(f"Критическая ошибка: {e}")
-        logging.error("Проверьте логи в файле bot.log")
-        sys.exit(1)
+# Регистрация handlers перенесена в bot/main.py
+# Точка входа перенесена в bot/main.py
