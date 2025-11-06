@@ -17,17 +17,16 @@ class PaymentKeyboards:
         Returns:
             InlineKeyboardMarkup
         """
-        keyboard = InlineKeyboardMarkup(row_width=2)
+        keyboard = InlineKeyboardMarkup(row_width=1)
         
         # Кнопка оплаты
         keyboard.add(
             InlineKeyboardButton("💳 Оплатить", url=payment_url)
         )
         
-        # Кнопки управления
-        keyboard.row(
-            InlineKeyboardButton("🔄 Проверить", callback_data=f"check_payment:{payment_id}"),
-            InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_payment:{payment_id}")
+        # Кнопка проверки статуса
+        keyboard.add(
+            InlineKeyboardButton("🔄 Проверить", callback_data=f"check_payment:{payment_id}")
         )
         
         return keyboard
