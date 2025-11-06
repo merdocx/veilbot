@@ -134,7 +134,7 @@ jobs:
                   print(f'⚠️ {file} missing (optional)')
           
           # Check directories
-          required_dirs = ['admin', 'docs', 'scripts', 'setup', 'payments', 'bot']
+          required_dirs = ['admin', 'docs', 'scripts', 'setup', 'payments', 'bot']  # Python list, commas are OK
           missing_dirs = []
           for dir in required_dirs:
               if os.path.exists(dir):
@@ -379,7 +379,7 @@ jobs:
           fi
           
           # Check required directories (some may be empty after cleanup)
-          required_dirs=('admin', 'docs')
+          required_dirs=('admin' 'docs')
           for dir in "${required_dirs[@]}"; do
             if [ -d "$dir" ]; then
               echo "✅ $dir exists"
