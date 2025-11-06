@@ -385,9 +385,8 @@ async def create_payment_with_email_and_protocol(
                 return
             
             # Создаем inline клавиатуру для оплаты
-            keyboard = InlineKeyboardMarkup()
+            keyboard = InlineKeyboardMarkup(row_width=1)
             keyboard.add(InlineKeyboardButton("₿ Оплатить USDT", url=payment_url))
-            keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_payment"))
             
             display_email = email if email else f"user_{user_id}@veilbot.com"
             
@@ -496,9 +495,8 @@ async def create_payment_with_email_and_protocol(
                         return
                 
                 # Создаем inline клавиатуру для оплаты
-                keyboard = InlineKeyboardMarkup()
+                keyboard = InlineKeyboardMarkup(row_width=1)
                 keyboard.add(InlineKeyboardButton("💳 Оплатить", url=payment_url))
-                keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_payment"))
                 
                 # Определяем email для отображения
                 display_email = email if email else f"user_{user_id}@veilbot.com"
