@@ -79,7 +79,8 @@ def register_purchase_handlers(
             protocol = available_protocols[0]
             user_states[user_id] = {
                 'state': 'protocol_selected',
-                'protocol': protocol
+                'protocol': protocol,
+                'auto_protocol': True
             }
             
             # Получаем страны для этого протокола
@@ -98,7 +99,9 @@ def register_purchase_handlers(
                 user_states[user_id] = {
                     "state": "waiting_payment_method_after_country",
                     "country": country,
-                    "protocol": protocol
+                    "protocol": protocol,
+                    "auto_protocol": True,
+                    "auto_country": True
                 }
                 
                 msg = f"💳 *Выберите способ оплаты*\n\n"
@@ -139,7 +142,8 @@ def register_purchase_handlers(
         # Сохраняем выбор протокола в состоянии пользователя
         user_states[user_id] = {
             'state': 'protocol_selected',
-            'protocol': protocol
+            'protocol': protocol,
+            'auto_protocol': False
         }
         
         # Получаем страны только для выбранного протокола
@@ -159,7 +163,9 @@ def register_purchase_handlers(
             user_states[user_id] = {
                 "state": "waiting_payment_method_after_country",
                 "country": country,
-                "protocol": protocol
+                "protocol": protocol,
+                "auto_protocol": True,
+                "auto_country": True
             }
             
             msg = f"💳 *Выберите способ оплаты*\n\n"
@@ -196,17 +202,25 @@ def register_purchase_handlers(
         if text == "🔙 Назад":
             # Возвращаемся к выбору страны
             protocol = state.get("protocol", "outline")
+            auto_protocol = state.get("auto_protocol", False)
+            auto_country = state.get("auto_country", False)
+
+            if auto_country:
+                user_states.pop(user_id, None)
+                await message.answer("Главное меню:", reply_markup=main_menu)
+                return
+
             countries = get_countries_by_protocol(protocol) if protocol else get_countries()
-            if protocol:
+            if protocol and not auto_protocol:
                 protocol_info = PROTOCOLS.get(protocol, {"name": protocol})
                 await message.answer(
                     f"Выберите страну для {protocol_info['name']}:",
                     reply_markup=get_country_menu(countries)
                 )
-                user_states[user_id] = {"state": "protocol_selected", "protocol": protocol}
+                user_states[user_id] = {"state": "protocol_selected", "protocol": protocol, "auto_protocol": False}
             else:
-                await message.answer("Выберите сервер:", reply_markup=get_country_menu(countries))
-                user_states[user_id] = {"state": "waiting_country"}
+                user_states.pop(user_id, None)
+                await message.answer("Главное меню:", reply_markup=main_menu)
             return
         
         if text == "💳 Карта РФ / СБП":
@@ -425,7 +439,7 @@ def register_purchase_handlers(
                 return
             
             # Сохраняем страну и переходим к выбору способа оплаты
-            user_states[user_id] = {"state": "waiting_payment_method_after_country", "country": country}
+            user_states[user_id] = {"state": "waiting_payment_method_after_country", "country": country, "auto_country": False}
             
             msg = f"💳 *Выберите способ оплаты*\n\n"
             msg += f"🌍 Страна: *{country}*\n"
@@ -466,23 +480,13 @@ def register_purchase_handlers(
             countries = get_countries_by_protocol(protocol)
             
             # Если доступна только одна страна и она не выбрана явно - автоматически выбираем её
-            if len(countries) == 1 and country not in countries:
-                country = countries[0]
-                logging.info(f"Auto-selecting single available country: {country} for protocol {protocol}")
-            
-            if country not in countries:
-                protocol_info = PROTOCOLS.get(protocol, {"name": protocol})
-                await message.answer(
-                    f"Пожалуйста, выберите страну из списка для {protocol_info['name']}:", 
-                    reply_markup=get_country_menu(countries)
-                )
-                return
-            
-            # Сохраняем страну и переходим к выбору способа оплаты
+            auto_country = len(countries) == 1 and message.text.strip() not in countries
             user_states[user_id] = {
-                "state": "waiting_payment_method_after_country", 
+                "state": "waiting_payment_method_after_country",
                 "country": country,
-                "protocol": protocol
+                "protocol": protocol,
+                "auto_protocol": user_state.get("auto_protocol", False),
+                "auto_country": auto_country
             }
             
             msg = f"💳 *Выберите способ оплаты*\n\n"
