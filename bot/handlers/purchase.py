@@ -517,6 +517,7 @@ def register_purchase_handlers(
             protocol = state.get("protocol", "outline")
             
             state["state"] = "waiting_payment_method_after_country"
+            state["auto_country"] = False
             user_states[user_id] = state
             
             msg = f"💳 *Выберите способ оплаты*\n\n"
