@@ -696,3 +696,7 @@ def register_purchase_handlers(
                             parse_mode="Markdown"
                         )
 
+    @dp.message_handler(lambda m: m.text == "🔙 Назад" and user_states.get(m.from_user.id) is None)
+    async def back_to_main_from_protocol(message: types.Message):
+        await message.answer("Главное меню:", reply_markup=main_menu)
+
