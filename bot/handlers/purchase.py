@@ -501,35 +501,35 @@ def register_purchase_handlers(
         except Exception as e:
             await BotErrorHandler.handle_error(message, e, "handle_protocol_country_selection", bot, ADMIN_ID)
     
+    @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_tariff" and m.text == "🔙 Назад")
+    async def handle_tariff_back(message: types.Message):
+        user_id = message.from_user.id
+        state = user_states.get(user_id, {})
+        protocol = state.get("protocol", "outline")
+        country = state.get("country", "")
+
+        state["state"] = "waiting_payment_method_after_country"
+        state["auto_country"] = False
+        user_states[user_id] = state
+
+        msg = f"💳 *Выберите способ оплаты*\n\n"
+        if protocol:
+            msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+        if country:
+            msg += f"🌍 Страна: *{country}*\n"
+
+        await message.answer(
+            msg,
+            reply_markup=get_payment_method_keyboard(),
+            parse_mode="Markdown"
+        )
+
     @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "waiting_tariff" and "—" in m.text and any(w in m.text for w in ["₽", "$", "бесплатно"]))
     async def handle_tariff_selection_with_country(message: types.Message):
         if message.text == "Получить месяц бесплатно":
             user_id = message.from_user.id
             user_states.pop(user_id, None)
             await handle_invite_friend(message)
-            return
-        
-        if message.text == "🔙 Назад":
-            # Возвращаемся к выбору способа оплаты
-            user_id = message.from_user.id
-            state = user_states.get(user_id, {})
-            country = state.get("country")
-            protocol = state.get("protocol", "outline")
-            
-            state["state"] = "waiting_payment_method_after_country"
-            state["auto_country"] = False
-            user_states[user_id] = state
-            
-            msg = f"💳 *Выберите способ оплаты*\n\n"
-            if protocol:
-                msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-            msg += f"🌍 Страна: *{country}*\n"
-            
-            await message.answer(
-                msg,
-                reply_markup=get_payment_method_keyboard(),
-                parse_mode="Markdown"
-            )
             return
         
         user_id = message.from_user.id
