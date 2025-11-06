@@ -36,7 +36,10 @@ jobs:
       - name: Run comprehensive tests
         run: |
           echo "🧪 Running comprehensive tests..."
-          python run_tests.py
+          python run_tests.py || {
+            echo "❌ Tests failed, but continuing to check other steps..."
+            exit 1
+          }
       
       - name: Test configuration validation
         run: |
@@ -85,58 +88,61 @@ jobs:
           
           # Check required files
           required_files = ['bot.py', 'config.py', 'db.py', 'requirements.txt', '.env.example']
+          missing_files = []
           for file in required_files:
               if os.path.exists(file):
                   print(f'✅ {file} exists')
               else:
                   print(f'❌ {file} missing')
+                  missing_files.append(file)
           
           # Check directories
           required_dirs = ['admin', 'docs', 'scripts', 'setup', 'payments', 'bot']
+          missing_dirs = []
           for dir in required_dirs:
               if os.path.exists(dir):
                   print(f'✅ {dir}/ exists')
               else:
                   print(f'❌ {dir}/ missing')
+                  missing_dirs.append(dir)
           
           # Check bot/services directory
           if os.path.exists('bot/services'):
               print('✅ bot/services/ exists')
               service_files = ['key_creation.py', 'background_tasks.py', 'key_management.py']
+              missing_service_files = []
               for file in service_files:
                   if os.path.exists(f'bot/services/{file}'):
                       print(f'✅ bot/services/{file} exists')
                   else:
                       print(f'❌ bot/services/{file} missing')
+                      missing_service_files.append(file)
           else:
               print('❌ bot/services/ missing')
+              missing_dirs.append('bot/services')
           
           print('🔍 Testing imports...')
           
           # Test new modules that don't require environment variables
+          import_errors = []
           try:
               import payments
               print('✅ payments module imported')
           except Exception as e:
-              print(f'❌ payments import failed: {e}')
-              import traceback
-              traceback.print_exc()
+              print(f'⚠️ payments import failed: {e}')
+              import_errors.append(f'payments: {e}')
           
           try:
               from memory_optimizer import MemoryOptimizer, get_memory_stats
               print('✅ memory_optimizer imported')
           except Exception as e:
-              print(f'❌ memory_optimizer import failed: {e}')
-              import traceback
-              traceback.print_exc()
+              print(f'⚠️ memory_optimizer import failed: {e} (may not exist)')
           
           try:
               from security_logger import SecurityLogger, security_logger
               print('✅ security_logger imported')
           except Exception as e:
-              print(f'❌ security_logger import failed: {e}')
-              import traceback
-              traceback.print_exc()
+              print(f'⚠️ security_logger import failed: {e} (may not exist)')
           
           # Test bot.services modules (syntax only, no execution)
           try:
@@ -145,10 +151,21 @@ jobs:
                   spec = importlib.util.find_spec(module_name)
                   if spec is None:
                       print(f'❌ {module_name} module not found')
+                      import_errors.append(module_name)
                   else:
                       print(f'✅ {module_name} module found')
           except Exception as e:
               print(f'⚠️ Could not check bot.services modules: {e}')
+              import_errors.append(f'bot.services check: {e}')
+          
+          # Only fail if critical files/dirs are missing
+          if missing_files or 'bot' in missing_dirs or 'bot/services' in missing_dirs:
+              print('❌ Critical files or directories missing!')
+              sys.exit(1)
+          
+          if import_errors and 'bot.services' in str(import_errors):
+              print('❌ Critical bot.services modules missing!')
+              sys.exit(1)
           
           print('✅ All new module imports successful')
           "
