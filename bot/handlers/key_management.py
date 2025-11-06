@@ -180,7 +180,8 @@ def register_key_management_handlers(
                 if len(all_keys) == 1:
                     # Если только один ключ, показываем выбор страны сразу
                     logging.debug(f"Меняем страну для одного ключа: {all_keys[0]['type']}")
-                    await show_country_change_menu_wrapper(message, user_id, all_keys[0])
+                    # Передаем user_states в функцию
+                    await show_country_change_menu(message, user_id, all_keys[0], user_states)
                 else:
                     # Если несколько ключей, показываем список для выбора
                     logging.debug("Показываем меню выбора ключа для смены страны")
@@ -413,7 +414,7 @@ def register_key_management_handlers(
                 }
         
         await callback_query.answer()
-        await show_country_change_menu_wrapper(callback_query.message, user_id, key_dict)
+        await show_country_change_menu(callback_query.message, user_id, key_dict, user_states)
     
     @dp.callback_query_handler(lambda c: c.data == "cancel_country_change")
     async def handle_cancel_country_change(callback_query: types.CallbackQuery):

@@ -134,6 +134,12 @@
                             <a href="/payments/{{ p.payment_id }}" class="btn" title="Подробнее">
                                 <span class="material-icons icon-small">visibility</span>
                             </a>
+                            <form method="post" action="/payments/{{ p.payment_id }}/delete" onsubmit="return deletePayment(event, this, '{{ p.payment_id }}')" style="display: inline;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <button class="btn btn-danger" title="Удалить" type="submit">
+                                    <span class="material-icons icon-small">delete</span>
+                                </button>
+                            </form>
                         </div>
                     </td>
                 </tr>
@@ -235,6 +241,35 @@ function showNotification(message, type = 'info') {
     `;
     document.body.appendChild(notification);
     setTimeout(() => notification.remove(), 5000);
+}
+
+function deletePayment(event, form, paymentId) {
+    event.preventDefault();
+    
+    if (!confirm(`Вы уверены, что хотите удалить платеж ${paymentId}? Это действие нельзя отменить.`)) {
+        return false;
+    }
+    
+    const formData = new FormData(form);
+    
+    fetch(form.action, {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification(data.message || 'Платеж успешно удален', 'success');
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showNotification('Ошибка: ' + (data.error || 'Не удалось удалить платеж'), 'error');
+        }
+    })
+    .catch(error => {
+        showNotification('Ошибка: ' + error, 'error');
+    });
+    
+    return false;
 }
 </script>
 {% endblock %}

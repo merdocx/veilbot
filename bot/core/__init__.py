@@ -66,3 +66,4 @@ def is_bot_registered() -> bool:
     """
     return _bot_instance is not None
 
+

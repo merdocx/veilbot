@@ -17,8 +17,14 @@ from app.settings import settings
 from bot.core import get_bot_instance
 from bot.utils.formatters import format_key_message_unified
 
-# Получаем bot instance через централизованный модуль
-bot = get_bot_instance()
+# Lazy import: получаем bot instance только когда он нужен
+def get_bot():
+    """Получить экземпляр бота (lazy import для избежания ошибок при старте админки)"""
+    try:
+        return get_bot_instance()
+    except RuntimeError:
+        # Бот еще не запущен - возвращаем None
+        return None
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token
@@ -141,14 +147,18 @@ async def resend_key(request: Request, key_id: int, csrf_token: str = Form(...))
         
         if user_id and access_url and protocol:
             try:
-                await bot.send_message(
-                    user_id,
-                    format_key_message_unified(access_url, protocol),
-                    disable_web_page_preview=True,
-                    parse_mode="Markdown"
-                )
-                log_admin_action(request, "RESEND_KEY", f"Key ID: {key_id}, User: {user_id}")
-                return JSONResponse({"success": True, "user_id": user_id})
+                bot = get_bot()
+                if bot:
+                    await bot.send_message(
+                        user_id,
+                        format_key_message_unified(access_url, protocol),
+                        disable_web_page_preview=True,
+                        parse_mode="Markdown"
+                    )
+                    log_admin_action(request, "RESEND_KEY", f"Key ID: {key_id}, User: {user_id}")
+                    return JSONResponse({"success": True, "user_id": user_id})
+                else:
+                    return JSONResponse({"success": False, "error": "Bot not available"}, status_code=503)
             except Exception as e:
                 return JSONResponse({"success": False, "error": str(e)}, status_code=500)
         return JSONResponse({"success": False, "error": "Key not found"}, status_code=404)

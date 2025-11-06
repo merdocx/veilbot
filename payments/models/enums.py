@@ -6,6 +6,7 @@ class PaymentStatus(str, Enum):
     """Статусы платежей"""
     PENDING = "pending"
     PAID = "paid"
+    COMPLETED = "completed"  # Платеж оплачен и ключ выдан/продлен
     FAILED = "failed"
     CANCELLED = "cancelled"
     REFUNDED = "refunded"

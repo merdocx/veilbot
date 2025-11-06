@@ -4,6 +4,7 @@ import sqlite3
 from typing import List, Tuple
 from app.settings import settings
 from app.infra.sqlite_utils import open_connection
+from app.infra.foreign_keys import safe_foreign_keys_off
 
 
 class KeyRepository:
@@ -56,13 +57,17 @@ class KeyRepository:
     def delete_outline_key_by_id(self, key_pk: int) -> None:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("DELETE FROM keys WHERE id = ?", (key_pk,))
+            # Используем контекстный менеджер для безопасного отключения foreign keys
+            with safe_foreign_keys_off(c):
+                c.execute("DELETE FROM keys WHERE id = ?", (key_pk,))
             conn.commit()
 
     def delete_v2ray_key_by_id(self, key_pk: int) -> None:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_pk,))
+            # Используем контекстный менеджер для безопасного отключения foreign keys
+            with safe_foreign_keys_off(c):
+                c.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_pk,))
             conn.commit()
 
     def get_expired_outline_keys(self, now_ts: int) -> List[Tuple]:

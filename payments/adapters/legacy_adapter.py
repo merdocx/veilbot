@@ -19,6 +19,8 @@ class LegacyPaymentAdapter:
     """Адаптер для совместимости со старым платежным кодом"""
     
     def __init__(self, payment_service: PaymentService):
+        if payment_service is None:
+            raise ValueError("PaymentService cannot be None")
         self.payment_service = payment_service
     
     async def create_payment_with_email_and_protocol(
@@ -227,12 +229,20 @@ async def wait_for_payment_with_protocol_legacy(
     """
     Обертка для прямой замены старой функции
     """
-    payment_service = get_payment_service()
-    adapter = LegacyPaymentAdapter(payment_service)
-    
-    return await adapter.wait_for_payment_with_protocol(
-        message, payment_id, protocol, timeout_minutes
-    )
+    try:
+        payment_service = get_payment_service()
+        if not payment_service:
+            logger.error("Payment service is not available in wait_for_payment_with_protocol_legacy")
+            return False
+        
+        adapter = LegacyPaymentAdapter(payment_service)
+        
+        return await adapter.wait_for_payment_with_protocol(
+            message, payment_id, protocol, timeout_minutes
+        )
+    except Exception as e:
+        logger.error(f"Error in wait_for_payment_with_protocol_legacy: {e}", exc_info=True)
+        return False
 
 
 async def handle_paid_tariff_legacy(

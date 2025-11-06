@@ -61,6 +61,13 @@
             <button class="btn btn-danger">Возврат</button>
           </form>
           {% endif %}
+          <form method="post" action="/payments/{{ payment.payment_id }}/delete" onsubmit="return deletePayment(event, this, '{{ payment.payment_id }}')" style="margin-top:8px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button class="btn btn-danger" type="submit">
+              <span class="material-icons icon-small">delete</span>
+              Удалить платеж
+            </button>
+          </form>
         </div>
       </div>
 
@@ -81,6 +88,35 @@ async function submitAjax(e, form) {
   alert(data.success ? 'Готово' : ('Ответ: ' + JSON.stringify(data)));
   window.location.reload();
   return false;
+}
+
+function deletePayment(event, form, paymentId) {
+    event.preventDefault();
+    
+    if (!confirm(`Вы уверены, что хотите удалить платеж ${paymentId}? Это действие нельзя отменить.`)) {
+        return false;
+    }
+    
+    const formData = new FormData(form);
+    
+    fetch(form.action, {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(data.message || 'Платеж успешно удален');
+            window.location.href = '/payments';
+        } else {
+            alert('Ошибка: ' + (data.error || 'Не удалось удалить платеж'));
+        }
+    })
+    .catch(error => {
+        alert('Ошибка: ' + error);
+    });
+    
+    return false;
 }
 </script>
 {% endblock %}

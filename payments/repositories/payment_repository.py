@@ -531,7 +531,7 @@ class PaymentRepository:
             return []
     
     async def get_paid_payments_without_keys(self) -> List[Payment]:
-        """Получение оплаченных платежей без ключей"""
+        """Получение оплаченных платежей без ключей (исключая закрытые платежи)"""
         try:
             async with aiosqlite.connect(self.db_path) as conn:
                 async with conn.execute("""
@@ -539,9 +539,11 @@ class PaymentRepository:
                     WHERE p.status = 'paid' 
                     AND p.user_id NOT IN (
                         SELECT user_id FROM keys WHERE expiry_at > ?
+                        UNION
+                        SELECT user_id FROM v2ray_keys WHERE expiry_at > ?
                     )
                     ORDER BY p.created_at ASC
-                """, (int(datetime.utcnow().timestamp()),)) as cursor:
+                """, (int(datetime.utcnow().timestamp()), int(datetime.utcnow().timestamp()))) as cursor:
                     rows = await cursor.fetchall()
                     return [self._payment_from_row(row) for row in rows]
                     

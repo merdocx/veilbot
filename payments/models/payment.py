@@ -102,6 +102,11 @@ class Payment:
         """Отметить как отмененный"""
         self.status = PaymentStatus.CANCELLED
         self.updated_at = datetime.utcnow()
+    
+    def mark_as_completed(self):
+        """Отметить как закрытый (ключ выдан/продлен)"""
+        self.status = PaymentStatus.COMPLETED
+        self.updated_at = datetime.utcnow()
 
 
 class PaymentCreate(BaseModel):

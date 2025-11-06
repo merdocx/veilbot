@@ -35,7 +35,12 @@ def foreign_keys_off(connection) -> Generator[None, None, None]:
         original_state = result[0] if result else 1
         
         # Отключаем foreign keys (PRAGMA выполняется через cursor)
+        # ВАЖНО: PRAGMA foreign_keys работает на уровне соединения, но нужно выполнить его
+        # на том же соединении, которое будет использоваться для INSERT
         temp_cursor.execute("PRAGMA foreign_keys=OFF")
+        # Закрываем временный курсор, чтобы освободить ресурсы
+        temp_cursor.close()
+        temp_cursor = None
         logger.debug("Foreign keys temporarily disabled")
         
         yield
@@ -56,6 +61,7 @@ def foreign_keys_off(connection) -> Generator[None, None, None]:
                 # Если не удалось получить исходное состояние, включаем обратно
                 temp_cursor.execute("PRAGMA foreign_keys=ON")
                 logger.warning("Foreign keys restored to ON (default) - original state unknown")
+            temp_cursor.close()
         except Exception as e:
             logger.error(f"Error restoring foreign keys state: {e}", exc_info=True)
             # Все равно пытаемся включить foreign keys для безопасности
@@ -63,6 +69,7 @@ def foreign_keys_off(connection) -> Generator[None, None, None]:
                 if temp_cursor is None:
                     temp_cursor = connection.cursor()
                 temp_cursor.execute("PRAGMA foreign_keys=ON")
+                temp_cursor.close()
             except:
                 pass
 

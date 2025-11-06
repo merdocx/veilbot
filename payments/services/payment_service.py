@@ -415,142 +415,87 @@ class PaymentService:
                 try:
                     logger.info(f"Processing paid payment without key: {payment.payment_id} for user {payment.user_id}")
                     
-                    # Идемпотентность: повторная проверка статуса в БД
-                    # Если в ходе гонки ключ уже выдан, пропускаем
-                    # (доп. проверка на наличие активных ключей у пользователя)
-                    key_repo = KeyRepository()
-                    sr = ServerRepository()
-
-                    # Выбор серверов по протоколу и стране
-                    servers = sr.list_servers()
-                    target_servers = [
-                        s for s in servers
-                        if (len(s) > 7 and (s[7] or 'outline') == (payment.protocol or 'outline'))
-                        and (not payment.country or (len(s) > 6 and (s[6] or '') == payment.country))
-                        and (len(s) > 5 and int(s[5]) == 1)
-                    ]
-                    if not target_servers and servers:
-                        # Фолбэк: любой активный сервер для данного протокола
-                        target_servers = [
-                            s for s in servers
-                            if (len(s) > 7 and (s[7] or 'outline') == (payment.protocol or 'outline'))
-                            and (len(s) > 5 and int(s[5]) == 1)
-                        ]
-                    if not target_servers:
-                        logger.error(f"No active servers for protocol={payment.protocol} country={payment.country}")
-                        continue
-
-                    server = target_servers[0]
-                    server_id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path = (
-                        server + (None,) * (11 - len(server))
-                    )
-
-                    # Создание ключа в соответствии с протоколом
-                    protocol_config = {
-                        'api_url': api_url,
-                        'cert_sha256': cert_sha256,
-                        'api_key': api_key,
-                        'domain': domain,
-                        'v2ray_path': v2ray_path,
-                    }
-                    client = ProtocolFactory.create_protocol(payment.protocol or 'outline', protocol_config)
-
-                    email = payment.email or f"user_{payment.user_id}@veilbot.com"
-                    user_data = await client.create_user(email)
-
-                    # Определение срока по тарифу (если возможно)
-                    expiry_ts = int((payment.created_at or datetime.utcnow()).timestamp()) + 30*24*3600
+                    # Добавляем задержку между обработкой платежей для избежания rate limit
+                    # Увеличиваем задержку до 15 секунд для V2Ray (rate limit: 5 запросов в минуту)
+                    if (payment.protocol or 'outline') == 'v2ray':
+                        await asyncio.sleep(15)  # 15 секунд = 4 запроса в минуту (безопасно)
+                    else:
+                        await asyncio.sleep(2)
+                    
+                    # Используем ту же логику, что и при покупке/продлении через wait_for_payment_with_protocol
+                    # Это обеспечивает правильную обработку продления (если ключ существует, он будет продлен)
                     try:
                         import sqlite3
                         from app.settings import settings as app_settings
+                        from utils import get_db_cursor
+                        from bot.services.key_creation import create_new_key_flow_with_protocol
+                        
+                        # Получаем тариф
+                        tariff = None
                         with sqlite3.connect(app_settings.DATABASE_PATH) as conn:
                             c = conn.cursor()
-                            c.execute("SELECT duration_sec FROM tariffs WHERE id = ?", (payment.tariff_id,))
-                            row = c.fetchone()
-                            if row and row[0]:
-                                expiry_ts = int((payment.created_at or datetime.utcnow()).timestamp()) + int(row[0])
-                    except Exception:
-                        pass
-
-                    # Сохранение ключа в БД (идемпотентно)
-                    if (payment.protocol or 'outline') == 'outline':
-                        # В таблицу keys
-                        access_url = user_data.get('accessUrl') or ''
-                        outline_key_id = user_data.get('id') or ''
-                        new_key_id = key_repo.insert_outline_key(
-                            server_id=server_id,
-                            user_id=payment.user_id,
-                            access_url=access_url,
-                            expiry_at=expiry_ts,
-                            key_id=outline_key_id,
-                            email=payment.email,
-                            tariff_id=payment.tariff_id,
-                        )
-                        try:
-                            log_key_creation(
+                            c.execute("SELECT id, name, duration_sec, price_rub FROM tariffs WHERE id = ?", (payment.tariff_id,))
+                            tariff_row = c.fetchone()
+                            if tariff_row:
+                                tariff = {
+                                    'id': tariff_row[0],
+                                    'name': tariff_row[1],
+                                    'duration_sec': tariff_row[2],
+                                    'price_rub': tariff_row[3]
+                                }
+                        
+                        if not tariff:
+                            logger.error(f"Tariff {payment.tariff_id} not found for payment {payment.payment_id}")
+                            continue
+                        
+                        # Используем create_new_key_flow_with_protocol, которая автоматически:
+                        # 1. Проверит наличие существующего ключа
+                        # 2. Если ключ существует - продлит его (обновит expiry_at)
+                        # 3. Если ключа нет - создаст новый
+                        # Это та же логика, что и при покупке/продлении через wait_for_payment_with_protocol
+                        with get_db_cursor(commit=True) as cursor:
+                            # Определяем, это продление или новая покупка
+                            # Проверяем наличие активного ключа у пользователя
+                            now_ts = int(datetime.utcnow().timestamp())
+                            GRACE_PERIOD = 86400  # 24 часа
+                            grace_threshold = now_ts - GRACE_PERIOD
+                            
+                            # Проверяем наличие ключа (для определения, это продление или покупка)
+                            cursor.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, grace_threshold))
+                            has_outline_key = cursor.fetchone() is not None
+                            cursor.execute("SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, grace_threshold))
+                            has_v2ray_key = cursor.fetchone() is not None
+                            
+                            # Если есть активный ключ - это продление
+                            for_renewal = has_outline_key or has_v2ray_key
+                            
+                            logger.info(f"Processing payment {payment.payment_id} for user {payment.user_id}: for_renewal={for_renewal}")
+                            
+                            # Вызываем create_new_key_flow_with_protocol, которая обработает и продление, и создание нового ключа
+                            await create_new_key_flow_with_protocol(
+                                cursor=cursor,
+                                message=None,  # Отправка сообщения будет внутри функции
                                 user_id=payment.user_id,
-                                key_id=outline_key_id,
-                                protocol='outline',
-                                server_id=server_id or 0,
-                                tariff_id=payment.tariff_id or 0,
+                                tariff=tariff,
+                                email=payment.email,
+                                country=payment.country,
+                                protocol=payment.protocol or 'outline',
+                                for_renewal=for_renewal  # Если есть активный ключ, это продление
                             )
-                        except Exception:
-                            pass
-                        try:
-                            # Отправка ключа пользователю
-                            bot_instance = get_bot()
-                            if bot_instance:
-                                await bot_instance.send_message(
-                                    payment.user_id,
-                                    format_key_message(access_url),
-                                    reply_markup=get_main_menu(),
-                                    disable_web_page_preview=True,
-                                    parse_mode="Markdown",
-                                )
-                        except Exception as e:
-                            logger.error(f"Failed to notify user {payment.user_id} about outline key: {e}")
-                    else:
-                        # V2Ray → v2ray_keys
-                        v2ray_uuid = user_data.get('uuid') or user_data.get('id') or ''
-                        key_repo.insert_v2ray_key(
-                            server_id=server_id,
-                            user_id=payment.user_id,
-                            v2ray_uuid=v2ray_uuid,
-                            email=payment.email,
-                            created_at=int((payment.created_at or datetime.utcnow()).timestamp()),
-                            expiry_at=expiry_ts,
-                            tariff_id=payment.tariff_id,
-                        )
-                        try:
-                            log_key_creation(
-                                user_id=payment.user_id,
-                                key_id=v2ray_uuid,
-                                protocol='v2ray',
-                                server_id=server_id or 0,
-                                tariff_id=payment.tariff_id or 0,
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            domain_eff = domain or 'veil-bird.ru'
-                            v2ray_path_eff = v2ray_path or '/v2ray'
-                            access_url = f"vless://{v2ray_uuid}@{domain_eff}:443?path={v2ray_path_eff}&security=tls&type=ws#VeilBot-V2Ray"
-                            # Используем унифицированный формат
-                            bot_instance = get_bot()
-                            if bot_instance:
-                                await bot_instance.send_message(
-                                    payment.user_id,
-                                    format_key_message_unified(access_url, 'v2ray', None, None),
-                                    reply_markup=get_main_menu(),
-                                    disable_web_page_preview=True,
-                                    parse_mode="Markdown",
-                                )
-                        except Exception as e:
-                            logger.error(f"Failed to notify user {payment.user_id} about v2ray key: {e}")
-                    
-                    processed_count += 1
-                    # Небольшая задержка между обработкой
-                    await asyncio.sleep(0.05)
+                            
+                            # После успешной выдачи/продления ключа помечаем платеж как закрытый
+                            # Это предотвратит повторную выдачу ключа по этому платежу
+                            payment.mark_as_completed()
+                            await self.payment_repo.update(payment)
+                            logger.info(f"Payment {payment.payment_id} marked as completed after key creation/renewal")
+                        
+                        processed_count += 1
+                        # Небольшая задержка между обработкой
+                        await asyncio.sleep(0.05)
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing payment {payment.payment_id} with create_new_key_flow_with_protocol: {e}", exc_info=True)
+                        continue
                     
                 except Exception as e:
                     logger.error(f"Error processing payment {payment.payment_id}: {e}")

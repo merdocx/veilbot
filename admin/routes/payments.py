@@ -17,8 +17,14 @@ from payments.config import get_payment_service
 from app.settings import settings
 from bot.core import get_bot_instance
 
-# Получаем bot instance через централизованный модуль
-bot = get_bot_instance()
+# Lazy import: получаем bot instance только когда он нужен
+def get_bot():
+    """Получить экземпляр бота (lazy import для избежания ошибок при старте админки)"""
+    try:
+        return get_bot_instance()
+    except RuntimeError:
+        # Бот еще не запущен - возвращаем None
+        return None
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token, validate_csrf_token
@@ -276,7 +282,9 @@ async def payments_reconcile(request: Request, csrf_token: str = Form(...)):
                     f"• Pending обработано: {pending_processed}\n"
                     f"• Выдано ключей: {issued_processed}\n"
                 )
-                await bot.send_message(admin_id, msg)
+                bot = get_bot()
+                if bot:
+                    await bot.send_message(admin_id, msg)
         except Exception:
             pass
 
@@ -375,5 +383,78 @@ async def payment_issue(request: Request, pid: str, csrf_token: str = Form(...))
         return JSONResponse({"success": ok})
     except Exception as e:
         log_admin_action(request, "PAYMENT_ISSUE_ERROR", f"Payment ID: {pid}, Error: {str(e)}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.post("/payments/{pid}/delete")
+async def payment_delete(request: Request, pid: str, csrf_token: str = Form(...)):
+    """Удаление платежа"""
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Not authorized"}, status_code=403)
+    
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+
+    repo = PaymentRepository(DB_PATH)
+    
+    try:
+        # Пробуем найти платеж по payment_id
+        payment = await repo.get_by_payment_id(pid)
+        
+        # Если не найден по payment_id, пробуем по числовому id
+        if not payment:
+            try:
+                payment = await repo.get_by_id(int(pid))
+            except (ValueError, TypeError):
+                pass
+        
+        if not payment:
+            log_admin_action(request, "PAYMENT_DELETE_NOT_FOUND", f"Payment ID: {pid}")
+            return JSONResponse({"success": False, "error": "Платеж не найден"}, status_code=404)
+        
+        # Проверяем, можно ли удалить платеж
+        # Не удаляем платежи со статусом completed или paid, если есть связанные активные ключи
+        payment_status = str(getattr(payment.status, 'value', payment.status) if hasattr(payment.status, 'value') else payment.status)
+        
+        # Для платежей со статусом 'completed' или 'paid' проверяем наличие активных ключей
+        if payment_status in ('completed', 'paid'):
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                now = int(datetime.utcnow().timestamp())
+                c.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now))
+                has_outline_key = c.fetchone() is not None
+                c.execute("SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now))
+                has_v2ray_key = c.fetchone() is not None
+                
+                if has_outline_key or has_v2ray_key:
+                    log_admin_action(request, "PAYMENT_DELETE_BLOCKED", f"Payment ID: {pid}, Status: {payment_status}, Reason: Has active keys")
+                    return JSONResponse({
+                        "success": False, 
+                        "error": f"Нельзя удалить платеж со статусом '{payment_status}', у пользователя есть активные ключи"
+                    }, status_code=400)
+        
+        # Удаляем платеж
+        # Используем payment.id (числовой id) для удаления
+        if payment.id:
+            deleted = await repo.delete(payment.id)
+        else:
+            # Если нет числового id, удаляем напрямую через SQL по payment_id
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("DELETE FROM payments WHERE payment_id = ?", (pid,))
+                conn.commit()
+                deleted = c.rowcount > 0
+        
+        if deleted:
+            log_admin_action(request, "PAYMENT_DELETE", f"Payment ID: {pid}, Status: {payment_status}, User: {payment.user_id}")
+            return JSONResponse({"success": True, "message": "Платеж успешно удален"})
+        else:
+            log_admin_action(request, "PAYMENT_DELETE_FAILED", f"Payment ID: {pid}")
+            return JSONResponse({"success": False, "error": "Не удалось удалить платеж"}, status_code=500)
+            
+    except Exception as e:
+        import logging
+        logging.error(f"Error deleting payment {pid}: {e}", exc_info=True)
+        log_admin_action(request, "PAYMENT_DELETE_ERROR", f"Payment ID: {pid}, Error: {str(e)}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 

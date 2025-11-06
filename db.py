@@ -109,15 +109,7 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
-    # Ensure extended payments schema exists (for tests and new deployments)
-    try:
-        # Check existing columns
-        c.execute("PRAGMA table_info(payments)")
-        cols = {row[1] for row in c.fetchall()}
-        if 'currency' not in cols:
-            migrate_extend_payments_schema()
-    except Exception as e:
-        logging.warning(f"Failed to ensure extended payments schema: {e}")
+    # Extended payments schema будет добавлена через миграции
 
     # PRAGMA tuning for better performance and durability
     try:
@@ -126,6 +118,7 @@ def init_db():
         c.execute("PRAGMA temp_store=MEMORY")
         c.execute("PRAGMA mmap_size=30000000000")  # ~30GB if supported, harmless fallback otherwise
         c.execute("PRAGMA busy_timeout=5000")
+        c.execute("PRAGMA foreign_keys=ON")
     except sqlite3.DatabaseError as e:
         logging.warning(f"SQLite PRAGMA setup failed: {e}")
 
@@ -198,59 +191,6 @@ def migrate_add_revoked_to_payments():
         logging.info("Поле revoked уже существует в таблице payments.")
     conn.close()
 
-def migrate_extend_payments_schema():
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    try:
-        # Получаем существующие колонки
-        cursor.execute("PRAGMA table_info(payments)")
-        cols = {row[1] for row in cursor.fetchall()}
-
-        # Требуемые дополнительные поля по новой схеме
-        required_columns = [
-            ("amount", "INTEGER DEFAULT 0"),
-            ("currency", "TEXT DEFAULT 'RUB'"),
-            ("country", "TEXT"),
-            ("protocol", "TEXT DEFAULT 'outline'"),
-            ("provider", "TEXT DEFAULT 'yookassa'"),
-            ("method", "TEXT"),
-            ("description", "TEXT"),
-            ("created_at", "INTEGER"),
-            ("updated_at", "INTEGER"),
-            ("paid_at", "INTEGER"),
-            ("metadata", "TEXT")
-        ]
-
-        added = 0
-        for name, decl in required_columns:
-            if name not in cols:
-                try:
-                    cursor.execute(f"ALTER TABLE payments ADD COLUMN {name} {decl}")
-                    added += 1
-                except sqlite3.OperationalError:
-                    pass
-
-        # Уникальный индекс на payment_id
-        try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)")
-        except sqlite3.OperationalError:
-            pass
-
-        # Полезные индексы для запросов
-        try:
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments(created_at)")
-        except sqlite3.OperationalError:
-            pass
-
-        conn.commit()
-        logging.info(f"Схема payments обновлена, добавлено полей: {added}")
-    finally:
-        conn.close()
-
 def migrate_add_free_key_usage():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
@@ -314,6 +254,62 @@ def migrate_add_tariff_id_to_v2ray_keys():
     except sqlite3.OperationalError:
         logging.info("Поле tariff_id уже существует в таблице v2ray_keys.")
     conn.close()
+
+def migrate_extend_payments_schema():
+    """Расширение схемы таблицы payments для поддержки новых полей"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # Получаем существующие колонки
+        cursor.execute("PRAGMA table_info(payments)")
+        cols = {row[1] for row in cursor.fetchall()}
+
+        # Требуемые дополнительные поля по новой схеме
+        required_columns = [
+            ("amount", "INTEGER DEFAULT 0"),
+            ("currency", "TEXT DEFAULT 'RUB'"),
+            ("country", "TEXT"),
+            ("protocol", "TEXT DEFAULT 'outline'"),
+            ("provider", "TEXT DEFAULT 'yookassa'"),
+            ("method", "TEXT"),
+            ("description", "TEXT"),
+            ("created_at", "INTEGER"),
+            ("updated_at", "INTEGER"),
+            ("paid_at", "INTEGER"),
+            ("metadata", "TEXT")
+        ]
+
+        added = 0
+        for name, decl in required_columns:
+            if name not in cols:
+                try:
+                    cursor.execute(f"ALTER TABLE payments ADD COLUMN {name} {decl}")
+                    added += 1
+                except sqlite3.OperationalError:
+                    pass
+
+        # Уникальный индекс на payment_id
+        try:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)")
+        except sqlite3.OperationalError:
+            pass
+
+        # Полезные индексы для запросов
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments(created_at)")
+        except sqlite3.OperationalError:
+            pass
+
+        conn.commit()
+        logging.info(f"Схема payments обновлена, добавлено полей: {added}")
+    except Exception as e:
+        logging.error(f"Ошибка при расширении схемы payments: {e}")
+    finally:
+        conn.close()
 
 def migrate_add_common_indexes():
     conn = sqlite3.connect(DATABASE_PATH)
@@ -510,6 +506,22 @@ def migrate_add_client_config_to_v2ray_keys():
     finally:
         conn.close()
 
+def migrate_add_notified_to_v2ray_keys():
+    """Добавление поля notified в v2ray_keys для отслеживания отправленных уведомлений"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN notified INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Поле notified добавлено в v2ray_keys")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name: notified" in str(e):
+            logging.info("Поле notified уже существует в v2ray_keys")
+        else:
+            raise
+    finally:
+        conn.close()
+
 def migrate_add_available_for_purchase_to_servers():
     """Добавление поля available_for_purchase в servers для управления доступностью серверов к покупке"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -523,9 +535,92 @@ def migrate_add_available_for_purchase_to_servers():
     finally:
         conn.close()
 
-if __name__ == "__main__":
-    import time
-    init_db()
+def migrate_fix_v2ray_keys_foreign_keys():
+    """Исправление foreign key constraints в таблице v2ray_keys - замена users(id) на users(user_id)"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # Проверяем, есть ли неправильный foreign key
+        cursor.execute("PRAGMA foreign_key_list(v2ray_keys)")
+        fk_list = cursor.fetchall()
+        
+        # Проверяем, есть ли foreign key на users(id) вместо users(user_id)
+        has_wrong_fk = False
+        for fk in fk_list:
+            # fk[2] - таблица, fk[3] - колонка в таблице, fk[4] - колонка в текущей таблице
+            if fk[2] == 'users' and fk[3] == 'id' and fk[4] == 'user_id':
+                has_wrong_fk = True
+                break
+        
+        if not has_wrong_fk:
+            logging.info("Foreign key constraints в v2ray_keys уже правильные или отсутствуют")
+            return
+        
+        logging.info("Обнаружен неправильный foreign key constraint. Пересоздаем таблицу v2ray_keys...")
+        
+        # Отключаем foreign keys для безопасного пересоздания таблицы
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        
+        # Создаем временную таблицу с правильной структурой
+        cursor.execute("""
+            CREATE TABLE v2ray_keys_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id INTEGER,
+                user_id INTEGER,
+                v2ray_uuid TEXT UNIQUE,
+                email TEXT,
+                level INTEGER DEFAULT 0,
+                created_at INTEGER,
+                expiry_at INTEGER,
+                tariff_id INTEGER,
+                client_config TEXT DEFAULT NULL,
+                notified INTEGER DEFAULT 0,
+                FOREIGN KEY (server_id) REFERENCES servers(id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
+            )
+        """)
+        
+        # Копируем данные
+        cursor.execute("""
+            INSERT INTO v2ray_keys_new 
+            SELECT * FROM v2ray_keys
+        """)
+        
+        # Удаляем старую таблицу
+        cursor.execute("DROP TABLE v2ray_keys")
+        
+        # Переименовываем новую таблицу
+        cursor.execute("ALTER TABLE v2ray_keys_new RENAME TO v2ray_keys")
+        
+        # Восстанавливаем индексы
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_tariff_id ON v2ray_keys(tariff_id)")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2ray_user_uuid ON v2ray_keys(user_id, v2ray_uuid)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_created_at ON v2ray_keys(created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email ON v2ray_keys(email) WHERE email IS NOT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email_created ON v2ray_keys(email, created_at)")
+        
+        # Включаем foreign keys обратно
+        cursor.execute("PRAGMA foreign_keys=ON")
+        
+        conn.commit()
+        logging.info("Таблица v2ray_keys успешно пересоздана с правильными foreign key constraints")
+    except Exception as e:
+        logging.error(f"Ошибка при исправлении foreign key constraints в v2ray_keys: {e}", exc_info=True)
+        conn.rollback()
+        # Включаем foreign keys обратно в случае ошибки
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        except:
+            pass
+    finally:
+        conn.close()
+
+def _run_all_migrations():
+    """Выполнить все миграции базы данных"""
     migrate_add_key_id()
     migrate_add_email()
     migrate_add_payment_email()
@@ -544,5 +639,17 @@ if __name__ == "__main__":
     migrate_add_crypto_pricing()
     migrate_add_crypto_payment_fields()
     migrate_add_client_config_to_v2ray_keys()
+    migrate_add_notified_to_v2ray_keys()
     migrate_add_available_for_purchase_to_servers()
+    migrate_fix_v2ray_keys_foreign_keys()
 
+# Выполняем миграции после определения всех функций
+# Это нужно для того, чтобы init_db() могла вызывать миграции
+def init_db_with_migrations():
+    """Инициализация БД с выполнением всех миграций"""
+    init_db()
+    _run_all_migrations()
+
+if __name__ == "__main__":
+    import time
+    init_db_with_migrations()

@@ -51,6 +51,18 @@ class WebhookService:
                 success = await self.payment_service.process_payment_success(payment_id)
                 if success:
                     logger.info(f"Payment {payment_id} processed successfully via webhook")
+                    
+                    # Создаем ключ для оплаченного платежа
+                    try:
+                        # Используем фоновую задачу для создания ключей
+                        # Это более надежно, чем создавать ключ здесь
+                        await self.payment_service.process_paid_payments_without_keys()
+                        logger.info(f"Key creation triggered for payment {payment_id} via webhook")
+                    except Exception as e:
+                        logger.error(f"Error creating key for payment {payment_id} via webhook: {e}")
+                        # Не возвращаем False, т.к. платеж уже обработан
+                        # Ключ будет создан фоновой задачей
+                    
                     return True
                 else:
                     logger.error(f"Failed to process payment {payment_id} via webhook")
