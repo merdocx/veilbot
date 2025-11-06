@@ -294,8 +294,8 @@ jobs:
             exit 1
           fi
           
-          # Check required files
-          required_files=('config.py', 'db.py', 'requirements.txt')
+          # Check required files (bash arrays use spaces, not commas!)
+          required_files=('config.py' 'db.py' 'requirements.txt')
           for file in "${required_files[@]}"; do
             if [ -f "$file" ]; then
               echo "✅ $file exists"
