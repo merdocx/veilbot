@@ -390,7 +390,7 @@ jobs:
           done
           
           # Check optional directories (may be empty after cleanup)
-          optional_dirs=('scripts', 'setup')
+          optional_dirs=('scripts' 'setup')
           for dir in "${optional_dirs[@]}"; do
             if [ -d "$dir" ]; then
               echo "✅ $dir exists (may be empty)"
