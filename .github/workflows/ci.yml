@@ -278,8 +278,13 @@ jobs:
           for file in "${required_files[@]}"; do
             if [ -f "$file" ]; then
               echo "✅ $file exists"
+              ls -lh "$file"
             else
               echo "❌ $file missing"
+              echo "🔍 Checking if $file is in git:"
+              git ls-files | grep "^${file}$" || echo "${file} not found in git ls-files"
+              echo "🔍 All Python files in root:"
+              ls -la *.py 2>/dev/null || echo "No .py files found in root"
               exit 1
             fi
           done
