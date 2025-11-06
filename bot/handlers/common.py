@@ -3,7 +3,7 @@
 """
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import ADMIN_ID, SUPPORT_USERNAME
@@ -14,6 +14,7 @@ from bot_error_handler import BotErrorHandler
 
 # Временное хранилище для текстов рассылки
 broadcast_texts: Dict[int, str] = {}
+help_menu_users: Set[int] = set()
 
 
 async def handle_invite_friend(message: types.Message) -> None:
@@ -49,6 +50,7 @@ async def handle_help(message: types.Message) -> None:
         "Оплаченный срок действия ключа сохранится!\n\n"
         "Выберите вариант ниже:"
     )
+    help_menu_users.add(message.from_user.id)
     await message.answer(help_text, reply_markup=help_keyboard)
 
 
@@ -81,6 +83,7 @@ async def handle_support(message: types.Message) -> None:
 async def handle_help_back(message: types.Message) -> None:
     """Обработчик возврата из помощи в главное меню"""
     main_menu = get_main_menu()
+    help_menu_users.discard(message.from_user.id)
     await message.answer("Главное меню:", reply_markup=main_menu)
 
 
@@ -245,7 +248,7 @@ def register_common_handlers(dp: Dispatcher) -> None:
     
     # Регистрация обработчика возврата из помощи
     help_keyboard = get_help_keyboard()
-    @dp.message_handler(lambda m: m.text == "🔙 Назад" and m.reply_markup == help_keyboard)
+    @dp.message_handler(lambda m: m.text == "🔙 Назад" and m.from_user.id in help_menu_users)
     async def help_back_handler(message: types.Message):
         await handle_help_back(message)
     
