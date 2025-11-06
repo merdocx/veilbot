@@ -461,8 +461,11 @@ def register_purchase_handlers(
         try:
             if message.text == "🔙 Назад":
                 user_id = message.from_user.id
-                user_states.pop(user_id, None)
-                await message.answer("Выберите протокол:", reply_markup=get_protocol_selection_menu())
+                state = user_states.pop(user_id, {})
+                if state.get("auto_protocol"):
+                    await message.answer("Главное меню:", reply_markup=main_menu)
+                else:
+                    await message.answer("Выберите протокол:", reply_markup=get_protocol_selection_menu())
                 return
             
             if message.text == "Получить месяц бесплатно":
