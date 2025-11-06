@@ -30,7 +30,8 @@ async def handle_invite_friend(message: types.Message) -> None:
         invite_link = f"https://t.me/{bot_username}?start={user_id}"
         await message.answer(
             f"Пригласите друга по этой ссылке:\n{invite_link}\n\nЕсли друг купит доступ, вы получите месяц бесплатно!",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
+            disable_web_page_preview=True
         )
     except Exception as e:
         await BotErrorHandler.handle_error(message, e, "handle_invite_friend", bot, ADMIN_ID)
