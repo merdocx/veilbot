@@ -1196,15 +1196,17 @@ async def change_country_for_key(
                 (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, tariff_id)
             )
             
-            reissue_text = (
-                "🌍 *Смена страны и продление*\n\n"
-                f"Ваш ключ перенесён из *{old_country}* в *{new_country}*\n\n"
-                f"⏰ Оставшееся время: {format_duration(remaining)}\n"
-                f"➕ Добавлено: {format_duration(additional_duration)}\n"
-                f"📅 Итого: {format_duration(total_duration)}\n\n"
-                f"{format_key_message_unified(access_url, protocol, tariff)}"
+            country_text = (
+                "🌍 *Смена страны*\n\n"
+                f"Ваш ключ перенесён из *{old_country}* в *{new_country}*.\n\n"
+                f"⏰ Оставшееся время: {format_duration(remaining)}\n\n"
             )
-            await message.answer(reissue_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            await message.answer(
+                country_text + format_key_message_unified(key["accessUrl"], protocol, tariff, remaining),
+                reply_markup=main_menu,
+                disable_web_page_preview=True,
+                parse_mode="Markdown",
+            )
             
         elif protocol == "v2ray":
             # Создаём новый V2Ray ключ
@@ -1268,15 +1270,17 @@ async def change_country_for_key(
                     logging.info(f"Удален старый V2Ray ключ {old_key_data['db_id']} из базы")
                 
                 # Используем сохраненный config для отправки пользователю
-                reissue_text = (
-                    "🌍 *Смена страны и продление*\n\n"
-                    f"Ваш ключ перенесён из *{old_country}* в *{new_country}*\n\n"
-                    f"⏰ Оставшееся время: {format_duration(remaining)}\n"
-                    f"➕ Добавлено: {format_duration(additional_duration)}\n"
-                    f"📅 Итого: {format_duration(total_duration)}\n\n"
-                    f"{format_key_message_unified(access_url, protocol, tariff)}"
+                country_text = (
+                    "🌍 *Смена страны*\n\n"
+                    f"Ваш ключ перенесён из *{old_country}* в *{new_country}*.\n\n"
+                    f"⏰ Оставшееся время: {format_duration(remaining)}\n\n"
                 )
-                await message.answer(reissue_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                await message.answer(
+                    country_text + format_key_message_unified(config, protocol, tariff, remaining),
+                    reply_markup=main_menu,
+                    disable_web_page_preview=True,
+                    parse_mode="Markdown",
+                )
                 
             except Exception as e:
                 logging.error(f"[COUNTRY CHANGE] Ошибка при создании нового V2Ray ключа: {e}", exc_info=True)
