@@ -256,8 +256,25 @@ jobs:
       - name: Test project structure
         run: |
           echo "📋 Testing project structure..."
+          echo "🔍 Current directory: $(pwd)"
+          echo "🔍 Listing files in root:"
+          ls -la | head -20
+          echo ""
+          echo "🔍 Checking for bot.py:"
+          if [ -f "bot.py" ]; then
+            echo "✅ bot.py exists"
+            ls -lh bot.py
+          else
+            echo "❌ bot.py missing"
+            echo "🔍 Files in current directory:"
+            ls -la
+            echo "🔍 Checking if bot.py is in git:"
+            git ls-files | grep bot.py || echo "bot.py not found in git ls-files"
+            exit 1
+          fi
+          
           # Check required files
-          required_files=('bot.py', 'config.py', 'db.py', 'requirements.txt')
+          required_files=('config.py', 'db.py', 'requirements.txt')
           for file in "${required_files[@]}"; do
             if [ -f "$file" ]; then
               echo "✅ $file exists"
