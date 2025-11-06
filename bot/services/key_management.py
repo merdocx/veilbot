@@ -1030,7 +1030,11 @@ async def change_protocol_for_key(
                     (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'], config)
                 )
                 
-                await message.answer(format_key_message_unified(config, new_protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                reissue_text = (
+                    "🔄 Ваш ключ перевыпущен. Пожалуйста, заново настройте его в приложении.\n\n"
+                    + format_key_message_unified(config, new_protocol, None, remaining)
+                )
+                await message.answer(reissue_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
                 # Удаляем старый ключ после успешного создания нового
                 await delete_old_key_after_success(cursor, old_key_data)
@@ -1192,7 +1196,15 @@ async def change_country_for_key(
                 (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, tariff_id)
             )
             
-            await message.answer(format_key_message_unified(key["accessUrl"], protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            reissue_text = (
+                "🌍 *Смена страны и продление*\n\n"
+                f"Ваш ключ перенесён из *{old_country}* в *{new_country}*\n\n"
+                f"⏰ Оставшееся время: {format_duration(remaining)}\n"
+                f"➕ Добавлено: {format_duration(additional_duration)}\n"
+                f"📅 Итого: {format_duration(total_duration)}\n\n"
+                f"{format_key_message_unified(access_url, protocol, tariff)}"
+            )
+            await message.answer(reissue_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
             
         elif protocol == "v2ray":
             # Создаём новый V2Ray ключ
@@ -1256,7 +1268,15 @@ async def change_country_for_key(
                     logging.info(f"Удален старый V2Ray ключ {old_key_data['db_id']} из базы")
                 
                 # Используем сохраненный config для отправки пользователю
-                await message.answer(format_key_message_unified(config, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                reissue_text = (
+                    "🌍 *Смена страны и продление*\n\n"
+                    f"Ваш ключ перенесён из *{old_country}* в *{new_country}*\n\n"
+                    f"⏰ Оставшееся время: {format_duration(remaining)}\n"
+                    f"➕ Добавлено: {format_duration(additional_duration)}\n"
+                    f"📅 Итого: {format_duration(total_duration)}\n\n"
+                    f"{format_key_message_unified(access_url, protocol, tariff)}"
+                )
+                await message.answer(reissue_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
             except Exception as e:
                 logging.error(f"[COUNTRY CHANGE] Ошибка при создании нового V2Ray ключа: {e}", exc_info=True)
@@ -1456,7 +1476,11 @@ async def reissue_specific_key(
                 (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, key_data['tariff_id'])
             )
             
-            await message.answer(format_key_message_unified(key["accessUrl"], protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            reissue_text = (
+                "🔄 Ваш ключ перевыпущен. Пожалуйста, заново настройте его в приложении.\n\n"
+                + format_key_message_unified(key["accessUrl"], protocol, None, remaining)
+            )
+            await message.answer(reissue_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
             
         elif key_data['type'] == "v2ray":  # v2ray
             # Создаём новый V2Ray ключ
@@ -1549,7 +1573,11 @@ async def reissue_specific_key(
                     cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_data['id'],))
                 
                 # Используем сохраненный config для отправки пользователю
-                await message.answer(format_key_message_unified(config, protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                reissue_text = (
+                    "🔄 Ваш ключ перевыпущен. Пожалуйста, заново настройте его в приложении.\n\n"
+                    + format_key_message_unified(config, protocol, None, remaining)
+                )
+                await message.answer(reissue_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                 
             except Exception as e:
                 logging.error(f"Ошибка при перевыпуске V2Ray ключа: {e}")
