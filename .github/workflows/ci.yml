@@ -11,6 +11,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history to ensure all files are available
+      
+      - name: Verify checkout
+        run: |
+          echo "🔍 Verifying checkout..."
+          echo "Current directory: $(pwd)"
+          echo "Git branch: $(git branch --show-current)"
+          echo "Git commit: $(git rev-parse HEAD)"
+          echo "Files in root:"
+          ls -la | head -20
+          echo ""
+          echo "Checking for config.py in git:"
+          git ls-files | grep "^config\.py$" || echo "config.py not in git ls-files"
+          echo ""
+          echo "Checking if config.py exists in HEAD:"
+          git cat-file -e HEAD:config.py && echo "✅ config.py exists in HEAD" || echo "❌ config.py does not exist in HEAD"
+          echo ""
+          echo "Trying to checkout config.py explicitly:"
+          git checkout HEAD -- config.py 2>&1 || echo "Failed to checkout config.py"
+          ls -la config.py 2>&1 || echo "config.py still not found after checkout"
       
       - name: Set up Python
         uses: actions/setup-python@v5
