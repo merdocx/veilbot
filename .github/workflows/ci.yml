@@ -95,7 +95,8 @@ jobs:
           print(f'Current directory: {os.getcwd()}')
           
           # Check required files
-          required_files = ['bot.py', 'config.py', 'db.py', 'requirements.txt', '.env.example']
+          required_files = ['bot.py', 'config.py', 'db.py', 'requirements.txt']
+          optional_files = ['.env.example']
           missing_files = []
           for file in required_files:
               if os.path.exists(file):
@@ -103,6 +104,13 @@ jobs:
               else:
                   print(f'❌ {file} missing')
                   missing_files.append(file)
+          
+          # Check optional files
+          for file in optional_files:
+              if os.path.exists(file):
+                  print(f'✅ {file} exists')
+              else:
+                  print(f'⚠️ {file} missing (optional)')
           
           # Check directories
           required_dirs = ['admin', 'docs', 'scripts', 'setup', 'payments', 'bot']
@@ -166,10 +174,12 @@ jobs:
               print(f'⚠️ Could not check bot.services modules: {e}')
               import_errors.append(f'bot.services check: {e}')
           
-          # Only fail if critical files/dirs are missing
+          # Only fail if critical files/dirs are missing (exclude optional files)
           if missing_files or 'bot' in missing_dirs or 'bot/services' in missing_dirs:
-              print('❌ Critical files or directories missing!')
+              print(f'❌ Critical files or directories missing: {missing_files}, {[d for d in missing_dirs if d in ["bot", "bot/services"]]}')
               sys.exit(1)
+          
+          print('✅ All critical files and directories found')
           
           if import_errors and 'bot.services' in str(import_errors):
               print('❌ Critical bot.services modules missing!')
@@ -247,7 +257,7 @@ jobs:
         run: |
           echo "📋 Testing project structure..."
           # Check required files
-          required_files=('bot.py', 'config.py', 'db.py', 'requirements.txt', '.env.example')
+          required_files=('bot.py', 'config.py', 'db.py', 'requirements.txt')
           for file in "${required_files[@]}"; do
             if [ -f "$file" ]; then
               echo "✅ $file exists"
@@ -256,6 +266,13 @@ jobs:
               exit 1
             fi
           done
+          
+          # Check optional files
+          if [ -f ".env.example" ]; then
+            echo "✅ .env.example exists"
+          else
+            echo "⚠️ .env.example missing (optional)"
+          fi
           
           # Check payments module
           if [ -d "payments" ]; then

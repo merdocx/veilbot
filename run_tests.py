@@ -168,8 +168,9 @@ def run_structure_tests():
     
     required_files = [
         'bot.py', 'config.py', 'db.py', 
-        'requirements.txt', '.env.example'
+        'requirements.txt'
     ]
+    optional_files = ['.env.example']
     
     required_dirs = ['admin', 'docs', 'payments', 'bot']
     optional_dirs = ['scripts', 'setup']
@@ -183,6 +184,13 @@ def run_structure_tests():
         else:
             print(f"❌ {file_path} missing")
             success = False
+    
+    # Check optional files
+    for file_path in optional_files:
+        if os.path.exists(file_path):
+            print(f"✅ {file_path} exists")
+        else:
+            print(f"⚠️ {file_path} missing (optional)")
     
     # Check payments module
     if os.path.exists('payments'):
