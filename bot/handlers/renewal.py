@@ -6,6 +6,7 @@ import logging
 from aiogram import Dispatcher, types
 from config import PROTOCOLS
 from utils import get_db_cursor
+from bot.utils import safe_send_message
 from bot.keyboards import get_main_menu, get_payment_method_keyboard
 from bot_rate_limiter import rate_limit
 
@@ -83,7 +84,8 @@ def register_renewal_handlers(
         msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
         msg += f"🌍 Страна: *{country}*\n"
         
-        await bot.send_message(
+        await safe_send_message(
+            bot,
             user_id,
             msg,
             reply_markup=get_payment_method_keyboard(),

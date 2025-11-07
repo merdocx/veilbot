@@ -16,6 +16,7 @@ from app.settings import settings
 from app.infra.sqlite_utils import open_connection
 from bot.core import get_bot_instance
 from bot.utils.formatters import format_key_message_unified
+from bot.utils.messaging import safe_send_message
 
 # Lazy import: получаем bot instance только когда он нужен
 def get_bot():
@@ -149,7 +150,8 @@ async def resend_key(request: Request, key_id: int, csrf_token: str = Form(...))
             try:
                 bot = get_bot()
                 if bot:
-                    await bot.send_message(
+                    await safe_send_message(
+                        bot,
                         user_id,
                         format_key_message_unified(access_url, protocol),
                         disable_web_page_preview=True,

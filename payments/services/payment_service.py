@@ -333,26 +333,6 @@ class PaymentService:
             logger.error(f"Error waiting for payment: {e}")
             return False
     
-    async def handle_referral_bonus(self, user_id: int) -> bool:
-        """
-        Обработка реферального бонуса
-        
-        Args:
-            user_id: ID пользователя
-            
-        Returns:
-            True если бонус обработан
-        """
-        try:
-            # Здесь должна быть логика проверки рефералов
-            # Пока что заглушка
-            logger.info(f"Referral bonus processing for user {user_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error handling referral bonus: {e}")
-            return False
-    
     async def get_user_payments(self, user_id: int, limit: int = 100) -> List[Payment]:
         """Получение платежей пользователя"""
         return await self.payment_repo.get_user_payments(user_id, limit)

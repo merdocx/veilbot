@@ -16,6 +16,7 @@ from payments.models.enums import PaymentStatus, PaymentProvider
 from payments.config import get_payment_service
 from app.settings import settings
 from bot.core import get_bot_instance
+from bot.utils.messaging import safe_send_message
 from app.infra.sqlite_utils import open_connection
 
 # Lazy import: получаем bot instance только когда он нужен
@@ -276,7 +277,7 @@ async def payments_reconcile(request: Request, csrf_token: str = Form(...)):
 
         # Уведомление администратору в Telegram
         try:
-            admin_id = settings.ADMIN_ID if hasattr(settings, 'ADMIN_ID') else None
+            admin_id = getattr(settings, "ADMIN_ID", None)
             if admin_id:
                 msg = (
                     f"🧾 Реконсиляция выполнена\n"
@@ -285,7 +286,7 @@ async def payments_reconcile(request: Request, csrf_token: str = Form(...)):
                 )
                 bot = get_bot()
                 if bot:
-                    await bot.send_message(admin_id, msg)
+                    await safe_send_message(bot, admin_id, msg, mark_blocked=False)
         except Exception:
             pass
 

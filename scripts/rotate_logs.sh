@@ -1,13 +1,12 @@
 #!/bin/bash
 # Скрипт для ротации логов VeilBot
 
-LOG_DIR="/root/veilbot/logs"
+LOG_ROOT="${VEILBOT_LOG_DIR:-/var/log/veilbot}"
+ARCHIVE_DIR="$LOG_ROOT/archive"
 APP_LOGS=(
-    "/root/veilbot/bot.log"
-    "/root/veilbot/admin.log"
-    "/root/veilbot/veilbot_security.log"
-    "/root/veilbot/admin/admin_audit.log"
-    "/root/veilbot/admin/nohup.out"
+    "$LOG_ROOT/bot.log"
+    "$LOG_ROOT/admin_audit.log"
+    "$LOG_ROOT/veilbot_security.log"
 )
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -15,7 +14,7 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 echo "=== Ротация логов VeilBot ==="
 echo "Время запуска: $(date)"
 
-mkdir -p "$LOG_DIR"
+mkdir -p "$ARCHIVE_DIR"
 
 for LOG_FILE in "${APP_LOGS[@]}"; do
     if [ -f "$LOG_FILE" ]; then
@@ -23,7 +22,7 @@ for LOG_FILE in "${APP_LOGS[@]}"; do
         DIRNAME=$(dirname "$LOG_FILE")
         
         echo "Ротируем $LOG_FILE..."
-        gzip -c "$LOG_FILE" > "$LOG_DIR/${BASENAME}.${TIMESTAMP}.gz"
+        gzip -c "$LOG_FILE" > "$ARCHIVE_DIR/${BASENAME}.${TIMESTAMP}.gz"
         echo "" > "$LOG_FILE" # Очищаем оригинальный файл
     else
         echo "Файл лога не найден: $LOG_FILE"
@@ -31,7 +30,7 @@ for LOG_FILE in "${APP_LOGS[@]}"; do
 done
 
 # Удаляем старые архивы логов (старше 30 дней)
-find "$LOG_DIR" -name "*.gz" -type f -mtime +30 -delete
+find "$ARCHIVE_DIR" -name "*.gz" -type f -mtime +30 -delete
 
 echo "Ротация логов завершена: $(date)"
 echo "=============================="

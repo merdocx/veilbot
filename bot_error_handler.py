@@ -7,6 +7,7 @@ from typing import Optional
 from aiogram import types
 from aiogram.dispatcher import Dispatcher
 from config import ADMIN_ID
+from bot.utils.messaging import safe_send_message
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +104,12 @@ class BotErrorHandler:
             message += f"*Сообщение:* `{error_details}`\n\n"
             message += f"*Traceback:*\n```\n{traceback_str}\n```"
             
-            await self.bot.send_message(
+            await safe_send_message(
+                self.bot,
                 self.admin_id,
                 message,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                mark_blocked=False,
             )
         except Exception as e:
             logger.error(f"Failed to notify admin about error: {e}")
@@ -192,7 +195,13 @@ class BotErrorHandler:
                 admin_message += f"*Сообщение:* `{error_details}`\n\n"
                 admin_message += f"*Traceback:*\n```\n{traceback_str}\n```"
                 
-                await bot.send_message(admin_id, admin_message, parse_mode="Markdown")
+                await safe_send_message(
+                    bot,
+                    admin_id,
+                    admin_message,
+                    parse_mode="Markdown",
+                    mark_blocked=False,
+                )
             except Exception as e:
                 logger.error(f"Failed to notify admin: {e}")
         

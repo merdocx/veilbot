@@ -14,7 +14,7 @@ from config import PROTOCOLS, ADMIN_ID
 from utils import get_db_cursor
 from vpn_protocols import format_duration, ProtocolFactory
 from bot.keyboards import get_main_menu, get_countries_by_protocol
-from bot.utils import format_key_message_unified
+from bot.utils import format_key_message_unified, safe_send_message
 from bot.core import get_bot_instance
 from memory_optimizer import get_vpn_service, get_security_logger
 
@@ -234,7 +234,7 @@ async def create_new_key_flow_with_protocol(
                         await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                     else:
                         # Если message=None (например, из webhook), отправляем напрямую через bot
-                        await bot.send_message(user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                     return
                 else:
                     # Если не удалось продлить, создаем новый ключ
@@ -332,7 +332,7 @@ async def create_new_key_flow_with_protocol(
                         await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                     else:
                         # Если message=None (например, из webhook), отправляем напрямую через bot
-                        await bot.send_message(user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
                     return
                 else:
                     # Если не удалось продлить, создаем новый ключ
@@ -475,7 +475,8 @@ async def create_new_key_flow_with_protocol(
                 )
             else:
                 # Если message=None (например, из webhook), отправляем напрямую через bot
-                await bot.send_message(
+                await safe_send_message(
+                    bot,
                     user_id,
                     f"⚠️ Ваш предыдущий ключ истёк более 24 часов назад и был удалён.\n\n"
                     f"Последний сервер был в стране: **{last_country}**\n\n"
@@ -491,7 +492,7 @@ async def create_new_key_flow_with_protocol(
         if message:
             await message.answer(f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
         else:
-            await bot.send_message(user_id, f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
+            await safe_send_message(bot, user_id, f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
         return
     
     try:
@@ -671,7 +672,8 @@ async def create_new_key_flow_with_protocol(
             )
         else:
             # Если message=None (например, из webhook), отправляем напрямую через bot
-            await bot.send_message(
+            await safe_send_message(
+                bot,
                 user_id,
                 format_key_message_unified(config, protocol, tariff),
                 reply_markup=current_main_menu,
@@ -689,10 +691,14 @@ async def create_new_key_flow_with_protocol(
         )
         if email:
             admin_msg += f"Email: `{email}`\n"
-        try:
-            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="Markdown")
-        except Exception as e:
-            logging.error(f"Failed to send admin notification: {e}")
+        await safe_send_message(
+            bot,
+            ADMIN_ID,
+            admin_msg,
+            disable_web_page_preview=True,
+            parse_mode="Markdown",
+            mark_blocked=False,
+        )
             
     except Exception as e:
         # При ошибке пытаемся удалить созданного пользователя с сервера
@@ -742,7 +748,8 @@ async def create_new_key_flow_with_protocol(
                 reply_markup=main_menu
             )
         else:
-            await bot.send_message(
+            await safe_send_message(
+                bot,
                 user_id,
                 f"❌ Ошибка при создании ключа {PROTOCOLS[protocol]['icon']}.\n"
                 f"Попробуйте позже или обратитесь к администратору.",
@@ -927,7 +934,7 @@ async def wait_for_payment_with_protocol(
                         if key and extend_existing_key:
                             try:
                                 extend_existing_key(cursor, key, bonus_duration)
-                                await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
+                                await safe_send_message(bot, referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
                             except Exception as e:
                                 logging.error(f"Error extending referrer key: {e}")
                                 # Если не удалось продлить, выдаем новый ключ
@@ -936,7 +943,7 @@ async def wait_for_payment_with_protocol(
                                 if bonus_tariff:
                                     bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
                                     await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                                    await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                                    await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
                         elif key:
                             logging.warning(f"extend_existing_key is None, cannot extend referrer key for user {referrer_id}")
                         else:
@@ -946,7 +953,7 @@ async def wait_for_payment_with_protocol(
                             if bonus_tariff:
                                 bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
                                 await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                                await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                                await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
                         cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
                 return
             else:
@@ -1119,7 +1126,7 @@ async def wait_for_crypto_payment(
                         if key and extend_existing_key:
                             try:
                                 extend_existing_key(cursor, key, bonus_duration)
-                                await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
+                                await safe_send_message(bot, referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
                             except Exception as e:
                                 logging.error(f"Error extending referrer key: {e}")
                                 # Если не удалось продлить, выдаем новый ключ
@@ -1128,7 +1135,7 @@ async def wait_for_crypto_payment(
                                 if bonus_tariff:
                                     bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
                                     await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                                    await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                                    await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
                         elif key:
                             logging.warning(f"extend_existing_key is None, cannot extend referrer key for user {referrer_id}")
                         else:
@@ -1137,7 +1144,7 @@ async def wait_for_crypto_payment(
                             if bonus_tariff:
                                 bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
                                 await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                                await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                                await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
                         cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
                 
                 return

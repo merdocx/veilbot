@@ -13,6 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from payments.config import get_webhook_service
 from app.settings import settings
 from bot.core import get_bot_instance
+from bot.utils.messaging import safe_send_message
 from app.infra.sqlite_utils import open_connection
 
 from ..middleware.audit import log_admin_action
@@ -243,14 +244,14 @@ async def cryptobot_webhook(request: Request):
                             bonus_duration = 30 * 24 * 3600
                             if key:
                                 extend_existing_key(cursor, key, bonus_duration)
-                                await bot.send_message(referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
+                                await safe_send_message(bot, referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
                             else:
                                 cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
                                 bonus_tariff = cursor.fetchone()
                                 if bonus_tariff:
                                     bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
                                     await create_new_key_flow_with_protocol(cursor, None, referrer_id, bonus_tariff_dict, None, None, protocol or "outline")
-                                    await bot.send_message(referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                                    await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
                             cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
                 
                 # Обновляем лог как успешный

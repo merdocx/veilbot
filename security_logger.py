@@ -10,6 +10,8 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, asdict
 import os
 
+DEFAULT_LOG_DIR = os.getenv("VEILBOT_LOG_DIR", "/var/log/veilbot")
+
 @dataclass
 class SecurityEvent:
     """Модель события безопасности"""
@@ -27,7 +29,7 @@ class SecurityEvent:
 class SecurityLogger:
     """Класс для логирования событий безопасности"""
     
-    def __init__(self, log_file: str = "veilbot_security.log", max_file_size: int = 10 * 1024 * 1024):
+    def __init__(self, log_file: str = os.path.join(DEFAULT_LOG_DIR, "veilbot_security.log"), max_file_size: int = 10 * 1024 * 1024):
         self.log_file = log_file
         self.max_file_size = max_file_size
         

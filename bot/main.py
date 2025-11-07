@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 from aiogram import Bot, Dispatcher, executor
 from config import TELEGRAM_BOT_TOKEN, validate_configuration
 from db import init_db_with_migrations
-from app.logging_config import setup_logging
+from app.logging_config import setup_logging, _SecretMaskingFilter
 from bot.core import set_bot_instance
 from bot_error_handler import setup_error_handler
 
@@ -37,6 +37,8 @@ import sys
 import os
 import importlib.util
 from unittest.mock import MagicMock
+
+LOG_DIR = os.getenv("VEILBOT_LOG_DIR", "/var/log/veilbot")
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 bot_py_path = os.path.join(project_root, 'bot.py')
@@ -188,11 +190,14 @@ def start_background_tasks(loop):
 def main():
     """Главная функция запуска бота"""
     # Настройка логирования с маскированием секретов
+    os.makedirs(LOG_DIR, exist_ok=True)
     setup_logging(level="INFO")
     try:
-        file_handler = RotatingFileHandler('bot.log', maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
+        bot_log_path = os.path.join(LOG_DIR, 'bot.log')
+        file_handler = RotatingFileHandler(bot_log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        file_handler.addFilter(_SecretMaskingFilter())
         logging.getLogger().addHandler(file_handler)
     except Exception:
         pass
@@ -241,7 +246,7 @@ def main():
         logger.error(f"Критическая ошибка при запуске бота: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         logging.critical(f"Критическая ошибка: {e}")
-        logging.error("Проверьте логи в файле bot.log")
+        logging.error("Проверьте логи в файле %s", os.path.join(LOG_DIR, 'bot.log'))
         sys.exit(1)
 
 

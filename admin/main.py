@@ -11,20 +11,19 @@ import os
 import logging
 import secrets
 import sys
+from logging.handlers import RotatingFileHandler
 
 # Ensure project root on sys.path BEFORE importing top-level packages
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.logging_config import setup_logging
+from app.logging_config import setup_logging, _SecretMaskingFilter
 from app.settings import settings
+from app.infra.sqlite_utils import open_connection
 from dotenv import load_dotenv
 
 # Setup logging
-logging.basicConfig(
-    filename='admin_audit.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+LOG_DIR = os.getenv("VEILBOT_LOG_DIR", "/var/log/veilbot")
+os.makedirs(LOG_DIR, exist_ok=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -32,6 +31,16 @@ app = FastAPI(title="VeilBot Admin", version="2.2.0")
 
 # Logging setup
 setup_logging("INFO")
+
+try:
+    audit_log_path = os.path.join(LOG_DIR, "admin_audit.log")
+    audit_handler = RotatingFileHandler(audit_log_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    audit_handler.setLevel(logging.INFO)
+    audit_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    audit_handler.addFilter(_SecretMaskingFilter())
+    logging.getLogger().addHandler(audit_handler)
+except Exception:
+    pass
 
 # Load environment from project root .env explicitly (systemd cwd is admin/)
 try:
@@ -205,6 +214,17 @@ from fastapi.exceptions import RequestValidationError
 from fastapi import HTTPException
 
 app.add_exception_handler(Exception, global_exception_handler)
+
+
+@app.get("/healthz", tags=["health"])
+async def health_check():
+    try:
+        with open_connection(settings.DATABASE_PATH) as conn:
+            conn.execute("SELECT 1")
+        return JSONResponse({"status": "ok"})
+    except Exception as exc:  # pragma: no cover - диагностический маршрут
+        logging.exception("Health check failed: %s", exc)
+        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=503)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 

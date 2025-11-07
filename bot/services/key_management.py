@@ -12,7 +12,7 @@ from aiogram import types
 from utils import get_db_cursor
 from outline import create_key, delete_key
 from vpn_protocols import format_duration, ProtocolFactory
-from bot.utils import format_key_message_unified
+from bot.utils import format_key_message_unified, safe_send_message
 from bot.keyboards import get_main_menu
 from bot.core import get_bot_instance
 from app.infra.foreign_keys import safe_foreign_keys_off
@@ -667,7 +667,14 @@ async def switch_protocol_and_extend(
             admin_msg += f"Email: `{old_email}`\n"
         
         try:
-            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+            await safe_send_message(
+                bot,
+                ADMIN_ID,
+                admin_msg,
+                disable_web_page_preview=True,
+                parse_mode="HTML",
+                mark_blocked=False,
+            )
         except Exception as e:
             logging.error(f"Failed to send admin notification (protocol switch): {e}")
         
@@ -875,7 +882,14 @@ async def change_country_and_extend(
             admin_msg += f"Email: `{old_email}`\n"
         
         try:
-            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+            await safe_send_message(
+                bot,
+                ADMIN_ID,
+                admin_msg,
+                disable_web_page_preview=True,
+                parse_mode="HTML",
+                mark_blocked=False,
+            )
         except Exception as e:
             logging.error(f"Failed to send admin notification (country change with extend): {e}")
         
@@ -1063,7 +1077,14 @@ async def change_protocol_for_key(
         if old_email:
             admin_msg += f"Email: `{old_email}`\n"
         try:
-            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+            await safe_send_message(
+                bot,
+                ADMIN_ID,
+                admin_msg,
+                disable_web_page_preview=True,
+                parse_mode="HTML",
+                mark_blocked=False,
+            )
         except Exception as e:
             logging.error(f"Failed to send admin notification (protocol change): {e}")
         
@@ -1316,7 +1337,14 @@ async def change_country_for_key(
         if old_email:
             admin_msg += f"Email: `{old_email}`\n"
         try:
-            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+            await safe_send_message(
+                bot,
+                ADMIN_ID,
+                admin_msg,
+                disable_web_page_preview=True,
+                parse_mode="HTML",
+                mark_blocked=False,
+            )
         except Exception as e:
             logging.error(f"Failed to send admin notification (country change): {e}")
         
@@ -1610,7 +1638,14 @@ async def reissue_specific_key(
         if old_email:
             admin_msg += f"Email: `{old_email}`\n"
         try:
-            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="HTML")
+            await safe_send_message(
+                bot,
+                ADMIN_ID,
+                admin_msg,
+                disable_web_page_preview=True,
+                parse_mode="HTML",
+                mark_blocked=False,
+            )
         except Exception as e:
             logging.error(f"Failed to send admin notification (reissue): {e}")
 

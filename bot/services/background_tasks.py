@@ -10,7 +10,7 @@ from typing import Optional, Callable, Awaitable, Dict
 from utils import get_db_cursor
 from outline import delete_key
 from vpn_protocols import format_duration, ProtocolFactory
-from bot.utils import format_key_message, format_key_message_unified
+from bot.utils import format_key_message, format_key_message_unified, safe_send_message
 from bot.keyboards import get_main_menu
 from bot.core import get_bot_instance
 from bot.services.key_creation import select_available_server_by_protocol
@@ -40,20 +40,17 @@ async def _notify_task_error(task_name: str, error: Exception) -> None:
 
     _task_last_error[task_name] = now
 
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            (
-                f"⚠️ Фоновая задача `{task_name}` завершилась с ошибкой:\n"
-                f"`{type(error).__name__}: {error}`\n"
-                "Повторная попытка будет выполнена автоматически."
-            ),
-            parse_mode="Markdown"
-        )
-    except Exception as notify_error:  # pragma: no cover - уведомление не критично для тестов
-        logging.error(
-            "Failed to notify admin about %s error: %s", task_name, notify_error
-        )
+    await safe_send_message(
+        bot,
+        ADMIN_ID,
+        (
+            f"⚠️ Фоновая задача `{task_name}` завершилась с ошибкой:\n"
+            f"`{type(error).__name__}: {error}`\n"
+            "Повторная попытка будет выполнена автоматически."
+        ),
+        parse_mode="Markdown",
+        mark_blocked=False,
+    )
 
 
 async def _run_periodic(
@@ -305,17 +302,18 @@ async def notify_expiring_keys() -> None:
                     v2ray_updates.append((new_notified, key_id_db))
 
         for user_id, message, keyboard in notifications_to_send:
-            try:
-                await bot.send_message(
-                    user_id,
-                    message,
-                    reply_markup=keyboard,
-                    disable_web_page_preview=True,
-                    parse_mode="Markdown",
-                )
+            result = await safe_send_message(
+                bot,
+                user_id,
+                message,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+                parse_mode="Markdown",
+            )
+            if result:
                 logging.info("Sent expiry notification to user %s", user_id)
-            except Exception as exc:  # noqa: BLE001
-                logging.error("Error sending expiry notification to user %s: %s", user_id, exc)
+            else:
+                logging.warning("Failed to deliver expiry notification to user %s", user_id)
 
         if outline_updates:
             with get_db_cursor(commit=True) as cursor:
@@ -361,18 +359,22 @@ async def check_key_availability() -> None:
 
         if free_keys < 6:
             if not low_key_notified:
-                await bot.send_message(
+                await safe_send_message(
+                    bot,
                     ADMIN_ID,
                     f"⚠️ **Внимание:** Осталось мало свободных ключей: *{free_keys}*.",
                     parse_mode="Markdown",
+                    mark_blocked=False,
                 )
                 low_key_notified = True
         else:
             if low_key_notified:
-                await bot.send_message(
+                await safe_send_message(
+                    bot,
                     ADMIN_ID,
                     f"✅ **Статус:** Количество свободных ключей восстановлено: *{free_keys}*.",
                     parse_mode="Markdown",
+                    mark_blocked=False,
                 )
             low_key_notified = False
 
@@ -507,19 +509,18 @@ async def process_pending_paid_payments() -> None:
                         if record_free_key_usage:
                             record_free_key_usage(cursor, user_id, protocol, country)
 
-                    try:
-                        await bot.send_message(
+                    result = await safe_send_message(
+                        bot,
+                        user_id,
+                        format_key_message(key["accessUrl"]),
+                        reply_markup=main_menu,
+                        disable_web_page_preview=True,
+                        parse_mode="Markdown",
+                    )
+                    if not result:
+                        logging.warning(
+                            "[AUTO-ISSUE] Не удалось отправить Outline ключ user_id=%s",
                             user_id,
-                            format_key_message(key["accessUrl"]),
-                            reply_markup=main_menu,
-                            disable_web_page_preview=True,
-                            parse_mode="Markdown",
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logging.error(
-                            "[AUTO-ISSUE] Не удалось отправить Outline ключ user_id=%s: %s",
-                            user_id,
-                            exc,
                         )
 
                 elif protocol == "v2ray":
@@ -601,19 +602,18 @@ async def process_pending_paid_payments() -> None:
                             if record_free_key_usage:
                                 record_free_key_usage(cursor, user_id, protocol, country)
 
-                        try:
-                            await bot.send_message(
+                        result = await safe_send_message(
+                            bot,
+                            user_id,
+                            format_key_message_unified(config, protocol, tariff),
+                            reply_markup=main_menu,
+                            disable_web_page_preview=True,
+                            parse_mode="Markdown",
+                        )
+                        if not result:
+                            logging.warning(
+                                "[AUTO-ISSUE] Не удалось отправить V2Ray ключ user_id=%s",
                                 user_id,
-                                format_key_message_unified(config, protocol, tariff),
-                                reply_markup=main_menu,
-                                disable_web_page_preview=True,
-                                parse_mode="Markdown",
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            logging.error(
-                                "[AUTO-ISSUE] Не удалось отправить V2Ray ключ user_id=%s: %s",
-                                user_id,
-                                exc,
                             )
 
                     except Exception as exc:  # noqa: BLE001

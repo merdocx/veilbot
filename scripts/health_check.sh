@@ -6,7 +6,8 @@ BOT_SERVICE="veilbot"
 ADMIN_SERVICE="veilbot-admin"
 NGINX_SERVICE="nginx"
 DB_PATH="/root/veilbot/vpn.db"
-LOG_DIR="/root/veilbot/logs"
+LOG_DIR="${VEILBOT_LOG_DIR:-/var/log/veilbot}"
+mkdir -p "$LOG_DIR" >/dev/null 2>&1 || true
 
 overall_status=0 # 0 = HEALTHY, 1 = ISSUES DETECTED
 
@@ -123,9 +124,19 @@ else
     echo "❌ Database not found at $DB_PATH"
     overall_status=1
 fi
-check_log_size "/root/veilbot/bot.log" 100 || overall_status=1
-check_log_size "/root/veilbot/admin.log" 10 || overall_status=1
-check_log_size "/root/veilbot/veilbot_security.log" 50 || overall_status=1
+check_log_size "$LOG_DIR/bot.log" 100 || overall_status=1
+check_log_size "$LOG_DIR/admin_audit.log" 10 || overall_status=1
+check_log_size "$LOG_DIR/veilbot_security.log" 50 || overall_status=1
+echo ""
+
+# Проверка health-check эндпоинта админки
+echo "--- HTTP Health Check ---"
+if curl -sf "http://127.0.0.1:8001/healthz" >/dev/null; then
+    echo "✅ Admin health endpoint responded"
+else
+    echo "❌ Admin health endpoint is not responding"
+    overall_status=1
+fi
 echo ""
 
 # Проверка процессов

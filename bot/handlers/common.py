@@ -11,6 +11,7 @@ from utils import get_db_cursor
 from bot.core import get_bot_instance
 from bot.keyboards import get_main_menu, get_help_keyboard
 from bot_error_handler import BotErrorHandler
+from bot.utils import safe_send_message
 
 # Временное хранилище для текстов рассылки
 broadcast_texts: Dict[int, str] = {}
@@ -113,13 +114,13 @@ async def broadcast_message(message_text: str, admin_id: Optional[int] = None) -
         
         if total_users == 0:
             if admin_id:
-                await bot.send_message(admin_id, "❌ Нет пользователей для рассылки")
+                await safe_send_message(bot, admin_id, "❌ Нет пользователей для рассылки", mark_blocked=False)
             return
         
         # Отправляем сообщение каждому пользователю
         for user_id in user_ids:
             try:
-                await bot.send_message(user_id, message_text, parse_mode='Markdown')
+                await safe_send_message(bot, user_id, message_text, parse_mode='Markdown')
                 success_count += 1
                 # Небольшая задержка, чтобы не превысить лимиты Telegram
                 await asyncio.sleep(0.05)
@@ -137,16 +138,13 @@ async def broadcast_message(message_text: str, admin_id: Optional[int] = None) -
                 f"📈 Всего пользователей: {total_users}\n"
                 f"📊 Процент успеха: {(success_count/total_users*100):.1f}%"
             )
-            await bot.send_message(admin_id, report, parse_mode='Markdown')
+            await safe_send_message(bot, admin_id, report, parse_mode='Markdown', mark_blocked=False)
             
     except Exception as e:
         error_msg = f"❌ Ошибка при рассылке: {e}"
         logging.error(error_msg, exc_info=True)
         if admin_id:
-            try:
-                await bot.send_message(admin_id, error_msg)
-            except Exception as send_error:
-                logging.error(f"Failed to send error notification to admin: {send_error}")
+            await safe_send_message(bot, admin_id, error_msg, mark_blocked=False)
 
 
 async def handle_broadcast_command(message: types.Message) -> None:

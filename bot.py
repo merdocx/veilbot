@@ -18,7 +18,7 @@ from bot.keyboards import (
     get_protocol_selection_menu, get_tariff_menu, get_payment_method_keyboard,
     get_country_menu, get_countries, get_countries_by_protocol, invalidate_menu_cache
 )
-from bot.utils import format_key_message, format_key_message_unified, format_key_message_with_protocol
+from bot.utils import format_key_message, format_key_message_unified, format_key_message_with_protocol, safe_send_message
 from bot.services.key_creation import (
     select_available_server_by_protocol,
     create_new_key_flow_with_protocol,
@@ -267,10 +267,14 @@ async def create_new_key_flow(
         )
         if email:
             admin_msg += f"Email: `{email}`\n"
-        try:
-            await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="Markdown")
-        except Exception as e:
-            logging.error(f"Failed to send admin notification: {e}")
+        await safe_send_message(
+            bot,
+            ADMIN_ID,
+            admin_msg,
+            disable_web_page_preview=True,
+            parse_mode="Markdown",
+            mark_blocked=False,
+        )
         return
     # Если нет активного ключа — создаём новый
     server = select_available_server(cursor, country)
@@ -302,10 +306,14 @@ async def create_new_key_flow(
     )
     if email:
         admin_msg += f"Email: `{email}`\n"
-    try:
-        await bot.send_message(ADMIN_ID, admin_msg, disable_web_page_preview=True, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Failed to send admin notification: {e}")
+    await safe_send_message(
+        bot,
+        ADMIN_ID,
+        admin_msg,
+        disable_web_page_preview=True,
+        parse_mode="Markdown",
+        mark_blocked=False,
+    )
 
 # Функции switch_protocol_and_extend и change_country_and_extend перенесены в bot/services/key_management.py
 
