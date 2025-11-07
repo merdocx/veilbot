@@ -31,7 +31,7 @@
     <div class="filter-bar">
         <div style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
             <input type="text" id="global-search" data-table-id="keys-table" placeholder="Поиск по всем столбцам..." class="filter-input" style="flex: 1; min-width: 250px;">
-            <button type="button" class="btn" onclick="if(window.VeilBotCommon){document.getElementById('global-search').value='';window.VeilBotCommon.createTableFilter('keys-table',0)('');}">
+            <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
             </button>
@@ -69,7 +69,7 @@
                         {% endif %}
                     </td>
                     <td style="text-align: center;">
-                        <button class="btn btn-icon" onclick="copyToClipboard('{{ k[2] }}')" title="Скопировать ключ: {{ k[2] }}">
+                        <button class="btn btn-icon" data-action="copy-key" data-key="{{ k[2]|e }}" title="Скопировать ключ: {{ k[2] }}">
                             <span class="material-icons icon-small">content_copy</span>
                         </button>
                     </td>
@@ -99,11 +99,11 @@
                     </td>
                     <td>
                         <div class="action-buttons">
-                            <button class="btn btn-icon" onclick="editKey({{ k[0] }}, '{{ k[4]|my_datetime_local }}')" title="Редактировать">
+                            <button class="btn btn-icon" data-action="edit-key" data-key-id="{{ k[0] }}" data-expiry="{{ k[4]|my_datetime_local }}" title="Редактировать">
                                 <span class="material-icons icon-small">edit</span>
                             </button>
                             <a href="/keys/delete/{{ k[0] }}" class="btn btn-icon btn-danger" 
-                               onclick="return confirm('Удалить ключ?')" title="Удалить">
+                               data-action="delete-key" data-key-id="{{ k[0] }}" title="Удалить">
                                 <span class="material-icons icon-small">delete</span>
                             </a>
                         </div>
@@ -155,7 +155,7 @@
                 <input type="datetime-local" id="new_expiry" name="new_expiry" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
             </div>
             <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                <button type="button" class="btn" onclick="closeEditModal()">Отмена</button>
+                <button type="button" class="btn" data-action="close-edit-modal">Отмена</button>
                 <button type="submit" class="btn btn-primary">Сохранить</button>
             </div>
         </form>
@@ -190,42 +190,9 @@
     font-weight: 500;
 }
 </style>
+{% endblock %}
 
-<script>
-function copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(function() {
-        if (window.VeilBotCommon && window.VeilBotCommon.showNotification) {
-            window.VeilBotCommon.showNotification('Ключ скопирован!', 'success');
-        } else {
-            // Fallback если common.js не загружен
-            alert('Ключ скопирован!');
-        }
-    });
-}
-
-function editKey(keyId, currentExpiry) {
-    document.getElementById('editForm').action = `/keys/edit/${keyId}`;
-    document.getElementById('new_expiry').value = currentExpiry;
-    document.getElementById('editModal').style.display = 'flex';
-}
-
-function closeEditModal() {
-    document.getElementById('editModal').style.display = 'none';
-}
-
-// Close modal on outside click
-window.addEventListener('click', function(event) {
-    const modal = document.getElementById('editModal');
-    if (event.target == modal) {
-        closeEditModal();
-    }
-});
-
-// Скрываем индикатор загрузки страницы после загрузки
-document.addEventListener('DOMContentLoaded', function() {
-    if (window.VeilBotCommon && window.VeilBotCommon.showPageLoader) {
-        window.VeilBotCommon.showPageLoader(false);
-    }
-});
-</script>
+{% block extra_scripts %}
+    {{ super() }}
+    <script src="/static/js/keys.js"></script>
 {% endblock %}
