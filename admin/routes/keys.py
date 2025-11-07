@@ -9,10 +9,13 @@ import sqlite3
 import time
 import logging
 import asyncio
+import math
+import re
 from datetime import datetime
 from collections import defaultdict
 from io import StringIO
 import csv
+from typing import Any, Dict, Optional
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.repositories.key_repository import KeyRepository
@@ -30,6 +33,384 @@ router = APIRouter()
 
 DATABASE_PATH = settings.DATABASE_PATH
 DB_PATH = DATABASE_PATH
+
+
+def _format_bytes(num_bytes: Optional[float]) -> str:
+    """Format raw bytes into a human-readable string."""
+    if num_bytes is None:
+        return "—"
+    if num_bytes <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    idx = min(int(math.log(num_bytes, 1024)), len(units) - 1)
+    normalized = num_bytes / (1024 ** idx)
+    return f"{normalized:.2f} {units[idx]}"
+
+
+def _parse_traffic_value(raw_value: Optional[str]) -> Dict[str, Any]:
+    if not raw_value:
+        return {
+            "display": "—",
+            "bytes": None,
+            "unit": None,
+            "state": "unknown",
+        }
+
+    normalized = raw_value.strip()
+    if normalized in {"N/A", "Error"}:
+        state = "error" if normalized == "Error" else "na"
+        return {
+            "display": normalized,
+            "bytes": None,
+            "unit": None,
+            "state": state,
+        }
+
+    match = re.match(r"^(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>[KMGT]B)$", normalized, re.IGNORECASE)
+    if not match:
+        # Attempt to parse MB specific case (legacy "0 GB")
+        match = re.match(r"^(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>[KMGT]?B)$", normalized, re.IGNORECASE)
+    if not match:
+        return {
+            "display": normalized,
+            "bytes": None,
+            "unit": None,
+            "state": "raw",
+        }
+
+    value = float(match.group("value").replace(",", "."))
+    unit = match.group("unit").upper()
+    power_map = {"B": 0, "KB": 1, "MB": 2, "GB": 3, "TB": 4, "PB": 5}
+    power = power_map.get(unit, 0)
+    num_bytes = value * (1024 ** power)
+    return {
+        "display": f"{value:.2f} {unit}",
+        "bytes": num_bytes,
+        "unit": unit,
+        "state": "ok",
+    }
+
+
+def _format_relative(delta_seconds: Optional[int]) -> str:
+    if delta_seconds is None:
+        return "—"
+    if abs(delta_seconds) < 60:
+        return "прямо сейчас" if delta_seconds >= 0 else "менее минуты назад"
+
+    future = delta_seconds > 0
+    seconds = abs(delta_seconds)
+    units = (
+        (86400, "д"),
+        (3600, "ч"),
+        (60, "мин"),
+    )
+    parts = []
+    for unit_seconds, suffix in units:
+        if seconds >= unit_seconds:
+            qty = seconds // unit_seconds
+            parts.append(f"{int(qty)} {suffix}")
+            seconds -= qty * unit_seconds
+        if len(parts) == 2:
+            break
+
+    label = " ".join(parts) if parts else "меньше часа"
+    return f"через {label}" if future else f"{label} назад"
+
+
+def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    return max(min_value, min(max_value, value))
+
+
+def _format_duration_components(total_seconds: int) -> Dict[str, int]:
+    seconds = abs(total_seconds)
+    units = {
+        "years": 365 * 24 * 3600,
+        "months": 30 * 24 * 3600,
+        "days": 24 * 3600,
+        "hours": 3600,
+        "minutes": 60,
+    }
+    result = {"years": 0, "months": 0, "days": 0, "hours": 0, "minutes": 0}
+    for name, unit_seconds in units.items():
+        count, seconds = divmod(seconds, unit_seconds)
+        result[name] = int(count)
+    return result
+
+
+def _format_expiry_remaining(expiry_at: int, now_ts: int) -> Dict[str, str]:
+    if not expiry_at:
+        return {
+            "label": "—",
+            "state": "unknown",
+        }
+
+    delta = expiry_at - now_ts
+    components = _format_duration_components(delta)
+
+    parts = []
+    labels = {
+        "years": "г",
+        "months": "мес",
+        "days": "д",
+        "hours": "ч",
+        "minutes": "мин",
+    }
+
+    for key, suffix in labels.items():
+        value = components[key]
+        if value:
+            parts.append(f"{value} {suffix}")
+
+    if not parts:
+        parts.append("< 1 мин")
+
+    label = " ".join(parts[:3])
+
+    if delta > 0:
+        return {
+            "label": f"Через {label}",
+            "state": "upcoming",
+        }
+    if delta < 0:
+        return {
+            "label": f"Просрочен {label} назад",
+            "state": "expired",
+        }
+
+    return {
+        "label": "Истекает прямо сейчас",
+        "state": "now",
+    }
+
+
+def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict[str, Any]:
+    traffic_raw = None
+    if len(row) >= 13:
+        traffic_raw = row[12]
+
+    traffic_info = _parse_traffic_value(traffic_raw)
+
+    key_id = int(row[0])
+    created_at = int(row[3] or 0)
+    expiry_at = int(row[4] or 0)
+    lifetime_total = max(expiry_at - created_at, 0)
+    elapsed = max(now_ts - created_at, 0)
+    progress = _clamp((elapsed / lifetime_total) if lifetime_total else (1 if expiry_at and now_ts >= expiry_at else 0))
+
+    is_active = bool(expiry_at and expiry_at > now_ts)
+    status_label = "Активен" if is_active else "Истёк"
+    status_icon = "check_circle" if is_active else "cancel"
+    protocol = (row[8] or '').lower()
+    protocol_meta = {
+        "outline": {"label": "Outline", "icon": "lock", "class": "protocol-badge--outline"},
+        "v2ray": {"label": "V2Ray", "icon": "security", "class": "protocol-badge--v2ray"},
+    }
+    protocol_info = protocol_meta.get(protocol, {"label": protocol or "—", "icon": "help_outline", "class": "protocol-badge--neutral"})
+
+    traffic_limit_mb = row[9] if len(row) > 9 else ''
+    traffic_limit_bytes = None
+    if isinstance(traffic_limit_mb, (int, float)):
+        traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
+    elif isinstance(traffic_limit_mb, str) and traffic_limit_mb.strip():
+        try:
+            traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
+        except ValueError:
+            traffic_limit_bytes = None
+
+    usage_percent = None
+    if traffic_info["bytes"] is not None and traffic_limit_bytes:
+        usage_percent = _clamp(traffic_info["bytes"] / traffic_limit_bytes, 0.0, 1.0)
+
+    expiry_remaining = _format_expiry_remaining(expiry_at, now_ts)
+
+    return {
+        "id": key_id,
+        "uuid": row[1],
+        "access_url": row[2],
+        "email": row[6] or '',
+        "server": row[5] or '',
+        "tariff": row[7] or '',
+        "protocol": protocol,
+        "protocol_label": protocol_info["label"],
+        "protocol_icon": protocol_info["icon"],
+        "protocol_badge_class": protocol_info["class"],
+        "created_at": created_at,
+        "created_display": created_at and datetime.fromtimestamp(created_at).strftime("%d.%m.%Y %H:%M") or "—",
+        "created_relative": _format_relative(now_ts - created_at),
+        "expiry_at": expiry_at,
+        "expiry_display": expiry_at and datetime.fromtimestamp(expiry_at).strftime("%d.%m.%Y %H:%M") or "—",
+        "expiry_relative": _format_relative(expiry_at - now_ts if expiry_at else None),
+        "expiry_iso": expiry_at and datetime.fromtimestamp(expiry_at).strftime("%Y-%m-%dT%H:%M") or "",
+        "expiry_remaining": expiry_remaining["label"],
+        "expiry_remaining_state": expiry_remaining["state"],
+        "status": "active" if is_active else "expired",
+        "status_label": status_label,
+        "status_icon": status_icon,
+        "status_class": "status-icon--active" if is_active else "status-icon--expired",
+        "lifetime_progress": progress,
+        "traffic": {
+            "raw": traffic_raw or "—",
+            "display": traffic_info["display"],
+            "bytes": traffic_info["bytes"],
+            "usage_percent": usage_percent,
+            "limit_bytes": traffic_limit_bytes,
+            "limit_display": _format_bytes(traffic_limit_bytes) if traffic_limit_bytes else "—",
+            "state": traffic_info["state"],
+        },
+    }
+
+
+def _compute_key_stats(db_path: str, now_ts: int) -> Dict[str, int]:
+    with sqlite3.connect(db_path) as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM keys")
+        outline_total = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM v2ray_keys")
+        v2ray_total = c.fetchone()[0]
+        total = int(outline_total) + int(v2ray_total)
+
+        c.execute("SELECT COUNT(*) FROM keys WHERE expiry_at > ?", (now_ts,))
+        outline_active = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE expiry_at > ?", (now_ts,))
+        v2ray_active = c.fetchone()[0]
+        active = int(outline_active) + int(v2ray_active)
+
+    expired = max(total - active, 0)
+    return {
+        "total": total,
+        "active": active,
+        "expired": expired,
+        "v2ray": int(v2ray_total),
+    }
+
+
+def _is_json_request(request: Request) -> bool:
+    accept_header = request.headers.get("accept", "")
+    requested_with = request.headers.get("x-requested-with", "")
+    return "application/json" in accept_header.lower() or requested_with.lower() == "xmlhttprequest"
+
+
+def _append_default_traffic(row: tuple[Any, ...] | list[Any]) -> list[Any]:
+    if len(row) >= 13:
+        return list(row)
+    extended = list(row)
+    extended.append('—')
+    return extended
+
+
+async def _update_key_expiry_internal(request: Request, key_id: int, new_expiry: int, key_repo: KeyRepository) -> Dict[str, Any]:
+    outline_key = key_repo.get_outline_key_brief(key_id)
+    if outline_key:
+        key_repo.update_outline_key_expiry(key_id, new_expiry)
+        log_admin_action(request, "EDIT_KEY", f"Outline key {key_id}, new expiry: {new_expiry}")
+        return {"protocol": "outline"}
+
+    v2ray_key = key_repo.get_v2ray_key_brief(key_id)
+    if v2ray_key:
+        key_repo.update_v2ray_key_expiry(key_id, new_expiry)
+        log_admin_action(request, "EDIT_KEY", f"V2Ray key {key_id}, new expiry: {new_expiry}")
+        return {"protocol": "v2ray"}
+
+    raise ValueError("Key not found")
+
+
+async def _delete_key_internal(request: Request, key_id: int, key_repo: KeyRepository) -> Dict[str, Any]:
+    outline_key = key_repo.get_outline_key_brief(key_id)
+    if outline_key:
+        user_id, outline_key_id, server_id = outline_key
+        if outline_key_id and server_id:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
+                server = c.fetchone()
+                if server:
+                    try:
+                        log_admin_action(request, "OUTLINE_DELETE_ATTEMPT", f"Attempting to delete key {outline_key_id} from server {server[0]}")
+                        result = delete_key(server[0], server[1], outline_key_id)
+                        if result:
+                            log_admin_action(request, "OUTLINE_DELETE_SUCCESS", f"Successfully deleted key {outline_key_id} from server")
+                        else:
+                            log_admin_action(request, "OUTLINE_DELETE_FAILED", f"Failed to delete key {outline_key_id} from server")
+                    except Exception as e:
+                        logging.error(f"Error deleting Outline key {outline_key_id}: {e}", exc_info=True)
+                        log_admin_action(request, "OUTLINE_DELETE_ERROR", f"Failed to delete key {outline_key_id}: {str(e)}")
+
+        try:
+            key_repo.delete_outline_key_by_id(key_id)
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                if user_id:
+                    c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
+                    outline_count = c.fetchone()[0]
+                    c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
+                    v2ray_count = c.fetchone()[0]
+                    if outline_count == 0 and v2ray_count == 0:
+                        c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
+                        conn.commit()
+        except Exception as e:
+            logging.error(f"Error deleting Outline key from database: {e}", exc_info=True)
+            log_admin_action(request, "OUTLINE_KEY_DELETE_DB_ERROR", f"Failed to delete key {key_id} from database: {str(e)}")
+
+        return {"protocol": "outline"}
+
+    v2ray_key = key_repo.get_v2ray_key_brief(key_id)
+    if v2ray_key:
+        user_id, v2ray_uuid, server_id = v2ray_key
+        protocol_client = None
+        if v2ray_uuid and server_id:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
+                server = c.fetchone()
+                if server and server[0] and server[1]:
+                    try:
+                        log_admin_action(request, "V2RAY_DELETE_ATTEMPT", f"Attempting to delete user {v2ray_uuid} from server {server[0]}")
+                        protocol_client = V2RayProtocol(server[0], server[1])
+                        result = await protocol_client.delete_user(v2ray_uuid)
+                        if result:
+                            log_admin_action(request, "V2RAY_DELETE_SUCCESS", f"Successfully deleted user {v2ray_uuid} from server")
+                        else:
+                            log_admin_action(request, "V2RAY_DELETE_FAILED", f"Failed to delete user {v2ray_uuid} from server")
+                    except Exception as e:
+                        logging.error(f"Error deleting V2Ray key {v2ray_uuid}: {e}", exc_info=True)
+                        log_admin_action(request, "V2RAY_DELETE_ERROR", f"Failed to delete user {v2ray_uuid}: {str(e)}")
+                    finally:
+                        if protocol_client:
+                            try:
+                                await protocol_client.close()
+                            except Exception as close_error:
+                                logging.warning(f"Error closing V2Ray protocol client: {close_error}")
+                elif server:
+                    logging.warning(f"Server {server_id} found but api_url or api_key is missing")
+                    log_admin_action(request, "V2RAY_DELETE_SERVER_CONFIG_ERROR", f"Server {server_id} configuration incomplete")
+
+        try:
+            key_repo.delete_v2ray_key_by_id(key_id)
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                if user_id:
+                    c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
+                    outline_count = c.fetchone()[0]
+                    c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
+                    v2ray_count = c.fetchone()[0]
+                    if outline_count == 0 and v2ray_count == 0:
+                        c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
+                        conn.commit()
+        except Exception as e:
+            logging.error(f"Error deleting key from database: {e}", exc_info=True)
+            log_admin_action(request, "KEY_DELETE_DB_ERROR", f"Failed to delete key {key_id} from database: {str(e)}")
+
+        return {"protocol": "v2ray"}
+
+    raise ValueError("Key not found")
+
+
+def _load_key_view_model(key_repo: KeyRepository, key_id: int, now_ts: int) -> Optional[Dict[str, Any]]:
+    row = key_repo.get_key_unified_by_id(key_id)
+    if not row:
+        return None
+    normalized_row = _append_default_traffic(row)
+    return _build_key_view_model(normalized_row, now_ts)
 
 
 async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: dict, server_id: int = None) -> str:
@@ -374,20 +755,28 @@ async def keys_page(
         if key_info:
             keys_with_traffic.append(key_info['data'])
     
+    now_ts = int(time.time())
     log_admin_action(request, "KEYS_QUERY_RESULT", f"Total keys: {len(keys_with_traffic)}")
 
-    # CSV Export
+    # CSV Export requires raw data before pagination trim
     if export and str(export).lower() in ("csv", "true", "1"):
         try:
-            now_ts = int(time.time())
             buffer = StringIO()
             writer = csv.writer(buffer)
             writer.writerow(["id", "protocol", "key", "tariff", "email", "server", "created_at", "expiry_at", "status", "traffic"])
-            for k in keys_with_traffic:
-                status = "active" if (k[4] and int(k[4]) > now_ts) else "expired"
+            for key_row in keys_with_traffic:
+                view = _build_key_view_model(key_row, now_ts)
                 writer.writerow([
-                    k[0], k[8], k[2], k[7] or '', k[6] or '', k[5] or '',
-                    int(k[3] or 0), int(k[4] or 0), status, (k[-1] if len(k) else '')
+                    view["id"],
+                    view["protocol"],
+                    view["access_url"],
+                    view["tariff"],
+                    view["email"],
+                    view["server"],
+                    view["created_at"],
+                    view["expiry_at"],
+                    view["status"],
+                    view["traffic"]["display"],
                 ])
             content = buffer.getvalue()
             return Response(content, media_type="text/csv", headers={
@@ -396,27 +785,28 @@ async def keys_page(
         except Exception as e:
             logging.error(f"CSV export error: {e}")
 
-    # Calculate additional stats
-    active_count = sum(1 for k in keys_with_traffic if k[4] and int(k[4]) > int(time.time()))
-    expired_count = total - active_count
-    v2ray_count = sum(1 for k in keys_with_traffic if len(k) > 8 and k[8] == 'v2ray')
     pages = (total + limit - 1) // limit
-    
+
     # Генерируем cursor для следующей страницы
     next_cursor = None
     if len(rows) > limit:
         from app.infra.pagination import KeysetPagination
         last_row = rows[-1]
         if len(last_row) >= 4:
-            created_at = last_row[3] or 0
-            key_id = last_row[0]
-            next_cursor = KeysetPagination.encode_cursor(created_at, key_id)
+            created_at_cursor = last_row[3] or 0
+            key_id_cursor = last_row[0]
+            next_cursor = KeysetPagination.encode_cursor(created_at_cursor, key_id_cursor)
         keys_with_traffic = keys_with_traffic[:limit]
-    
+
+    key_models = [_build_key_view_model(key_row, now_ts) for key_row in keys_with_traffic]
+    active_count = sum(1 for key in key_models if key["status"] == "active")
+    expired_count = total - active_count
+    v2ray_count = sum(1 for key in key_models if key["protocol"] == "v2ray")
+
     return templates.TemplateResponse("keys.html", {
-        "request": request, 
-        "keys": keys_with_traffic,
-        "current_time": int(time.time()),
+        "request": request,
+        "keys": key_models,
+        "current_time": now_ts,
         "page": page,
         "limit": limit,
         "total": total,
@@ -432,6 +822,7 @@ async def keys_page(
         "filters": {"email": email or '', "tariff_id": tariff_id or '', "protocol": protocol or '', "server_id": server_id or ''},
         "sort": {"by": sort_by_eff, "order": sort_order_eff},
         "csrf_token": get_csrf_token(request),
+        "stats_overview": _compute_key_stats(DB_PATH, now_ts),
     })
 
 
@@ -493,7 +884,9 @@ async def edit_key_route(request: Request, key_id: int):
     new_expiry_str = form.get("new_expiry")
     
     if not new_expiry_str:
-        return JSONResponse({"error": "new_expiry is required"}, status_code=400)
+        if _is_json_request(request):
+            return JSONResponse({"error": "new_expiry is required"}, status_code=400)
+        return RedirectResponse(url="/keys", status_code=303)
     
     try:
         # Парсим datetime-local format (YYYY-MM-DDTHH:mm) в timestamp
@@ -501,26 +894,30 @@ async def edit_key_route(request: Request, key_id: int):
         new_expiry = int(dt.timestamp())
         
         key_repo = KeyRepository(DB_PATH)
-        
-        # Пробуем Outline сначала
-        outline_key = key_repo.get_outline_key_brief(key_id)
-        if outline_key:
-            key_repo.update_outline_key_expiry(key_id, new_expiry)
-            log_admin_action(request, "EDIT_KEY", f"Outline key {key_id}, new expiry: {new_expiry}")
+        try:
+            await _update_key_expiry_internal(request, key_id, new_expiry, key_repo)
+        except ValueError:
+            if _is_json_request(request):
+                return JSONResponse({"error": "Key not found"}, status_code=404)
             return RedirectResponse(url="/keys", status_code=303)
-        
-        # Пробуем V2Ray
-        v2ray_key = key_repo.get_v2ray_key_brief(key_id)
-        if v2ray_key:
-            key_repo.update_v2ray_key_expiry(key_id, new_expiry)
-            log_admin_action(request, "EDIT_KEY", f"V2Ray key {key_id}, new expiry: {new_expiry}")
-            return RedirectResponse(url="/keys", status_code=303)
-        
-        return JSONResponse({"error": "Key not found"}, status_code=404)
-        
+
+        if _is_json_request(request):
+            now_ts = int(time.time())
+            key_view = _load_key_view_model(key_repo, key_id, now_ts)
+            stats = _compute_key_stats(DB_PATH, now_ts)
+            return JSONResponse({
+                "message": "Срок действия обновлен",
+                "key": key_view,
+                "stats": stats,
+            })
+
+        return RedirectResponse(url="/keys", status_code=303)
+
     except Exception as e:
         logging.error(f"Error editing key {key_id}: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        if _is_json_request(request):
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return RedirectResponse(url="/keys", status_code=303)
 
 
 @router.get("/keys/delete/{key_id}")
@@ -531,104 +928,35 @@ async def delete_key_route(request: Request, key_id: int):
 
     try:
         key_repo = KeyRepository(DB_PATH)
-
-        # Сначала как Outline
-        outline_key = key_repo.get_outline_key_brief(key_id)
-        if outline_key:
-            user_id, outline_key_id, server_id = outline_key
-            if outline_key_id and server_id:
-                with sqlite3.connect(DB_PATH) as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
-                    server = c.fetchone()
-                    if server:
-                        try:
-                            log_admin_action(request, "OUTLINE_DELETE_ATTEMPT", f"Attempting to delete key {outline_key_id} from server {server[0]}")
-                            result = delete_key(server[0], server[1], outline_key_id)
-                            if result:
-                                log_admin_action(request, "OUTLINE_DELETE_SUCCESS", f"Successfully deleted key {outline_key_id} from server")
-                            else:
-                                log_admin_action(request, "OUTLINE_DELETE_FAILED", f"Failed to delete key {outline_key_id} from server")
-                        except Exception as e:
-                            logging.error(f"Error deleting Outline key {outline_key_id}: {e}", exc_info=True)
-                            log_admin_action(request, "OUTLINE_DELETE_ERROR", f"Failed to delete key {outline_key_id}: {str(e)}")
-            
-            try:
-                key_repo.delete_outline_key_by_id(key_id)
-                with sqlite3.connect(DB_PATH) as conn:
-                    c = conn.cursor()
-                    if user_id:
-                        c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
-                        outline_count = c.fetchone()[0]
-                        c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
-                        v2ray_count = c.fetchone()[0]
-                        if outline_count == 0 and v2ray_count == 0:
-                            c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
-                            conn.commit()
-            except Exception as e:
-                logging.error(f"Error deleting Outline key from database: {e}", exc_info=True)
-                log_admin_action(request, "OUTLINE_KEY_DELETE_DB_ERROR", f"Failed to delete key {key_id} from database: {str(e)}")
-            
-            return RedirectResponse("/keys", status_code=303)
-
-        # Затем V2Ray
-        v2ray_key = key_repo.get_v2ray_key_brief(key_id)
-        if v2ray_key:
-            user_id, v2ray_uuid, server_id = v2ray_key
-            protocol_client = None
-            if v2ray_uuid and server_id:
-                with sqlite3.connect(DB_PATH) as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
-                    server = c.fetchone()
-                    if server and server[0] and server[1]:  # Проверяем что api_url и api_key не None
-                        try:
-                            log_admin_action(request, "V2RAY_DELETE_ATTEMPT", f"Attempting to delete user {v2ray_uuid} from server {server[0]}")
-                            protocol_client = V2RayProtocol(server[0], server[1])
-                            result = await protocol_client.delete_user(v2ray_uuid)
-                            if result:
-                                log_admin_action(request, "V2RAY_DELETE_SUCCESS", f"Successfully deleted user {v2ray_uuid} from server")
-                            else:
-                                log_admin_action(request, "V2RAY_DELETE_FAILED", f"Failed to delete user {v2ray_uuid} from server")
-                        except Exception as e:
-                            logging.error(f"Error deleting V2Ray key {v2ray_uuid}: {e}", exc_info=True)
-                            log_admin_action(request, "V2RAY_DELETE_ERROR", f"Failed to delete user {v2ray_uuid}: {str(e)}")
-                        finally:
-                            # Закрываем сессию V2Ray протокола
-                            if protocol_client:
-                                try:
-                                    await protocol_client.close()
-                                except Exception as e:
-                                    logging.warning(f"Error closing V2Ray protocol client: {e}")
-                    elif server:
-                        logging.warning(f"Server {server_id} found but api_url or api_key is missing")
-                        log_admin_action(request, "V2RAY_DELETE_SERVER_CONFIG_ERROR", f"Server {server_id} configuration incomplete")
-            
-            try:
-                key_repo.delete_v2ray_key_by_id(key_id)
-                with sqlite3.connect(DB_PATH) as conn:
-                    c = conn.cursor()
-                    if user_id:
-                        c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
-                        outline_count = c.fetchone()[0]
-                        c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
-                        v2ray_count = c.fetchone()[0]
-                        if outline_count == 0 and v2ray_count == 0:
-                            c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
-                            conn.commit()
-            except Exception as e:
-                logging.error(f"Error deleting key from database: {e}", exc_info=True)
-                log_admin_action(request, "KEY_DELETE_DB_ERROR", f"Failed to delete key {key_id} from database: {str(e)}")
-            
-            return RedirectResponse("/keys", status_code=303)
-
-        # Если ключ не найден ни как Outline, ни как V2Ray
+        await _delete_key_internal(request, key_id, key_repo)
+    except ValueError:
         logging.warning(f"Key {key_id} not found for deletion")
         log_admin_action(request, "KEY_DELETE_NOT_FOUND", f"Key {key_id} not found")
-        return RedirectResponse("/keys", status_code=303)
-
     except Exception as e:
         logging.error(f"Error deleting key {key_id}: {e}", exc_info=True)
         log_admin_action(request, "KEY_DELETE_ERROR", f"Failed to delete key {key_id}: {str(e)}")
-        return RedirectResponse("/keys", status_code=303)
+    return RedirectResponse("/keys", status_code=303)
+
+
+@router.delete("/api/keys/{key_id}")
+async def delete_key_api(request: Request, key_id: int):
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        key_repo = KeyRepository(DB_PATH)
+        result = await _delete_key_internal(request, key_id, key_repo)
+        now_ts = int(time.time())
+        stats = _compute_key_stats(DB_PATH, now_ts)
+        return JSONResponse({
+            "message": "Ключ удалён",
+            "key_id": key_id,
+            "protocol": result.get("protocol"),
+            "stats": stats,
+        })
+    except ValueError:
+        return JSONResponse({"error": "Key not found"}, status_code=404)
+    except Exception as e:
+        logging.error(f"Error deleting key {key_id}: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
 

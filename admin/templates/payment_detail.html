@@ -3,40 +3,44 @@
 {% block content %}
 <div class="card">
   <div class="card-header">
-    <h2>Детали платежа</h2>
+    <h2 class="card-title">Детали платежа</h2>
   </div>
   <div class="card-body">
     {% if error %}
-      <p class="error">{{ error }}</p>
+      <div class="card alert alert--danger">
+        <div class="card-body">
+          {{ error }}
+        </div>
+      </div>
     {% else %}
-      <div class="grid-2">
+      <div class="grid-two">
         <div>
-          <h3>Основное</h3>
-          <ul class="kv">
+          <h3 class="section-title">Основное</h3>
+          <ul class="kv-list">
             <li><b>ID:</b> {{ payment.id }}</li>
             <li><b>Payment ID:</b> {{ payment.payment_id }}</li>
             <li><b>User ID:</b> {{ payment.user_id }}</li>
             <li><b>Tariff ID:</b> {{ payment.tariff_id }}</li>
             <li><b>Сумма:</b> {{ payment.amount|rub }}</li>
-            <li><b>Статус:</b> 
+            <li><b>Статус:</b>
                 {% set st = payment.status %}
                 {% if st == 'paid' %}
-                    <span class="material-icons" style="color: #2e7d32; font-size: 20px; vertical-align: middle;" title="Оплачен">check_circle</span>
+                    <span class="material-icons icon-lg icon-success" title="Оплачен">check_circle</span>
                 {% elif st == 'pending' %}
-                    <span class="material-icons" style="color: #ef6c00; font-size: 20px; vertical-align: middle;" title="Ожидает">schedule</span>
+                    <span class="material-icons icon-lg icon-warning" title="Ожидает">schedule</span>
                 {% elif st in ['failed','cancelled','expired'] %}
-                    <span class="material-icons" style="color: #c62828; font-size: 20px; vertical-align: middle;" title="{{ st }}">cancel</span>
+                    <span class="material-icons icon-lg icon-danger" title="{{ st }}">cancel</span>
                 {% else %}
-                    <span class="material-icons" style="color: #757575; font-size: 20px; vertical-align: middle;" title="{{ st }}">help_outline</span>
+                    <span class="material-icons icon-lg icon-muted" title="{{ st }}">help_outline</span>
                 {% endif %}
             </li>
             <li><b>Email:</b> {{ payment.email or '—' }}</li>
             <li><b>Страна:</b> {{ payment.country or '—' }}</li>
-            <li><b>Протокол:</b> 
+            <li><b>Протокол:</b>
                 {% if payment.protocol == 'outline' %}
-                    <span class="material-icons" style="color: #1565c0; font-size: 20px; vertical-align: middle;" title="Outline">lock</span>
+                    <span class="material-icons icon-lg icon-primary" title="Outline">lock</span>
                 {% elif payment.protocol == 'v2ray' %}
-                    <span class="material-icons" style="color: #1565c0; font-size: 20px; vertical-align: middle;" title="V2Ray">security</span>
+                    <span class="material-icons icon-lg icon-primary" title="V2Ray">security</span>
                 {% else %}
                     {{ payment.protocol or '—' }}
                 {% endif %}
@@ -46,79 +50,52 @@
           </ul>
         </div>
         <div>
-          <h3>Действия</h3>
-          <form method="post" action="/payments/{{ payment.payment_id }}/recheck" onsubmit="return submitAjax(event, this)">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-            <button class="btn">Перепроверить статус</button>
-          </form>
-          {% if payment.status != 'refunded' %}
-          <form method="post" action="/payments/{{ payment.payment_id }}/refund" onsubmit="return submitAjax(event, this)" style="margin-top:8px">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-            <label>Сумма (копейки):</label>
-            <input type="number" name="amount" value="{{ payment.amount }}" />
-            <label>Причина:</label>
-            <input type="text" name="reason" value="Возврат" />
-            <button class="btn btn-danger">Возврат</button>
-          </form>
-          {% endif %}
-          <form method="post" action="/payments/{{ payment.payment_id }}/delete" onsubmit="return deletePayment(event, this, '{{ payment.payment_id }}')" style="margin-top:8px">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-            <button class="btn btn-danger" type="submit">
-              <span class="material-icons icon-small">delete</span>
-              Удалить платеж
-            </button>
-          </form>
+          <h3 class="section-title">Действия</h3>
+          <div class="stack-actions">
+            <form method="post" action="/payments/{{ payment.payment_id }}/recheck" data-payment-detail="recheck">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="btn btn-primary" type="submit">
+                <span class="material-icons icon-small">refresh</span>
+                Перепроверить статус
+              </button>
+            </form>
+            {% if payment.status != 'refunded' %}
+            <form method="post" action="/payments/{{ payment.payment_id }}/refund" data-payment-detail="refund">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <label class="form-label">Сумма (копейки)</label>
+              <input type="number" name="amount" class="form-control" value="{{ payment.amount }}">
+              <label class="form-label">Причина</label>
+              <input type="text" name="reason" class="form-control" value="Возврат">
+              <button class="btn btn-danger" type="submit">
+                <span class="material-icons icon-small">undo</span>
+                Возврат
+              </button>
+            </form>
+            {% endif %}
+            <form method="post" action="/payments/{{ payment.payment_id }}/delete" data-payment-detail="delete" data-payment-id="{{ payment.payment_id }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="btn btn-danger" type="submit">
+                <span class="material-icons icon-small">delete</span>
+                Удалить платеж
+              </button>
+            </form>
+          </div>
         </div>
       </div>
 
-      <h3>Метаданные</h3>
-      <pre>{{ payment.metadata | tojson(indent=2) }}</pre>
+      <h3 class="section-title">Метаданные</h3>
+      <pre class="code-block">{{ payment.metadata | tojson(indent=2) }}</pre>
 
-      <h3>Данные провайдера</h3>
-      <pre>{% if provider_info %}{{ provider_info | tojson(indent=2) }}{% else %}—{% endif %}</pre>
+      <h3 class="section-title">Данные провайдера</h3>
+      <pre class="code-block">{% if provider_info %}{{ provider_info | tojson(indent=2) }}{% else %}—{% endif %}</pre>
     {% endif %}
   </div>
 </div>
 
-<script>
-async function submitAjax(e, form) {
-  e.preventDefault();
-  const resp = await fetch(form.action, { method: 'POST', body: new FormData(form) });
-  const data = await resp.json().catch(() => ({}));
-  alert(data.success ? 'Готово' : ('Ответ: ' + JSON.stringify(data)));
-  window.location.reload();
-  return false;
-}
-
-function deletePayment(event, form, paymentId) {
-    event.preventDefault();
-    
-    if (!confirm(`Вы уверены, что хотите удалить платеж ${paymentId}? Это действие нельзя отменить.`)) {
-        return false;
-    }
-    
-    const formData = new FormData(form);
-    
-    fetch(form.action, {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert(data.message || 'Платеж успешно удален');
-            window.location.href = '/payments';
-        } else {
-            alert('Ошибка: ' + (data.error || 'Не удалось удалить платеж'));
-        }
-    })
-    .catch(error => {
-        alert('Ошибка: ' + error);
-    });
-    
-    return false;
-}
-</script>
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/paymentDetail.js"></script>
+{% endblock %}
 {% endblock %}
 
 

@@ -4,24 +4,50 @@
 {% block page_title %}Платежи{% endblock %}
 
 {% block content %}
+{% set current_status = status or '' %}
+{% set current_preset = preset or '' %}
+
 <!-- Stats Cards -->
 <div class="stats-grid">
-    <div class="stat-card">
-        <div class="stat-value">{{ payments|length }}</div>
-        <div class="stat-label">Всего платежей</div>
-    </div>
-    <div class="stat-card">
+    <button type="button"
+        class="stat-card stat-card--action"
+        data-status-filter=""
+        data-preset-filter=""
+        aria-pressed="{{ 'true' if (current_status == '' and current_preset == '') else 'false' }}"
+        aria-label="Показать все платежи">
+        <div class="stat-value">{{ total }}</div>
+        <div class="stat-label">Все платежи</div>
+    </button>
+
+    <button type="button"
+        class="stat-card stat-card--action"
+        data-status-filter="paid"
+        data-preset-filter=""
+        aria-pressed="{{ 'true' if current_status == 'paid' else 'false' }}"
+        aria-label="Показать оплаченные платежи">
         <div class="stat-value">{{ paid_count }}</div>
         <div class="stat-label">Оплачено</div>
-    </div>
-    <div class="stat-card">
+    </button>
+
+    <button type="button"
+        class="stat-card stat-card--action"
+        data-status-filter="pending"
+        data-preset-filter=""
+        aria-pressed="{{ 'true' if current_status == 'pending' or current_preset == 'pending' else 'false' }}"
+        aria-label="Показать ожидающие платежи">
         <div class="stat-value">{{ pending_count }}</div>
         <div class="stat-label">Ожидает</div>
-    </div>
-    <div class="stat-card">
+    </button>
+
+    <button type="button"
+        class="stat-card stat-card--action"
+        data-status-filter=""
+        data-preset-filter="errors"
+        aria-pressed="{{ 'true' if current_preset == 'errors' or current_status in ['failed','cancelled','expired'] else 'false' }}"
+        aria-label="Показать проблемные платежи">
         <div class="stat-value">{{ failed_count }}</div>
-        <div class="stat-label">Неудачных</div>
-    </div>
+        <div class="stat-label">Проблемы</div>
+    </button>
 </div>
 
 <!-- Payments Table -->
@@ -29,8 +55,8 @@
     <div class="card-header">
         <h2 class="card-title">Платежи</h2>
         <p class="card-subtitle">Управление платежами и транзакциями</p>
-        <div style="margin-top: 16px;">
-            <button class="btn btn-primary" onclick="reconcileNow('{{ csrf_token }}')">
+        <div class="mt-2">
+            <button class="btn btn-primary" data-action="reconcile" data-csrf="{{ csrf_token }}">
                 <span class="material-icons icon-small">sync</span>
                 Реконсиляция
             </button>
@@ -39,11 +65,20 @@
 
     <!-- Filters -->
     <div class="filter-bar">
-        <form method="get" action="/payments" style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
+        <form method="get" action="/payments" class="flex-wrap" data-payments-filter-form>
             <input type="text" name="email" placeholder="Поиск по email" value="{{ email }}" class="filter-input">
             <input type="text" name="user_id" placeholder="User ID" value="{{ user_id }}" class="filter-input">
             <input type="text" name="payment_id" placeholder="Payment ID" value="{{ payment_id }}" class="filter-input">
-            <input type="text" name="status" placeholder="Статус" value="{{ status }}" class="filter-input">
+            <select name="status" class="form-control" id="payments-status-select" data-filter-status-select>
+                <option value="">Все статусы</option>
+                <option value="paid" {% if status == 'paid' %}selected{% endif %}>Оплачен</option>
+                <option value="pending" {% if status == 'pending' %}selected{% endif %}>Ожидает</option>
+                <option value="failed" {% if status == 'failed' %}selected{% endif %}>Ошибка</option>
+                <option value="cancelled" {% if status == 'cancelled' %}selected{% endif %}>Отменён</option>
+                <option value="expired" {% if status == 'expired' %}selected{% endif %}>Истёк</option>
+                <option value="refunded" {% if status == 'refunded' %}selected{% endif %}>Возврат</option>
+            </select>
+            <input type="hidden" name="preset" value="{{ preset }}" data-filter-preset-input>
             <button type="submit" class="btn btn-primary">
                 <span class="material-icons icon-small">search</span>
                 Поиск
@@ -56,8 +91,8 @@
     </div>
 
     <!-- Table -->
-    <div style="overflow-x: auto;">
-        <table class="material-table" id="payments-table" style="table-layout: fixed; width: 100%; max-width: 100%;">
+    <div class="table-scroll">
+        <table class="material-table" id="payments-table">
             <thead>
                 <tr>
                     <th>ID</th>
@@ -85,9 +120,9 @@
                         </span>
                     </td>
                     <td>
-                        <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="inline-flex">
                             <span class="code" title="{{ p.payment_id }}">
-                                <a href="/payments/{{ p.payment_id }}" style="color: inherit; text-decoration: none;">
+                                <a href="/payments/{{ p.payment_id }}" class="link-plain">
                                     {{ p.payment_id|string|truncate(20) }}
                                 </a>
                             </span>
@@ -111,21 +146,21 @@
                     <td class="text-small">
                         {{ (p.created_at.timestamp() if p.created_at else 0) | timestamp | truncate(10) }}
                     </td>
-                    <td style="text-align: center;">
+                    <td class="text-center">
                         {% set st = (p.status | status_text) %}
                         {% if st == 'paid' %}
-                            <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Оплачен">check_circle</span>
+                            <span class="material-icons icon-lg icon-success" title="Оплачен">check_circle</span>
                         {% elif st == 'pending' %}
-                            <span class="material-icons" style="color: #ef6c00; font-size: 20px;" title="Ожидает">schedule</span>
+                            <span class="material-icons icon-lg icon-warning" title="Ожидает">schedule</span>
                         {% elif st in ['failed','cancelled','expired'] %}
-                            <span class="material-icons" style="color: #c62828; font-size: 20px;" title="{{ st }}">cancel</span>
+                            <span class="material-icons icon-lg icon-danger" title="{{ st }}">cancel</span>
                         {% else %}
-                            <span class="material-icons" style="color: #757575; font-size: 20px;" title="{{ st }}">help_outline</span>
+                            <span class="material-icons icon-lg icon-muted" title="{{ st }}">help_outline</span>
                         {% endif %}
                     </td>
                     <td>
                         <div class="action-buttons">
-                            <form method="post" action="/payments/{{ p.payment_id }}/recheck" onsubmit="return submitAjax(event, this)" style="display: inline;">
+                            <form method="post" action="/payments/{{ p.payment_id }}/recheck" data-action="payments-form" class="d-inline">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                                 <button class="btn btn-primary" title="Перепроверить">
                                     <span class="material-icons icon-small">refresh</span>
@@ -134,7 +169,7 @@
                             <a href="/payments/{{ p.payment_id }}" class="btn" title="Подробнее">
                                 <span class="material-icons icon-small">visibility</span>
                             </a>
-                            <form method="post" action="/payments/{{ p.payment_id }}/delete" onsubmit="return deletePayment(event, this, '{{ p.payment_id }}')" style="display: inline;">
+                            <form method="post" action="/payments/{{ p.payment_id }}/delete" data-action="delete-payment" data-payment-id="{{ p.payment_id }}" class="d-inline">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                                 <button class="btn btn-danger" title="Удалить" type="submit">
                                     <span class="material-icons icon-small">delete</span>
@@ -178,98 +213,8 @@
 </div>
 {% endif %}
 
-<script>
-function reconcileNow(csrfToken) {
-    if (confirm('Запустить реконсиляцию платежей?')) {
-        fetch('/payments/reconcile', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: `csrf_token=${csrfToken}`
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showNotification(`Реконсиляция завершена. Обработано: ${data.processed}`, 'success');
-                setTimeout(() => location.reload(), 2000);
-            } else {
-                showNotification('Ошибка реконсиляции: ' + data.error, 'error');
-            }
-        })
-        .catch(error => {
-            showNotification('Ошибка: ' + error, 'error');
-        });
-    }
-}
-
-function submitAjax(event, form) {
-    event.preventDefault();
-    const formData = new FormData(form);
-    
-    fetch(form.action, {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            showNotification('Операция выполнена успешно', 'success');
-            setTimeout(() => location.reload(), 1000);
-        } else {
-            showNotification('Ошибка: ' + data.error, 'error');
-        }
-    })
-    .catch(error => {
-        showNotification('Ошибка: ' + error, 'error');
-    });
-}
-
-function showNotification(message, type = 'info') {
-    const notification = document.createElement('div');
-    notification.textContent = message;
-    notification.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
-        color: white;
-        padding: 12px 16px;
-        border-radius: 4px;
-        z-index: 1001;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-    `;
-    document.body.appendChild(notification);
-    setTimeout(() => notification.remove(), 5000);
-}
-
-function deletePayment(event, form, paymentId) {
-    event.preventDefault();
-    
-    if (!confirm(`Вы уверены, что хотите удалить платеж ${paymentId}? Это действие нельзя отменить.`)) {
-        return false;
-    }
-    
-    const formData = new FormData(form);
-    
-    fetch(form.action, {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            showNotification(data.message || 'Платеж успешно удален', 'success');
-            setTimeout(() => location.reload(), 1000);
-        } else {
-            showNotification('Ошибка: ' + (data.error || 'Не удалось удалить платеж'), 'error');
-        }
-    })
-    .catch(error => {
-        showNotification('Ошибка: ' + error, 'error');
-    });
-    
-    return false;
-}
-</script>
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/payments.js"></script>
+{% endblock %}
 {% endblock %}

@@ -3,66 +3,60 @@
 {% block page_title %}Редактировать тариф{% endblock %}
 
 {% block content %}
-<div class="form-container">
+<div class="card">
     <div class="card-header">
         <h2 class="card-title">Редактировать тариф</h2>
     </div>
-    
-    <form method="post" action="/tariffs/edit/{{ tariff.id }}">
-        <div class="form-grid">
-            <div class="form-group">
-                <label class="form-label">Название тарифа</label>
-                <input type="text" name="name" class="form-input" required 
-                       value="{{ tariff.name }}" placeholder="Например: 1 день">
+
+    <div class="card-body">
+        <form method="post" action="/tariffs/edit/{{ tariff.id }}">
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label" for="name">Название тарифа</label>
+                    <input type="text" id="name" name="name" class="form-control" required
+                           value="{{ tariff.name }}" placeholder="Например: 1 день">
+                </div>
+
+                <div>
+                    <label class="form-label" for="duration_sec">Длительность (в секундах)</label>
+                    <input type="number" id="duration_sec" name="duration_sec" class="form-control" required
+                           value="{{ tariff.duration_sec }}" placeholder="86400" min="1">
+                    <small class="form-hint">86400 = 1 день, 3600 = 1 час, 60 = 1 минута</small>
+                </div>
+
+                <div>
+                    <label class="form-label" for="traffic_limit_mb">Лимит трафика (МБ)</label>
+                    <input type="number" id="traffic_limit_mb" name="traffic_limit_mb" class="form-control"
+                           value="{{ tariff.traffic_limit_mb or '' }}" placeholder="0" min="0">
+                    <small class="form-hint">0 = безлимит</small>
+                </div>
+
+                <div>
+                    <label class="form-label" for="price_rub">Цена (₽)</label>
+                    <input type="number" id="price_rub" name="price_rub" class="form-control" required
+                           value="{{ tariff.price_rub }}" placeholder="0" min="0">
+                    <small class="form-hint">0 = бесплатный тариф</small>
+                </div>
+
+                <div>
+                    <label class="form-label" for="price_crypto_usd">Цена в криптовалюте (USD)</label>
+                    <input type="number" id="price_crypto_usd" name="price_crypto_usd" class="form-control" step="0.01"
+                           value="{{ tariff.price_crypto_usd or '' }}" placeholder="" min="0">
+                    <small class="form-hint">Оставьте пустым, если крипто-оплата недоступна для этого тарифа</small>
+                </div>
             </div>
-            
-            <div class="form-group">
-                <label class="form-label">Длительность (в секундах)</label>
-                <input type="number" name="duration_sec" class="form-input" required 
-                       value="{{ tariff.duration_sec }}" placeholder="86400" min="1">
-                <small style="color: #64748b; font-size: 0.75rem;">
-                    86400 = 1 день, 3600 = 1 час, 60 = 1 минута
-                </small>
+
+            <div class="justify-end">
+                <a href="/tariffs" class="btn">
+                    <span class="material-icons icon-small">cancel</span>
+                    Отмена
+                </a>
+                <button type="submit" class="btn btn-primary">
+                    <span class="material-icons icon-small">save</span>
+                    Сохранить изменения
+                </button>
             </div>
-            
-            <div class="form-group">
-                <label class="form-label">Лимит трафика (МБ)</label>
-                <input type="number" name="traffic_limit_mb" class="form-input" 
-                       value="{{ tariff.traffic_limit_mb or '' }}" placeholder="0" min="0">
-                <small style="color: #64748b; font-size: 0.75rem;">
-                    0 = безлимит
-                </small>
-            </div>
-            
-            <div class="form-group">
-                <label class="form-label">Цена (₽)</label>
-                <input type="number" name="price_rub" class="form-input" required 
-                       value="{{ tariff.price_rub }}" placeholder="0" min="0">
-                <small style="color: #64748b; font-size: 0.75rem;">
-                    0 = бесплатный тариф
-                </small>
-            </div>
-            
-            <div class="form-group">
-                <label class="form-label">Цена в криптовалюте (USD)</label>
-                <input type="number" name="price_crypto_usd" class="form-input" step="0.01" 
-                       value="{{ tariff.price_crypto_usd or '' }}" placeholder="" min="0">
-                <small style="color: #64748b; font-size: 0.75rem;">
-                    Оставьте пустым, если крипто-оплата недоступна для этого тарифа
-                </small>
-            </div>
-        </div>
-        
-        <div class="card-actions">
-            <a href="/tariffs" class="btn btn-warning">
-                <span class="material-icons">cancel</span>
-                Отмена
-            </a>
-            <button type="submit" class="btn btn-primary">
-                <span class="material-icons">save</span>
-                Сохранить изменения
-            </button>
-        </div>
-    </form>
+        </form>
+    </div>
 </div>
-{% endblock %} 
+{% endblock %}

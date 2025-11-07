@@ -13,11 +13,12 @@
     <link rel="stylesheet" href="/static/css/material-admin.css">
     
     <!-- Common JavaScript -->
-    <script src="/static/js/common.js"></script>
+    <script type="module" src="/static/js/common.js"></script>
     
     {% block extra_head %}{% endblock %}
 </head>
 <body>
+    <a href="#main-content" class="skip-link">Пропустить навигацию</a>
     <div class="app-container">
         <!-- Sidebar -->
         <nav class="sidebar">
@@ -81,7 +82,7 @@
         </nav>
 
         <!-- Main Content -->
-        <main class="main-content">
+        <main class="main-content" id="main-content" tabindex="-1">
             <header class="top-bar">
                 <div class="top-bar-content">
                     <h1 class="page-title">{% block page_title %}Админ панель{% endblock %}</h1>

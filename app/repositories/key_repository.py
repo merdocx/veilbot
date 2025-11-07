@@ -54,6 +54,35 @@ class KeyRepository:
             c.execute("SELECT user_id, v2ray_uuid, server_id FROM v2ray_keys WHERE id = ?", (key_pk,))
             return c.fetchone()
 
+    def get_key_unified_by_id(self, key_pk: int) -> Tuple | None:
+        """Return a unified key row (outline or v2ray) for the given primary key."""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT k.id, k.key_id, k.access_url, k.created_at, k.expiry_at,
+                       IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'outline' as protocol,
+                       IFNULL(k.traffic_limit_mb,''), '' as api_url, '' as api_key
+                FROM keys k
+                LEFT JOIN servers s ON k.server_id = s.id
+                LEFT JOIN tariffs t ON k.tariff_id = t.id
+                WHERE k.id = ?
+                UNION ALL
+                SELECT k.id, k.v2ray_uuid as key_id,
+                       ('PENDING_FROM_SERVER') as access_url,
+                       k.created_at, k.expiry_at,
+                       IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'v2ray' as protocol,
+                       '' as traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,'')
+                FROM v2ray_keys k
+                LEFT JOIN servers s ON k.server_id = s.id
+                LEFT JOIN tariffs t ON k.tariff_id = t.id
+                WHERE k.id = ?
+                LIMIT 1
+                """,
+                (key_pk, key_pk),
+            )
+            return c.fetchone()
+
     def delete_outline_key_by_id(self, key_pk: int) -> None:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()

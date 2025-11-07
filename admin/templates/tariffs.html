@@ -12,7 +12,7 @@
     </div>
 
     <!-- Table -->
-    <div style="overflow-x: auto;">
+    <div class="table-scroll">
         <table class="material-table">
             <thead>
                 <tr>
@@ -30,7 +30,7 @@
                 <tr>
                     <td>{{ t[0] }}</td>
                     <td>
-                        <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="inline-flex">
                             <span class="material-icons icon-small">payment</span>
                             <strong>{{ t[1] }}</strong>
                         </div>
@@ -66,8 +66,7 @@
                                 {{ t[3] }} ₽
                             </span>
                             {% if t|length > 5 and t[5] and t[5] > 0 %}
-                                <br>
-                                <span class="badge badge-info" style="margin-top: 4px;">
+                                <span class="badge badge-info mt-1 d-inline-block">
                                     <span class="material-icons icon-small">currency_bitcoin</span>
                                     ${{ "%.2f"|format(t[5]) }}
                                 </span>
@@ -88,11 +87,11 @@
                             </span>
                         {% endif %}
                     </td>
-                    <td style="text-align: center;">
+                    <td class="text-center">
                         {% if t[3] == 0 %}
-                            <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Бесплатный">free_breakfast</span>
+                            <span class="material-icons icon-lg icon-success" title="Бесплатный">free_breakfast</span>
                         {% else %}
-                            <span class="material-icons" style="color: #ef6c00; font-size: 20px;" title="Платный">paid</span>
+                            <span class="material-icons icon-lg icon-warning" title="Платный">paid</span>
                         {% endif %}
                     </td>
                     <td>
@@ -101,7 +100,7 @@
                                 <span class="material-icons icon-small">edit</span>
                             </a>
                             <a href="/delete_tariff/{{ t[0] }}" class="btn btn-danger" 
-                               onclick="return confirm('Удалить тариф?')" title="Удалить">
+                               data-confirm="Удалить тариф?" title="Удалить">
                                 <span class="material-icons icon-small">delete</span>
                             </a>
                         </div>
@@ -120,42 +119,42 @@
         <p class="card-subtitle">Создание нового тарифного плана</p>
     </div>
     
-    <div style="padding: 24px;">
+    <div class="card-body">
         <form method="post" action="/add_tariff">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
             
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px;">
+            <div class="form-grid mb-3">
                 <div>
-                    <label for="name" style="display: block; margin-bottom: 8px; font-weight: 500;">Название тарифа:</label>
-                    <input type="text" id="name" name="name" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    <label for="name" class="form-label">Название тарифа:</label>
+                    <input type="text" id="name" name="name" required class="form-control">
                 </div>
                 
                 <div>
-                    <label for="duration_sec" style="display: block; margin-bottom: 8px; font-weight: 500;">Длительность (секунды):</label>
-                    <input type="number" id="duration_sec" name="duration_sec" required min="1" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                    <small style="color: #666; font-size: 12px;">Например: 86400 = 1 день, 2592000 = 30 дней</small>
+                    <label for="duration_sec" class="form-label">Длительность (секунды):</label>
+                    <input type="number" id="duration_sec" name="duration_sec" required min="1" class="form-control">
+                    <small class="form-hint">Например: 86400 = 1 день, 2592000 = 30 дней</small>
                 </div>
                 
                 <div>
-                    <label for="traffic_limit_mb" style="display: block; margin-bottom: 8px; font-weight: 500;">Лимит трафика (МБ):</label>
-                    <input type="number" id="traffic_limit_mb" name="traffic_limit_mb" min="0" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                    <small style="color: #666; font-size: 12px;">0 = безлимит</small>
+                    <label for="traffic_limit_mb" class="form-label">Лимит трафика (МБ):</label>
+                    <input type="number" id="traffic_limit_mb" name="traffic_limit_mb" min="0" class="form-control">
+                    <small class="form-hint">0 = безлимит</small>
                 </div>
                 
                 <div>
-                    <label for="price_rub" style="display: block; margin-bottom: 8px; font-weight: 500;">Цена (рубли):</label>
-                    <input type="number" id="price_rub" name="price_rub" min="0" value="0" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                    <small style="color: #666; font-size: 12px;">0 = бесплатный тариф</small>
+                    <label for="price_rub" class="form-label">Цена (рубли):</label>
+                    <input type="number" id="price_rub" name="price_rub" min="0" value="0" class="form-control">
+                    <small class="form-hint">0 = бесплатный тариф</small>
                 </div>
                 
                 <div>
-                    <label for="price_crypto_usd" style="display: block; margin-bottom: 8px; font-weight: 500;">Цена в криптовалюте (USD):</label>
-                    <input type="number" id="price_crypto_usd" name="price_crypto_usd" step="0.01" min="0" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                    <small style="color: #666; font-size: 12px;">Оставьте пустым, если крипто-оплата недоступна для этого тарифа</small>
+                    <label for="price_crypto_usd" class="form-label">Цена в криптовалюте (USD):</label>
+                    <input type="number" id="price_crypto_usd" name="price_crypto_usd" step="0.01" min="0" class="form-control">
+                    <small class="form-hint">Оставьте пустым, если крипто-оплата недоступна для этого тарифа</small>
                 </div>
             </div>
             
-            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <div class="justify-end">
                 <button type="submit" class="btn btn-primary">
                     <span class="material-icons icon-small">add</span>
                     Добавить тариф

@@ -59,26 +59,26 @@
             </div>
             
             <!-- Outline-specific fields -->
-            <div class="form-group outline-fields" style="display: {% if server.protocol == 'outline' %}block{% else %}none{% endif %};">
+            <div class="form-group outline-fields {% if server.protocol != 'outline' %}hidden{% endif %}">
                 <label class="form-label">SHA256 сертификата *</label>
                 <input type="text" name="cert_sha256" class="form-input" 
                        value="{{ server.cert_sha256 }}" placeholder="XX:XX:XX:XX:XX:XX:XX:XX">
             </div>
             
             <!-- V2Ray-specific fields -->
-            <div class="form-group v2ray-fields" style="display: {% if server.protocol == 'v2ray' %}block{% else %}none{% endif %};">
+            <div class="form-group v2ray-fields {% if server.protocol != 'v2ray' %}hidden{% endif %}">
                 <label class="form-label">Домен *</label>
                 <input type="text" name="domain" class="form-input" 
                        value="{{ server.domain }}" placeholder="example.com">
             </div>
             
-            <div class="form-group v2ray-fields" style="display: {% if server.protocol == 'v2ray' %}block{% else %}none{% endif %};">
+            <div class="form-group v2ray-fields {% if server.protocol != 'v2ray' %}hidden{% endif %}">
                 <label class="form-label">API Ключ *</label>
                 <input type="text" name="api_key" class="form-input" 
                        value="{{ server.api_key }}" placeholder="veil-bird-secret-api-key-2024">
             </div>
             
-            <div class="form-group v2ray-fields" style="display: {% if server.protocol == 'v2ray' %}block{% else %}none{% endif %};">
+            <div class="form-group v2ray-fields {% if server.protocol != 'v2ray' %}hidden{% endif %}">
                 <label class="form-label">V2Ray Путь</label>
                 <input type="text" name="v2ray_path" class="form-input" 
                        value="{{ server.v2ray_path or '/v2ray' }}" placeholder="/v2ray">
@@ -150,24 +150,9 @@
     margin-top: 1rem;
 }
 </style>
+{% endblock %}
 
-<script>
-// Show/hide fields based on server protocol
-document.addEventListener('DOMContentLoaded', function() {
-    const protocol = '{{ server.protocol or "outline" }}';
-    const outlineFields = document.querySelectorAll('.outline-fields');
-    const v2rayFields = document.querySelectorAll('.v2ray-fields');
-    
-    // Hide all protocol-specific fields first
-    outlineFields.forEach(field => field.style.display = 'none');
-    v2rayFields.forEach(field => field.style.display = 'none');
-    
-    // Show fields for the current protocol
-    if (protocol === 'outline') {
-        outlineFields.forEach(field => field.style.display = 'block');
-    } else if (protocol === 'v2ray') {
-        v2rayFields.forEach(field => field.style.display = 'block');
-    }
-});
-</script>
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/editServer.js"></script>
 {% endblock %} 

@@ -3,20 +3,26 @@
 {% block title %}Ключи{% endblock %}
 {% block page_title %}Ключи{% endblock %}
 
+{% from "components/modal.html" import modal %}
+
 {% block content %}
 <!-- Stats Cards -->
 <div class="stats-grid">
-    <div class="stat-card">
-        <div class="stat-value">{{ total }}</div>
+    <div class="stat-card" data-stat="total">
+        <div class="stat-value" data-stat-value>{{ total }}</div>
         <div class="stat-label">Всего ключей</div>
     </div>
-    <div class="stat-card">
-        <div class="stat-value">{{ active_count }}</div>
+    <div class="stat-card" data-stat="active">
+        <div class="stat-value" data-stat-value>{{ active_count }}</div>
         <div class="stat-label">Активных</div>
     </div>
-    <div class="stat-card">
-        <div class="stat-value">{{ expired_count }}</div>
+    <div class="stat-card" data-stat="expired">
+        <div class="stat-value" data-stat-value>{{ expired_count }}</div>
         <div class="stat-label">Истекших</div>
+    </div>
+    <div class="stat-card" data-stat="v2ray">
+        <div class="stat-value" data-stat-value>{{ v2ray_count }}</div>
+        <div class="stat-label">V2Ray</div>
     </div>
 </div>
 
@@ -29,9 +35,9 @@
 
     <!-- Filters -->
     <div class="filter-bar">
-        <div style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
-            <input type="text" id="global-search" data-table-id="keys-table" placeholder="Поиск по всем столбцам..." class="filter-input" style="flex: 1; min-width: 250px;">
-            <button type="button" class="btn" id="reset-search-btn">
+        <div class="filter-bar__group">
+            <input type="text" id="global-search" data-table-id="keys-table" placeholder="Поиск по всем столбцам..." class="filter-input">
+            <button type="button" class="btn filter-bar__reset" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
             </button>
@@ -39,12 +45,11 @@
     </div>
 
     <!-- Table -->
-    <div style="overflow-x: auto; width: 100%;">
+    <div class="table-scroll">
         <table class="material-table" id="keys-table">
             <thead>
                 <tr>
                     <th>ID</th>
-                    <th>Тип</th>
                     <th>Ключ</th>
                     <th>Email</th>
                     <th>Сервер</th>
@@ -56,54 +61,65 @@
                 </tr>
             </thead>
             <tbody>
-                {% for k in keys %}
-                <tr data-key-id="{{ k[0] }}" data-protocol="{{ k[8] }}">
-                    <td>{{ k[0] }}</td>
-                    <td style="text-align: center;">
-                        {% if k[8] == 'outline' %}
-                            <span class="material-icons" style="color: #1565c0;" title="Outline">lock</span>
-                        {% elif k[8] == 'v2ray' %}
-                            <span class="material-icons" style="color: #1565c0;" title="V2Ray">security</span>
-                        {% else %}
-                            <span class="material-icons" style="color: #757575;" title="{{ k[8] }}">help_outline</span>
-                        {% endif %}
+                {% for key in keys %}
+                <tr class="keys-table__row" data-key-id="{{ key.id }}" data-protocol="{{ key.protocol }}" data-status="{{ key.status }}" data-expiry-ts="{{ key.expiry_at }}" data-expiry-iso="{{ key.expiry_iso }}">
+                    <td class="keys-table__cell keys-table__cell--id">
+                        <span class="text-muted">#{{ key.id }}</span>
                     </td>
-                    <td style="text-align: center;">
-                        <button class="btn btn-icon" data-action="copy-key" data-key="{{ k[2]|e }}" title="Скопировать ключ: {{ k[2] }}">
+                    <td class="keys-table__cell keys-table__cell--copy text-center">
+                        <button class="btn btn-icon" data-action="copy-key" data-key="{{ key.access_url|e }}" data-key-id="{{ key.id }}" title="Скопировать ключ">
                             <span class="material-icons icon-small">content_copy</span>
                         </button>
                     </td>
-                    <td>
-                        {% if k[6] %}
-                            <span class="text-muted" title="{{ k[6] }}">{{ k[6]|truncate(30) }}</span>
+                    <td class="keys-table__cell keys-table__cell--email">
+                        {% if key.email %}
+                            <div class="cell-primary" title="{{ key.email }}">{{ key.email }}</div>
                         {% else %}
-                            <span class="text-muted">—</span>
+                            <div class="cell-primary text-muted">—</div>
+                        {% endif %}
+                        <div class="cell-secondary text-muted">{{ key.tariff or '—' }}</div>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--server">
+                        <div class="cell-primary">{{ key.server or '—' }}</div>
+                        <div class="cell-secondary">
+                            <span class="protocol-badge {{ key.protocol_badge_class }}" title="{{ key.protocol_label }}">
+                                <span class="material-icons icon-small">{{ key.protocol_icon }}</span>
+                                {{ key.protocol_label }}
+                            </span>
+                        </div>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--created">
+                        <div class="cell-primary" data-field="created-display">{{ key.created_display }}</div>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--expiry" data-key-expiry="{{ key.expiry_at }}">
+                        <div class="cell-primary" data-field="expiry-remaining">{{ key.expiry_remaining }}</div>
+                        <div class="cell-secondary" data-field="expiry-display">{{ key.expiry_display }}</div>
+                        <div class="progress-bar" data-progress="{{ (key.lifetime_progress * 100)|round(0) }}">
+                            <div class="progress-bar__fill"></div>
+                        </div>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--status">
+                        <span class="material-icons status-icon {{ key.status_class }}" data-field="status-icon" title="{{ key.status_label }}">{{ key.status_icon }}</span>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--traffic traffic-cell" data-key-id="{{ key.id }}" data-traffic-state="{{ key.traffic.state }}">
+                        <div class="cell-primary" data-field="traffic-display">{{ key.traffic.display }}</div>
+                        {% if key.traffic.limit_display != '—' %}
+                            <div class="cell-secondary" data-field="traffic-limit">Лимит: {{ key.traffic.limit_display }}</div>
+                        {% else %}
+                            <div class="cell-secondary text-muted" data-field="traffic-limit">Лимит не задан</div>
+                        {% endif %}
+                        {% if key.traffic.usage_percent is not none %}
+                            <div class="progress-bar progress-bar--compact" data-progress="{{ (key.traffic.usage_percent * 100)|round(0) }}">
+                                <div class="progress-bar__fill"></div>
+                            </div>
                         {% endif %}
                     </td>
-                    <td>{{ k[5] }}</td>
-                    <td class="text-small">{{ k[3]|timestamp }}</td>
-                    <td class="text-small">{{ k[4]|timestamp }}</td>
-                    <td style="text-align: center;">
-                        {% if k[4] > current_time %}
-                            <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Активен">check_circle</span>
-                        {% else %}
-                            <span class="material-icons" style="color: #c62828; font-size: 20px;" title="Истек">cancel</span>
-                        {% endif %}
-                    </td>
-                    <td class="traffic-cell" data-key-id="{{ k[0] }}">
-                        {% if k[8] == 'v2ray' and k|length > 12 %}
-                            <span class="traffic-value">{{ k[12] }}</span>
-                        {% else %}
-                            <span class="text-muted">N/A</span>
-                        {% endif %}
-                    </td>
-                    <td>
+                    <td class="keys-table__cell keys-table__cell--actions">
                         <div class="action-buttons">
-                            <button class="btn btn-icon" data-action="edit-key" data-key-id="{{ k[0] }}" data-expiry="{{ k[4]|my_datetime_local }}" title="Редактировать">
+                            <button class="btn btn-icon" data-action="edit-key" data-key-id="{{ key.id }}" data-expiry="{{ key.expiry_iso }}" title="Редактировать">
                                 <span class="material-icons icon-small">edit</span>
                             </button>
-                            <a href="/keys/delete/{{ k[0] }}" class="btn btn-icon btn-danger" 
-                               data-action="delete-key" data-key-id="{{ k[0] }}" title="Удалить">
+                            <a href="/keys/delete/{{ key.id }}" class="btn btn-icon btn-danger" data-action="delete-key" data-key-id="{{ key.id }}" title="Удалить">
                                 <span class="material-icons icon-small">delete</span>
                             </a>
                         </div>
@@ -144,55 +160,22 @@
 </div>
 {% endif %}
 
-<!-- Edit Modal -->
-<div id="editModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <h3>Редактировать срок действия</h3>
-        <form id="editForm" method="post">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-            <div style="margin: 16px 0;">
-                <label for="new_expiry" style="display: block; margin-bottom: 8px; font-weight: 500;">Новая дата истечения:</label>
-                <input type="datetime-local" id="new_expiry" name="new_expiry" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-            </div>
-            <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                <button type="button" class="btn" data-action="close-edit-modal">Отмена</button>
-                <button type="submit" class="btn btn-primary">Сохранить</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<style>
-.modal {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0,0,0,0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-}
-
-.modal-content {
-    background: white;
-    padding: 24px;
-    border-radius: 8px;
-    min-width: 400px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-}
-
-.modal h3 {
-    margin: 0 0 16px 0;
-    font-size: 18px;
-    font-weight: 500;
-}
-</style>
+{% call modal("edit-key-modal", "Редактировать срок действия") %}
+    <form id="editForm" method="post" class="form" data-form="edit-key">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <div class="form-field">
+            <label for="new_expiry" class="form-label">Новая дата истечения</label>
+            <input type="datetime-local" id="new_expiry" name="new_expiry" required class="form-input">
+        </div>
+        <div class="form-actions">
+            <button type="button" class="btn" data-modal-close>Отмена</button>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+        </div>
+    </form>
+{% endcall %}
 {% endblock %}
 
 {% block extra_scripts %}
     {{ super() }}
-    <script src="/static/js/keys.js"></script>
+    <script type="module" src="/static/js/keys.js"></script>
 {% endblock %}

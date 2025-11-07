@@ -29,9 +29,9 @@
 
     <!-- Filters -->
     <div class="filter-bar">
-        <div style="display: flex; gap: 16px; align-items: center; flex: 1; flex-wrap: wrap;">
-            <input type="text" id="global-search" data-table-id="users-table" placeholder="Поиск по всем столбцам..." class="filter-input" style="flex: 1; min-width: 250px;">
-            <button type="button" class="btn" onclick="document.getElementById('global-search').value=''; window.VeilBotCommon?.createTableFilter('users-table', 0)('');">
+        <div class="flex-wrap flex-1">
+            <input type="text" id="global-search" data-table-id="users-table" placeholder="Поиск по всем столбцам..." class="filter-input filter-input--grow">
+            <button type="button" class="btn" data-clear-target="#global-search" data-clear-event="input">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
             </button>
@@ -39,7 +39,7 @@
     </div>
 
     <!-- Table -->
-    <div style="overflow-x: auto;">
+    <div class="table-scroll">
         <table class="material-table" id="users-table">
             <thead>
                 <tr>
@@ -54,7 +54,7 @@
                 {% for user in users %}
                 <tr>
                     <td>
-                        <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="inline-flex">
                             <span class="material-icons icon-small">person</span>
                             <span class="text-large">{{ user.user_id }}</span>
                         </div>
@@ -72,11 +72,11 @@
                             <span class="text-muted">—</span>
                         {% endif %}
                     </td>
-                    <td style="text-align: center;">
+                    <td class="text-center">
                         {% if user.is_active %}
-                            <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Активен">check_circle</span>
+                            <span class="material-icons icon-lg icon-success" title="Активен">check_circle</span>
                         {% else %}
-                            <span class="material-icons" style="color: #c62828; font-size: 20px;" title="Неактивен">cancel</span>
+                            <span class="material-icons icon-lg icon-danger" title="Неактивен">cancel</span>
                         {% endif %}
                     </td>
                     <td>
@@ -126,9 +126,4 @@
     {% endif %}
 </div>
 {% endif %}
-
-<script>
-// Поиск и фильтрация обрабатываются common.js автоматически
-// Дополнительный функционал для страницы users можно добавить здесь
-</script>
 {% endblock %}

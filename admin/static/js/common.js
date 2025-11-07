@@ -1,334 +1,495 @@
-/**
- * Общие JavaScript функции для админки VeilBot
- */
+let confirmHandlersAttached = false;
 
-/**
- * Дебаунс функция - откладывает выполнение до истечения времени ожидания
- */
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
+const debounce = (fn, wait = 300) => {
+    let timeoutId;
+    return (...args) => {
+        const invoke = () => {
+            timeoutId = undefined;
+            fn(...args);
         };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
+        clearTimeout(timeoutId);
+        timeoutId = window.setTimeout(invoke, wait);
     };
-}
+};
 
-/**
- * Создает универсальную функцию фильтрации таблиц с дебаунсом и кэшированием
- * @param {string} tableId - ID таблицы для фильтрации
- * @param {number} debounceMs - Задержка дебаунса в миллисекундах (по умолчанию 300)
- * @returns {Function} Функция фильтрации с дебаунсом
- */
-function createTableFilter(tableId, debounceMs = 300) {
+const createTableFilter = (tableId, debounceMs = 300) => {
     const table = document.getElementById(tableId);
     if (!table) {
         console.warn(`Table with id "${tableId}" not found`);
-        return () => {};
+        return () => undefined;
     }
-    
+
     let cachedRows = null;
-    
-    const filterFunction = (searchTerm) => {
-        // Кэшируем строки при первом вызове
+
+    const performFilter = (searchTerm) => {
         if (!cachedRows) {
             cachedRows = Array.from(table.querySelectorAll('tbody tr'));
         }
-        
-        const term = searchTerm.toLowerCase().trim();
-        
-        if (term === '') {
-            // Показываем все строки если поиск пустой
-            cachedRows.forEach(row => {
+
+        const normalized = (searchTerm || '').toLowerCase().trim();
+        if (!normalized) {
+            cachedRows.forEach((row) => {
                 row.style.display = '';
             });
             return;
         }
-        
-        // Фильтруем строки
-        cachedRows.forEach(row => {
+
+        cachedRows.forEach((row) => {
             const cells = Array.from(row.querySelectorAll('td'));
-            // Исключаем последнюю колонку (Actions)
-            const searchableCells = cells.slice(0, -1);
-            const found = searchableCells.some(cell => {
-                const text = (cell.textContent || cell.innerText || '').toLowerCase();
-                return text.includes(term);
+            const searchable = cells.slice(0, -1);
+            const found = searchable.some((cell) => {
+                const text = (cell.textContent || '').toLowerCase();
+                return text.includes(normalized);
             });
             row.style.display = found ? '' : 'none';
         });
     };
-    
-    // Возвращаем функцию с дебаунсом
-    return debounce(filterFunction, debounceMs);
-}
 
-/**
- * Универсальная функция показа уведомлений
- * @param {string} message - Сообщение для отображения
- * @param {string} type - Тип уведомления: 'success', 'error', 'warning', 'info'
- * @param {number} duration - Длительность отображения в мс (по умолчанию 3000)
- */
-function showNotification(message, type = 'info', duration = 3000) {
-    // Удаляем существующие уведомления
-    const existing = document.querySelectorAll('.veilbot-notification');
-    existing.forEach(el => el.remove());
-    
-    const notification = document.createElement('div');
-    notification.className = 'veilbot-notification';
-    notification.textContent = message;
-    
-    // Цвета в зависимости от типа
-    const colors = {
-        'success': '#4caf50',
-        'error': '#f44336',
-        'warning': '#ff9800',
-        'info': '#2196f3'
-    };
-    
-    notification.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        background: ${colors[type] || colors.info};
-        color: white;
-        padding: 12px 16px;
-        border-radius: 4px;
-        z-index: 10001;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        font-size: 14px;
-        font-weight: 500;
-        max-width: 400px;
-        word-wrap: break-word;
-        animation: slideIn 0.3s ease-out;
-    `;
-    
-    // Добавляем анимацию
-    const style = document.createElement('style');
-    style.textContent = `
-        @keyframes slideIn {
-            from {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-    `;
-    if (!document.querySelector('#veilbot-notification-styles')) {
-        style.id = 'veilbot-notification-styles';
-        document.head.appendChild(style);
-    }
-    
-    document.body.appendChild(notification);
-    
-    // Удаляем через duration
-    setTimeout(() => {
-        notification.style.animation = 'slideIn 0.3s ease-out reverse';
-        setTimeout(() => notification.remove(), 300);
-    }, duration);
-}
+    return debounce(performFilter, debounceMs);
+};
 
-/**
- * Инициализация поиска для страницы
- * Автоматически находит input с id="global-search" и привязывает фильтр
- */
-function initTableSearch() {
-    const searchInput = document.getElementById('global-search');
-    if (!searchInput) {
+const ensureNotificationStyles = () => {
+    if (document.getElementById('veilbot-notification-styles')) {
         return;
     }
-    
-    // Получаем ID таблицы из data-атрибута или используем значение по умолчанию
-    const tableId = searchInput.dataset.tableId || 
-                   searchInput.closest('.card')?.querySelector('table')?.id || 
-                   'keys-table';
-    
-    const filterFn = createTableFilter(tableId, 300);
-    
-    // Обработчик ввода с дебаунсом
-    searchInput.addEventListener('input', (e) => {
-        filterFn(e.target.value);
-    });
-    
-    // Обработчик очистки
-    const clearBtn = document.querySelector('[onclick*="clearSearch"]');
-    if (clearBtn) {
-        clearBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            searchInput.value = '';
-            filterFn('');
-        });
-    }
-}
+    const style = document.createElement('style');
+    style.id = 'veilbot-notification-styles';
+    style.textContent = `
+        @keyframes vb-slide-in {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+    `;
+    document.head.appendChild(style);
+};
 
-/**
- * Показывает глобальный индикатор загрузки страницы
- * @param {boolean} show - Показать или скрыть
- */
-function showPageLoader(show = true) {
+const ensureNotificationContainer = () => {
+    let container = document.querySelector('.veilbot-notification-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'veilbot-notification-container';
+        container.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            z-index: 10001;
+        `;
+        container.setAttribute('role', 'region');
+        container.setAttribute('aria-live', 'polite');
+        container.setAttribute('aria-atomic', 'false');
+        document.body.appendChild(container);
+    }
+    return container;
+};
+
+const showNotification = (message, type = 'info', duration = 3000) => {
+    ensureNotificationStyles();
+    const container = ensureNotificationContainer();
+
+    const colors = {
+        success: '#4caf50',
+        error: '#f44336',
+        warning: '#ff9800',
+        info: '#2196f3',
+    };
+
+    const notification = document.createElement('div');
+    notification.className = 'veilbot-notification';
+    const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    notification.style.cssText = `
+        display: inline-flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-width: 220px;
+        max-width: 420px;
+        background: ${colors[type] || colors.info};
+        color: #fff;
+        padding: 12px 16px;
+        border-radius: 6px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+        font-size: 14px;
+        font-weight: 500;
+        ${reducedMotion ? '' : 'animation: vb-slide-in 0.25s ease;'}
+    `;
+    notification.textContent = message;
+    notification.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    notification.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+    notification.setAttribute('aria-atomic', 'true');
+    notification.tabIndex = 0;
+
+    const dismiss = () => notification.remove();
+    notification.addEventListener('click', dismiss);
+
+    container.appendChild(notification);
+    if (duration > 0) {
+        window.setTimeout(dismiss, duration);
+    }
+};
+
+const postForm = async (url, formElementOrData) => {
+    const body = formElementOrData instanceof FormData ? formElementOrData : new FormData(formElementOrData);
+    const response = await fetch(url, {
+        method: 'POST',
+        body,
+    });
+    return response;
+};
+
+const showPageLoader = (show = true) => {
     let loader = document.getElementById('page-loader');
-    
+
     if (show && !loader) {
         loader = document.createElement('div');
         loader.id = 'page-loader';
+        loader.className = 'page-loader';
         loader.style.cssText = `
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.9);
+            inset: 0;
+            background: rgba(255, 255, 255, 0.92);
             display: flex;
             align-items: center;
             justify-content: center;
-            z-index: 10000;
             flex-direction: column;
             gap: 16px;
+            z-index: 10000;
         `;
         loader.innerHTML = `
-            <div class="material-icons" style="font-size: 48px; color: #1976d2; animation: spin 1s linear infinite;">refresh</div>
+            <div class="material-icons" style="font-size: 48px; color: #1976d2; animation: vb-spin 1s linear infinite;">refresh</div>
             <div style="font-size: 16px; color: #666;">Загрузка...</div>
         `;
+
+        if (!document.getElementById('vb-spin-styles')) {
+            const style = document.createElement('style');
+            style.id = 'vb-spin-styles';
+            style.textContent = `
+                @keyframes vb-spin {
+                    from { transform: rotate(0deg); }
+                    to { transform: rotate(360deg); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
         document.body.appendChild(loader);
-    } else if (loader) {
-        loader.style.display = show ? 'flex' : 'none';
-        if (!show) {
-            setTimeout(() => loader.remove(), 300);
+    }
+
+    if (loader) {
+        if (show) {
+            loader.style.display = 'flex';
+        } else {
+            loader.style.display = 'none';
+            window.setTimeout(() => loader.remove(), 300);
         }
     }
-}
+};
 
-/**
- * Показывает индикатор загрузки для элемента
- * @param {HTMLElement} element - Элемент для показа индикатора
- */
-function showLoadingIndicator(element) {
-    if (!element) return;
-    
-    const spinner = document.createElement('span');
-    spinner.className = 'loading-spinner';
-    spinner.innerHTML = '<span class="material-icons icon-small" style="animation: spin 1s linear infinite;">refresh</span>';
-    spinner.style.cssText = 'display: inline-flex; align-items: center;';
-    
-    const style = document.createElement('style');
-    style.id = 'spinner-styles';
-    if (!document.getElementById('spinner-styles')) {
-        style.textContent = `
-            @keyframes spin {
-                from { transform: rotate(0deg); }
-                to { transform: rotate(360deg); }
-            }
-        `;
-        document.head.appendChild(style);
+const ensureSpinnerStyles = () => {
+    if (document.getElementById('vb-spinner-styles')) {
+        return;
     }
-    
-    element.innerHTML = '';
-    element.appendChild(spinner);
-    return spinner;
-}
+    const style = document.createElement('style');
+    style.id = 'vb-spinner-styles';
+    style.textContent = `
+        @keyframes vb-spinner {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+    `;
+    document.head.appendChild(style);
+};
 
-/**
- * Централизованная обработка ошибок
- * @param {Error|string} error - Ошибка для обработки
- * @param {string} context - Контекст ошибки (опционально)
- */
-function handleError(error, context = '') {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const fullMessage = context ? `${context}: ${errorMessage}` : errorMessage;
-    
-    console.error('VeilBot Error:', fullMessage);
-    showNotification(fullMessage, 'error', 5000);
-}
+const showLoadingIndicator = (element) => {
+    if (!element) return null;
+    ensureSpinnerStyles();
+    element.dataset.previousContent = element.innerHTML;
+    element.innerHTML = `
+        <span class="material-icons icon-small" style="animation: vb-spinner 1s linear infinite; display: inline-flex;">refresh</span>
+    `;
+    return element;
+};
 
-/**
- * Загрузка трафика для ключа по требованию
- * @param {number} keyId - ID ключа
- */
-async function loadTraffic(keyId) {
+const restorePreviousContent = (element) => {
+    if (!element || typeof element.dataset.previousContent === 'undefined') {
+        return;
+    }
+    element.innerHTML = element.dataset.previousContent;
+    delete element.dataset.previousContent;
+};
+
+const handleError = (error, context = '') => {
+    const message = error instanceof Error ? error.message : String(error);
+    const formatted = context ? `${context}: ${message}` : message;
+    console.error('VeilBot error:', formatted);
+    showNotification(formatted, 'error', 5000);
+};
+
+const updateProgressBars = (root = document) => {
+    const bars = root.querySelectorAll('[data-progress]');
+    bars.forEach((bar) => {
+        const value = Number(bar.dataset.progress || 0);
+        const normalized = Math.min(Math.max(value, 0), 100);
+        bar.style.setProperty('--progress', `${normalized}%`);
+        const fill = bar.querySelector('.progress-bar__fill');
+        if (fill) {
+            fill.style.width = `${normalized}%`;
+        }
+    });
+};
+
+const loadTraffic = async (keyId) => {
     const cell = document.querySelector(`.traffic-cell[data-key-id="${keyId}"]`);
     if (!cell) return;
-    
-    // Показываем индикатор загрузки
+
     showLoadingIndicator(cell);
-    
+
     try {
         const response = await fetch(`/api/keys/${keyId}/traffic`);
         const data = await response.json();
-        
+
         if (!response.ok) {
             throw new Error(data.error || 'Ошибка загрузки трафика');
         }
-        
-        // Показываем результат
-        cell.innerHTML = `<span class="traffic-value">${data.traffic}</span>`;
-        
+
+        restorePreviousContent(cell);
+        const display = cell.querySelector('[data-field="traffic-display"]');
+        if (display) {
+            display.textContent = data.traffic;
+        } else {
+            cell.textContent = data.traffic;
+        }
+        updateProgressBars(cell);
     } catch (error) {
         handleError(error, 'Ошибка загрузки трафика');
-        // Восстанавливаем кнопку для повторной попытки
-        cell.innerHTML = `
-            <button class="btn btn-small btn-load-traffic" onclick="loadTraffic(${keyId})" title="Повторить загрузку">
-                <span class="material-icons icon-small">refresh</span>
-                Повторить
-            </button>
-        `;
+        restorePreviousContent(cell);
+        cell.innerHTML = '';
+        const retryButton = document.createElement('button');
+        retryButton.className = 'btn btn-small';
+        retryButton.type = 'button';
+        retryButton.innerHTML = '<span class="material-icons icon-small">refresh</span> Повторить';
+        retryButton.addEventListener('click', () => loadTraffic(keyId));
+        cell.appendChild(retryButton);
     }
-}
+};
 
-/**
- * Инициализация всех общих функций при загрузке DOM
- */
-document.addEventListener('DOMContentLoaded', function() {
-    // Инициализация поиска
-    initTableSearch();
-    
-    // Инициализация ленивой загрузки трафика
-    initLazyTrafficLoading();
-    
-    // Выделение активной страницы в навигации
+const initTableSearch = () => {
+    const searchInput = document.getElementById('global-search');
+    if (!searchInput) return;
+
+    const tableId = searchInput.dataset.tableId
+        || searchInput.closest('.card')?.querySelector('table')?.id
+        || 'keys-table';
+
+    const filter = createTableFilter(tableId, 250);
+    searchInput.addEventListener('input', (event) => {
+        filter(event.target.value);
+    });
+
+    const resetButton = document.getElementById('reset-search-btn');
+    if (resetButton) {
+        resetButton.addEventListener('click', () => {
+            searchInput.value = '';
+            filter('');
+            searchInput.focus();
+        });
+    }
+};
+
+const initLazyTrafficLoading = () => {
+    // Placeholder for future IntersectionObserver integration.
+};
+
+const highlightActiveNavigation = () => {
     const currentPath = window.location.pathname;
-    const navLinks = document.querySelectorAll('.nav-link');
-    navLinks.forEach(link => {
+    document.querySelectorAll('.nav-link').forEach((link) => {
         if (link.getAttribute('href') === currentPath) {
             link.classList.add('active');
         }
     });
-    
-    // Показываем индикатор загрузки при переходе на другие страницы
-    document.querySelectorAll('a.nav-link').forEach(link => {
-        link.addEventListener('click', () => {
-            if (link.getAttribute('href').startsWith('/')) {
-                showPageLoader(true);
+};
+
+const initNavigationLoader = () => {
+    document.querySelectorAll('a.nav-link').forEach((link) => {
+        link.addEventListener('click', (event) => {
+            const href = link.getAttribute('href') || '';
+            if (!href.startsWith('/')) {
+                return;
+            }
+            if (event.metaKey || event.ctrlKey || event.shiftKey) {
+                return;
+            }
+            showPageLoader(true);
+        });
+    });
+};
+
+class ModalController {
+    constructor(element) {
+        this.element = element;
+        this.focusTrap = null;
+        this.closeButtons = [];
+        this.previouslyFocused = null;
+        this.handleKeyDown = this.handleKeyDown.bind(this);
+        this.onBackdropClick = this.onBackdropClick.bind(this);
+    }
+
+    open() {
+        if (!this.element) return;
+        this.previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        this.element.classList.add('vb-modal--open');
+        this.element.setAttribute('aria-hidden', 'false');
+        this.element.setAttribute('aria-modal', 'true');
+        document.body.classList.add('vb-modal-open');
+        this.bindEvents();
+        const focusTarget = this.element.querySelector('[data-modal-focus]')
+            || this.element.querySelector('input, button, select, textarea, [tabindex]:not([tabindex="-1"])');
+        if (focusTarget && typeof focusTarget.focus === 'function') {
+            focusTarget.focus();
+        }
+    }
+
+    close() {
+        if (!this.element) return;
+        this.element.classList.remove('vb-modal--open');
+        this.element.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('vb-modal-open');
+        if (this.previouslyFocused && typeof this.previouslyFocused.focus === 'function') {
+            this.previouslyFocused.focus();
+            this.previouslyFocused = null;
+        }
+        this.unbindEvents();
+    }
+
+    bindEvents() {
+        this.element.addEventListener('click', this.onBackdropClick);
+        this.element.addEventListener('keydown', this.handleKeyDown);
+        this.closeButtons = Array.from(this.element.querySelectorAll('[data-modal-close]'));
+        this.closeButtons.forEach((btn) => btn.addEventListener('click', this.onBackdropClick));
+    }
+
+    unbindEvents() {
+        this.element.removeEventListener('click', this.onBackdropClick);
+        this.element.removeEventListener('keydown', this.handleKeyDown);
+        if (this.closeButtons) {
+            this.closeButtons.forEach((btn) => btn.removeEventListener('click', this.onBackdropClick));
+            this.closeButtons = null;
+        }
+    }
+
+    onBackdropClick(event) {
+        if (event.target === this.element || event.target.closest('[data-modal-close]')) {
+            this.close();
+        }
+    }
+
+    handleKeyDown(event) {
+        if (event.key === 'Escape') {
+            this.close();
+        }
+    }
+}
+
+const attachConfirmHandlers = () => {
+    if (confirmHandlersAttached) {
+        return;
+    }
+    confirmHandlersAttached = true;
+
+    document.addEventListener('click', (event) => {
+        const target = event.target.closest('[data-confirm]');
+        if (!target) {
+            return;
+        }
+        if (target.tagName.toLowerCase() === 'form') {
+            return;
+        }
+        const message = target.dataset.confirm;
+        if (!message) {
+            return;
+        }
+        if (!window.confirm(message)) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+    });
+
+    document.addEventListener('submit', (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) {
+            return;
+        }
+        if (!form.matches('[data-confirm]')) {
+            return;
+        }
+        const message = form.dataset.confirm;
+        if (!message) {
+            return;
+        }
+        if (!window.confirm(message)) {
+            event.preventDefault();
+        }
+    });
+};
+
+const attachClearHandlers = () => {
+    document.querySelectorAll('[data-clear-target]:not([data-clear-bound])').forEach((button) => {
+        button.dataset.clearBound = '1';
+        button.addEventListener('click', () => {
+            const selector = button.dataset.clearTarget || '';
+            const eventType = button.dataset.clearEvent || 'input';
+            if (!selector) {
+                return;
+            }
+            selector.split(',').forEach((raw) => {
+                const trimmed = raw.trim();
+                if (!trimmed) {
+                    return;
+                }
+                const element = document.querySelector(trimmed);
+                if (!element) {
+                    return;
+                }
+                if ('value' in element) {
+                    element.value = '';
+                }
+                if (eventType) {
+                    element.dispatchEvent(new Event(eventType, { bubbles: true }));
+                }
+            });
+        });
+    });
+};
+
+const attachBackHandlers = () => {
+    document.querySelectorAll('[data-go-back]:not([data-back-bound])').forEach((element) => {
+        element.dataset.backBound = '1';
+        element.addEventListener('click', (event) => {
+            event.preventDefault();
+            if (window.history.length > 1) {
+                window.history.back();
+            } else {
+                window.location.href = element.getAttribute('href') || '/dashboard';
             }
         });
     });
-});
+};
 
-// Глобальный обработчик ошибок
-window.addEventListener('error', (event) => {
-    handleError(event.error || event.message, 'JavaScript Error');
-});
+const initializeCommon = () => {
+    initTableSearch();
+    initLazyTrafficLoading();
+    highlightActiveNavigation();
+    initNavigationLoader();
+    updateProgressBars();
+    showPageLoader(false);
+    attachConfirmHandlers();
+    attachClearHandlers();
+    attachBackHandlers();
+};
 
-// Обработка необработанных промисов
-window.addEventListener('unhandledrejection', (event) => {
-    handleError(event.reason, 'Promise Rejection');
-    event.preventDefault();
-});
-
-/**
- * Инициализация ленивой загрузки трафика при скролле (опционально)
- */
-function initLazyTrafficLoading() {
-    // Можно добавить Intersection Observer для автозагрузки при скролле
-    // Пока загрузка по требованию через кнопку
-}
-
-// Экспорт функций для использования в других скриптах
-window.VeilBotCommon = {
+const VeilBotCommon = {
     debounce,
     createTableFilter,
     showNotification,
@@ -336,6 +497,41 @@ window.VeilBotCommon = {
     showLoadingIndicator,
     showPageLoader,
     handleError,
-    loadTraffic
+    loadTraffic,
+    updateProgressBars,
+    ModalController,
+    postForm,
+    attachConfirmHandlers,
+    attachClearHandlers,
+    attachBackHandlers,
 };
 
+if (typeof window !== 'undefined') {
+    window.VeilBotCommon = VeilBotCommon;
+    window.addEventListener('error', (event) => {
+        if (!event) return;
+        handleError(event.error || event.message, 'JavaScript error');
+    });
+    window.addEventListener('unhandledrejection', (event) => {
+        handleError(event.reason, 'Promise rejection');
+        event.preventDefault();
+    });
+    document.addEventListener('DOMContentLoaded', initializeCommon);
+}
+
+export {
+    debounce,
+    createTableFilter,
+    showNotification,
+    initTableSearch,
+    showLoadingIndicator,
+    showPageLoader,
+    handleError,
+    loadTraffic,
+    updateProgressBars,
+    ModalController,
+    postForm,
+    VeilBotCommon,
+};
+
+export default VeilBotCommon;

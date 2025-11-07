@@ -3,29 +3,31 @@
 {% block page_title %}Пользователь {{ user.user_id }}{% endblock %}
 
 {% block content %}
-<style>
-.user-card { background:white; border-radius:8px; padding:16px; box-shadow:0 2px 4px rgba(0,0,0,0.08); margin-bottom:16px; }
-.user-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:12px; }
-.kv { color:#6b7280; font-size:0.8rem; }
-.vv { color:#111827; font-weight:600; font-size:0.95rem; }
-.keys-table { width:100%; border-collapse:collapse; margin-top:1rem; background:white; border-radius:8px; overflow:hidden; box-shadow:0 2px 4px rgba(0,0,0,0.1); font-size:0.8rem; }
-.keys-table th { background:#f8fafc; padding:8px 6px; text-align:left; font-weight:600; color:#374151; border-bottom:1px solid #e5e7eb; font-size:0.75rem; white-space:nowrap; }
-.keys-table td { padding:8px 6px; border-bottom:1px solid #f3f4f6; font-size:0.75rem; vertical-align:middle; }
-.badge { display:inline-block; padding:2px 6px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:0.7rem; }
-.code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:0.72rem; background:#f3f4f6; padding:3px 6px; border-radius:4px; }
-.pagination { display:flex; justify-content:center; gap:6px; margin:1rem 0; }
-.btn { padding:6px 10px; border:1px solid #d1d5db; background:#f3f4f6; border-radius:4px; cursor:pointer; text-decoration:none; color:#111827; }
-.btn.active { background:#3b82f6; color:white; border-color:#3b82f6; }
-</style>
-
-<div class="user-card">
-  <div class="user-grid">
-    <div><div class="kv">User ID</div><div class="vv">{{ user.user_id }}</div></div>
-    <div><div class="kv">Email</div><div class="vv">{{ user.email or '—' }}</div></div>
-    <div><div class="kv">Ключей Outline</div><div class="vv">{{ user.outline_count }}</div></div>
-    <div><div class="kv">Ключей V2Ray</div><div class="vv">{{ user.v2ray_count }}</div></div>
-    <div><div class="kv">Рефералы</div><div class="vv">{{ user.referrals }}</div></div>
-    <div><div class="kv">Активность</div><div class="vv">{{ user.last_activity|timestamp }}</div></div>
+<div class="card mb-3">
+  <div class="card-header">
+    <h2 class="card-title">Информация о пользователе</h2>
+  </div>
+  <div class="card-body">
+    <div class="grid-two">
+      <div>
+        <div class="kv-list"><b>User ID</b><span class="vv">{{ user.user_id }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Email</b><span class="vv">{{ user.email or '—' }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Ключей Outline</b><span class="vv">{{ user.outline_count }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Ключей V2Ray</b><span class="vv">{{ user.v2ray_count }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Рефералы</b><span class="vv">{{ user.referrals }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Последняя активность</b><span class="vv">{{ user.last_activity|timestamp }}</span></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -33,12 +35,12 @@
   <div class="table-header">
     <h2>Ключи пользователя</h2>
   </div>
-  <div style="overflow-x:auto;">
-    <table class="keys-table">
+  <div class="table-scroll">
+    <table class="material-table">
       <thead>
         <tr>
-          <th style="width:60px;">ID</th>
-          <th style="width:120px;">Протокол</th>
+          <th>ID</th>
+          <th>Протокол</th>
           <th>Access URL</th>
           <th>Тариф</th>
           <th>Email</th>
@@ -46,49 +48,52 @@
           <th>Создан</th>
           <th>Истекает</th>
           <th>Статус</th>
+          <th>Действия</th>
         </tr>
       </thead>
       <tbody>
         {% for k in keys %}
         <tr>
           <td>{{ k[0] }}</td>
-          <td style="text-align: center;">
+          <td class="text-center">
             {% if k[8] == 'outline' %}
-              <span class="material-icons" style="color: #1565c0;" title="Outline">lock</span>
+              <span class="material-icons icon-lg icon-primary" title="Outline">lock</span>
             {% elif k[8] == 'v2ray' %}
-              <span class="material-icons" style="color: #1565c0;" title="V2Ray">security</span>
+              <span class="material-icons icon-lg icon-primary" title="V2Ray">security</span>
             {% else %}
-              <span class="material-icons" style="color: #757575;" title="{{ k[8] }}">help_outline</span>
+              <span class="material-icons icon-lg icon-muted" title="{{ k[8] }}">help_outline</span>
             {% endif %}
           </td>
-          <td><div class="code" title="{{ k[2] }}">{{ k[2]|truncate(40) }}</div></td>
+          <td><span class="code" title="{{ k[2] }}">{{ k[2]|truncate(40) }}</span></td>
           <td>{{ k[7] or '—' }}</td>
           <td>{{ k[6] or '—' }}</td>
           <td>{{ k[5] }}</td>
           <td>{{ k[3]|timestamp }}</td>
           <td>{{ k[4]|timestamp }}</td>
-          <td style="text-align: center;">
+          <td class="text-center">
             {% if k[4] > (namespace().now_ts if false else 0) %}
-              <span class="material-icons" style="color: #2e7d32; font-size: 20px;" title="Активен">check_circle</span>
+              <span class="material-icons icon-lg icon-success" title="Активен">check_circle</span>
             {% else %}
-              <span class="material-icons" style="color: #c62828; font-size: 20px;" title="Истек">cancel</span>
+              <span class="material-icons icon-lg icon-danger" title="Истек">cancel</span>
             {% endif %}
           </td>
           <td>
-            <form method="post" action="/users/keys/{{ k[0] }}/resend" style="display:inline;">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-              <button class="btn" type="submit">Отправить</button>
-            </form>
-            <form method="post" action="/users/keys/{{ k[0] }}/extend" style="display:inline; margin-left:6px;">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-              <input type="number" name="days" value="30" min="1" style="width:64px;" />
-              <button class="btn" type="submit">Продлить</button>
-            </form>
+            <div class="action-buttons">
+              <form method="post" action="/users/keys/{{ k[0] }}/resend" data-user-action="resend" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button class="btn" type="submit">Отправить</button>
+              </form>
+              <form method="post" action="/users/keys/{{ k[0] }}/extend" data-user-action="extend" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <input type="number" name="days" value="30" min="1" class="form-control input-inline" />
+                <button class="btn" type="submit">Продлить</button>
+              </form>
+            </div>
           </td>
         </tr>
         {% endfor %}
         {% if not keys %}
-        <tr><td colspan="10" style="text-align:center; color:#6b7280;">Нет ключей</td></tr>
+        <tr><td colspan="10" class="text-center text-muted">Нет ключей</td></tr>
         {% endif %}
       </tbody>
     </table>
@@ -103,7 +108,7 @@
       {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
         <a class="btn {% if p==page %}active{% endif %}" href="/users/{{ user.user_id }}?page={{ p }}&limit={{ limit }}">{{ p }}</a>
       {% elif p == page-3 or p == page+3 %}
-        <span style="padding:4px 8px; color:#6b7280;">…</span>
+        <span class="text-muted">…</span>
       {% endif %}
     {% endfor %}
     {% if page < pages %}
@@ -112,12 +117,12 @@
   </div>
 </div>
 
-<div class="table-container" style="margin-top:16px;">
+<div class="table-container mt-2">
   <div class="table-header">
     <h2>Платежи пользователя</h2>
   </div>
-  <div style="overflow-x:auto;">
-    <table class="keys-table">
+  <div class="table-scroll">
+    <table class="material-table">
       <thead>
         <tr>
           <th>ID</th>
@@ -140,11 +145,11 @@
           <td>
             {% set st = (p.status.value if p.status is not string and p.status.value is defined else p.status) %}
             {% if st == 'paid' %}
-              <span class="badge" style="background:#dcfce7; color:#166534;">оплачен</span>
+              <span class="badge badge-success">оплачен</span>
             {% elif st == 'pending' %}
-              <span class="badge" style="background:#fef9c3; color:#854d0e;">ожидает</span>
+              <span class="badge badge-warning">ожидает</span>
             {% else %}
-              <span class="badge" style="background:#fee2e2; color:#991b1b;">ошибка</span>
+              <span class="badge badge-error">ошибка</span>
             {% endif %}
           </td>
           <td>{{ (p.amount or 0) | int | rub }}</td>
@@ -155,12 +160,12 @@
           <td>{{ (p.paid_at.timestamp() if p.paid_at else 0) | int | timestamp }}</td>
           <td>
             {% if st == 'paid' %}
-              <form method="post" action="/payments/{{ p.payment_id }}/issue" style="display:inline;">
+              <form method="post" action="/payments/{{ p.payment_id }}/issue" data-user-payment="issue" class="d-inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                 <button class="btn" type="submit">Выдать ключ</button>
               </form>
             {% elif st == 'pending' %}
-              <form method="post" action="/payments/{{ p.payment_id }}/recheck" style="display:inline;">
+              <form method="post" action="/payments/{{ p.payment_id }}/recheck" data-user-payment="recheck" class="d-inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                 <button class="btn" type="submit">Перепроверить</button>
               </form>
@@ -169,12 +174,17 @@
         </tr>
         {% endfor %}
         {% if not payments %}
-        <tr><td colspan="10" style="text-align:center; color:#6b7280;">Нет платежей</td></tr>
+        <tr><td colspan="10" class="text-center text-muted">Нет платежей</td></tr>
         {% endif %}
       </tbody>
     </table>
   </div>
 </div>
+{% endblock %}
+
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/userDetail.js"></script>
 {% endblock %}
 
 
