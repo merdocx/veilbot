@@ -9,8 +9,26 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, asdict
 import os
+from pathlib import Path
 
 DEFAULT_LOG_DIR = os.getenv("VEILBOT_LOG_DIR", "/var/log/veilbot")
+
+
+def _resolve_log_path(filename: str) -> Path:
+    """Возвращает путь к файлу лога с учётом доступности каталога."""
+
+    path = Path(filename)
+    if not path.is_absolute():
+        path = Path(DEFAULT_LOG_DIR) / filename
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        fallback_dir = Path(os.getenv("VEILBOT_FALLBACK_LOG_DIR", Path.cwd() / "logs"))
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        path = fallback_dir / Path(filename).name
+
+    return path
 
 @dataclass
 class SecurityEvent:
@@ -30,20 +48,16 @@ class SecurityLogger:
     """Класс для логирования событий безопасности"""
     
     def __init__(self, log_file: str = os.path.join(DEFAULT_LOG_DIR, "veilbot_security.log"), max_file_size: int = 10 * 1024 * 1024):
-        self.log_file = log_file
+        resolved_path = _resolve_log_path(log_file)
+        self.log_file = str(resolved_path)
         self.max_file_size = max_file_size
         
         # Настройка логгера безопасности
         self.logger = logging.getLogger('security')
         self.logger.setLevel(logging.INFO)
         
-        # Создаем директорию для логов если её нет
-        log_dir = os.path.dirname(log_file)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        
         # Хендлер для файла
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
         file_handler.setLevel(logging.INFO)
         
         # Форматтер для структурированного логирования
