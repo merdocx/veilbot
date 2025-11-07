@@ -3,13 +3,13 @@
 """
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
-import sqlite3
 import time
 import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.settings import settings
+from app.infra.sqlite_utils import open_connection
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.templates import templates
@@ -38,7 +38,7 @@ async def dashboard(request: Request):
     else:
         # Вычисляем статистику - объединенный запрос для оптимизации
         now = int(time.time())
-        with sqlite3.connect(DATABASE_PATH) as conn:
+        with open_connection(DATABASE_PATH) as conn:
             c = conn.cursor()
             # Объединяем все COUNT запросы в один
             c.execute("""

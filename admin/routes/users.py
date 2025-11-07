@@ -7,13 +7,13 @@ from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
 import time
-import sqlite3
 
 _root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _root_dir)
 from app.repositories.user_repository import UserRepository
 from app.repositories.key_repository import KeyRepository
 from app.settings import settings
+from app.infra.sqlite_utils import open_connection
 from bot.core import get_bot_instance
 from bot.utils.formatters import format_key_message_unified
 
@@ -123,7 +123,7 @@ async def resend_key(request: Request, key_id: int, csrf_token: str = Form(...))
     access_url = None
     protocol = None
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             c.execute("SELECT user_id, access_url FROM keys WHERE id = ?", (key_id,))
             row = c.fetchone()
@@ -192,7 +192,7 @@ async def extend_key(
         now_ts = int(time.time())
         extend_sec = max(1, int(days)) * 86400
         
-        with sqlite3.connect(DB_PATH) as conn:
+        with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             # Проверяем Outline ключ
             c.execute("SELECT user_id, expiry_at FROM keys WHERE id = ?", (key_id,))
@@ -244,7 +244,7 @@ async def update_key_expiry(request: Request, key_id: int):
         if not expiry_timestamp:
             return JSONResponse({"error": "expiry_timestamp required"}, status_code=400)
         
-        with sqlite3.connect(DB_PATH) as conn:
+        with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             # Пытаемся обновить в таблице keys
             c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (expiry_timestamp, key_id))

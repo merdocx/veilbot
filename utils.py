@@ -31,7 +31,7 @@ class SQLiteConnectionPool:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA foreign_keys=ON")
-                conn.execute("PRAGMA busy_timeout=5000")
+                conn.execute("PRAGMA busy_timeout=15000")
                 conn.row_factory = sqlite3.Row
                 self.pool.put(conn)
             
@@ -51,7 +51,7 @@ class SQLiteConnectionPool:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA foreign_keys=ON")
-                conn.execute("PRAGMA busy_timeout=5000")
+                conn.execute("PRAGMA busy_timeout=15000")
                 conn.row_factory = sqlite3.Row
             return conn
         except queue.Empty:
@@ -60,7 +60,7 @@ class SQLiteConnectionPool:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA busy_timeout=15000")
             conn.row_factory = sqlite3.Row
             return conn
     

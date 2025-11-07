@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import List, Tuple
-from app.settings import settings
 from app.infra.sqlite_utils import open_connection
+from app.settings import settings
 
 
 class TariffRepository:
@@ -39,7 +38,7 @@ class TariffRepository:
             conn.commit()
 
     def update_tariff(self, tariff_id: int, name: str, duration_sec: int, price_rub: int, traffic_limit_mb: int = 0, price_crypto_usd: float | None = None) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 "UPDATE tariffs SET name = ?, duration_sec = ?, price_rub = ?, traffic_limit_mb = ?, price_crypto_usd = ? WHERE id = ?",

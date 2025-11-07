@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import List, Tuple
 from app.infra.sqlite_utils import open_connection
 from app.settings import settings
@@ -89,7 +88,7 @@ class ServerRepository:
         if not server_ids:
             return {}
         q_marks = ",".join(["?"] * len(server_ids))
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(f"SELECT server_id, COUNT(*) FROM v2ray_keys GROUP BY server_id HAVING server_id IN ({q_marks})", server_ids)
             return dict(c.fetchall())

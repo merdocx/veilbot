@@ -112,25 +112,25 @@ class KeyRepository:
             return c.fetchall()
 
     def outline_key_exists(self, key_pk: int) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT 1 FROM keys WHERE id = ?", (key_pk,))
             return c.fetchone() is not None
 
     def v2ray_key_exists(self, key_pk: int) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT 1 FROM v2ray_keys WHERE id = ?", (key_pk,))
             return c.fetchone() is not None
 
     def update_outline_key_expiry(self, key_pk: int, new_expiry_ts: int) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_pk))
             conn.commit()
 
     def update_v2ray_key_expiry(self, key_pk: int, new_expiry_ts: int) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_pk))
             conn.commit()
@@ -146,7 +146,7 @@ class KeyRepository:
         email: str | None,
         tariff_id: int | None,
     ) -> int:
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
@@ -168,7 +168,7 @@ class KeyRepository:
         expiry_at: int,
         tariff_id: int | None,
     ) -> int:
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """

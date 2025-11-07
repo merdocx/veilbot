@@ -6,7 +6,6 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
-import sqlite3
 import json
 import logging
 
@@ -14,6 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from payments.config import get_webhook_service
 from app.settings import settings
 from bot.core import get_bot_instance
+from app.infra.sqlite_utils import open_connection
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token, validate_csrf_token
@@ -42,7 +42,7 @@ async def yookassa_webhook(request: Request):
 
         # Сохранение лога вебхука (best-effort)
         try:
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 c.execute(
                     """
@@ -75,7 +75,7 @@ async def yookassa_webhook(request: Request):
         logging.error(f"[YOOKASSA_WEBHOOK] Error: {e}")
         # Пытаемся залогировать даже при ошибке парсинга
         try:
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 c.execute(
                     "CREATE TABLE IF NOT EXISTS webhook_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, event TEXT, payload TEXT, result TEXT, status_code INTEGER, ip TEXT, created_at INTEGER)"
@@ -105,7 +105,7 @@ async def cryptobot_webhook(request: Request):
         
         # Логируем webhook
         try:
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 c.execute(
                     """
@@ -143,7 +143,7 @@ async def cryptobot_webhook(request: Request):
                 from payments.config import get_payment_service
                 payment_service = get_payment_service()
                 
-                with sqlite3.connect(DB_PATH) as conn:
+                with open_connection(DB_PATH) as conn:
                     c = conn.cursor()
                     c.execute(
                         "SELECT user_id, tariff_id, country, protocol, email FROM payments WHERE payment_id = ? AND status = 'pending'",
@@ -155,7 +155,7 @@ async def cryptobot_webhook(request: Request):
                     logging.warning(f"[CRYPTOBOT_WEBHOOK] Payment not found or already processed: {invoice_id}")
                     # Обновляем лог
                     try:
-                        with sqlite3.connect(DB_PATH) as conn:
+                        with open_connection(DB_PATH) as conn:
                             c = conn.cursor()
                             c.execute(
                                 "UPDATE webhook_logs SET result = 'not_found' WHERE provider = 'cryptobot' AND event = ? AND created_at = (SELECT MAX(created_at) FROM webhook_logs WHERE provider = 'cryptobot')",
@@ -169,7 +169,7 @@ async def cryptobot_webhook(request: Request):
                 user_id, tariff_id, country, protocol, email = payment_row
                 
                 # Обновляем статус платежа
-                with sqlite3.connect(DB_PATH) as conn:
+                with open_connection(DB_PATH) as conn:
                     c = conn.cursor()
                     c.execute(
                         "UPDATE payments SET status = 'paid', paid_at = strftime('%s','now') WHERE payment_id = ?",
@@ -178,7 +178,7 @@ async def cryptobot_webhook(request: Request):
                     conn.commit()
                 
                 # Получаем данные тарифа
-                with sqlite3.connect(DB_PATH) as conn:
+                with open_connection(DB_PATH) as conn:
                     c = conn.cursor()
                     c.execute("SELECT id, name, duration_sec, price_rub, price_crypto_usd FROM tariffs WHERE id = ?", (tariff_id,))
                     tariff_row = c.fetchone()
@@ -223,10 +223,19 @@ async def cryptobot_webhook(request: Request):
                             cursor, None, user_id, tariff, email, country, protocol or "outline"
                         )
                         
-                        # Реферальный бонус
+                        # Реферальный бонус (только для платных тарифов)
                         cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
                         ref_row = cursor.fetchone()
-                        if ref_row and ref_row[0] and not ref_row[1]:
+
+                        cursor.execute(
+                            "SELECT 1 FROM payments WHERE user_id = ? AND amount > 0 AND status IN ('paid', 'completed') LIMIT 1",
+                            (user_id,),
+                        )
+                        has_paid_payment = cursor.fetchone() is not None
+
+                        tariff_price = int((tariff.get("price_rub") if isinstance(tariff, dict) else 0) or 0)
+
+                        if ref_row and ref_row[0] and not ref_row[1] and has_paid_payment and tariff_price > 0:
                             referrer_id = ref_row[0]
                             now = int(time.time())
                             cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
@@ -246,7 +255,7 @@ async def cryptobot_webhook(request: Request):
                 
                 # Обновляем лог как успешный
                 try:
-                    with sqlite3.connect(DB_PATH) as conn:
+                    with open_connection(DB_PATH) as conn:
                         c = conn.cursor()
                         c.execute(
                             "UPDATE webhook_logs SET result = 'ok' WHERE provider = 'cryptobot' AND event = ? AND created_at = (SELECT MAX(created_at) FROM webhook_logs WHERE provider = 'cryptobot')",
@@ -263,7 +272,7 @@ async def cryptobot_webhook(request: Request):
                 logging.error(f"[CRYPTOBOT_WEBHOOK] Error processing payment: {e}")
                 # Обновляем лог как ошибку
                 try:
-                    with sqlite3.connect(DB_PATH) as conn:
+                    with open_connection(DB_PATH) as conn:
                         c = conn.cursor()
                         c.execute(
                             "UPDATE webhook_logs SET result = 'error' WHERE provider = 'cryptobot' AND event = ? AND created_at = (SELECT MAX(created_at) FROM webhook_logs WHERE provider = 'cryptobot')",
@@ -282,7 +291,7 @@ async def cryptobot_webhook(request: Request):
         status_code = 500
         logging.error(f"[CRYPTOBOT_WEBHOOK] Error: {e}")
         try:
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 c.execute(
                     "CREATE TABLE IF NOT EXISTS webhook_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, event TEXT, payload TEXT, result TEXT, status_code INTEGER, ip TEXT, created_at INTEGER)"
@@ -334,7 +343,7 @@ async def webhook_logs_page(
     order_dir = "ASC" if (str(sort_order).upper() == "ASC") else "DESC"
     
     # Использование параметризованных запросов для безопасности
-    with sqlite3.connect(DB_PATH) as conn:
+    with open_connection(DB_PATH) as conn:
         c = conn.cursor()
         # COUNT запрос - безопасный, так как where_sql построен из валидированных параметров
         count_query = "SELECT COUNT(*) FROM webhook_logs" + where_sql
@@ -392,7 +401,7 @@ async def replay_webhook(request: Request, log_id: int, csrf_token: str = Form(.
         return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
     
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             c.execute("SELECT provider, payload FROM webhook_logs WHERE id = ?", (log_id,))
             row = c.fetchone()
@@ -409,7 +418,7 @@ async def replay_webhook(request: Request, log_id: int, csrf_token: str = Form(.
         
         # Идемпотентность: если тот же provider+payload уже обработан OK (не replay), пропускаем
         already_ok = 0
-        with sqlite3.connect(DB_PATH) as conn:
+        with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             c.execute(
                 "SELECT COUNT(1) FROM webhook_logs WHERE provider = ? AND payload = ? AND result = 'ok' AND event != 'replay'",
@@ -434,7 +443,7 @@ async def replay_webhook(request: Request, log_id: int, csrf_token: str = Form(.
         finally:
             # best-effort: логируем результат replay как новую строку
             try:
-                with sqlite3.connect(DB_PATH) as conn:
+                with open_connection(DB_PATH) as conn:
                     c = conn.cursor()
                     c.execute(
                         "INSERT INTO webhook_logs(provider, event, payload, result, status_code, ip, created_at) VALUES(?,?,?,?,?,?, strftime('%s','now'))",

@@ -6,13 +6,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
-import sqlite3
 import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.settings import settings
 from outline import delete_key
 from app.repositories.key_repository import KeyRepository
+from app.infra.sqlite_utils import open_connection
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token, validate_csrf_token
@@ -78,7 +78,7 @@ async def cleanup(request: Request, csrf_token: str = Form(...)):
         for key_id, outline_key_id, server_id in expired_outline_keys:
             try:
                 if outline_key_id and server_id:
-                    with sqlite3.connect(DB_PATH) as conn:
+                    with open_connection(DB_PATH) as conn:
                         c = conn.cursor()
                         c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
                         server = c.fetchone()
@@ -97,7 +97,7 @@ async def cleanup(request: Request, csrf_token: str = Form(...)):
         for key_id, v2ray_uuid, server_id in expired_v2ray_keys:
             try:
                 if v2ray_uuid and server_id:
-                    with sqlite3.connect(DB_PATH) as conn:
+                    with open_connection(DB_PATH) as conn:
                         c = conn.cursor()
                         c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
                         server = c.fetchone()

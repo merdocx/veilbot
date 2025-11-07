@@ -1,4 +1,3 @@
-import aiosqlite
 import sqlite3
 import logging
 from typing import List, Optional, Dict, Any
@@ -7,6 +6,8 @@ from datetime import datetime
 from ..models.payment import Payment, PaymentStatus, PaymentFilter
 import json
 import ast
+
+from app.infra.sqlite_utils import open_async_connection
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class PaymentRepository:
     
     async def _ensure_table_exists(self):
         """Создание таблицы платежей если не существует"""
-        async with aiosqlite.connect(self.db_path) as conn:
+        async with open_async_connection(self.db_path) as conn:
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS payments (
@@ -229,7 +230,7 @@ class PaymentRepository:
         """Создание платежа в БД"""
         try:
             await self._ensure_table_exists()
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 try:
                     cursor = await conn.execute(
                         """
@@ -260,7 +261,7 @@ class PaymentRepository:
     async def get_by_id(self, payment_id: int) -> Optional[Payment]:
         """Получение платежа по ID"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     "SELECT * FROM payments WHERE id = ?", 
                     (payment_id,)
@@ -277,7 +278,7 @@ class PaymentRepository:
     async def get_by_payment_id(self, payment_id: str) -> Optional[Payment]:
         """Получение платежа по payment_id"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     "SELECT * FROM payments WHERE payment_id = ?", 
                     (payment_id,)
@@ -294,7 +295,7 @@ class PaymentRepository:
     async def update(self, payment: Payment) -> Payment:
         """Обновление платежа"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 row_data = self._payment_to_row(payment)
                 # Исключаем payment_id из данных для UPDATE (он идет в WHERE)
                 update_data = row_data[1:] + (payment.payment_id,)
@@ -320,7 +321,7 @@ class PaymentRepository:
     async def update_status(self, payment_id: str, status: PaymentStatus) -> bool:
         """Обновление статуса платежа"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 cursor = await conn.execute(
                     "UPDATE payments SET status = ?, updated_at = ? WHERE payment_id = ?",
                     (status.value, int(datetime.utcnow().timestamp()), payment_id)
@@ -339,7 +340,7 @@ class PaymentRepository:
     async def delete(self, payment_id: int) -> bool:
         """Удаление платежа"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 cursor = await conn.execute(
                     "DELETE FROM payments WHERE id = ?", 
                     (payment_id,)
@@ -358,7 +359,7 @@ class PaymentRepository:
     async def list(self, limit: int = 100, offset: int = 0) -> List[Payment]:
         """Получение списка платежей"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     "SELECT * FROM payments ORDER BY created_at DESC LIMIT ? OFFSET ?",
                     (limit, offset)
@@ -435,7 +436,7 @@ class PaymentRepository:
 
             params.extend([filter_obj.limit, filter_obj.offset])
             
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     f"SELECT * FROM payments WHERE {where_clause} ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?",
                     params
@@ -490,7 +491,7 @@ class PaymentRepository:
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     f"SELECT COUNT(*) FROM payments WHERE {where_clause}",
                     params,
@@ -504,7 +505,7 @@ class PaymentRepository:
     async def get_user_payments(self, user_id: int, limit: int = 100) -> List[Payment]:
         """Получение платежей пользователя"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     "SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
                     (user_id, limit)
@@ -519,7 +520,7 @@ class PaymentRepository:
     async def get_pending_payments(self) -> List[Payment]:
         """Получение ожидающих платежей"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     "SELECT * FROM payments WHERE status = 'pending' ORDER BY created_at ASC"
                 ) as cursor:
@@ -533,7 +534,7 @@ class PaymentRepository:
     async def get_paid_payments_without_keys(self) -> List[Payment]:
         """Получение оплаченных платежей без ключей (исключая закрытые платежи)"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute("""
                     SELECT p.* FROM payments p
                     WHERE p.status = 'paid' 
@@ -554,7 +555,7 @@ class PaymentRepository:
     async def count(self) -> int:
         """Получение количества платежей"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute("SELECT COUNT(*) FROM payments") as cursor:
                     row = await cursor.fetchone()
                     return row[0] if row else 0
@@ -566,7 +567,7 @@ class PaymentRepository:
     async def exists(self, payment_id: str) -> bool:
         """Проверка существования платежа"""
         try:
-            async with aiosqlite.connect(self.db_path) as conn:
+            async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     "SELECT 1 FROM payments WHERE payment_id = ?", 
                     (payment_id,)

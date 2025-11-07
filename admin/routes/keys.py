@@ -5,7 +5,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, JSONResponse, Response
 import sys
 import os
-import sqlite3
 import time
 import logging
 import asyncio
@@ -23,6 +22,7 @@ from vpn_protocols import ProtocolFactory
 from outline import delete_key
 from vpn_protocols import V2RayProtocol
 import aiohttp
+from app.infra.sqlite_utils import open_connection
 from app.settings import settings
 
 from ..middleware.audit import log_admin_action
@@ -261,7 +261,7 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
 
 
 def _compute_key_stats(db_path: str, now_ts: int) -> Dict[str, int]:
-    with sqlite3.connect(db_path) as conn:
+    with open_connection(db_path) as conn:
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM keys")
         outline_total = c.fetchone()[0]
@@ -319,7 +319,7 @@ async def _delete_key_internal(request: Request, key_id: int, key_repo: KeyRepos
     if outline_key:
         user_id, outline_key_id, server_id = outline_key
         if outline_key_id and server_id:
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
                 server = c.fetchone()
@@ -337,7 +337,7 @@ async def _delete_key_internal(request: Request, key_id: int, key_repo: KeyRepos
 
         try:
             key_repo.delete_outline_key_by_id(key_id)
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 if user_id:
                     c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
@@ -358,7 +358,7 @@ async def _delete_key_internal(request: Request, key_id: int, key_repo: KeyRepos
         user_id, v2ray_uuid, server_id = v2ray_key
         protocol_client = None
         if v2ray_uuid and server_id:
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
                 server = c.fetchone()
@@ -386,7 +386,7 @@ async def _delete_key_internal(request: Request, key_id: int, key_repo: KeyRepos
 
         try:
             key_repo.delete_v2ray_key_by_id(key_id)
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 if user_id:
                     c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
@@ -535,7 +535,7 @@ async def keys_page(
     v2ray_key_ids = [key[0] for key in rows if len(key) > 8 and key[8] == 'v2ray']
     server_id_map = {}
     if v2ray_key_ids:
-        with sqlite3.connect(DB_PATH) as conn:
+        with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             placeholders = ','.join('?' * len(v2ray_key_ids))
             c.execute(f"SELECT id, server_id FROM v2ray_keys WHERE id IN ({placeholders})", v2ray_key_ids)
@@ -847,7 +847,7 @@ async def get_key_traffic_api(request: Request, key_id: int):
         user_id, v2ray_uuid, server_id = v2ray_key
         
         # Получаем конфигурацию сервера
-        with sqlite3.connect(DB_PATH) as conn:
+        with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
             server = c.fetchone()

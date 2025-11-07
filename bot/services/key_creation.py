@@ -906,7 +906,19 @@ async def wait_for_payment_with_protocol(
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
                     ref_row = cursor.fetchone()
                     bonus_duration = 30 * 24 * 3600  # 1 месяц
-                    if ref_row and ref_row[0] and not ref_row[1]:
+
+                    # Бонус начисляем только за платные тарифы
+                    tariff_price = 0
+                    if isinstance(tariff, dict):
+                        tariff_price = int(tariff.get('price_rub') or 0)
+
+                    cursor.execute(
+                        "SELECT 1 FROM payments WHERE user_id = ? AND amount > 0 AND status IN ('paid', 'completed') LIMIT 1",
+                        (user_id,),
+                    )
+                    has_paid_payment = cursor.fetchone() is not None
+
+                    if ref_row and ref_row[0] and not ref_row[1] and has_paid_payment and tariff_price > 0:
                         referrer_id = ref_row[0]
                         # Проверяем, есть ли у пригласившего активный ключ
                         now = int(time.time())

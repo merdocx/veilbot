@@ -6,7 +6,6 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 import logging
 import sys
 import os
-import sqlite3
 from datetime import datetime
 
 _root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,6 +16,7 @@ from payments.models.enums import PaymentStatus, PaymentProvider
 from payments.config import get_payment_service
 from app.settings import settings
 from bot.core import get_bot_instance
+from app.infra.sqlite_utils import open_connection
 
 # Lazy import: получаем bot instance только когда он нужен
 def get_bot():
@@ -149,7 +149,7 @@ async def payments_page(
     # Статистика для графиков (последние 14 дней)
     daily_stats = []
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             c.execute(
                 """
@@ -419,7 +419,7 @@ async def payment_delete(request: Request, pid: str, csrf_token: str = Form(...)
         
         # Для платежей со статусом 'completed' или 'paid' проверяем наличие активных ключей
         if payment_status in ('completed', 'paid'):
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 now = int(datetime.utcnow().timestamp())
                 c.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now))
@@ -440,7 +440,7 @@ async def payment_delete(request: Request, pid: str, csrf_token: str = Form(...)
             deleted = await repo.delete(payment.id)
         else:
             # Если нет числового id, удаляем напрямую через SQL по payment_id
-            with sqlite3.connect(DB_PATH) as conn:
+            with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 c.execute("DELETE FROM payments WHERE payment_id = ?", (pid,))
                 conn.commit()

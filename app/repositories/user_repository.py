@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import List, Tuple, Optional
+
+from app.infra.sqlite_utils import open_connection
 from app.settings import settings
 
 
@@ -10,17 +11,22 @@ class UserRepository:
         self.db_path = db_path or settings.DATABASE_PATH
 
     def count_users(self, query: Optional[str] = None) -> int:
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            base_query = (
+                "SELECT user_id FROM ("
+                "SELECT DISTINCT user_id FROM keys "
+                "UNION "
+                "SELECT DISTINCT user_id FROM v2ray_keys"
+                ")"
+            )
             if query:
-                # Поиск по user_id (подстрока/префикс)
                 like = f"%{query.strip()}%"
-                c.execute(
-                    "SELECT COUNT(*) FROM (SELECT DISTINCT user_id FROM keys WHERE CAST(user_id AS TEXT) LIKE ?)",
-                    (like,),
-                )
+                sql = f"SELECT COUNT(*) FROM ({base_query}) AS combined WHERE CAST(user_id AS TEXT) LIKE ?"
+                c.execute(sql, (like,))
             else:
-                c.execute("SELECT COUNT(DISTINCT user_id) FROM keys")
+                sql = f"SELECT COUNT(*) FROM ({base_query}) AS combined"
+                c.execute(sql)
             row = c.fetchone()
             return int(row[0] if row and row[0] is not None else 0)
 
@@ -29,38 +35,43 @@ class UserRepository:
         Возвращает список (user_id, referral_count) с пагинацией и поиском по user_id.
         Источник пользователей — таблица keys (как в текущей логике админки).
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
+
+            base_subquery = (
+                "SELECT DISTINCT user_id FROM keys "
+                "UNION "
+                "SELECT DISTINCT user_id FROM v2ray_keys"
+            )
+
             if query:
                 like = f"%{query.strip()}%"
-                c.execute(
-                    """
-                    SELECT u.user_id,
-                           (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count
-                    FROM (
-                        SELECT DISTINCT user_id FROM keys WHERE CAST(user_id AS TEXT) LIKE ?
-                        ORDER BY user_id
-                        LIMIT ? OFFSET ?
-                    ) u
-                    """,
-                    (like, limit, offset),
+                sql = (
+                    "SELECT u.user_id, "
+                    "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count "
+                    "FROM ("
+                    f"    SELECT user_id FROM ({base_subquery}) AS combined "
+                    "    WHERE CAST(user_id AS TEXT) LIKE ? "
+                    "    ORDER BY user_id LIMIT ? OFFSET ?"
+                    ") u"
                 )
+                c.execute(sql, (like, limit, offset))
             else:
-                c.execute(
-                    """
-                    SELECT u.user_id,
-                           (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count
-                    FROM (
-                        SELECT DISTINCT user_id FROM keys ORDER BY user_id LIMIT ? OFFSET ?
-                    ) u
-                    """,
-                    (limit, offset),
+                sql = (
+                    "SELECT u.user_id, "
+                    "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count "
+                    "FROM ("
+                    f"    SELECT user_id FROM ({base_subquery}) AS combined "
+                    "    ORDER BY user_id LIMIT ? OFFSET ?"
+                    ") u"
                 )
+                c.execute(sql, (limit, offset))
+
             return c.fetchall()
 
     def get_user_overview(self, user_id: int) -> dict:
         """Return basic info about user: counts, last activity, email if any."""
-        with sqlite3.connect(self.db_path) as conn:
+        with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT COUNT(*), MAX(created_at) FROM keys WHERE user_id = ?", (user_id,))
             outline_row = c.fetchone() or (0, None)

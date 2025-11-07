@@ -13,6 +13,7 @@ from app.repositories.server_repository import ServerRepository
 from app.repositories.key_repository import KeyRepository
 from vpn_protocols import ProtocolFactory
 from app.settings import settings as app_settings
+from app.infra.sqlite_utils import open_connection
 # Импорты из bot.py (используем прямые импорты, чтобы избежать циклических зависимостей)
 # bot будет получен через get_bot() или передан как параметр
 from bot.utils.formatters import format_key_message, format_key_message_unified
@@ -425,14 +426,12 @@ class PaymentService:
                     # Используем ту же логику, что и при покупке/продлении через wait_for_payment_with_protocol
                     # Это обеспечивает правильную обработку продления (если ключ существует, он будет продлен)
                     try:
-                        import sqlite3
-                        from app.settings import settings as app_settings
                         from utils import get_db_cursor
                         from bot.services.key_creation import create_new_key_flow_with_protocol
                         
                         # Получаем тариф
                         tariff = None
-                        with sqlite3.connect(app_settings.DATABASE_PATH) as conn:
+                        with open_connection(app_settings.DATABASE_PATH) as conn:
                             c = conn.cursor()
                             c.execute("SELECT id, name, duration_sec, price_rub FROM tariffs WHERE id = ?", (payment.tariff_id,))
                             tariff_row = c.fetchone()
@@ -459,18 +458,18 @@ class PaymentService:
                             now_ts = int(datetime.utcnow().timestamp())
                             GRACE_PERIOD = 86400  # 24 часа
                             grace_threshold = now_ts - GRACE_PERIOD
-                            
+
                             # Проверяем наличие ключа (для определения, это продление или покупка)
                             cursor.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, grace_threshold))
                             has_outline_key = cursor.fetchone() is not None
                             cursor.execute("SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, grace_threshold))
                             has_v2ray_key = cursor.fetchone() is not None
-                            
+
                             # Если есть активный ключ - это продление
                             for_renewal = has_outline_key or has_v2ray_key
-                            
+
                             logger.info(f"Processing payment {payment.payment_id} for user {payment.user_id}: for_renewal={for_renewal}")
-                            
+
                             # Вызываем create_new_key_flow_with_protocol, которая обработает и продление, и создание нового ключа
                             await create_new_key_flow_with_protocol(
                                 cursor=cursor,
@@ -482,12 +481,12 @@ class PaymentService:
                                 protocol=payment.protocol or 'outline',
                                 for_renewal=for_renewal  # Если есть активный ключ, это продление
                             )
-                            
-                            # После успешной выдачи/продления ключа помечаем платеж как закрытый
-                            # Это предотвратит повторную выдачу ключа по этому платежу
-                            payment.mark_as_completed()
-                            await self.payment_repo.update(payment)
-                            logger.info(f"Payment {payment.payment_id} marked as completed after key creation/renewal")
+
+                        # После успешной выдачи/продления ключа фиксируем статус платежа отдельно,
+                        # чтобы обновление выполнялось после коммита в блоке get_db_cursor
+                        payment.mark_as_completed()
+                        await self.payment_repo.update(payment)
+                        logger.info(f"Payment {payment.payment_id} marked as completed after key creation/renewal")
                         
                         processed_count += 1
                         # Небольшая задержка между обработкой
@@ -518,9 +517,8 @@ class PaymentService:
             # Проверяем, нет ли у пользователя активных ключей уже (как в get_paid_payments_without_keys)
             # Если есть — считаем, что ключ уже выдан
             from app.settings import settings as app_settings
-            import sqlite3
             now_ts = int(datetime.utcnow().timestamp())
-            with sqlite3.connect(app_settings.DATABASE_PATH) as conn:
+            with open_connection(app_settings.DATABASE_PATH) as conn:
                 c = conn.cursor()
                 c.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now_ts))
                 if c.fetchone():
