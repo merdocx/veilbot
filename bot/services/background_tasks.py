@@ -657,7 +657,7 @@ async def process_pending_paid_payments() -> None:
                     "[AUTO-ISSUE] Успешно создан ключ %s для user_id=%s, payment_id=%s",
                     protocol,
                     user_id,
-                    payment_id,
+                    payment_uuid,
                 )
 
     async def job() -> None:
