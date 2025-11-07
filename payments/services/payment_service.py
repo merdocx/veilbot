@@ -427,17 +427,42 @@ class PaymentService:
                             logger.error(f"Tariff {payment.tariff_id} not found for payment {payment.payment_id}")
                             continue
                         
-                        # Используем create_new_key_flow_with_protocol, которая автоматически:
-                        # 1. Проверит наличие существующего ключа
-                        # 2. Если ключ существует - продлит его (обновит expiry_at)
-                        # 3. Если ключа нет - создаст новый
-                        # Это та же логика, что и при покупке/продлении через wait_for_payment_with_protocol
-                        with get_db_cursor(commit=True) as cursor:
-                            # Определяем, это продление или новая покупка
-                            # Проверяем наличие активного ключа у пользователя
-                            now_ts = int(datetime.utcnow().timestamp())
-                            GRACE_PERIOD = 86400  # 24 часа
-                            grace_threshold = now_ts - GRACE_PERIOD
+                    # Используем create_new_key_flow_with_protocol, которая автоматически:
+                    # 1. Проверит наличие существующего ключа
+                    # 2. Если ключ существует - продлит его (обновит expiry_at)
+                    # 3. Если ключа нет - создаст новый
+                    # Это та же логика, что и при покупке/продлении через wait_for_payment_with_protocol
+                    with get_db_cursor(commit=True) as cursor:
+                        cursor.execute(
+                            "SELECT status FROM payments WHERE payment_id = ?",
+                            (payment.payment_id,),
+                        )
+                        status_row = cursor.fetchone()
+                        if status_row:
+                            payment_status = (status_row[0] or "").lower()
+                            if payment_status == "completed":
+                                logger.info(
+                                    "Payment %s already completed, skipping key issuance",
+                                    payment.payment_id,
+                                )
+                                continue
+                            if payment_status != "paid":
+                                cursor.execute(
+                                    "UPDATE payments SET status = 'paid' WHERE payment_id = ?",
+                                    (payment.payment_id,),
+                                )
+                        else:
+                            logger.warning(
+                                "Payment %s disappeared before key issuance, skipping",
+                                payment.payment_id,
+                            )
+                            continue
+                        
+                        # Определяем, это продление или новая покупка
+                        # Проверяем наличие активного ключа у пользователя
+                        now_ts = int(datetime.utcnow().timestamp())
+                        GRACE_PERIOD = 86400  # 24 часа
+                        grace_threshold = now_ts - GRACE_PERIOD
 
                             # Проверяем наличие ключа (для определения, это продление или покупка)
                             cursor.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, grace_threshold))

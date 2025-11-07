@@ -216,6 +216,21 @@ async def cryptobot_webhook(request: Request):
                 from vpn_protocols import ProtocolFactory
                 
                 with get_db_cursor(commit=True) as cursor:
+                    cursor.execute(
+                        "SELECT status FROM payments WHERE payment_id = ?",
+                        (str(invoice_id),),
+                    )
+                    status_row = cursor.fetchone()
+                    payment_status = (status_row[0] or "").lower() if status_row else ""
+                    if payment_status == "completed":
+                        logging.info(f"[CRYPTOBOT_WEBHOOK] Payment {invoice_id} already completed, skipping key issuance")
+                        return JSONResponse({"status": "ok", "processed": False})
+                    if payment_status != "paid":
+                        cursor.execute(
+                            "UPDATE payments SET status = 'paid' WHERE payment_id = ?",
+                            (str(invoice_id),),
+                        )
+                    
                     # Выбираем сервер
                     server = select_available_server_by_protocol(cursor, country, protocol or "outline")
                     

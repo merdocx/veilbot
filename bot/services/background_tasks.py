@@ -438,7 +438,24 @@ async def process_pending_paid_payments() -> None:
             )
             payments = cursor.fetchall()
 
-            for payment_id, user_id, tariff_id, email, protocol, country in payments:
+            for payment_db_id, user_id, tariff_id, email, protocol, country in payments:
+                cursor.execute("SELECT status, payment_id FROM payments WHERE id = ?", (payment_db_id,))
+                status_row = cursor.fetchone()
+                if not status_row:
+                    logging.warning("[AUTO-ISSUE] Payment id=%s not found, skipping", payment_db_id)
+                    continue
+                
+                payment_status = (status_row[0] or "").lower()
+                payment_uuid = status_row[1]
+                
+                if payment_status == "completed":
+                    logging.info(
+                        "[AUTO-ISSUE] Payment %s already completed, skipping key issuance", payment_uuid
+                    )
+                    continue
+                
+                if payment_status != "paid":
+                    cursor.execute("UPDATE payments SET status = 'paid' WHERE id = ?", (payment_db_id,))
                 cursor.execute("SELECT name, duration_sec, price_rub FROM tariffs WHERE id=?", (tariff_id,))
                 tariff_row = cursor.fetchone()
                 if not tariff_row:

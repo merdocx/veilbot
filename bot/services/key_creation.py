@@ -850,16 +850,26 @@ async def wait_for_payment_with_protocol(
                 
                 # Создаем ключ после успешного платежа
                 with get_db_cursor(commit=True) as cursor:
-                    cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
-                    cursor.execute("SELECT user_id, email, tariff_id, country, protocol FROM payments WHERE payment_id = ?", (payment_id,))
+                    cursor.execute(
+                        "SELECT status, user_id, email, tariff_id, country, protocol FROM payments WHERE payment_id = ?",
+                        (payment_id,),
+                    )
                     payment_data = cursor.fetchone()
                     
                     if payment_data:
-                        payment_user_id = payment_data[0]
-                        email = payment_data[1]
-                        payment_tariff_id = payment_data[2]
-                        payment_country = payment_data[3]
-                        payment_protocol = payment_data[4]
+                        payment_status = (payment_data[0] or "").lower()
+                        if payment_status == "completed":
+                            logging.info(f"Payment {payment_id} already completed, skipping key issuance")
+                            return
+                        
+                        if payment_status != "paid":
+                            cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
+                        
+                        payment_user_id = payment_data[1]
+                        email = payment_data[2]
+                        payment_tariff_id = payment_data[3]
+                        payment_country = payment_data[4]
+                        payment_protocol = payment_data[5]
                         
                         # Используем user_id из платежа, если он не был передан или отличается
                         if not user_id or user_id != payment_user_id:
@@ -1054,16 +1064,26 @@ async def wait_for_crypto_payment(
                 
                 # Обновляем статус платежа в БД
                 with get_db_cursor(commit=True) as cursor:
-                    cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (str(invoice_id),))
-                    cursor.execute("SELECT user_id, email, tariff_id, country, protocol FROM payments WHERE payment_id = ?", (str(invoice_id),))
+                    cursor.execute(
+                        "SELECT status, user_id, email, tariff_id, country, protocol FROM payments WHERE payment_id = ?",
+                        (str(invoice_id),),
+                    )
                     payment_data = cursor.fetchone()
                     
                     if payment_data:
-                        payment_user_id = payment_data[0]
-                        email = payment_data[1] if payment_data[1] else None
-                        payment_tariff_id = payment_data[2]
-                        payment_country = payment_data[3]
-                        payment_protocol = payment_data[4]
+                        payment_status = (payment_data[0] or "").lower()
+                        if payment_status == "completed":
+                            logging.info(f"Crypto payment {invoice_id} already completed, skipping key issuance")
+                            return
+                        
+                        if payment_status != "paid":
+                            cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (str(invoice_id),))
+                        
+                        payment_user_id = payment_data[1]
+                        email = payment_data[2] if payment_data[2] else None
+                        payment_tariff_id = payment_data[3]
+                        payment_country = payment_data[4]
+                        payment_protocol = payment_data[5]
                         
                         # Используем user_id из платежа, если он не был передан или отличается
                         if not user_id or user_id != payment_user_id:
