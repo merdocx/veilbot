@@ -542,6 +542,7 @@ async def switch_protocol_and_extend(
     
     old_server_id = old_key_data['server_id']
     old_email = old_key_data.get('email') or email
+    traffic_limit_mb = 0
     try:
         traffic_limit_mb = int(old_key_data.get('traffic_limit_mb') or 0)
     except (TypeError, ValueError):
@@ -562,6 +563,8 @@ async def switch_protocol_and_extend(
                 traffic_limit_mb = int(row[0])
         except Exception as e:  # noqa: BLE001
             logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff.get('id')}: {e}")
+    
+    old_key_data['traffic_limit_mb'] = traffic_limit_mb
     
     logging.info(f"User {user_id}: switching protocol {old_protocol}→{new_protocol}, country {old_country}→{target_country}, remaining={remaining}s, adding={additional_duration}s")
     
@@ -602,7 +605,18 @@ async def switch_protocol_and_extend(
             cursor.execute(
                 "INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
                 "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, key["accessUrl"], new_expiry, traffic_limit_mb, key["id"], now, old_email, tariff['id'], new_protocol),
+                (
+                    new_server_id,
+                    user_id,
+                    key["accessUrl"],
+                    new_expiry,
+                    old_key_data['traffic_limit_mb'],
+                    key["id"],
+                    now,
+                    old_email,
+                    tariff['id'],
+                    new_protocol,
+                ),
             )
             
             access_url = key["accessUrl"]
@@ -685,9 +699,9 @@ async def switch_protocol_and_extend(
                     access_url = config
             
             # Добавляем новый ключ с конфигурацией
-            usage_bytes_new = 0 if reset_usage else key_data.get('traffic_usage_bytes', 0)
-            over_limit_at_new = None if reset_usage else key_data.get('traffic_over_limit_at')
-            over_limit_notified_new = 0 if reset_usage else key_data.get('traffic_over_limit_notified', 0)
+            usage_bytes_new = old_key_data.get('traffic_usage_bytes', 0)
+            over_limit_at_new = old_key_data.get('traffic_over_limit_at')
+            over_limit_notified_new = old_key_data.get('traffic_over_limit_notified', 0)
             cursor.execute(
                 "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config, "
                 "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "
@@ -854,6 +868,8 @@ async def change_country_and_extend(
                 traffic_limit_mb = int(row[0])
         except Exception as e:  # noqa: BLE001
             logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff.get('id')}: {e}")
+    
+    key_data['traffic_limit_mb'] = traffic_limit_mb
     
     # Считаем оставшееся время старого ключа
     remaining = max(0, key_data['expiry_at'] - now)
@@ -1198,11 +1214,11 @@ async def change_protocol_for_key(
                     user_id,
                     key["accessUrl"],
                     now + remaining,
-                    traffic_limit_mb,
+                    old_key_data['traffic_limit_mb'],
                     key["id"],
                     now,
                     old_email,
-                    key_data['tariff_id'],
+                    old_key_data.get('tariff_id'),
                     new_protocol,
                 ),
             )
@@ -1241,9 +1257,9 @@ async def change_protocol_for_key(
                     })
                 
                 # Добавляем новый ключ с тем же сроком действия и email, включая client_config
-                usage_bytes_new = key_data.get('traffic_usage_bytes', 0)
-                over_limit_at_new = key_data.get('traffic_over_limit_at')
-                over_limit_notified_new = key_data.get('traffic_over_limit_notified', 0)
+                usage_bytes_new = old_key_data.get('traffic_usage_bytes', 0)
+                over_limit_at_new = old_key_data.get('traffic_over_limit_at')
+                over_limit_notified_new = old_key_data.get('traffic_over_limit_notified', 0)
                 cursor.execute(
                     "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, "
                     "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "
@@ -1255,9 +1271,9 @@ async def change_protocol_for_key(
                         old_email or f"user_{user_id}@veilbot.com",
                         now,
                         now + remaining,
-                        key_data['tariff_id'],
+                        old_key_data.get('tariff_id'),
                         config,
-                        traffic_limit_mb,
+                        old_key_data['traffic_limit_mb'],
                         usage_bytes_new,
                         over_limit_at_new,
                         over_limit_notified_new,
@@ -1444,7 +1460,7 @@ async def change_country_for_key(
                     user_id,
                     key["accessUrl"],
                     now + remaining,
-                    traffic_limit_mb,
+                    key_data['traffic_limit_mb'],
                     key["id"],
                     now,
                     old_email,
@@ -1531,7 +1547,7 @@ async def change_country_for_key(
                             old_email,
                             tariff_id,
                             config,
-                            traffic_limit_mb,
+                            key_data['traffic_limit_mb'],
                             usage_bytes_new,
                             over_limit_at_new,
                             over_limit_notified_new,
