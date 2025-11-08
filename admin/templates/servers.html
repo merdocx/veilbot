@@ -74,7 +74,6 @@
                     <th>ID</th>
                     <th>Название</th>
                     <th>Протокол</th>
-                    <th>API URL</th>
                     <th>Ключей</th>
                     <th>Макс.</th>
                     <th>Статус</th>
@@ -100,9 +99,6 @@
                             </span>
                             {{ protocol|upper }}
                         </span>
-                    </td>
-                    <td>
-                        <div class="cell-primary code" title="{{ s[2] }}">{{ s[2]|truncate(42) }}</div>
                     </td>
                     <td>
                         {% if s[12] %}

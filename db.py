@@ -384,6 +384,28 @@ def migrate_add_unique_key_indexes():
         logging.info("Установлены уникальные индексы для keys и v2ray_keys (если отсутствовали)")
     finally:
         conn.close()
+def migrate_create_dashboard_metrics_table():
+    """Создание таблицы для хранения ежедневных метрик дашборда"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dashboard_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL UNIQUE,
+                active_keys INTEGER NOT NULL DEFAULT 0,
+                started_users INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER,
+                updated_at INTEGER
+            )
+        """)
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dashboard_metrics_date ON dashboard_metrics(date)")
+        conn.commit()
+        logging.info("Таблица dashboard_metrics создана/проверена")
+    except Exception as e:
+        logging.error(f"Ошибка создания таблицы dashboard_metrics: {e}")
+    finally:
+        conn.close()
 def migrate_create_users_table():
     """Create users table for storing all bot users"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -729,6 +751,7 @@ def _run_all_migrations():
     migrate_extend_payments_schema()
     migrate_add_common_indexes()
     migrate_add_unique_key_indexes()
+    migrate_create_dashboard_metrics_table()
     migrate_create_webhook_logs()
     migrate_create_users_table()
     migrate_backfill_users()

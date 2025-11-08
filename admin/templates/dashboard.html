@@ -7,6 +7,18 @@
 <div class="stats-grid">
     <div class="stat-card">
         <div class="stat-header">
+            <div class="stat-icon stat-icon--orange">
+                <span class="material-icons">play_arrow</span>
+            </div>
+            <div>
+                <div class="stat-value">{{ started_users }}</div>
+                <div class="stat-label">Нажали "Start"</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
             <div class="stat-icon stat-icon--blue">
                 <span class="material-icons">key</span>
             </div>
@@ -66,6 +78,80 @@
                 Добавить тариф
             </a>
         </div>
+    </div>
+</div>
+
+<!-- Metrics Chart -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Динамика по дням</h2>
+    </div>
+    <div class="card-content">
+        {% if chart_data %}
+            <svg class="metrics-chart" viewBox="0 0 {{ chart_data.width }} {{ chart_data.height }}" preserveAspectRatio="none">
+                <defs>
+                    <linearGradient id="usersGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#f57c00" stop-opacity="0.4"/>
+                        <stop offset="100%" stop-color="#f57c00" stop-opacity="0"/>
+                    </linearGradient>
+                    <linearGradient id="keysGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#1976d2" stop-opacity="0.45"/>
+                        <stop offset="100%" stop-color="#1976d2" stop-opacity="0"/>
+                    </linearGradient>
+                </defs>
+
+                <g class="grid-lines" stroke="rgba(148, 163, 184, 0.25)" stroke-width="1">
+                    {% for tick in chart_data.y_ticks %}
+                        <line x1="{{ chart_data.padding.left }}" x2="{{ chart_data.width - chart_data.padding.right }}" y1="{{ tick.y }}" y2="{{ tick.y }}" />
+                    {% endfor %}
+                    <line x1="{{ chart_data.padding.left }}" x2="{{ chart_data.width - chart_data.padding.right }}" y1="{{ chart_data.baseline_y }}" y2="{{ chart_data.baseline_y }}" stroke="rgba(148, 163, 184, 0.45)" />
+                </g>
+
+                <g class="y-labels" fill="#64748b" font-size="12" font-family="Roboto, sans-serif">
+                    {% for tick in chart_data.y_ticks %}
+                        <text x="16" y="{{ tick.y + 4 }}">{{ tick.value }}</text>
+                    {% endfor %}
+                </g>
+
+                <path d="{{ chart_data.users_fill }}" fill="url(#usersGradient)" stroke="none"/>
+                <path d="{{ chart_data.keys_fill }}" fill="url(#keysGradient)" stroke="none"/>
+                <path d="{{ chart_data.users_path }}" fill="none" stroke="#f57c00" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                <path d="{{ chart_data.keys_path }}" fill="none" stroke="#1976d2" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+                <g class="points">
+                    {% for point in chart_data.users_points %}
+                        <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="#fff" stroke="#f57c00" stroke-width="1.5">
+                            <title>{{ point.label }}: {{ point.value }}</title>
+                        </circle>
+                    {% endfor %}
+                    {% for point in chart_data.keys_points %}
+                        <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="#fff" stroke="#1976d2" stroke-width="1.5">
+                            <title>{{ point.label }}: {{ point.value }}</title>
+                        </circle>
+                    {% endfor %}
+                </g>
+
+                <g class="x-labels" fill="#475569" font-size="12" font-family="Roboto, sans-serif">
+                    {% for label in chart_data.x_labels %}
+                        {% if label.show %}
+                            <text x="{{ label.x }}" y="{{ chart_data.height - chart_data.padding.bottom + 24 }}" text-anchor="middle">{{ label.text[5:] }}</text>
+                        {% endif %}
+                    {% endfor %}
+                </g>
+            </svg>
+            <div class="metrics-legend">
+                <span class="legend-item">
+                    <span class="legend-swatch" style="background:#f57c00"></span>
+                    Нажали «Start»
+                </span>
+                <span class="legend-item">
+                    <span class="legend-swatch" style="background:#1976d2"></span>
+                    Активные ключи
+                </span>
+            </div>
+        {% else %}
+            <p class="text-muted">Недостаточно данных для отображения графика.</p>
+        {% endif %}
     </div>
 </div>
 {% endblock %}
