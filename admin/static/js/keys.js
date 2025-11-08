@@ -10,6 +10,7 @@ const state = {
     editForm: null,
     expiryInput: null,
     currentKeyId: null,
+    trafficLimitInput: null,
 };
 
 const copyToClipboard = async (value) => {
@@ -90,6 +91,8 @@ const applyKeyUpdate = (key) => {
     const editButton = row.querySelector('[data-action="edit-key"]');
     if (editButton) {
         editButton.dataset.expiry = key.expiry_iso || '';
+        const limitMb = key.traffic && key.traffic.limit_mb != null ? String(key.traffic.limit_mb) : '';
+        editButton.dataset.limit = limitMb;
     }
 
     const trafficCell = row.querySelector('.traffic-cell');
@@ -108,6 +111,23 @@ const applyKeyUpdate = (key) => {
                 limit.classList.add('text-muted');
             } else {
                 limit.classList.remove('text-muted');
+            }
+        }
+        const warning = trafficCell.querySelector('[data-field="traffic-warning"]');
+        const isOverLimit = Boolean(key.traffic.over_limit);
+        trafficCell.dataset.overLimit = isOverLimit ? '1' : '0';
+        trafficCell.dataset.overLimitDeadline = key.traffic.over_limit_deadline || '';
+        trafficCell.classList.toggle('traffic-cell--over-limit', isOverLimit);
+        if (warning) {
+            if (isOverLimit) {
+                const deadlineText = key.traffic.over_limit_deadline_display || '';
+                warning.textContent = deadlineText
+                    ? `Превышен лимит. ${deadlineText}`
+                    : 'Превышен лимит. Ключ будет отключён без продления.';
+                warning.classList.remove('hidden');
+            } else {
+                warning.textContent = '';
+                warning.classList.add('hidden');
             }
         }
         const trafficBar = trafficCell.querySelector('.progress-bar');
@@ -193,6 +213,10 @@ const openEditModal = (trigger) => {
     state.editForm.dataset.keyId = keyId;
     state.editForm.action = `/keys/edit/${keyId}`;
     state.expiryInput.value = expiryValue;
+    if (state.trafficLimitInput) {
+        const limitValue = trigger.dataset.limit ?? '';
+        state.trafficLimitInput.value = limitValue !== undefined ? limitValue : '';
+    }
     state.modal.open();
     state.expiryInput.focus();
 };
@@ -267,6 +291,7 @@ const initKeysPage = () => {
 
     state.editForm = document.getElementById('editForm');
     state.expiryInput = document.getElementById('new_expiry');
+    state.trafficLimitInput = document.getElementById('traffic_limit_mb');
 
     if (state.editForm) {
         state.editForm.addEventListener('submit', handleEditSubmit);

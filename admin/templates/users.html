@@ -54,29 +54,23 @@
                 {% for user in users %}
                 <tr>
                     <td>
-                        <div class="inline-flex">
-                            <span class="material-icons icon-small">person</span>
-                            <span class="text-large">{{ user.user_id }}</span>
-                        </div>
+                        <div class="cell-primary">{{ user.user_id }}</div>
                     </td>
                     <td>
-                        <span class="badge badge-info">
-                            <span class="material-icons icon-small">group_add</span>
-                            {{ user.referral_count }}
-                        </span>
+                        <div class="cell-primary">{{ user.referral_count }}</div>
                     </td>
-                    <td class="text-small">
+                    <td>
                         {% if user.last_activity %}
-                            {{ user.last_activity|timestamp }}
+                            <div class="cell-primary">{{ user.last_activity|timestamp }}</div>
                         {% else %}
-                            <span class="text-muted">—</span>
+                            <div class="cell-primary text-muted">—</div>
                         {% endif %}
                     </td>
-                    <td class="text-center">
+                    <td>
                         {% if user.is_active %}
-                            <span class="material-icons icon-lg icon-success" title="Активен">check_circle</span>
+                            <div class="cell-primary">Активен</div>
                         {% else %}
-                            <span class="material-icons icon-lg icon-danger" title="Неактивен">cancel</span>
+                            <div class="cell-primary">Неактивен</div>
                         {% endif %}
                     </td>
                     <td>

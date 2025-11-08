@@ -21,7 +21,6 @@
                     <th>Длительность</th>
                     <th>Цена</th>
                     <th>Трафик</th>
-                    <th>Тип</th>
                     <th>Действия</th>
                 </tr>
             </thead>
@@ -30,68 +29,36 @@
                 <tr>
                     <td>{{ t[0] }}</td>
                     <td>
-                        <div class="inline-flex">
-                            <span class="material-icons icon-small">payment</span>
-                            <strong>{{ t[1] }}</strong>
-                        </div>
+                        <div class="cell-primary" title="{{ t[1] }}">{{ t[1] }}</div>
                     </td>
                     <td>
                         {% set duration = t[2] %}
                         {% if duration >= 86400 %}
-                            <span class="badge badge-info">
-                                <span class="material-icons icon-small">schedule</span>
-                                {{ (duration // 86400) }} дн.
-                            </span>
+                            <div class="cell-primary">{{ (duration // 86400) }} дн.</div>
                         {% elif duration >= 3600 %}
-                            <span class="badge badge-info">
-                                <span class="material-icons icon-small">schedule</span>
-                                {{ (duration // 3600) }} ч.
-                            </span>
+                            <div class="cell-primary">{{ (duration // 3600) }} ч.</div>
                         {% else %}
-                            <span class="badge badge-info">
-                                <span class="material-icons icon-small">schedule</span>
-                                {{ (duration // 60) }} мин.
-                            </span>
+                            <div class="cell-primary">{{ (duration // 60) }} мин.</div>
                         {% endif %}
                     </td>
                     <td>
-                        {% if t[3] == 0 %}
-                            <span class="badge badge-success">
-                                <span class="material-icons icon-small">free_breakfast</span>
-                                Бесплатно
-                            </span>
-                        {% else %}
-                            <span class="badge badge-warning">
-                                <span class="material-icons icon-small">attach_money</span>
-                                {{ t[3] }} ₽
-                            </span>
-                            {% if t|length > 5 and t[5] and t[5] > 0 %}
-                                <span class="badge badge-info mt-1 d-inline-block">
-                                    <span class="material-icons icon-small">currency_bitcoin</span>
-                                    ${{ "%.2f"|format(t[5]) }}
-                                </span>
+                        <div class="tariff-price">
+                            {% if t[3] == 0 %}
+                                <span class="tariff-price__line">Бесплатно</span>
+                            {% else %}
+                                <span class="tariff-price__line">{{ t[3] }} ₽</span>
+                                {% if t|length > 5 and t[5] and t[5] > 0 %}
+                                    <span class="tariff-price__line">${{ "%.2f"|format(t[5]) }}</span>
+                                {% endif %}
                             {% endif %}
-                        {% endif %}
+                        </div>
                     </td>
                     <td>
                         {% set traffic_limit = t[4] if t|length > 4 else None %}
                         {% if traffic_limit and traffic_limit > 0 %}
-                            <span class="badge badge-neutral">
-                                <span class="material-icons icon-small">data_usage</span>
-                                {{ traffic_limit }} МБ
-                            </span>
+                            <div class="cell-primary">{{ traffic_limit }} МБ</div>
                         {% else %}
-                            <span class="badge badge-neutral">
-                                <span class="material-icons icon-small">all_inclusive</span>
-                                Безлимит
-                            </span>
-                        {% endif %}
-                    </td>
-                    <td class="text-center">
-                        {% if t[3] == 0 %}
-                            <span class="material-icons icon-lg icon-success" title="Бесплатный">free_breakfast</span>
-                        {% else %}
-                            <span class="material-icons icon-lg icon-warning" title="Платный">paid</span>
+                            <div class="cell-primary">Безлимит</div>
                         {% endif %}
                     </td>
                     <td>

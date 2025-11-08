@@ -1,3 +1,17 @@
+.traffic-cell--over-limit {
+    background: rgba(255, 87, 51, 0.08);
+}
+
+.traffic-warning {
+    color: #d32f2f;
+    font-weight: 600;
+    margin-top: 4px;
+}
+
+.traffic-warning.hidden {
+    display: none;
+}
+
 .btn + .btn {
     margin-left: 8px;
 }
@@ -566,13 +580,13 @@ body {
 
 #keys-table th:nth-child(5),
 #keys-table td:nth-child(5) {
-    width: 13%;
+    width: 18%;
     padding: 6px 4px;
 }
 
 #keys-table th:nth-child(6),
 #keys-table td:nth-child(6) {
-    width: 16%;
+    width: 11%;
     padding: 6px 4px;
 }
 
@@ -653,20 +667,19 @@ body {
 
 #servers-table th:nth-child(2),
 #servers-table td:nth-child(2) { 
-    width: 18%;
+    width: 10%;
 }
 
-/* Протокол - иконка, уменьшенная ширина */
 #servers-table th:nth-child(3),
 #servers-table td:nth-child(3) { 
-    width: 6%;
+    width: 8%;
     text-align: center;
     padding: 8px 2px;
 }
 
 #servers-table th:nth-child(4),
 #servers-table td:nth-child(4) { 
-    width: 24%;
+    width: 28%;
     word-break: break-all;
 }
 
@@ -680,23 +693,23 @@ body {
     width: 7%;
 }
 
-/* Статус - иконка, уменьшенная ширина */
 #servers-table th:nth-child(7),
 #servers-table td:nth-child(7) { 
-    width: 6%;
+    width: 8%;
     text-align: center;
     padding: 8px 2px;
 }
 
-/* Страна - увеличенная ширина */
 #servers-table th:nth-child(8),
 #servers-table td:nth-child(8) { 
-    width: 6%;
+    width: 8%;
+    text-align: center;
+    padding: 8px 2px;
 }
 
 #servers-table th:nth-child(9),
 #servers-table td:nth-child(9) { 
-    width: 13%;
+    width: 11%;
 }
 
 #servers-table th:nth-child(10),
@@ -718,39 +731,37 @@ body {
 
 #payments-table th:nth-child(1),
 #payments-table td:nth-child(1) { 
-    width: 5%;
+    width: 6%;
 }
 
 #payments-table th:nth-child(2),
 #payments-table td:nth-child(2) { 
-    width: 7%;
+    width: 12%;
 }
 
 #payments-table th:nth-child(3),
 #payments-table td:nth-child(3) { 
-    width: 18%;
-    word-break: break-all;
+    width: 10%;
 }
 
 #payments-table th:nth-child(4),
 #payments-table td:nth-child(4) { 
-    width: 5%;
+    width: 22%;
 }
 
 #payments-table th:nth-child(5),
 #payments-table td:nth-child(5) { 
-    width: 15%;
-    word-break: break-word;
+    width: 12%;
 }
 
 #payments-table th:nth-child(6),
 #payments-table td:nth-child(6) { 
-    width: 8%;
+    width: 10%;
 }
 
 #payments-table th:nth-child(7),
 #payments-table td:nth-child(7) { 
-    width: 8%;
+    width: 15%;
 }
 
 #payments-table th:nth-child(8),
@@ -760,18 +771,7 @@ body {
 
 #payments-table th:nth-child(9),
 #payments-table td:nth-child(9) { 
-    width: 12%;
-    font-size: 12px;
-}
-
-#payments-table th:nth-child(10),
-#payments-table td:nth-child(10) { 
-    width: 7%;
-}
-
-#payments-table th:nth-child(11),
-#payments-table td:nth-child(11) { 
-    width: 8%;
+    width: 6%;
 }
 
 #tariffs-table {
@@ -782,22 +782,22 @@ body {
 
 #tariffs-table th:nth-child(1),
 #tariffs-table td:nth-child(1) {
-    width: 8%;
+    width: 7%;
 }
 
 #tariffs-table th:nth-child(2),
 #tariffs-table td:nth-child(2) {
-    width: 26%;
+    width: 28%;
 }
 
 #tariffs-table th:nth-child(3),
 #tariffs-table td:nth-child(3) {
-    width: 14%;
+    width: 16%;
 }
 
 #tariffs-table th:nth-child(4),
 #tariffs-table td:nth-child(4) {
-    width: 16%;
+    width: 20%;
 }
 
 #tariffs-table th:nth-child(5),
@@ -807,13 +807,26 @@ body {
 
 #tariffs-table th:nth-child(6),
 #tariffs-table td:nth-child(6) {
-    width: 8%;
-    text-align: center;
+    width: 15%;
 }
 
-#tariffs-table th:nth-child(7),
-#tariffs-table td:nth-child(7) {
-    width: 14%;
+.tariff-price {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+}
+
+.tariff-price__line {
+    display: block;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.2;
+}
+
+.tariff-price__line + .tariff-price__line {
+    font-weight: 500;
+    color: var(--text-muted);
 }
 
 .material-table:not(#keys-table):not(#users-table):not(#servers-table):not(#payments-table) th,

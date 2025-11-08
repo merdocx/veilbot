@@ -413,14 +413,15 @@ class PaymentService:
                         tariff = None
                         with open_connection(app_settings.DATABASE_PATH) as conn:
                             c = conn.cursor()
-                            c.execute("SELECT id, name, duration_sec, price_rub FROM tariffs WHERE id = ?", (payment.tariff_id,))
+                            c.execute("SELECT id, name, duration_sec, price_rub, traffic_limit_mb FROM tariffs WHERE id = ?", (payment.tariff_id,))
                             tariff_row = c.fetchone()
                             if tariff_row:
                                 tariff = {
                                     'id': tariff_row[0],
                                     'name': tariff_row[1],
                                     'duration_sec': tariff_row[2],
-                                    'price_rub': tariff_row[3]
+                                    'price_rub': tariff_row[3],
+                                    'traffic_limit_mb': tariff_row[4],
                                 }
                         
                         if not tariff:

@@ -26,7 +26,8 @@ from bot.services.background_tasks import (
     auto_delete_expired_keys,
     notify_expiring_keys,
     check_key_availability,
-    process_pending_paid_payments
+    process_pending_paid_payments,
+    monitor_v2ray_traffic_limits,
 )
 
 # Импортируем функции и переменные из bot.py
@@ -176,7 +177,8 @@ def start_background_tasks(loop):
         process_pending_paid_payments(),
         auto_delete_expired_keys(),
         notify_expiring_keys(),
-        check_key_availability()
+        check_key_availability(),
+        monitor_v2ray_traffic_limits(),
     ]
     
     for task in background_tasks:

@@ -15,6 +15,7 @@ from bot.keyboards import (
 )
 from bot_rate_limiter import rate_limit
 from bot_error_handler import BotErrorHandler
+import sqlite3
 
 # Эти функции будут импортированы из bot.py
 # Они будут переданы через register_purchase_handlers
@@ -581,15 +582,31 @@ def register_purchase_handlers(
             # Ищем тариф в зависимости от способа оплаты
             if payment_method == "cryptobot" and price_crypto is not None:
                 # Ищем по имени и крипто-цене
-                cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND ABS(price_crypto_usd - ?) < 0.01", (tariff_name, price_crypto))
-                row = cursor.fetchone()
+                try:
+                    cursor.execute(
+                        "SELECT id, name, price_rub, duration_sec, price_crypto_usd, traffic_limit_mb FROM tariffs WHERE name = ? AND ABS(price_crypto_usd - ?) < 0.01",
+                        (tariff_name, price_crypto),
+                    )
+                    row = cursor.fetchone()
+                except sqlite3.OperationalError as exc:
+                    if "traffic_limit_mb" in str(exc):
+                        cursor.execute(
+                            "SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND ABS(price_crypto_usd - ?) < 0.01",
+                            (tariff_name, price_crypto),
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            row = (*row, 0)
+                    else:
+                        raise
                 if row:
                     tariff = {
                         "id": row[0],
                         "name": row[1],
                         "price_rub": row[2],
                         "duration_sec": row[3],
-                        "price_crypto_usd": row[4] if len(row) > 4 else None
+                        "price_crypto_usd": row[4] if len(row) > 4 else None,
+                        "traffic_limit_mb": row[5] if len(row) > 5 else 0,
                     }
                 else:
                     await message.answer("Не удалось найти тариф с указанной ценой.", reply_markup=main_menu)

@@ -86,48 +86,51 @@
             <tbody>
                 {% for s in servers %}
                 <tr>
-                    <td>{{ s[0] }}</td>
                     <td>
-                        <strong>{{ s[1] }}</strong>
-                    </td>
-                    <td class="text-center">
-                        {% if s[7] == 'v2ray' %}
-                            <span class="material-icons icon-lg icon-primary" title="V2Ray">security</span>
-                        {% else %}
-                            <span class="material-icons icon-lg icon-primary" title="Outline">lock</span>
-                        {% endif %}
+                        <div class="cell-primary">{{ s[0] }}</div>
                     </td>
                     <td>
-                        <span class="code" title="{{ s[2] }}">{{ s[2]|truncate(30) }}</span>
+                        <div class="cell-primary" title="{{ s[1] }}">{{ s[1] }}</div>
+                    </td>
+                    <td>
+                        {% set protocol = s[7] if s|length > 7 else 'outline' %}
+                        <span class="protocol-badge {% if protocol == 'v2ray' %}protocol-badge--v2ray{% elif protocol == 'outline' %}protocol-badge--outline{% else %}protocol-badge--neutral{% endif %}">
+                            <span class="material-icons icon-small">
+                                {% if protocol == 'v2ray' %}security{% elif protocol == 'outline' %}lock{% else %}device_hub{% endif %}
+                            </span>
+                            {{ protocol|upper }}
+                        </span>
+                    </td>
+                    <td>
+                        <div class="cell-primary code" title="{{ s[2] }}">{{ s[2]|truncate(42) }}</div>
                     </td>
                     <td>
                         {% if s[12] %}
-                            <span class="badge badge-neutral">{{ s[12] }}</span>
+                            <div class="cell-primary">{{ s[12] }}</div>
                         {% else %}
-                            <span class="text-muted">—</span>
+                            <div class="cell-primary text-muted">—</div>
                         {% endif %}
                     </td>
-                    <td>{{ s[4] }}</td>
+                    <td>
+                        <div class="cell-primary">{{ s[4] }}</div>
+                    </td>
                     <td class="text-center">
                         {% if s[5] %}
-                            <span class="material-icons icon-lg icon-success" title="Активен">check_circle</span>
+                            <span class="material-icons status-icon icon-success" title="Активен">check_circle</span>
                         {% else %}
-                            <span class="material-icons icon-lg icon-danger" title="Неактивен">cancel</span>
+                            <span class="material-icons status-icon icon-danger" title="Неактивен">cancel</span>
                         {% endif %}
                     </td>
                     <td class="text-center">
                         {% set available_for_purchase = s[11] if s|length > 11 else 1 %}
                         {% if available_for_purchase %}
-                            <span class="material-icons icon-lg icon-success" title="Доступен к покупке">check_circle</span>
+                            <span class="material-icons status-icon icon-success" title="Доступен к покупке">check_circle</span>
                         {% else %}
-                            <span class="material-icons icon-lg icon-warning" title="Недоступен к покупке">remove_circle</span>
+                            <span class="material-icons status-icon icon-warning" title="Недоступен к покупке">remove_circle</span>
                         {% endif %}
                     </td>
                     <td>
-                        <span class="badge badge-info">
-                            <span class="material-icons icon-small">public</span>
-                            {{ s[6] }}
-                        </span>
+                        <div class="cell-primary">{{ s[6] or '—' }}</div>
                     </td>
                     <td>
                         <div class="action-buttons">

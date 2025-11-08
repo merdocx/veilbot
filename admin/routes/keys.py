@@ -184,10 +184,7 @@ def _format_expiry_remaining(expiry_at: int, now_ts: int) -> Dict[str, str]:
 
 
 def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict[str, Any]:
-    traffic_raw = None
-    if len(row) >= 13:
-        traffic_raw = row[12]
-
+    traffic_raw = row[15] if len(row) > 15 else None
     traffic_info = _parse_traffic_value(traffic_raw)
 
     key_id = int(row[0])
@@ -207,19 +204,44 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     }
     protocol_info = protocol_meta.get(protocol, {"label": protocol or "—", "icon": "help_outline", "class": "protocol-badge--neutral"})
 
-    traffic_limit_mb = row[9] if len(row) > 9 else ''
+    raw_limit_value = row[9] if len(row) > 9 else 0
+    try:
+        traffic_limit_mb = int(raw_limit_value)
+    except (TypeError, ValueError):
+        traffic_limit_mb = 0
     traffic_limit_bytes = None
-    if isinstance(traffic_limit_mb, (int, float)):
+    if traffic_limit_mb:
         traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
-    elif isinstance(traffic_limit_mb, str) and traffic_limit_mb.strip():
+
+    traffic_usage_bytes_db = row[12] if len(row) > 12 else 0
+    if traffic_info["bytes"] is None and traffic_usage_bytes_db:
         try:
-            traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
-        except ValueError:
-            traffic_limit_bytes = None
+            traffic_info["bytes"] = float(traffic_usage_bytes_db)
+            traffic_info["display"] = _format_bytes(traffic_usage_bytes_db)
+            traffic_info["state"] = "calculated"
+        except (TypeError, ValueError):
+            parsed_usage = _parse_traffic_value(str(traffic_usage_bytes_db))
+            if parsed_usage["bytes"] is not None:
+                traffic_info["bytes"] = parsed_usage["bytes"]
+                traffic_info["display"] = parsed_usage["display"]
+                traffic_info["state"] = parsed_usage["state"]
+
+    over_limit_at = row[13] if len(row) > 13 and row[13] else None
+    over_limit_notified = bool(row[14]) if len(row) > 14 and row[14] else False
 
     usage_percent = None
+    over_limit_deadline = over_limit_at + 86400 if over_limit_at else None
+
+    over_limit = False
+    over_limit_display = None
+    over_limit_state = None
     if traffic_info["bytes"] is not None and traffic_limit_bytes:
         usage_percent = _clamp(traffic_info["bytes"] / traffic_limit_bytes, 0.0, 1.0)
+        over_limit = traffic_info["bytes"] > traffic_limit_bytes
+        if over_limit and over_limit_deadline:
+            deadline_info = _format_expiry_remaining(over_limit_deadline, now_ts)
+            over_limit_display = deadline_info["label"]
+            over_limit_state = deadline_info["state"]
 
     expiry_remaining = _format_expiry_remaining(expiry_at, now_ts)
 
@@ -254,8 +276,16 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
             "bytes": traffic_info["bytes"],
             "usage_percent": usage_percent,
             "limit_bytes": traffic_limit_bytes,
+            "limit_mb": traffic_limit_mb,
             "limit_display": _format_bytes(traffic_limit_bytes) if traffic_limit_bytes else "—",
             "state": traffic_info["state"],
+            "usage_bytes_db": traffic_usage_bytes_db,
+            "over_limit": over_limit,
+            "over_limit_at": over_limit_at,
+            "over_limit_deadline": over_limit_deadline,
+            "over_limit_deadline_display": over_limit_display,
+            "over_limit_deadline_state": over_limit_state,
+            "over_limit_notified": over_limit_notified,
         },
     }
 
@@ -291,24 +321,39 @@ def _is_json_request(request: Request) -> bool:
 
 
 def _append_default_traffic(row: tuple[Any, ...] | list[Any]) -> list[Any]:
-    if len(row) >= 13:
-        return list(row)
     extended = list(row)
-    extended.append('—')
+    # Гарантируем наличие новых колонок (traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified)
+    while len(extended) < 15:
+        extended.append(None)
+    # Последняя колонка предназначена для строкового представления трафика
+    if len(extended) == 15:
+        extended.append('—')
     return extended
 
 
-async def _update_key_expiry_internal(request: Request, key_id: int, new_expiry: int, key_repo: KeyRepository) -> Dict[str, Any]:
+async def _update_key_expiry_internal(
+    request: Request,
+    key_id: int,
+    new_expiry: int,
+    key_repo: KeyRepository,
+    traffic_limit_mb: int | None = None,
+) -> Dict[str, Any]:
     outline_key = key_repo.get_outline_key_brief(key_id)
     if outline_key:
-        key_repo.update_outline_key_expiry(key_id, new_expiry)
-        log_admin_action(request, "EDIT_KEY", f"Outline key {key_id}, new expiry: {new_expiry}")
+        key_repo.update_outline_key_expiry(key_id, new_expiry, traffic_limit_mb)
+        details = f"Outline key {key_id}, new expiry: {new_expiry}"
+        if traffic_limit_mb is not None:
+            details += f", traffic_limit_mb: {traffic_limit_mb}"
+        log_admin_action(request, "EDIT_KEY", details)
         return {"protocol": "outline"}
 
     v2ray_key = key_repo.get_v2ray_key_brief(key_id)
     if v2ray_key:
-        key_repo.update_v2ray_key_expiry(key_id, new_expiry)
-        log_admin_action(request, "EDIT_KEY", f"V2Ray key {key_id}, new expiry: {new_expiry}")
+        key_repo.update_v2ray_key_expiry(key_id, new_expiry, traffic_limit_mb)
+        details = f"V2Ray key {key_id}, new expiry: {new_expiry}"
+        if traffic_limit_mb is not None:
+            details += f", traffic_limit_mb: {traffic_limit_mb}"
+        log_admin_action(request, "EDIT_KEY", details)
         return {"protocol": "v2ray"}
 
     raise ValueError("Key not found")
@@ -863,11 +908,17 @@ async def get_key_traffic_api(request: Request, key_id: int):
         traffic = await get_key_monthly_traffic(v2ray_uuid, 'v2ray', server_config, server_id)
         logging.debug(f"Traffic result for key_id={key_id}: {traffic}")
         
+        key_repo = KeyRepository(DB_PATH)
+        now_ts = int(time.time())
+        key_view = _load_key_view_model(key_repo, key_id, now_ts)
+        if key_view and key_view.get("traffic"):
+            key_view["traffic"]["display"] = traffic
         return JSONResponse({
             "traffic": traffic,
             "protocol": "v2ray",
+            "key": key_view,
             "key_id": key_id,
-            "uuid": v2ray_uuid  # Для отладки
+            "uuid": v2ray_uuid
         })
     except Exception as e:
         logging.error(f"Error getting traffic for key {key_id}: {e}", exc_info=True)
@@ -882,35 +933,53 @@ async def edit_key_route(request: Request, key_id: int):
     
     form = await request.form()
     new_expiry_str = form.get("new_expiry")
-    
+    traffic_limit_str = form.get("traffic_limit_mb")
+ 
     if not new_expiry_str:
         if _is_json_request(request):
             return JSONResponse({"error": "new_expiry is required"}, status_code=400)
         return RedirectResponse(url="/keys", status_code=303)
-    
+ 
     try:
         # Парсим datetime-local format (YYYY-MM-DDTHH:mm) в timestamp
         dt = datetime.strptime(new_expiry_str, "%Y-%m-%dT%H:%M")
         new_expiry = int(dt.timestamp())
-        
+
+        new_limit: int | None = None
+        if traffic_limit_str is not None:
+            trimmed = traffic_limit_str.strip()
+            if trimmed == "":
+                new_limit = 0
+            else:
+                try:
+                    new_limit = int(trimmed)
+                except ValueError:
+                    if _is_json_request(request):
+                        return JSONResponse({"error": "traffic_limit_mb must be an integer"}, status_code=400)
+                    return RedirectResponse(url="/keys", status_code=303)
+                if new_limit < 0:
+                    if _is_json_request(request):
+                        return JSONResponse({"error": "traffic_limit_mb must be >= 0"}, status_code=400)
+                    return RedirectResponse(url="/keys", status_code=303)
+ 
         key_repo = KeyRepository(DB_PATH)
         try:
-            await _update_key_expiry_internal(request, key_id, new_expiry, key_repo)
+            await _update_key_expiry_internal(request, key_id, new_expiry, key_repo, new_limit)
         except ValueError:
             if _is_json_request(request):
                 return JSONResponse({"error": "Key not found"}, status_code=404)
             return RedirectResponse(url="/keys", status_code=303)
-
+ 
         if _is_json_request(request):
             now_ts = int(time.time())
             key_view = _load_key_view_model(key_repo, key_id, now_ts)
             stats = _compute_key_stats(DB_PATH, now_ts)
             return JSONResponse({
-                "message": "Срок действия обновлен",
+                "message": "Параметры ключа обновлены",
                 "key": key_view,
                 "stats": stats,
             })
-
+ 
         return RedirectResponse(url="/keys", status_code=303)
 
     except Exception as e:

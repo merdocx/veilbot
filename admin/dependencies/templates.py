@@ -50,15 +50,29 @@ def rub_filter(value):
         return f"{value} ₽"
 
 
+_STATUS_LABELS = {
+    "pending": "Ожидает",
+    "paid": "Оплачен",
+    "completed": "Завершён",
+    "failed": "Ошибка",
+    "cancelled": "Отменён",
+    "refunded": "Возврат",
+    "expired": "Истёк",
+}
+
+
 def status_text_filter(value):
     """Конвертирует статус платежа в читаемый текст"""
     if value is None:
         return ""
-    # Если это enum, берем его значение
-    if hasattr(value, 'value'):
-        return str(value.value)
-    # Если это строка, возвращаем как есть
-    return str(value)
+
+    if hasattr(value, "value"):
+        raw = str(value.value)
+    else:
+        raw = str(value)
+
+    key = raw.lower()
+    return _STATUS_LABELS.get(key, raw)
 
 
 def pretty_json_filter(value):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from typing import List, Tuple
 from app.settings import settings
 from app.infra.sqlite_utils import open_connection
@@ -62,7 +63,8 @@ class KeyRepository:
                 """
                 SELECT k.id, k.key_id, k.access_url, k.created_at, k.expiry_at,
                        IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'outline' as protocol,
-                       IFNULL(k.traffic_limit_mb,''), '' as api_url, '' as api_key
+                       COALESCE(k.traffic_limit_mb, 0), '' as api_url, '' as api_key,
+                       0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified
                 FROM keys k
                 LEFT JOIN servers s ON k.server_id = s.id
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
@@ -72,7 +74,9 @@ class KeyRepository:
                        ('PENDING_FROM_SERVER') as access_url,
                        k.created_at, k.expiry_at,
                        IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'v2ray' as protocol,
-                       '' as traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,'')
+                       COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
+                       COALESCE(k.traffic_usage_bytes, 0), k.traffic_over_limit_at,
+                       COALESCE(k.traffic_over_limit_notified, 0)
                 FROM v2ray_keys k
                 LEFT JOIN servers s ON k.server_id = s.id
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
@@ -123,16 +127,28 @@ class KeyRepository:
             c.execute("SELECT 1 FROM v2ray_keys WHERE id = ?", (key_pk,))
             return c.fetchone() is not None
 
-    def update_outline_key_expiry(self, key_pk: int, new_expiry_ts: int) -> None:
+    def update_outline_key_expiry(self, key_pk: int, new_expiry_ts: int, traffic_limit_mb: int | None = None) -> None:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_pk))
+            if traffic_limit_mb is None:
+                c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_pk))
+            else:
+                c.execute(
+                    "UPDATE keys SET expiry_at = ?, traffic_limit_mb = ? WHERE id = ?",
+                    (new_expiry_ts, traffic_limit_mb, key_pk),
+                )
             conn.commit()
 
-    def update_v2ray_key_expiry(self, key_pk: int, new_expiry_ts: int) -> None:
+    def update_v2ray_key_expiry(self, key_pk: int, new_expiry_ts: int, traffic_limit_mb: int | None = None) -> None:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_pk))
+            if traffic_limit_mb is None:
+                c.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_pk))
+            else:
+                c.execute(
+                    "UPDATE v2ray_keys SET expiry_at = ?, traffic_limit_mb = ? WHERE id = ?",
+                    (new_expiry_ts, traffic_limit_mb, key_pk),
+                )
             conn.commit()
 
     # Insert methods
@@ -145,15 +161,34 @@ class KeyRepository:
         key_id: str,
         email: str | None,
         tariff_id: int | None,
+        *,
+        traffic_limit_mb: int = 0,
+        protocol: str = "outline",
+        created_at: int | None = None,
     ) -> int:
+        created_ts = created_at if created_at is not None else int(time.time())
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
-                INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, email, tariff_id)
-                VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?)
+                INSERT INTO keys (
+                    server_id, user_id, access_url, expiry_at, traffic_limit_mb,
+                    notified, key_id, created_at, email, tariff_id, protocol
+                )
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                 """,
-                (server_id, user_id, access_url, expiry_at, key_id, email, tariff_id),
+                (
+                    server_id,
+                    user_id,
+                    access_url,
+                    expiry_at,
+                    traffic_limit_mb,
+                    key_id,
+                    created_ts,
+                    email,
+                    tariff_id,
+                    protocol,
+                ),
             )
             conn.commit()
             return c.lastrowid
@@ -167,15 +202,37 @@ class KeyRepository:
         created_at: int,
         expiry_at: int,
         tariff_id: int | None,
+        *,
+        client_config: str | None = None,
+        traffic_limit_mb: int = 0,
+        traffic_usage_bytes: int = 0,
+        traffic_over_limit_at: int | None = None,
+        traffic_over_limit_notified: int = 0,
     ) -> int:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
-                INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO v2ray_keys (
+                    server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config,
+                    traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id),
+                (
+                    server_id,
+                    user_id,
+                    v2ray_uuid,
+                    email,
+                    created_at,
+                    expiry_at,
+                    tariff_id,
+                    client_config,
+                    traffic_limit_mb,
+                    traffic_usage_bytes,
+                    traffic_over_limit_at,
+                    traffic_over_limit_notified,
+                ),
             )
             conn.commit()
             return c.lastrowid
@@ -261,7 +318,10 @@ class KeyRepository:
 
             def add_outline():
                 sql = (
-                    "SELECT k.id, k.key_id, k.access_url, k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'outline' as protocol, IFNULL(k.traffic_limit_mb,''), '' as api_url, '' as api_key "
+                    "SELECT k.id, k.key_id, k.access_url, k.created_at, k.expiry_at, "
+                    "IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'outline' as protocol, "
+                    "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, '' as api_url, '' as api_key, "
+                    "0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified "
                     "FROM keys k LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
                 )
                 where = []
@@ -286,7 +346,10 @@ class KeyRepository:
                 sql = (
                     "SELECT k.id, k.v2ray_uuid as key_id, "
                     "('PENDING_FROM_SERVER') as access_url, "
-                    "k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'v2ray' as protocol, '' as traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,'') "
+                    "k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'v2ray' as protocol, "
+                    "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "
+                    "COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes, k.traffic_over_limit_at, "
+                    "COALESCE(k.traffic_over_limit_notified, 0) AS traffic_over_limit_notified "
                     "FROM v2ray_keys k LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
                 )
                 where = []

@@ -24,10 +24,29 @@ def get_tariff_by_name_and_price(
     Returns:
         Словарь с данными тарифа или None, если не найден
     """
-    cursor.execute(
-        "SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND price_rub = ?",
-        (tariff_name, price)
-    )
+    try:
+        cursor.execute(
+            "SELECT id, name, price_rub, duration_sec, price_crypto_usd, traffic_limit_mb FROM tariffs WHERE name = ? AND price_rub = ?",
+            (tariff_name, price),
+        )
+    except sqlite3.OperationalError as exc:
+        if "traffic_limit_mb" in str(exc):
+            cursor.execute(
+                "SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND price_rub = ?",
+                (tariff_name, price),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "name": row[1],
+                "price_rub": row[2],
+                "duration_sec": row[3],
+                "price_crypto_usd": row[4] if len(row) > 4 else None,
+                "traffic_limit_mb": 0,
+            }
+        raise
     row = cursor.fetchone()
     if not row:
         return None
@@ -36,7 +55,8 @@ def get_tariff_by_name_and_price(
         "name": row[1],
         "price_rub": row[2],
         "duration_sec": row[3],
-        "price_crypto_usd": row[4] if len(row) > 4 else None
+        "price_crypto_usd": row[4] if len(row) > 4 else None,
+        "traffic_limit_mb": row[5] if len(row) > 5 else 0,
     }
 
 

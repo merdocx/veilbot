@@ -240,6 +240,84 @@ const updateProgressBars = (root = document) => {
     });
 };
 
+const updateKeyRow = (key) => {
+    if (!key) return;
+    const row = document.querySelector(`.keys-table__row[data-key-id="${key.id}"]`);
+    if (!row) return;
+
+    row.dataset.protocol = key.protocol || '';
+    row.dataset.status = key.status || '';
+    row.dataset.expiryTs = key.expiry_at || '';
+    row.dataset.expiryIso = key.expiry_iso || '';
+
+    const statusIcon = row.querySelector('[data-field="status-icon"]');
+    if (statusIcon) {
+        statusIcon.textContent = key.status_icon;
+        statusIcon.setAttribute('title', key.status_label);
+        statusIcon.classList.remove('status-icon--active', 'status-icon--expired');
+        statusIcon.classList.add(key.status_class);
+    }
+
+    const editButton = row.querySelector('[data-action="edit-key"]');
+    if (editButton) {
+        editButton.dataset.expiry = key.expiry_iso || '';
+    }
+
+    const trafficCell = row.querySelector('.traffic-cell');
+    if (trafficCell && key.traffic) {
+        trafficCell.dataset.trafficState = key.traffic.state || 'na';
+        trafficCell.dataset.overLimit = key.traffic.over_limit ? '1' : '0';
+        trafficCell.dataset.overLimitDeadline = key.traffic.over_limit_deadline || '';
+        trafficCell.classList.toggle('traffic-cell--over-limit', Boolean(key.traffic.over_limit));
+
+        const display = trafficCell.querySelector('[data-field="traffic-display"]');
+        if (display) {
+            display.textContent = key.traffic.display;
+        }
+        const limit = trafficCell.querySelector('[data-field="traffic-limit"]');
+        if (limit) {
+            limit.textContent = key.traffic.limit_display && key.traffic.limit_display !== '—'
+                ? `Лимит: ${key.traffic.limit_display}`
+                : 'Лимит не задан';
+            if (!key.traffic.limit_display || key.traffic.limit_display === '—') {
+                limit.classList.add('text-muted');
+            } else {
+                limit.classList.remove('text-muted');
+            }
+        }
+        const warning = trafficCell.querySelector('[data-field="traffic-warning"]');
+        if (warning) {
+            if (key.traffic.over_limit) {
+                const deadlineText = key.traffic.over_limit_deadline_display || '';
+                warning.textContent = deadlineText
+                    ? `Превышен лимит. ${deadlineText}`
+                    : 'Превышен лимит. Ключ будет отключён без продления.';
+                warning.classList.remove('hidden');
+            } else {
+                warning.textContent = '';
+                warning.classList.add('hidden');
+            }
+        }
+
+        const trafficBar = trafficCell.querySelector('.progress-bar');
+        if (trafficBar) {
+            const percent = key.traffic.usage_percent != null
+                ? Math.round(key.traffic.usage_percent * 100)
+                : 0;
+            trafficBar.dataset.progress = percent;
+        }
+    }
+
+    if (key.access_url) {
+        const copyButton = row.querySelector('[data-action="copy-key"]');
+        if (copyButton) {
+            copyButton.dataset.key = key.access_url;
+        }
+    }
+
+    updateProgressBars(row);
+};
+
 const loadTraffic = async (keyId) => {
     const cell = document.querySelector(`.traffic-cell[data-key-id="${keyId}"]`);
     if (!cell) return;
@@ -255,13 +333,17 @@ const loadTraffic = async (keyId) => {
         }
 
         restorePreviousContent(cell);
-        const display = cell.querySelector('[data-field="traffic-display"]');
-        if (display) {
-            display.textContent = data.traffic;
+        if (data.key) {
+            updateKeyRow(data.key);
         } else {
-            cell.textContent = data.traffic;
+            const display = cell.querySelector('[data-field="traffic-display"]');
+            if (display) {
+                display.textContent = data.traffic;
+            } else {
+                cell.textContent = data.traffic;
+            }
+            updateProgressBars(cell);
         }
-        updateProgressBars(cell);
     } catch (error) {
         handleError(error, 'Ошибка загрузки трафика');
         restorePreviousContent(cell);
@@ -498,7 +580,9 @@ const VeilBotCommon = {
     showPageLoader,
     handleError,
     loadTraffic,
+    updateKeyRow,
     updateProgressBars,
+    updateKeyRow,
     ModalController,
     postForm,
     attachConfirmHandlers,
@@ -529,6 +613,8 @@ export {
     handleError,
     loadTraffic,
     updateProgressBars,
+    updateKeyRow,
+    updateKeyRow,
     ModalController,
     postForm,
     VeilBotCommon,

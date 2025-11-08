@@ -97,12 +97,10 @@
                 <tr>
                     <th>ID</th>
                     <th>Провайдер</th>
-                    <th>Payment ID</th>
                     <th>Тариф</th>
                     <th>Email</th>
                     <th>Сумма</th>
                     <th>User</th>
-                    <th>Страна</th>
                     <th>Создан</th>
                     <th>Статус</th>
                     <th>Действия</th>
@@ -114,49 +112,35 @@
                     <td>{{ p.id }}</td>
                     <td>
                         {% set prov = (p.provider.value if (p.provider is not none and (p.provider is not string)) else (p.provider or 'yookassa')) %}
-                        <span class="badge badge-info">
-                            <span class="material-icons icon-small">payment</span>
-                            {{ prov|lower }}
-                        </span>
-                    </td>
-                    <td>
-                        <div class="inline-flex">
-                            <span class="code" title="{{ p.payment_id }}">
-                                <a href="/payments/{{ p.payment_id }}" class="link-plain">
-                                    {{ p.payment_id|string|truncate(20) }}
-                                </a>
-                            </span>
+                        <div class="cell-primary">{{ prov|replace('_', ' ')|capitalize }}</div>
+                        <div class="cell-secondary">
+                            <a href="/payments/{{ p.payment_id }}" class="link-plain text-muted" title="Открыть платеж">
+                                ID: {{ p.payment_id|string|truncate(18) }}
+                            </a>
                         </div>
                     </td>
                     <td>
-                        <span class="badge badge-neutral">{{ p.tariff_id }}</span>
+                        <div class="cell-primary">#{{ p.tariff_id or '—' }}</div>
                     </td>
                     <td>
                         {% if p.email %}
-                            <span class="text-muted">{{ p.email }}</span>
+                            <div class="cell-primary" title="{{ p.email }}">{{ p.email }}</div>
                         {% else %}
-                            <span class="text-muted">—</span>
+                            <div class="cell-primary text-muted">—</div>
                         {% endif %}
                     </td>
                     <td>
-                        <span class="text-large">{{ p.amount|rub }}</span>
+                        <div class="cell-primary">{{ p.amount|rub }}</div>
                     </td>
-                    <td>{{ p.user_id }}</td>
-                    <td>{{ p.country or '—' }}</td>
-                    <td class="text-small">
-                        {{ (p.created_at.timestamp() if p.created_at else 0) | timestamp | truncate(10) }}
+                    <td>
+                        <div class="cell-primary">{{ p.user_id or '—' }}</div>
                     </td>
-                    <td class="text-center">
+                    <td>
+                        <div class="cell-primary">{{ (p.created_at.timestamp() if p.created_at else 0) | timestamp }}</div>
+                    </td>
+                    <td>
                         {% set st = (p.status | status_text) %}
-                        {% if st == 'paid' %}
-                            <span class="material-icons icon-lg icon-success" title="Оплачен">check_circle</span>
-                        {% elif st == 'pending' %}
-                            <span class="material-icons icon-lg icon-warning" title="Ожидает">schedule</span>
-                        {% elif st in ['failed','cancelled','expired'] %}
-                            <span class="material-icons icon-lg icon-danger" title="{{ st }}">cancel</span>
-                        {% else %}
-                            <span class="material-icons icon-lg icon-muted" title="{{ st }}">help_outline</span>
-                        {% endif %}
+                        <div class="cell-primary">{{ st }}</div>
                     </td>
                     <td>
                         <div class="action-buttons">

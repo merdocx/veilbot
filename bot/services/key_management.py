@@ -20,6 +20,8 @@ from config import PROTOCOLS, ADMIN_ID
 
 logger = logging.getLogger(__name__)
 
+_COLUMN_CACHE: Dict[str, set[str]] = {}
+
 
 # ============================================================================
 # Вспомогательные функции
@@ -95,6 +97,15 @@ def find_alternative_server(
     return row
 
 
+def _table_has_column(cursor: sqlite3.Cursor, table_name: str, column_name: str) -> bool:
+    columns = _COLUMN_CACHE.get(table_name)
+    if columns is None:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = {row[1] for row in cursor.fetchall()}
+        _COLUMN_CACHE[table_name] = columns
+    return column_name in columns
+
+
 # ============================================================================
 # Функции продления ключей
 # ============================================================================
@@ -120,6 +131,15 @@ def extend_existing_key(
         tariff_id: ID тарифа (опционально, для обновления)
     """
     now = int(time.time())
+    tariff_limit_mb: Optional[int] = None
+    if tariff_id:
+        try:
+            cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff_id,))
+            row = cursor.fetchone()
+            if row and row[0] is not None:
+                tariff_limit_mb = int(row[0])
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff_id}: {e}")
     # Если ключ истёк, продляем от текущего времени, иначе от старого expiry_at
     if existing_key[1] <= now:
         new_expiry = now + duration
@@ -160,6 +180,15 @@ async def extend_existing_key_with_fallback(
         protocol: Протокол VPN ('outline' или 'v2ray')
     """
     now = int(time.time())
+    tariff_limit_mb: Optional[int] = None
+    if tariff_id:
+        try:
+            cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff_id,))
+            row = cursor.fetchone()
+            if row and row[0] is not None:
+                tariff_limit_mb = int(row[0])
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff_id}: {e}")
     # Если ключ истёк, продляем от текущего времени, иначе от старого expiry_at
     if existing_key[1] <= now:
         new_expiry = now + duration
@@ -206,13 +235,22 @@ async def extend_existing_key_with_fallback(
                     return False
                 
                 # Обновляем ключ в базе данных
-                cursor.execute("""
-                    UPDATE keys 
-                    SET server_id = ?, access_url = ?, key_id = ?, expiry_at = ?, email = ?, tariff_id = ?
-                    WHERE id = ?
-                """, (alt_server_id, key['accessUrl'], key['id'], new_expiry, email or '', tariff_id or 0, existing_key[0]))
+                update_parts = [
+                    ("server_id = ?", alt_server_id),
+                    ("access_url = ?", key['accessUrl']),
+                    ("key_id = ?", key['id']),
+                    ("expiry_at = ?", new_expiry),
+                    ("email = ?", email or ''),
+                    ("tariff_id = ?", tariff_id or 0),
+                ]
+                if tariff_limit_mb is not None and _table_has_column(cursor, "keys", "traffic_limit_mb"):
+                    update_parts.append(("traffic_limit_mb = ?", tariff_limit_mb))
+                sql = "UPDATE keys SET " + ", ".join(part for part, _ in update_parts) + " WHERE id = ?"
+                params = [value for _, value in update_parts]
+                params.append(existing_key[0])
+                cursor.execute(sql, tuple(params))
                 
-                logging.info(f"Key {existing_key[0]} moved to alternative active server {alt_server_id} ({alt_name}) for renewal")
+                logging.info(f"Key {existing_key[0]} moved to alternative server {alt_server_id} ({alt_name})")
                 return True
             except Exception as e:
                 logging.error(f"Error creating key on alternative server: {e}")
@@ -256,13 +294,21 @@ async def extend_existing_key_with_fallback(
                     return False
                 
                 # Обновляем ключ в базе данных
-                cursor.execute("""
-                    UPDATE v2ray_keys 
-                    SET server_id = ?, v2ray_uuid = ?, expiry_at = ?, email = ?, tariff_id = ?
-                    WHERE id = ?
-                """, (alt_server_id, user_data['uuid'], new_expiry, email or '', tariff_id or 0, existing_key[0]))
+                update_parts = [
+                    ("server_id = ?", alt_server_id),
+                    ("v2ray_uuid = ?", user_data['uuid']),
+                    ("expiry_at = ?", new_expiry),
+                    ("email = ?", email or ''),
+                    ("tariff_id = ?", tariff_id or 0),
+                ]
+                if tariff_limit_mb is not None and _table_has_column(cursor, "v2ray_keys", "traffic_limit_mb"):
+                    update_parts.append(("traffic_limit_mb = ?", tariff_limit_mb))
+                sql = "UPDATE v2ray_keys SET " + ", ".join(part for part, _ in update_parts) + " WHERE id = ?"
+                params = [value for _, value in update_parts]
+                params.append(existing_key[0])
+                cursor.execute(sql, tuple(params))
                 
-                logging.info(f"V2Ray key {existing_key[0]} moved to alternative active server {alt_server_id} ({alt_name}) for renewal")
+                logging.info(f"V2Ray key {existing_key[0]} moved to alternative server {alt_server_id} ({alt_name})")
                 return True
             except Exception as e:
                 logging.error(f"Error creating V2Ray key on alternative server: {e}")
@@ -272,23 +318,29 @@ async def extend_existing_key_with_fallback(
     if check_server_availability(api_url, cert_sha256, protocol):
         # Сервер доступен, просто продлеваем
         if protocol == 'outline':
-            if email and tariff_id:
-                cursor.execute("UPDATE keys SET expiry_at = ?, email = ?, tariff_id = ? WHERE id = ?", (new_expiry, email, tariff_id, existing_key[0]))
-            elif email:
-                cursor.execute("UPDATE keys SET expiry_at = ?, email = ? WHERE id = ?", (new_expiry, email, existing_key[0]))
-            elif tariff_id:
-                cursor.execute("UPDATE keys SET expiry_at = ?, tariff_id = ? WHERE id = ?", (new_expiry, tariff_id, existing_key[0]))
-            else:
-                cursor.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry, existing_key[0]))
+            update_parts = [("expiry_at = ?", new_expiry)]
+            if email is not None:
+                update_parts.append(("email = ?", email))
+            if tariff_id is not None:
+                update_parts.append(("tariff_id = ?", tariff_id))
+            if tariff_limit_mb is not None and _table_has_column(cursor, "keys", "traffic_limit_mb"):
+                update_parts.append(("traffic_limit_mb = ?", tariff_limit_mb))
+            sql = "UPDATE keys SET " + ", ".join(part for part, _ in update_parts) + " WHERE id = ?"
+            params = [value for _, value in update_parts]
+            params.append(existing_key[0])
+            cursor.execute(sql, tuple(params))
         else:  # v2ray
-            if email and tariff_id:
-                cursor.execute("UPDATE v2ray_keys SET expiry_at = ?, email = ?, tariff_id = ? WHERE id = ?", (new_expiry, email, tariff_id, existing_key[0]))
-            elif email:
-                cursor.execute("UPDATE v2ray_keys SET expiry_at = ?, email = ? WHERE id = ?", (new_expiry, email, existing_key[0]))
-            elif tariff_id:
-                cursor.execute("UPDATE v2ray_keys SET expiry_at = ?, tariff_id = ? WHERE id = ?", (new_expiry, tariff_id, existing_key[0]))
-            else:
-                cursor.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (new_expiry, existing_key[0]))
+            update_parts = [("expiry_at = ?", new_expiry)]
+            if email is not None:
+                update_parts.append(("email = ?", email))
+            if tariff_id is not None:
+                update_parts.append(("tariff_id = ?", tariff_id))
+            if tariff_limit_mb is not None and _table_has_column(cursor, "v2ray_keys", "traffic_limit_mb"):
+                update_parts.append(("traffic_limit_mb = ?", tariff_limit_mb))
+            sql = "UPDATE v2ray_keys SET " + ", ".join(part for part, _ in update_parts) + " WHERE id = ?"
+            params = [value for _, value in update_parts]
+            params.append(existing_key[0])
+            cursor.execute(sql, tuple(params))
         return True
     else:
         # Сервер недоступен, ищем альтернативный
@@ -490,6 +542,26 @@ async def switch_protocol_and_extend(
     
     old_server_id = old_key_data['server_id']
     old_email = old_key_data.get('email') or email
+    try:
+        traffic_limit_mb = int(old_key_data.get('traffic_limit_mb') or 0)
+    except (TypeError, ValueError):
+        traffic_limit_mb = 0
+    if isinstance(tariff, dict):
+        try:
+            tariff_limit = int(tariff.get('traffic_limit_mb') or 0)
+        except (TypeError, ValueError):
+            tariff_limit = 0
+        if traffic_limit_mb == 0 and tariff_limit:
+            traffic_limit_mb = tariff_limit
+        tariff['traffic_limit_mb'] = tariff_limit
+    if traffic_limit_mb == 0 and isinstance(tariff, dict) and tariff.get('id'):
+        try:
+            cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff['id'],))
+            row = cursor.fetchone()
+            if row and row[0]:
+                traffic_limit_mb = int(row[0])
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff.get('id')}: {e}")
     
     logging.info(f"User {user_id}: switching protocol {old_protocol}→{new_protocol}, country {old_country}→{target_country}, remaining={remaining}s, adding={additional_duration}s")
     
@@ -528,9 +600,9 @@ async def switch_protocol_and_extend(
             
             # Добавляем новый ключ
             cursor.execute(
-                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, key["accessUrl"], new_expiry, key["id"], now, old_email, tariff['id'])
+                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
+                "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, key["accessUrl"], new_expiry, traffic_limit_mb, key["id"], now, old_email, tariff['id'], new_protocol),
             )
             
             access_url = key["accessUrl"]
@@ -613,11 +685,49 @@ async def switch_protocol_and_extend(
                     access_url = config
             
             # Добавляем новый ключ с конфигурацией
+            usage_bytes_new = 0 if reset_usage else key_data.get('traffic_usage_bytes', 0)
+            over_limit_at_new = None if reset_usage else key_data.get('traffic_over_limit_at')
+            over_limit_notified_new = 0 if reset_usage else key_data.get('traffic_over_limit_notified', 0)
             cursor.execute(
-                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'], config)
+                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config, "
+                "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    new_server_id,
+                    user_id,
+                    user_data['uuid'],
+                    new_expiry,
+                    now,
+                    old_email,
+                    tariff['id'],
+                    config,
+                    traffic_limit_mb,
+                    usage_bytes_new,
+                    over_limit_at_new,
+                    over_limit_notified_new,
+                ),
             )
+            new_key_id = cursor.lastrowid
+            if (traffic_limit_mb or 0) <= 0 and tariff.get('id'):
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE v2ray_keys
+                        SET traffic_limit_mb = COALESCE(
+                            (SELECT traffic_limit_mb FROM tariffs WHERE id = ?),
+                            0
+                        )
+                        WHERE id = ?
+                        """,
+                        (tariff['id'], new_key_id),
+                    )
+                except Exception as update_error:
+                    logging.warning("[PROTOCOL SWITCH] Failed to backfill traffic_limit_mb for key %s: %s", new_key_id, update_error)
+                else:
+                    cursor.execute("SELECT traffic_limit_mb FROM v2ray_keys WHERE id = ?", (new_key_id,))
+                    row_limit = cursor.fetchone()
+                    if not row_limit or (row_limit[0] or 0) <= 0:
+                        logging.warning("[PROTOCOL SWITCH] traffic_limit_mb remains zero for key %s after backfill", new_key_id)
             
             # Удаляем старый ключ
             await delete_old_key_after_success(cursor, old_key_for_deletion)
@@ -698,7 +808,8 @@ async def change_country_and_extend(
     new_country: str, 
     additional_duration: int, 
     email: str, 
-    tariff: Dict[str, Any]
+    tariff: Dict[str, Any],
+    reset_usage: bool = False,
 ) -> None:
     """
     Меняет страну для ключа и добавляет новое время (при покупке нового тарифа)
@@ -715,12 +826,34 @@ async def change_country_and_extend(
         additional_duration: Дополнительное время в секундах (продление)
         email: Email пользователя
         tariff: Словарь с данными тарифа
+        reset_usage: Сбрасывать ли учёт трафика после переноса (используется при продлении)
     """
     bot = get_bot_instance()
     main_menu = get_main_menu()
     
     now = int(time.time())
     protocol = key_data['protocol']
+    traffic_limit_mb = 0
+    try:
+        traffic_limit_mb = int(key_data.get('traffic_limit_mb') or 0)
+    except (TypeError, ValueError):
+        traffic_limit_mb = 0
+    if isinstance(tariff, dict):
+        try:
+            tariff_limit = int(tariff.get('traffic_limit_mb') or 0)
+        except (TypeError, ValueError):
+            tariff_limit = 0
+        if traffic_limit_mb == 0 and tariff_limit:
+            traffic_limit_mb = tariff_limit
+        tariff['traffic_limit_mb'] = tariff_limit
+    if traffic_limit_mb == 0 and tariff and isinstance(tariff, dict) and tariff.get('id'):
+        try:
+            cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff['id'],))
+            row = cursor.fetchone()
+            if row and row[0]:
+                traffic_limit_mb = int(row[0])
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff.get('id')}: {e}")
     
     # Считаем оставшееся время старого ключа
     remaining = max(0, key_data['expiry_at'] - now)
@@ -754,7 +887,10 @@ async def change_country_and_extend(
         'server_id': old_server_id,
         'key_id': key_data.get('key_id'),
         'v2ray_uuid': key_data.get('v2ray_uuid'),
-        'db_id': key_data['id']
+        'db_id': key_data['id'],
+        'traffic_usage_bytes': key_data.get('traffic_usage_bytes', 0),
+        'traffic_over_limit_at': key_data.get('traffic_over_limit_at'),
+        'traffic_over_limit_notified': key_data.get('traffic_over_limit_notified', 0),
     }
     
     try:
@@ -768,9 +904,9 @@ async def change_country_and_extend(
             
             # Добавляем новый ключ
             cursor.execute(
-                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, key["accessUrl"], new_expiry, key["id"], now, old_email, tariff['id'])
+                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
+                "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                (new_server_id, user_id, key["accessUrl"], new_expiry, traffic_limit_mb, key["id"], now, old_email, tariff['id'], protocol),
             )
             
             access_url = key["accessUrl"]
@@ -796,35 +932,20 @@ async def change_country_and_extend(
         elif protocol == "v2ray":
             from vpn_protocols import V2RayProtocol
             v2ray_client = V2RayProtocol(api_url, api_key)
-            user_data = await v2ray_client.create_user(old_email or f"user_{user_id}@veilbot.com")
-            
-            if not user_data or not user_data.get('uuid'):
-                logging.error(f"Failed to create V2Ray key on server {new_server_id}")
-                await message.answer("❌ Ошибка при создании V2Ray ключа на новом сервере.", reply_markup=main_menu)
-                return False
-            
-            # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
-            config = None
-            if user_data.get('client_config'):
-                config = user_data['client_config']
-                # Извлекаем VLESS URL, если конфигурация многострочная
-                if 'vless://' in config:
-                    lines = config.split('\n')
-                    for line in lines:
-                        if line.strip().startswith('vless://'):
-                            config = line.strip()
-                            break
-                access_url = config
-                logging.info(f"Using client_config from create_user response for country change")
-            else:
-                # Если client_config нет, используем get_user_config или fallback
-                try:
-                    config = await v2ray_client.get_user_config(user_data['uuid'], {
-                        'domain': domain,
-                        'port': 443,
-                        'path': v2ray_path or '/v2ray',
-                        'email': old_email or f"user_{user_id}@veilbot.com"
-                    })
+            access_url = None
+            new_key_id: Optional[int] = None
+            try:
+                user_data = await v2ray_client.create_user(old_email or f"user_{user_id}@veilbot.com")
+                
+                if not user_data or not user_data.get('uuid'):
+                    logging.error(f"Failed to create V2Ray key on server {new_server_id}")
+                    await message.answer("❌ Ошибка при создании V2Ray ключа на новом сервере.", reply_markup=main_menu)
+                    return False
+                
+                # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+                config = None
+                if user_data.get('client_config'):
+                    config = user_data['client_config']
                     # Извлекаем VLESS URL, если конфигурация многострочная
                     if 'vless://' in config:
                         lines = config.split('\n')
@@ -833,19 +954,81 @@ async def change_country_and_extend(
                                 config = line.strip()
                                 break
                     access_url = config
-                except Exception as e:
-                    logging.warning(f"Failed to get user config, using fallback: {e}")
-                    # Fallback к хардкодированному формату
-                    config = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
-                    access_url = config
-            
-            # Добавляем новый ключ с конфигурацией
-            cursor.execute(
-                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, user_data['uuid'], new_expiry, now, old_email, tariff['id'], config)
-            )
-            
+                    logging.info(f"Using client_config from create_user response for country change")
+                else:
+                    # Если client_config нет, используем get_user_config или fallback
+                    try:
+                        config = await v2ray_client.get_user_config(user_data['uuid'], {
+                            'domain': domain,
+                            'port': 443,
+                            'path': v2ray_path or '/v2ray',
+                            'email': old_email or f"user_{user_id}@veilbot.com"
+                        })
+                        # Извлекаем VLESS URL, если конфигурация многострочная
+                        if 'vless://' in config:
+                            lines = config.split('\n')
+                            for line in lines:
+                                if line.strip().startswith('vless://'):
+                                    config = line.strip()
+                                    break
+                        access_url = config
+                    except Exception as e:
+                        logging.warning(f"Failed to get user config, using fallback: {e}")
+                        # Fallback к хардкодированному формату
+                        config = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
+                        access_url = config
+                
+                # Добавляем новый ключ с конфигурацией
+                usage_bytes_new = 0 if reset_usage else key_data.get('traffic_usage_bytes', 0)
+                over_limit_at_new = None if reset_usage else key_data.get('traffic_over_limit_at')
+                over_limit_notified_new = 0 if reset_usage else key_data.get('traffic_over_limit_notified', 0)
+
+                cursor.execute(
+                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config, "
+                    "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        new_server_id,
+                        user_id,
+                        user_data['uuid'],
+                        new_expiry,
+                        now,
+                        old_email,
+                        tariff['id'],
+                        config,
+                        traffic_limit_mb,
+                        usage_bytes_new,
+                        over_limit_at_new,
+                        over_limit_notified_new,
+                    ),
+                )
+                new_key_id = cursor.lastrowid
+
+                if reset_usage and user_data.get('uuid'):
+                    try:
+                        await v2ray_client.reset_key_usage(user_data['uuid'])
+                    except Exception as reset_error:
+                        logging.error(f"Failed to reset V2Ray usage after renewal for UUID {user_data['uuid']}: {reset_error}")
+                    if new_key_id:
+                        try:
+                            cursor.execute(
+                                """
+                                UPDATE v2ray_keys
+                                SET traffic_usage_bytes = 0,
+                                    traffic_over_limit_at = NULL,
+                                    traffic_over_limit_notified = 0
+                                WHERE id = ?
+                                """,
+                                (new_key_id,),
+                            )
+                        except Exception as reset_db_error:
+                            logging.error(f"Failed to reset V2Ray usage flags in DB for key {new_key_id}: {reset_db_error}")
+            finally:
+                try:
+                    await v2ray_client.close()
+                except Exception as close_error:
+                    logging.warning(f"Error closing V2Ray client after country change: {close_error}")
+
             # Удаляем старый ключ
             await delete_old_key_after_success(cursor, old_key_data)
             
@@ -938,12 +1121,18 @@ async def change_protocol_for_key(
     
     with get_db_cursor(commit=False) as cursor:
         # Получаем тариф
-        cursor.execute("SELECT name, duration_sec, price_rub FROM tariffs WHERE id = ?", (key_data['tariff_id'],))
+        cursor.execute("SELECT name, duration_sec, price_rub, traffic_limit_mb FROM tariffs WHERE id = ?", (key_data['tariff_id'],))
         tariff_row = cursor.fetchone()
         if not tariff_row:
             await message.answer("Ошибка: тариф не найден.", reply_markup=main_menu)
             return
-        tariff = {'id': key_data['tariff_id'], 'name': tariff_row[0], 'duration_sec': tariff_row[1], 'price_rub': tariff_row[2]}
+        tariff = {
+            'id': key_data['tariff_id'],
+            'name': tariff_row[0],
+            'duration_sec': tariff_row[1],
+            'price_rub': tariff_row[2],
+            'traffic_limit_mb': tariff_row[3],
+        }
         
         # Считаем оставшееся время
         remaining = key_data['expiry_at'] - now
@@ -980,7 +1169,10 @@ async def change_protocol_for_key(
             'server_id': old_server_id,
             'key_id': key_data.get('key_id'),
             'v2ray_uuid': key_data.get('v2ray_uuid'),
-            'db_id': key_data['id']
+            'db_id': key_data['id'],
+            'traffic_usage_bytes': key_data.get('traffic_usage_bytes', 0),
+            'traffic_over_limit_at': key_data.get('traffic_over_limit_at'),
+            'traffic_over_limit_notified': key_data.get('traffic_over_limit_notified', 0),
         }
         logging.info(f"[PROTOCOL CHANGE] Old key data: type={old_key_data['type']}, old_protocol={old_protocol}, key_data_type={key_data.get('type')}, db_id={old_key_data['db_id']}, v2ray_uuid={old_key_data.get('v2ray_uuid')}, key_id={old_key_data.get('key_id')}")
         
@@ -999,9 +1191,20 @@ async def change_protocol_for_key(
             
             # Добавляем новый ключ с тем же сроком действия и email
             cursor.execute(
-                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, key_data['tariff_id'])
+                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
+                "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                (
+                    new_server_id,
+                    user_id,
+                    key["accessUrl"],
+                    now + remaining,
+                    traffic_limit_mb,
+                    key["id"],
+                    now,
+                    old_email,
+                    key_data['tariff_id'],
+                    new_protocol,
+                ),
             )
             
             await message.answer(format_key_message_unified(key["accessUrl"], new_protocol, tariff, remaining), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
@@ -1038,10 +1241,27 @@ async def change_protocol_for_key(
                     })
                 
                 # Добавляем новый ключ с тем же сроком действия и email, включая client_config
+                usage_bytes_new = key_data.get('traffic_usage_bytes', 0)
+                over_limit_at_new = key_data.get('traffic_over_limit_at')
+                over_limit_notified_new = key_data.get('traffic_over_limit_notified', 0)
                 cursor.execute(
-                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'], config)
+                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, "
+                    "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        new_server_id,
+                        user_id,
+                        user_data['uuid'],
+                        old_email or f"user_{user_id}@veilbot.com",
+                        now,
+                        now + remaining,
+                        key_data['tariff_id'],
+                        config,
+                        traffic_limit_mb,
+                        usage_bytes_new,
+                        over_limit_at_new,
+                        over_limit_notified_new,
+                    ),
                 )
                 
                 reissue_text = (
@@ -1132,13 +1352,18 @@ async def change_country_for_key(
             await message.answer("Ошибка: тариф не найден в данных ключа.", reply_markup=main_menu)
             return
         
-        cursor.execute("SELECT name, duration_sec, price_rub FROM tariffs WHERE id = ?", (tariff_id,))
-        tariff_row = cursor.fetchone()
+        tariff_row = _fetch_tariff_row_with_limit(cursor, tariff_id)
         if not tariff_row:
             logging.error(f"[COUNTRY CHANGE] Tariff {tariff_id} not found in database")
             await message.answer("Ошибка: тариф не найден в базе данных.", reply_markup=main_menu)
             return
-        tariff = {'id': tariff_id, 'name': tariff_row[0], 'duration_sec': tariff_row[1], 'price_rub': tariff_row[2]}
+        tariff = {
+            'id': tariff_id,
+            'name': tariff_row[0],
+            'duration_sec': tariff_row[1],
+            'price_rub': tariff_row[2],
+            'traffic_limit_mb': tariff_row[3],
+        }
         
         # Считаем оставшееся время
         remaining = key_data['expiry_at'] - now
@@ -1212,9 +1437,20 @@ async def change_country_for_key(
             
             # Добавляем новый ключ с тем же сроком действия и email
             cursor.execute(
-                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, tariff_id)
+                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
+                "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                (
+                    new_server_id,
+                    user_id,
+                    key["accessUrl"],
+                    now + remaining,
+                    traffic_limit_mb,
+                    key["id"],
+                    now,
+                    old_email,
+                    tariff_id,
+                    protocol,
+                ),
             )
             
             country_text = (
@@ -1279,10 +1515,27 @@ async def change_country_for_key(
                 # Добавляем новый ключ с client_config в базу данных (до удаления старого)
                 # Временно отключаем foreign key проверку для INSERT
                 with safe_foreign_keys_off(cursor):
+                    usage_bytes_new = old_key_data.get('traffic_usage_bytes', 0)
+                    over_limit_at_new = old_key_data.get('traffic_over_limit_at')
+                    over_limit_notified_new = old_key_data.get('traffic_over_limit_notified', 0)
                     cursor.execute(
-                        "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (new_server_id, user_id, user_data['uuid'], now + remaining, now, old_email, tariff_id, config)
+                        "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config, "
+                        "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            new_server_id,
+                            user_id,
+                            user_data['uuid'],
+                            now + remaining,
+                            now,
+                            old_email,
+                            tariff_id,
+                            config,
+                            traffic_limit_mb,
+                            usage_bytes_new,
+                            over_limit_at_new,
+                            over_limit_notified_new,
+                        ),
                     )
                 
                 # Удаляем старый ключ из базы после успешного создания нового
@@ -1383,12 +1636,18 @@ async def reissue_specific_key(
     
     with get_db_cursor(commit=True) as cursor:
         # Получаем тариф
-        cursor.execute("SELECT name, duration_sec, price_rub FROM tariffs WHERE id = ?", (key_data['tariff_id'],))
+        cursor.execute("SELECT name, duration_sec, price_rub, traffic_limit_mb FROM tariffs WHERE id = ?", (key_data['tariff_id'],))
         tariff_row = cursor.fetchone()
         if not tariff_row:
             await message.answer("Ошибка: тариф не найден.", reply_markup=main_menu)
             return
-        tariff = {'id': key_data['tariff_id'], 'name': tariff_row[0], 'duration_sec': tariff_row[1], 'price_rub': tariff_row[2]}
+        tariff = {
+            'id': key_data['tariff_id'],
+            'name': tariff_row[0],
+            'duration_sec': tariff_row[1],
+            'price_rub': tariff_row[2],
+            'traffic_limit_mb': tariff_row[3],
+        }
         
         # Считаем оставшееся время
         remaining = key_data['expiry_at'] - now
@@ -1400,6 +1659,19 @@ async def reissue_specific_key(
         country = key_data['country']
         old_email = key_data['email']
         protocol = key_data['protocol']
+        try:
+            traffic_limit_mb = int(key_data.get('traffic_limit_mb') or 0)
+        except (TypeError, ValueError):
+            traffic_limit_mb = 0
+        try:
+            tariff_limit = int(tariff.get('traffic_limit_mb') or 0)
+        except (TypeError, ValueError):
+            tariff_limit = 0
+        if traffic_limit_mb == 0 and tariff_limit:
+            traffic_limit_mb = tariff_limit
+        if traffic_limit_mb == 0:
+            traffic_limit_mb = tariff_limit
+        tariff['traffic_limit_mb'] = tariff_limit
         
         # Ищем другие серверы той же страны и протокола (только доступные к покупке)
         cursor.execute("""
@@ -1503,9 +1775,20 @@ async def reissue_specific_key(
             
             # Добавляем новый ключ с тем же сроком действия и email
             cursor.execute(
-                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_server_id, user_id, key["accessUrl"], now + remaining, key["id"], now, old_email, key_data['tariff_id'])
+                "INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
+                "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                (
+                    new_server_id,
+                    user_id,
+                    key["accessUrl"],
+                    now + remaining,
+                    traffic_limit_mb,
+                    key["id"],
+                    now,
+                    old_email,
+                    key_data['tariff_id'],
+                    protocol,
+                ),
             )
             
             reissue_text = (
@@ -1594,10 +1877,27 @@ async def reissue_specific_key(
                 # Добавляем новый ключ с client_config в базу данных (до удаления старого)
                 # Временно отключаем foreign key проверку для INSERT
                 with safe_foreign_keys_off(cursor):
+                    usage_bytes_new = key_data.get('traffic_usage_bytes', 0)
+                    over_limit_at_new = key_data.get('traffic_over_limit_at')
+                    over_limit_notified_new = key_data.get('traffic_over_limit_notified', 0)
                     cursor.execute(
-                        "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (new_server_id, user_id, user_data['uuid'], old_email or f"user_{user_id}@veilbot.com", now, now + remaining, key_data['tariff_id'], config)
+                        "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, "
+                        "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            new_server_id,
+                            user_id,
+                            user_data['uuid'],
+                            old_email or f"user_{user_id}@veilbot.com",
+                            now,
+                            now + remaining,
+                            key_data['tariff_id'],
+                            config,
+                            traffic_limit_mb,
+                            usage_bytes_new,
+                            over_limit_at_new,
+                            over_limit_notified_new,
+                        ),
                     )
                 
                 # Удаляем старый ключ из базы после успешного создания нового
@@ -1648,4 +1948,24 @@ async def reissue_specific_key(
             )
         except Exception as e:
             logging.error(f"Failed to send admin notification (reissue): {e}")
+
+
+def _fetch_tariff_row_with_limit(cursor: sqlite3.Cursor, tariff_id: int) -> Optional[tuple]:
+    try:
+        cursor.execute(
+            "SELECT name, duration_sec, price_rub, traffic_limit_mb FROM tariffs WHERE id = ?",
+            (tariff_id,),
+        )
+        return cursor.fetchone()
+    except sqlite3.OperationalError as exc:
+        if "traffic_limit_mb" in str(exc):
+            cursor.execute(
+                "SELECT name, duration_sec, price_rub FROM tariffs WHERE id = ?",
+                (tariff_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return (*row, 0)
+            return None
+        raise
 

@@ -5,7 +5,8 @@
 import asyncio
 import time
 import logging
-from typing import Optional, Callable, Awaitable, Dict
+from collections import defaultdict
+from typing import Optional, Callable, Awaitable, Dict, Any
 
 from utils import get_db_cursor
 from outline import delete_key
@@ -25,6 +26,10 @@ low_key_notified: bool = False
 
 _TASK_ERROR_COOLDOWN_SECONDS = 1800
 _task_last_error: Dict[str, float] = {}
+
+TRAFFIC_NOTIFY_WARNING = 1
+TRAFFIC_NOTIFY_DISABLED = 2
+TRAFFIC_DISABLE_GRACE = 86400  # 24 часа
 
 
 async def _notify_task_error(task_name: str, error: Exception) -> None:
@@ -336,6 +341,291 @@ async def notify_expiring_keys() -> None:
     )
 
 
+def _format_bytes_short(num_bytes: Optional[float]) -> str:
+    if not num_bytes or num_bytes <= 0:
+        return "0 Б"
+    value = float(num_bytes)
+    units = ["Б", "КБ", "МБ", "ГБ", "ТБ", "ПБ"]
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024
+        idx += 1
+    if idx == 0:
+        return f"{int(value)} {units[idx]}"
+    return f"{value:.2f} {units[idx]}"
+
+
+async def monitor_v2ray_traffic_limits() -> None:
+    """Контроль превышения трафиковых лимитов для V2Ray ключей."""
+
+    async def _fetch_usage_for_server(server_id: int, config: Dict[str, str], keys: list[Dict[str, Any]]) -> Dict[int, Optional[int]]:
+        if not keys:
+            return {}
+        try:
+            protocol = ProtocolFactory.create_protocol('v2ray', config)
+        except Exception as e:
+            logger.error(f"[TRAFFIC LIMIT] Failed to initialise V2Ray protocol for server {server_id}: {e}")
+            return {}
+
+        results: Dict[int, Optional[int]] = {}
+        try:
+            history = await protocol.get_traffic_history()
+            traffic_map: Dict[str, int] = {}
+            if isinstance(history, dict):
+                data = history.get('data') or {}
+                items = data.get('keys') or []
+                for item in items:
+                    uuid_val = item.get('key_uuid') or item.get('uuid')
+                    total = item.get('total_traffic') or {}
+                    total_bytes = total.get('total_bytes')
+                    if uuid_val and isinstance(total_bytes, (int, float)):
+                        traffic_map[uuid_val] = int(total_bytes)
+            for key_row in keys:
+                uuid = key_row.get('v2ray_uuid')
+                key_pk = key_row.get('id')
+                if uuid is None or key_pk is None:
+                    continue
+                results[key_pk] = traffic_map.get(uuid)
+        except Exception as e:
+            logger.error(f"[TRAFFIC LIMIT] Error fetching usage for server {server_id}: {e}")
+        finally:
+            try:
+                await protocol.close()
+            except Exception as close_error:
+                logger.warning(f"[TRAFFIC LIMIT] Error closing protocol client for server {server_id}: {close_error}")
+        return results
+
+    async def _disable_v2ray_key(server_id: int, config: Dict[str, str], key_uuid: str) -> bool:
+        try:
+            protocol = ProtocolFactory.create_protocol('v2ray', config)
+        except Exception as e:
+            logger.error(f"[TRAFFIC LIMIT] Failed to init protocol for disable on server {server_id}: {e}")
+            return False
+
+        try:
+            result = await protocol.delete_user(key_uuid)
+            if not result:
+                logger.warning(f"[TRAFFIC LIMIT] Failed to delete V2Ray user {key_uuid} on server {server_id}")
+            return result
+        except Exception as e:
+            logger.error(f"[TRAFFIC LIMIT] Error disabling V2Ray key {key_uuid}: {e}")
+            return False
+        finally:
+            try:
+                await protocol.close()
+            except Exception as close_error:
+                logger.warning(f"[TRAFFIC LIMIT] Error closing protocol during disable: {close_error}")
+
+    async def job() -> None:
+        now = int(time.time())
+
+        with get_db_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 
+                    k.id,
+                    k.user_id,
+                    k.v2ray_uuid,
+                    k.server_id,
+                    COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb,
+                    COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes,
+                    k.traffic_over_limit_at,
+                    COALESCE(k.traffic_over_limit_notified, 0) AS traffic_over_limit_notified,
+                    k.expiry_at,
+                    IFNULL(s.api_url, '') AS api_url,
+                    IFNULL(s.api_key, '') AS api_key,
+                    IFNULL(t.name, '') AS tariff_name,
+                    IFNULL(k.email, '') AS email
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                LEFT JOIN tariffs t ON k.tariff_id = t.id
+                WHERE k.expiry_at > ?
+                  AND COALESCE(k.traffic_limit_mb, 0) > 0
+                """,
+                (now,),
+            )
+            rows = cursor.fetchall()
+
+        if not rows:
+            return
+
+        rows_data = [dict(row) for row in rows]
+        server_configs: Dict[int, Dict[str, str]] = {}
+        server_keys_map: Dict[int, list[Dict[str, Any]]] = defaultdict(list)
+
+        for row in rows_data:
+            api_url = row["api_url"]
+            api_key = row["api_key"]
+            if not api_url or not api_key:
+                logger.warning(
+                    "[TRAFFIC LIMIT] Missing API credentials for server %s, skipping key %s",
+                    row["server_id"],
+                    row["v2ray_uuid"],
+                )
+                continue
+            config = {"api_url": api_url, "api_key": api_key}
+            server_configs[row["server_id"]] = config
+            server_keys_map[row["server_id"]].append(row)
+
+        usage_map: Dict[int, Optional[int]] = {}
+        if server_keys_map:
+            tasks = [
+                _fetch_usage_for_server(server_id, server_configs[server_id], keys)
+                for server_id, keys in server_keys_map.items()
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, dict):
+                    usage_map.update(result)
+                else:
+                    logger.error(f"[TRAFFIC LIMIT] Error in usage fetch task: {result}")
+
+        warn_notifications = []
+        disable_notifications = []
+        updates = []
+
+        for row in rows_data:
+            key_id = row["id"]
+            limit_mb = row["traffic_limit_mb"] or 0
+            try:
+                limit_mb_value = float(limit_mb)
+            except (TypeError, ValueError):
+                limit_mb_value = 0.0
+            limit_bytes = max(0, int(limit_mb_value * 1024 * 1024))
+
+            usage_bytes = usage_map.get(key_id)
+            if usage_bytes is None:
+                usage_bytes = row["traffic_usage_bytes"] or 0
+            else:
+                usage_bytes = int(usage_bytes)
+
+            over_limit_at = row.get("traffic_over_limit_at")
+            notified_flags = row.get("traffic_over_limit_notified") or 0
+            expiry_at = row.get("expiry_at") or 0
+
+            over_limit = limit_bytes > 0 and usage_bytes > limit_bytes
+            new_over_limit_at = over_limit_at
+            new_notified_flags = notified_flags
+            new_expiry = expiry_at
+            key_uuid = row["v2ray_uuid"]
+            server_id = row["server_id"]
+            server_config = server_configs.get(server_id)
+            tariff_name = row.get("tariff_name") or "V2Ray"
+            user_id = row.get("user_id")
+
+            if over_limit:
+                if not new_over_limit_at:
+                    new_over_limit_at = now
+
+                if not (new_notified_flags & TRAFFIC_NOTIFY_WARNING):
+                    limit_display = _format_bytes_short(limit_bytes)
+                    usage_display = _format_bytes_short(usage_bytes)
+                    deadline_ts = (new_over_limit_at or now) + TRAFFIC_DISABLE_GRACE
+                    remaining = max(0, deadline_ts - now)
+                    message = (
+                        "⚠️ Превышен лимит трафика для вашего V2Ray ключа.\n"
+                        f"Тариф: {tariff_name}\n"
+                        f"Израсходовано: {usage_display} из {limit_display}.\n"
+                        f"Ключ будет отключён через {format_duration(remaining)}.\n"
+                        "Продлите доступ, чтобы сбросить лимит."
+                    )
+                    if user_id:
+                        warn_notifications.append((user_id, message))
+                    else:
+                        logger.warning("[TRAFFIC LIMIT] Cannot notify user for key %s - user_id missing", key_uuid)
+                    new_notified_flags |= TRAFFIC_NOTIFY_WARNING
+
+                should_disable = False
+                disable_deadline = None
+                if new_over_limit_at:
+                    disable_deadline = new_over_limit_at + TRAFFIC_DISABLE_GRACE
+                    should_disable = (
+                        now >= disable_deadline
+                        and not (new_notified_flags & TRAFFIC_NOTIFY_DISABLED)
+                        and server_config is not None
+                    )
+
+                if should_disable:
+                    disable_success = await _disable_v2ray_key(server_id, server_config, key_uuid)
+                    if disable_success:
+                        new_expiry = now
+                        new_over_limit_at = None
+                        new_notified_flags |= TRAFFIC_NOTIFY_DISABLED
+
+                        limit_display = _format_bytes_short(limit_bytes)
+                        usage_display = _format_bytes_short(usage_bytes)
+                        message = (
+                            "❌ Ваш V2Ray ключ был отключён из-за превышения лимита трафика более чем на 24 часа.\n"
+                            f"Всего израсходовано: {usage_display} из {limit_display}.\n"
+                            "Продлите доступ, чтобы восстановить ключ и сбросить лимит."
+                        )
+                        if user_id:
+                            disable_notifications.append((user_id, message))
+                        else:
+                            logger.warning("[TRAFFIC LIMIT] Disabled key %s without user_id", key_uuid)
+                    else:
+                        logger.warning(
+                            "[TRAFFIC LIMIT] Failed to disable key %s on server %s; will retry later",
+                            key_uuid,
+                            server_id,
+                        )
+            else:
+                new_over_limit_at = None
+                new_notified_flags = 0
+
+            updates.append(
+                (
+                    usage_bytes,
+                    new_over_limit_at,
+                    new_notified_flags,
+                    new_expiry,
+                    key_id,
+                )
+            )
+
+        if updates:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.executemany(
+                    """
+                    UPDATE v2ray_keys
+                    SET traffic_usage_bytes = ?,
+                        traffic_over_limit_at = ?,
+                        traffic_over_limit_notified = ?,
+                        expiry_at = ?
+                    WHERE id = ?
+                    """,
+                    updates,
+                )
+
+        if warn_notifications or disable_notifications:
+            bot = get_bot_instance()
+            if bot:
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+                keyboard = InlineKeyboardMarkup()
+                keyboard.add(InlineKeyboardButton("🔁 Продлить", callback_data="buy"))
+
+                for user_id, message in warn_notifications + disable_notifications:
+                    result = await safe_send_message(
+                        bot,
+                        user_id,
+                        message,
+                        reply_markup=keyboard,
+                        disable_web_page_preview=True,
+                    )
+                    if result:
+                        logger.info("[TRAFFIC LIMIT] Sent notification to user %s", user_id)
+                    else:
+                        logger.warning("[TRAFFIC LIMIT] Failed to deliver notification to user %s", user_id)
+
+    await _run_periodic(
+        "monitor_v2ray_traffic_limits",
+        interval_seconds=300,
+        job=job,
+        max_backoff=1800,
+    )
+
+
 async def check_key_availability() -> None:
     """Проверка количества доступных ключей и уведомление администратора."""
 
@@ -456,7 +746,7 @@ async def process_pending_paid_payments() -> None:
                 
                 if payment_status != "paid":
                     cursor.execute("UPDATE payments SET status = 'paid' WHERE id = ?", (payment_db_id,))
-                cursor.execute("SELECT name, duration_sec, price_rub FROM tariffs WHERE id=?", (tariff_id,))
+                cursor.execute("SELECT name, duration_sec, price_rub, traffic_limit_mb FROM tariffs WHERE id=?", (tariff_id,))
                 tariff_row = cursor.fetchone()
                 if not tariff_row:
                     logging.error("[AUTO-ISSUE] Не найден тариф id=%s для user_id=%s", tariff_id, user_id)
@@ -467,6 +757,7 @@ async def process_pending_paid_payments() -> None:
                     "name": tariff_row[0],
                     "duration_sec": tariff_row[1],
                     "price_rub": tariff_row[2],
+                    "traffic_limit_mb": tariff_row[3],
                 }
 
                 protocol = protocol or "outline"
@@ -513,9 +804,26 @@ async def process_pending_paid_payments() -> None:
 
                     now = int(time.time())
                     expiry = now + tariff["duration_sec"]
+                    traffic_limit_mb = 0
+                    try:
+                        traffic_limit_mb = int(tariff.get("traffic_limit_mb") or 0)
+                    except (TypeError, ValueError):
+                        traffic_limit_mb = 0
                     cursor.execute(
-                        "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (server_dict["id"], user_id, key["accessUrl"], expiry, key["id"], now, email, tariff_id),
+                        "INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
+                        "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                        (
+                            server_dict["id"],
+                            user_id,
+                            key["accessUrl"],
+                            expiry,
+                            traffic_limit_mb,
+                            key["id"],
+                            now,
+                            email,
+                            tariff_id,
+                            protocol,
+                        ),
                     )
 
                     if tariff["price_rub"] == 0:
@@ -597,8 +905,19 @@ async def process_pending_paid_payments() -> None:
                         now = int(time.time())
                         expiry = now + tariff["duration_sec"]
                         with safe_foreign_keys_off(cursor):
+                            traffic_limit_mb = 0
+                            try:
+                                traffic_limit_mb = int(tariff.get("traffic_limit_mb") or 0)
+                            except (TypeError, ValueError):
+                                traffic_limit_mb = 0
                             cursor.execute(
-                                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                """
+                                INSERT INTO v2ray_keys (
+                                    server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config,
+                                    traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified
+                                )
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0)
+                                """,
                                 (
                                     server_dict["id"],
                                     user_id,
@@ -608,8 +927,30 @@ async def process_pending_paid_payments() -> None:
                                     expiry,
                                     tariff_id,
                                     config,
+                                    traffic_limit_mb,
                                 ),
                             )
+                            new_key_id = cursor.lastrowid
+                            if (traffic_limit_mb or 0) <= 0 and tariff_id:
+                                try:
+                                    cursor.execute(
+                                        """
+                                        UPDATE v2ray_keys
+                                        SET traffic_limit_mb = COALESCE(
+                                            (SELECT traffic_limit_mb FROM tariffs WHERE id = ?),
+                                            0
+                                        )
+                                        WHERE id = ?
+                                        """,
+                                        (tariff_id, new_key_id),
+                                    )
+                                except Exception as update_error:
+                                    logging.warning("[AUTO-ISSUE] Failed to backfill traffic_limit_mb for key %s: %s", new_key_id, update_error)
+                                else:
+                                    cursor.execute("SELECT traffic_limit_mb FROM v2ray_keys WHERE id = ?", (new_key_id,))
+                                    row_limit = cursor.fetchone()
+                                    if not row_limit or (row_limit[0] or 0) <= 0:
+                                        logging.warning("[AUTO-ISSUE] traffic_limit_mb remains zero for key %s after backfill", new_key_id)
 
                         if tariff["price_rub"] == 0:
                             import importlib

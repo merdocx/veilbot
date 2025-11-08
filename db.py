@@ -49,11 +49,21 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         server_id INTEGER,
         user_id INTEGER,
-        v2ray_uuid TEXT,
+        v2ray_uuid TEXT UNIQUE,
         email TEXT,
+        level INTEGER DEFAULT 0,
         created_at INTEGER,
         expiry_at INTEGER,
-        tariff_id INTEGER
+        tariff_id INTEGER,
+        client_config TEXT DEFAULT NULL,
+        notified INTEGER DEFAULT 0,
+        traffic_limit_mb INTEGER DEFAULT 0,
+        traffic_usage_bytes INTEGER DEFAULT 0,
+        traffic_over_limit_at INTEGER,
+        traffic_over_limit_notified INTEGER DEFAULT 0,
+        FOREIGN KEY (server_id) REFERENCES servers(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
     )""")
 
     c.execute("""
@@ -535,6 +545,79 @@ def migrate_add_notified_to_v2ray_keys():
     finally:
         conn.close()
 
+def migrate_add_traffic_monitoring_to_v2ray_keys():
+    """Добавление полей для контроля превышения трафикового лимита в v2ray_keys"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_limit_mb INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Поле traffic_limit_mb добавлено в v2ray_keys")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name: traffic_limit_mb" in str(e):
+            logging.info("Поле traffic_limit_mb уже существует в v2ray_keys")
+        else:
+            raise
+    try:
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_usage_bytes INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Поле traffic_usage_bytes добавлено в v2ray_keys")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name: traffic_usage_bytes" in str(e):
+            logging.info("Поле traffic_usage_bytes уже существует в v2ray_keys")
+        else:
+            raise
+    try:
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_over_limit_at INTEGER")
+        conn.commit()
+        logging.info("Поле traffic_over_limit_at добавлено в v2ray_keys")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name: traffic_over_limit_at" in str(e):
+            logging.info("Поле traffic_over_limit_at уже существует в v2ray_keys")
+        else:
+            raise
+    try:
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_over_limit_notified INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Поле traffic_over_limit_notified добавлено в v2ray_keys")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name: traffic_over_limit_notified" in str(e):
+            logging.info("Поле traffic_over_limit_notified уже существует в v2ray_keys")
+        else:
+            raise
+    try:
+        cursor.execute(
+            """
+            UPDATE v2ray_keys
+            SET traffic_limit_mb = COALESCE(
+                (SELECT traffic_limit_mb FROM tariffs WHERE tariffs.id = v2ray_keys.tariff_id),
+                traffic_limit_mb,
+                0
+            )
+            """
+        )
+        conn.commit()
+        logging.info("Данные traffic_limit_mb в v2ray_keys синхронизированы с тарифами")
+    except Exception as e:
+        logging.warning(f"Не удалось выполнить бэкфилл traffic_limit_mb для v2ray_keys: {e}")
+    try:
+        cursor.execute(
+            """
+            UPDATE keys
+            SET traffic_limit_mb = COALESCE(
+                (SELECT traffic_limit_mb FROM tariffs WHERE tariffs.id = keys.tariff_id),
+                traffic_limit_mb,
+                0
+            )
+            """
+        )
+        conn.commit()
+        logging.info("Данные traffic_limit_mb в keys синхронизированы с тарифами")
+    except Exception as e:
+        logging.warning(f"Не удалось выполнить бэкфилл traffic_limit_mb для keys: {e}")
+    finally:
+        conn.close()
+
 def migrate_add_available_for_purchase_to_servers():
     """Добавление поля available_for_purchase в servers для управления доступностью серверов к покупке"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -653,6 +736,7 @@ def _run_all_migrations():
     migrate_add_crypto_payment_fields()
     migrate_add_client_config_to_v2ray_keys()
     migrate_add_notified_to_v2ray_keys()
+    migrate_add_traffic_monitoring_to_v2ray_keys()
     migrate_add_available_for_purchase_to_servers()
     migrate_fix_v2ray_keys_foreign_keys()
 

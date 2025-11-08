@@ -23,6 +23,33 @@ logger = logging.getLogger(__name__)
 # Глобальная переменная для lazy loading VPN протоколов
 VPN_PROTOCOLS_AVAILABLE = None
 
+COLUMN_CACHE: Dict[str, set[str]] = {}
+
+
+def _get_table_columns(cursor: sqlite3.Cursor, table_name: str) -> set[str]:
+    columns = COLUMN_CACHE.get(table_name)
+    if columns is None:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = {row[1] for row in cursor.fetchall()}
+        COLUMN_CACHE[table_name] = columns
+    return columns
+
+
+def _table_has_column(cursor: sqlite3.Cursor, table_name: str, column_name: str) -> bool:
+    return column_name in _get_table_columns(cursor, table_name)
+
+
+def _insert_with_schema(cursor: sqlite3.Cursor, table_name: str, values: Dict[str, Any]) -> None:
+    columns = _get_table_columns(cursor, table_name)
+    insert_columns = [col for col in values.keys() if col in columns]
+    if not insert_columns:
+        raise ValueError(f"No matching columns to insert into {table_name}")
+    placeholders = ", ".join(["?"] * len(insert_columns))
+    cursor.execute(
+        f"INSERT INTO {table_name} ({', '.join(insert_columns)}) VALUES ({placeholders})",
+        tuple(values[col] for col in insert_columns),
+    )
+
 
 def select_available_server_by_protocol(
     cursor: sqlite3.Cursor, 
@@ -80,6 +107,21 @@ def select_available_server_by_protocol(
         return None
     
     return row
+
+
+def _execute_with_limit_fallback(
+    cursor: sqlite3.Cursor,
+    sql_with_limit: str,
+    sql_without_limit: str,
+    params: tuple,
+) -> None:
+    try:
+        cursor.execute(sql_with_limit, params)
+    except sqlite3.OperationalError as exc:
+        if "traffic_limit_mb" in str(exc):
+            cursor.execute(sql_without_limit, params)
+        else:
+            raise
 
 
 async def create_new_key_flow_with_protocol(
@@ -161,12 +203,40 @@ async def create_new_key_flow_with_protocol(
     main_menu = get_main_menu()
     
     now = int(time.time())
+    traffic_limit_mb = 0
+    if isinstance(tariff, dict):
+        raw_limit = tariff.get('traffic_limit_mb')
+        if raw_limit is None and tariff.get('id') is not None:
+            try:
+                cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff['id'],))
+                row = cursor.fetchone()
+                if row is not None:
+                    raw_limit = row[0]
+            except Exception as e:  # noqa: BLE001
+                logging.warning("Failed to fetch traffic_limit_mb for tariff %s: %s", tariff.get('id'), e)
+        try:
+            traffic_limit_mb = int(raw_limit or 0)
+        except (TypeError, ValueError):
+            traffic_limit_mb = 0
+        if traffic_limit_mb == 0:
+            logging.warning("[TRAFFIC LIMIT] Tariff %s provided zero traffic_limit_mb", tariff.get('id'))
+        tariff['traffic_limit_mb'] = traffic_limit_mb
     GRACE_PERIOD = 86400  # 24 часа в секундах
     grace_threshold = now - GRACE_PERIOD
     
     # Проверяем наличие активного или недавно истекшего ключа (в пределах grace period)
     if protocol == "outline":
-        cursor.execute("SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, grace_threshold))
+        _execute_with_limit_fallback(
+            cursor,
+            "SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, "
+            "COALESCE(k.traffic_limit_mb, 0) "
+            "FROM keys k JOIN servers s ON k.server_id = s.id "
+            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            "SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, 0 AS traffic_limit_mb "
+            "FROM keys k JOIN servers s ON k.server_id = s.id "
+            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            (user_id, grace_threshold),
+        )
         existing_key = cursor.fetchone()
         if existing_key:
             # Проверяем, отличается ли запрошенная страна от текущей
@@ -187,7 +257,8 @@ async def create_new_key_flow_with_protocol(
                     'tariff_id': existing_key[6] or tariff['id'],
                     'email': existing_key[7] or email,
                     'protocol': protocol,
-                    'type': 'outline'
+                    'type': 'outline',
+                    'traffic_limit_mb': existing_key[8] if len(existing_key) > 8 else traffic_limit_mb,
                 }
                 
                 # Вызываем функцию смены страны с продлением
@@ -195,7 +266,17 @@ async def create_new_key_flow_with_protocol(
                     logging.error("change_country_and_extend is None, cannot change country for Outline key")
                     success = False
                 else:
-                    success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff)
+                    success = await change_country_and_extend(
+                        cursor,
+                        message,
+                        user_id,
+                        key_data,
+                        country,
+                        tariff['duration_sec'],
+                        email,
+                        tariff,
+                        reset_usage=for_renewal,
+                    )
                 
                 if success:
                     user_states.pop(user_id, None)
@@ -241,7 +322,14 @@ async def create_new_key_flow_with_protocol(
                     logging.warning(f"Failed to extend key {existing_key[0]}, creating new key for user {user_id}")
                     # Продолжаем выполнение для создания нового ключа
     else:  # v2ray
-        cursor.execute("SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, k.tariff_id, k.email FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, grace_threshold))
+        cursor.execute(
+            "SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
+            "k.tariff_id, k.email, COALESCE(k.traffic_limit_mb, 0), COALESCE(k.traffic_usage_bytes, 0), "
+            "k.traffic_over_limit_at, COALESCE(k.traffic_over_limit_notified, 0) "
+            "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
+            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            (user_id, grace_threshold),
+        )
         existing_key = cursor.fetchone()
         if existing_key:
             # Проверяем, отличается ли запрошенная страна от текущей
@@ -263,11 +351,16 @@ async def create_new_key_flow_with_protocol(
                     'tariff_id': existing_key[7] or tariff['id'],
                     'email': existing_key[8] or email,
                     'protocol': protocol,
-                    'type': 'v2ray'
+                    'type': 'v2ray',
+                    'traffic_limit_mb': existing_key[9] if len(existing_key) > 9 else 0,
+                    'traffic_usage_bytes': existing_key[10] if len(existing_key) > 10 else 0,
+                    'traffic_over_limit_at': existing_key[11] if len(existing_key) > 11 else None,
+                    'traffic_over_limit_notified': existing_key[12] if len(existing_key) > 12 else 0,
                 }
                 
                 # Вызываем функцию смены страны с продлением
-                success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff)
+                success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff, reset_usage=for_renewal)
+                success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff, reset_usage=for_renewal)
                 
                 if success:
                     user_states.pop(user_id, None)
@@ -293,6 +386,8 @@ async def create_new_key_flow_with_protocol(
                     if updated_key:
                         v2ray_uuid, domain, path, api_url, api_key, key_email = updated_key
                         # Получаем реальную конфигурацию с сервера (как в "мои ключи")
+                        config = None
+                        protocol_client = None
                         try:
                             if api_url and api_key:
                                 server_config = {'api_url': api_url, 'api_key': api_key}
@@ -303,6 +398,11 @@ async def create_new_key_flow_with_protocol(
                                     'path': path or '/v2ray',
                                     'email': key_email or email or f"user_{user_id}@veilbot.com"
                                 })
+                                if for_renewal:
+                                    try:
+                                        await protocol_client.reset_key_usage(v2ray_uuid)
+                                    except Exception as reset_error:
+                                        logging.error(f"Error resetting V2Ray usage for {v2ray_uuid}: {reset_error}")
                             else:
                                 # Fallback к хардкодной конфигурации если нет данных сервера
                                 config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
@@ -310,12 +410,46 @@ async def create_new_key_flow_with_protocol(
                             logging.error(f"Error getting V2Ray config for {v2ray_uuid} during extension: {e}")
                             # Fallback к хардкодной конфигурации при ошибке
                             config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                        finally:
+                            if protocol_client:
+                                try:
+                                    await protocol_client.close()
+                                except Exception as close_error:
+                                    logging.warning(f"Error closing V2Ray protocol client after renewal: {close_error}")
+                        if for_renewal:
+                            try:
+                                cursor.execute(
+                                    """
+                                    UPDATE v2ray_keys
+                                    SET traffic_usage_bytes = 0,
+                                        traffic_over_limit_at = NULL,
+                                        traffic_over_limit_notified = 0
+                                    WHERE id = ?
+                                    """,
+                                    (existing_key[0],),
+                                )
+                            except Exception as reset_db_error:
+                                logging.error(f"Failed to reset traffic counters in DB for key {existing_key[0]}: {reset_db_error}")
                     else:
                         # Fallback к старой конфигурации
                         v2ray_uuid = existing_key[2]
                         domain = existing_key[3]
                         path = existing_key[4] or '/v2ray'
                         config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                        if for_renewal:
+                            try:
+                                cursor.execute(
+                                    """
+                                    UPDATE v2ray_keys
+                                    SET traffic_usage_bytes = 0,
+                                        traffic_over_limit_at = NULL,
+                                        traffic_over_limit_notified = 0
+                                    WHERE id = ?
+                                    """,
+                                    (existing_key[0],),
+                                )
+                            except Exception as reset_db_error:
+                                logging.error(f"Failed to reset V2Ray usage flags in DB for key {existing_key[0]}: {reset_db_error}")
                     
                     # Очищаем состояние пользователя
                     user_states.pop(user_id, None)
@@ -343,7 +477,20 @@ async def create_new_key_flow_with_protocol(
     # Это важно: проверяем только если НЕ нашли ключ запрошенного протокола выше
     if protocol == "outline":
         # Проверяем, есть ли V2Ray ключ
-        cursor.execute("SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, k.tariff_id, k.email FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, grace_threshold))
+        _execute_with_limit_fallback(
+            cursor,
+            "SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
+            "k.tariff_id, k.email, COALESCE(k.traffic_limit_mb, 0), COALESCE(k.traffic_usage_bytes, 0), "
+            "k.traffic_over_limit_at, COALESCE(k.traffic_over_limit_notified, 0) "
+            "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
+            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            "SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
+            "k.tariff_id, k.email, 0 AS traffic_limit_mb, 0 AS traffic_usage_bytes, "
+            "NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified "
+            "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
+            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            (user_id, grace_threshold),
+        )
         opposite_key = cursor.fetchone()
         
         if opposite_key:
@@ -361,7 +508,11 @@ async def create_new_key_flow_with_protocol(
                 'tariff_id': opposite_key[7],
                 'email': opposite_key[8],
                 'protocol': 'v2ray',
-                'type': 'v2ray'
+                'type': 'v2ray',
+                'traffic_limit_mb': opposite_key[9] if len(opposite_key) > 9 else 0,
+                'traffic_usage_bytes': opposite_key[10] if len(opposite_key) > 10 else 0,
+                'traffic_over_limit_at': opposite_key[11] if len(opposite_key) > 11 else None,
+                'traffic_over_limit_notified': opposite_key[12] if len(opposite_key) > 12 else 0,
             }
             
             # Вызываем функцию смены протокола
@@ -380,7 +531,14 @@ async def create_new_key_flow_with_protocol(
     
     else:  # protocol == "v2ray"
         # Проверяем, есть ли Outline ключ
-        cursor.execute("SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1", (user_id, grace_threshold))
+        _execute_with_limit_fallback(
+            cursor,
+            "SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            "SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, 0 AS traffic_limit_mb "
+            "FROM keys k JOIN servers s ON k.server_id = s.id "
+            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            (user_id, grace_threshold),
+        )
         opposite_key = cursor.fetchone()
         
         if opposite_key:
@@ -544,10 +702,23 @@ async def create_new_key_flow_with_protocol(
         expiry = now + tariff['duration_sec']
         
         if protocol == 'outline':
-            cursor.execute("""
-                INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id, protocol)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (server[0], user_id, user_data['accessUrl'], expiry, user_data['id'], now, email, tariff['id'], protocol))
+            _insert_with_schema(
+                cursor,
+                "keys",
+                {
+                    "server_id": server[0],
+                    "user_id": user_id,
+                    "access_url": user_data['accessUrl'],
+                    "expiry_at": expiry,
+                    "traffic_limit_mb": traffic_limit_mb,
+                    "notified": 0,
+                    "key_id": user_data['id'],
+                    "created_at": now,
+                    "email": email,
+                    "tariff_id": tariff['id'],
+                    "protocol": protocol,
+                },
+            )
             
             config = user_data['accessUrl']
             
@@ -625,10 +796,46 @@ async def create_new_key_flow_with_protocol(
                 
                 # Сохраняем ключ с конфигурацией в БД
                 # Выполняем в том же контексте с отключенными foreign keys
-                cursor.execute("""
-                    INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (server[0], user_id, user_data['uuid'], email or f"user_{user_id}@veilbot.com", now, expiry, tariff['id'], config))
+                values_map = {
+                    "server_id": server[0],
+                    "user_id": user_id,
+                    "v2ray_uuid": user_data['uuid'],
+                    "email": email or f"user_{user_id}@veilbot.com",
+                    "created_at": now,
+                    "expiry_at": expiry,
+                    "tariff_id": tariff['id'],
+                    "client_config": config,
+                    "traffic_limit_mb": traffic_limit_mb,
+                    "traffic_usage_bytes": 0,
+                    "traffic_over_limit_at": None,
+                    "traffic_over_limit_notified": 0,
+                }
+                _insert_with_schema(cursor, "v2ray_keys", values_map)
+                new_key_id = cursor.lastrowid
+                if (traffic_limit_mb or 0) <= 0 and tariff.get('id'):
+                    try:
+                        cursor.execute(
+                            """
+                            UPDATE v2ray_keys
+                            SET traffic_limit_mb = COALESCE(
+                                (SELECT traffic_limit_mb FROM tariffs WHERE id = ?),
+                                0
+                            )
+                            WHERE id = ?
+                            """,
+                            (tariff['id'], new_key_id),
+                        )
+                        cursor.execute(
+                            """
+                            SELECT traffic_limit_mb FROM v2ray_keys WHERE id = ?
+                            """,
+                            (new_key_id,),
+                        )
+                        row_limit = cursor.fetchone()
+                        if row_limit and (row_limit[0] or 0) > 0:
+                            traffic_limit_mb = row_limit[0]
+                    except Exception as e:  # noqa: BLE001
+                        logging.warning("Failed to backfill traffic_limit_mb for new v2ray key %s: %s", new_key_id, e)
             
             # Логирование создания V2Ray ключа
             try:
@@ -878,14 +1085,15 @@ async def wait_for_payment_with_protocol(
                         
                         # Если tariff не передан, получаем его из платежа
                         if not tariff and payment_tariff_id:
-                            cursor.execute("SELECT id, name, duration_sec, price_rub FROM tariffs WHERE id = ?", (payment_tariff_id,))
+                            cursor.execute("SELECT id, name, duration_sec, price_rub, traffic_limit_mb FROM tariffs WHERE id = ?", (payment_tariff_id,))
                             tariff_row = cursor.fetchone()
                             if tariff_row:
                                 tariff = {
                                     'id': tariff_row[0],
                                     'name': tariff_row[1],
                                     'duration_sec': tariff_row[2],
-                                    'price_rub': tariff_row[3]
+                                    'price_rub': tariff_row[3],
+                                    'traffic_limit_mb': tariff_row[4],
                                 }
                         
                         # Используем данные из платежа, если они не переданы
@@ -1092,14 +1300,15 @@ async def wait_for_crypto_payment(
                         
                         # Если tariff не передан, получаем его из платежа
                         if not tariff and payment_tariff_id:
-                            cursor.execute("SELECT id, name, duration_sec, price_rub FROM tariffs WHERE id = ?", (payment_tariff_id,))
+                            cursor.execute("SELECT id, name, duration_sec, price_rub, traffic_limit_mb FROM tariffs WHERE id = ?", (payment_tariff_id,))
                             tariff_row = cursor.fetchone()
                             if tariff_row:
                                 tariff = {
                                     'id': tariff_row[0],
                                     'name': tariff_row[1],
                                     'duration_sec': tariff_row[2],
-                                    'price_rub': tariff_row[3]
+                                    'price_rub': tariff_row[3],
+                                    'traffic_limit_mb': tariff_row[4],
                                 }
                         
                         # Используем данные из платежа, если они не переданы

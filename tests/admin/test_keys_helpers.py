@@ -31,6 +31,7 @@ def test_build_key_view_model_active_with_limit():
     assert view['status_icon'] == 'check_circle'
     assert view['traffic']['display'] == '1.50 GB'
     assert view['traffic']['limit_display'] == '1.00 GB'
+    assert view['traffic']['limit_mb'] == 1024
     assert view['traffic']['usage_percent'] == 1.0  # clamped to 100%
     assert view['expiry_remaining'].startswith('Через')
 

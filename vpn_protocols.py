@@ -1036,6 +1036,62 @@ class V2RayProtocol(VPNProtocol):
             logger.error(f"Error getting V2Ray key traffic history: {e}")
             return {}
 
+    async def get_key_usage_bytes(self, key_uuid: str) -> Optional[int]:
+        """
+        Получить суммарное потребление трафика для ключа V2Ray.
+        
+        Args:
+            key_uuid: UUID ключа (как хранится в таблице v2ray_keys)
+        
+        Returns:
+            Количество байт, израсходованных ключом, или None, если данные недоступны.
+        """
+        try:
+            key_info = await self.get_key_info(key_uuid)
+            api_key_id = key_info.get('id') or key_info.get('uuid')
+            if not api_key_id:
+                logger.warning(f"[V2RAY TRAFFIC] Cannot resolve api_key_id for UUID {key_uuid}")
+                return None
+
+            history = await self.get_key_traffic_history(str(api_key_id))
+            if not history:
+                return None
+
+            data = history.get('data') or {}
+            total_traffic = data.get('total_traffic') or {}
+            total_bytes = total_traffic.get('total_bytes')
+
+            if isinstance(total_bytes, (int, float)):
+                return int(total_bytes)
+
+            logger.debug(f"[V2RAY TRAFFIC] total_bytes not found for UUID {key_uuid}: {total_bytes}")
+            return None
+        except Exception as e:
+            logger.error(f"[V2RAY TRAFFIC] Error getting usage for key {key_uuid}: {e}")
+            return None
+
+    async def reset_key_usage(self, key_uuid: str) -> bool:
+        """
+        Сбросить счётчик трафика для ключа V2Ray.
+        
+        Args:
+            key_uuid: UUID ключа
+        
+        Returns:
+            True, если сброс выполнен успешно.
+        """
+        try:
+            key_info = await self.get_key_info(key_uuid)
+            api_key_id = key_info.get('id') or key_info.get('uuid')
+            if not api_key_id:
+                logger.warning(f"[V2RAY TRAFFIC] Cannot resolve api_key_id for UUID {key_uuid} to reset usage")
+                return False
+
+            return await self.reset_key_traffic_history(str(api_key_id))
+        except Exception as e:
+            logger.error(f"[V2RAY TRAFFIC] Error resetting usage for key {key_uuid}: {e}")
+            return False
+
     async def get_daily_traffic_stats(self, date: str) -> Dict:
         """Получить ежедневную статистику трафика (формат даты: YYYY-MM-DD)"""
         try:
