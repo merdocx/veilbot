@@ -7,7 +7,7 @@ from typing import Optional
 from aiogram import Dispatcher, types
 from utils import get_db_cursor
 from config import PROTOCOLS
-from vpn_protocols import format_duration, ProtocolFactory
+from vpn_protocols import format_duration, ProtocolFactory, normalize_vless_host
 from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
 
@@ -84,49 +84,72 @@ async def handle_my_keys_btn(message: types.Message):
         usage_bytes,
         over_limit_at,
     ) in v2ray_keys:
-        # Используем сохраненную конфигурацию из БД, если она есть
-        if saved_config:
-            # Извлекаем VLESS URL из сохраненной конфигурации, если она многострочная
-            if 'vless://' in saved_config:
-                lines = saved_config.split('\n')
-                for line in lines:
-                    if line.strip().startswith('vless://'):
-                        config = line.strip()
-                        break
-                else:
-                    config = saved_config.strip()
+        config = None
+        normalized_saved = None
+
+        if saved_config and 'vless://' in saved_config:
+            lines = saved_config.split('\n')
+            for line in lines:
+                if line.strip().startswith('vless://'):
+                    normalized_saved = normalize_vless_host(
+                        line.strip(),
+                        domain,
+                        api_url or ''
+                    )
+                    break
             else:
-                config = saved_config.strip()
-            logging.debug(f"Using saved client_config from DB for UUID {v2ray_uuid[:8]}...")
-        else:
-            # Если сохраненной конфигурации нет, запрашиваем с сервера (fallback)
+                normalized_saved = normalize_vless_host(
+                    saved_config.strip(),
+                    domain,
+                    api_url or ''
+                )
+        elif saved_config:
+            normalized_saved = saved_config.strip()
+
+        # Всегда пытаемся получить актуальную конфигурацию с сервера
+        if api_url and api_key:
+            server_config = {'api_url': api_url, 'api_key': api_key}
             try:
-                if api_url and api_key:
-                    server_config = {'api_url': api_url, 'api_key': api_key}
-                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                    config = await protocol_client.get_user_config(v2ray_uuid, {
-                        'domain': domain,
-                        'port': 443,
-                        'path': path or '/v2ray',
-                        'email': email or f"user_{user_id}@veilbot.com"
-                    })
-                    # Извлекаем VLESS URL, если конфигурация многострочная
-                    if 'vless://' in config:
-                        lines = config.split('\n')
-                        for line in lines:
-                            if line.strip().startswith('vless://'):
-                                config = line.strip()
-                                break
-                    # Сохраняем для обновления в БД
-                    keys_to_update.append((config, v2ray_uuid))
-                    logging.info(f"Retrieved client_config from server for UUID {v2ray_uuid[:8]}..., will save to DB")
-                else:
-                    # Fallback к старому формату если нет данных сервера
-                    config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                fetched_config = await protocol_client.get_user_config(v2ray_uuid, {
+                    'domain': domain,
+                    'port': 443,
+                    'path': path or '/v2ray',
+                    'email': email or f"user_{user_id}@veilbot.com"
+                })
+                if 'vless://' in fetched_config:
+                    lines = fetched_config.split('\n')
+                    for line in lines:
+                        if line.strip().startswith('vless://'):
+                            fetched_config = line.strip()
+                            break
+                fetched_config = normalize_vless_host(
+                    fetched_config.strip(),
+                    domain,
+                    api_url or ''
+                )
+
+                config = fetched_config
+                if not normalized_saved or normalized_saved != fetched_config:
+                    keys_to_update.append((fetched_config, v2ray_uuid))
+                    logging.info(
+                        "[MY_KEYS] Refreshed client_config for UUID %s (updated DB)",
+                        v2ray_uuid[:8],
+                    )
             except Exception as e:
                 logging.error(f"Error getting V2Ray config for {v2ray_uuid}: {e}")
-                # Fallback к старому формату при ошибке
-                config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+
+        if not config:
+            config = normalized_saved
+
+        if not config:
+            # Fallback к старому формату при отсутствии данных
+            config = (
+                f"vless://{v2ray_uuid}@{domain or 'example.com'}:443"
+                "?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome"
+                "&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f"
+                f"&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+            )
         
         all_keys.append({
             'type': 'v2ray',
