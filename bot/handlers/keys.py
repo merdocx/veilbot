@@ -3,12 +3,26 @@
 """
 import time
 import logging
+from typing import Optional
 from aiogram import Dispatcher, types
 from utils import get_db_cursor
 from config import PROTOCOLS
 from vpn_protocols import format_duration, ProtocolFactory
 from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
+
+def _format_bytes_short(num_bytes: Optional[float]) -> str:
+    """Форматирование байт в читаемый вид."""
+    if num_bytes is None:
+        return "—"
+    units = ["Б", "КБ", "МБ", "ГБ", "ТБ"]
+    size = float(num_bytes)
+    for unit in units:
+        if abs(size) < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} ПБ"
+
 
 async def handle_my_keys_btn(message: types.Message):
     """
@@ -26,7 +40,7 @@ async def handle_my_keys_btn(message: types.Message):
     with get_db_cursor() as cursor:
         # Получаем Outline ключи с информацией о стране
         cursor.execute("""
-            SELECT k.access_url, k.expiry_at, k.protocol, s.country
+            SELECT k.access_url, k.expiry_at, k.protocol, s.country, k.traffic_limit_mb
             FROM keys k
             JOIN servers s ON k.server_id = s.id
             WHERE k.user_id = ? AND k.expiry_at > ?
@@ -35,7 +49,8 @@ async def handle_my_keys_btn(message: types.Message):
         
         # Получаем V2Ray ключи с информацией о стране и сервере, включая сохраненную конфигурацию
         cursor.execute("""
-            SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key, k.client_config
+            SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key, k.client_config,
+                   k.traffic_limit_mb, k.traffic_usage_bytes, k.traffic_over_limit_at
             FROM v2ray_keys k
             JOIN servers s ON k.server_id = s.id
             WHERE k.user_id = ? AND k.expiry_at > ?
@@ -43,17 +58,32 @@ async def handle_my_keys_btn(message: types.Message):
         v2ray_keys = cursor.fetchall()
     
     # Добавляем Outline ключи
-    for access_url, exp, protocol, country in outline_keys:
+    for access_url, exp, protocol, country, limit_mb in outline_keys:
         all_keys.append({
             'type': 'outline',
             'config': access_url,
             'expiry': exp,
             'protocol': protocol or 'outline',
-            'country': country
+            'country': country,
+            'traffic_limit_mb': limit_mb or 0,
+            'traffic_usage_bytes': None,
         })
     
     # Добавляем V2Ray ключи
-    for v2ray_uuid, exp, domain, path, country, email, api_url, api_key, saved_config in v2ray_keys:
+    for (
+        v2ray_uuid,
+        exp,
+        domain,
+        path,
+        country,
+        email,
+        api_url,
+        api_key,
+        saved_config,
+        limit_mb,
+        usage_bytes,
+        over_limit_at,
+    ) in v2ray_keys:
         # Используем сохраненную конфигурацию из БД, если она есть
         if saved_config:
             # Извлекаем VLESS URL из сохраненной конфигурации, если она многострочная
@@ -103,7 +133,10 @@ async def handle_my_keys_btn(message: types.Message):
             'config': config,
             'expiry': exp,
             'protocol': 'v2ray',
-            'country': country
+            'country': country,
+            'traffic_limit_mb': limit_mb or 0,
+            'traffic_usage_bytes': usage_bytes if usage_bytes is not None else 0,
+            'traffic_over_limit_at': over_limit_at,
         })
     
     # Обновляем конфигурации в БД, если нужно
@@ -123,6 +156,19 @@ async def handle_my_keys_btn(message: types.Message):
         time_str = format_duration(remaining_seconds)
         
         protocol_info = PROTOCOLS[key['protocol']]
+        limit_mb = key.get('traffic_limit_mb') or 0
+        usage_bytes = key.get('traffic_usage_bytes')
+        remaining_line = "📊 Осталось трафика: без ограничений"
+        if limit_mb and limit_mb > 0:
+            limit_bytes = int(limit_mb * 1024 * 1024)
+            usage = int(usage_bytes or 0)
+            remaining_bytes = max(limit_bytes - usage, 0)
+            remaining_line = (
+                f"📊 Осталось трафика: {_format_bytes_short(remaining_bytes)} из "
+                f"{_format_bytes_short(limit_bytes)}"
+            )
+        elif usage_bytes:
+            remaining_line = f"📊 Израсходовано: {_format_bytes_short(usage_bytes)}"
         
         # Получаем ссылки на приложения в зависимости от протокола
         if key['protocol'] == 'outline':
@@ -135,6 +181,7 @@ async def handle_my_keys_btn(message: types.Message):
             f"🌍 Страна: {key['country']}\n"
             f"`{key['config']}`\n"
             f"⏳ Осталось времени: {time_str}\n"
+            f"{remaining_line}\n"
             f"{app_links}\n\n"
         )
     
