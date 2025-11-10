@@ -365,15 +365,28 @@ async def issue_free_v2ray_key_on_start(message: types.Message) -> Dict[str, Any
             protocol="v2ray",
             for_renewal=False,
         )
+        actual_country = FREE_V2RAY_COUNTRY
         if not server:
-            logging.warning(
-                "No available V2Ray servers in %s for free issuance",
+            logging.info(
+                "No V2Ray servers found for free issuance with country '%s', falling back to any country",
                 FREE_V2RAY_COUNTRY,
             )
-            return {
-                "status": "no_server",
-                "message": "Нет свободных V2Ray серверов в Нидерландах. Попробуйте позже или выберите платный тариф.",
-            }
+            server = select_available_server_by_protocol(
+                cursor,
+                country=None,
+                protocol="v2ray",
+                for_renewal=False,
+            )
+            if not server:
+                logging.warning("No V2Ray servers available for free issuance at all")
+                return {"status": "no_server"}
+            cursor.execute("SELECT country FROM servers WHERE id = ?", (server[0],))
+            row_country = cursor.fetchone()
+            actual_country = row_country[0] if row_country and row_country[0] else None
+        else:
+            cursor.execute("SELECT country FROM servers WHERE id = ?", (server[0],))
+            row_country = cursor.fetchone()
+            actual_country = row_country[0] if row_country and row_country[0] else FREE_V2RAY_COUNTRY
 
         try:
             key_data = await _create_v2ray_key_for_start(
@@ -391,7 +404,7 @@ async def issue_free_v2ray_key_on_start(message: types.Message) -> Dict[str, Any
             cursor,
             user_id=user_id,
             protocol="v2ray",
-            country=FREE_V2RAY_COUNTRY,
+            country=actual_country,
         )
 
     # Уведомление администратора (вне транзакции)
@@ -439,6 +452,9 @@ async def _create_v2ray_key_for_start(
     traffic_limit_mb = int(tariff.get("traffic_limit_mb") or 0)
 
     server_id, server_name, api_url, cert_sha256, domain, api_key, v2ray_path = server
+    cursor.execute("SELECT country FROM servers WHERE id = ?", (server_id,))
+    row_country = cursor.fetchone()
+    server_country = row_country[0] if row_country and row_country[0] else None
     server_config = {
         "api_url": api_url,
         "cert_sha256": cert_sha256,
@@ -533,7 +549,7 @@ async def _create_v2ray_key_for_start(
             "server": {
                 "id": server_id,
                 "name": server_name,
-                "country": FREE_V2RAY_COUNTRY,
+                "country": server_country,
             },
             "expires_at": expiry,
         }
