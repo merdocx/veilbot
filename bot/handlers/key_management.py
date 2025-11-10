@@ -292,14 +292,14 @@ def register_key_management_handlers(
         with get_db_cursor() as cursor:
             if key_type == "outline":
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
+                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path, k.traffic_limit_mb
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
@@ -321,7 +321,8 @@ def register_key_management_handlers(
                     'country': key_data[5],
                     'tariff_id': key_data[6],
                     'email': key_data[7],
-                    'protocol': key_data[8],
+                        'protocol': key_data[8],
+                        'traffic_limit_mb': key_data[9],
                     'type': 'outline'
                 }
             else:
@@ -333,9 +334,10 @@ def register_key_management_handlers(
                     'country': key_data[4],
                     'tariff_id': key_data[5],
                     'email': key_data[6],
-                    'protocol': key_data[7],
-                    'domain': key_data[8],
-                    'v2ray_path': key_data[9],
+                        'protocol': key_data[7],
+                        'domain': key_data[8],
+                        'v2ray_path': key_data[9],
+                        'traffic_limit_mb': key_data[10],
                     'type': 'v2ray'
                 }
         
@@ -369,14 +371,14 @@ def register_key_management_handlers(
         with get_db_cursor() as cursor:
             if key_type == "outline":
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
+                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path, k.traffic_limit_mb
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
@@ -399,6 +401,7 @@ def register_key_management_handlers(
                     'tariff_id': key_data[6],
                     'email': key_data[7],
                     'protocol': key_data[8],
+                    'traffic_limit_mb': key_data[9],
                     'type': 'outline'
                 }
             else:  # v2ray
@@ -413,7 +416,8 @@ def register_key_management_handlers(
                     'protocol': key_data[7],
                     'type': 'v2ray',
                     'domain': key_data[8],
-                    'v2ray_path': key_data[9]
+                    'v2ray_path': key_data[9],
+                    'traffic_limit_mb': key_data[10]
                 }
         
         await callback_query.answer()
@@ -444,14 +448,14 @@ def register_key_management_handlers(
         with get_db_cursor() as cursor:
             if key_type == "outline":
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
+                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path, k.traffic_limit_mb
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
@@ -474,6 +478,7 @@ def register_key_management_handlers(
                     'tariff_id': key_data[6],
                     'email': key_data[7],
                     'protocol': key_data[8],
+                    'traffic_limit_mb': key_data[9],
                     'type': 'outline'
                 }
             else:
@@ -488,6 +493,7 @@ def register_key_management_handlers(
                     'protocol': key_data[7],
                     'domain': key_data[8],
                     'v2ray_path': key_data[9],
+                    'traffic_limit_mb': key_data[10],
                     'type': 'v2ray'
                 }
         
