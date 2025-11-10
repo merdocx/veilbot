@@ -5,6 +5,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
+from urllib.parse import urlparse, urlunparse
 from outline import create_key as outline_create_key, delete_key as outline_delete_key
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,19 @@ class V2RayProtocol(VPNProtocol):
     """Реализация для V2Ray VLESS с новым API"""
     
     def __init__(self, api_url: str, api_key: str = None):
-        self.api_url = api_url.rstrip('/')
+        base_url = api_url.strip()
+        parsed = urlparse(base_url)
+        path = (parsed.path or "").rstrip('/')
+        segments = [seg for seg in path.split('/') if seg]
+        if not segments:
+            path = "/api"
+        elif "api" not in segments:
+            path = f"{path}/api" if path else "/api"
+        # Гарантируем ведущий слэш
+        if not path.startswith("/"):
+            path = f"/{path}"
+        normalized = parsed._replace(path=path)
+        self.api_url = urlunparse(normalized).rstrip('/')
         # API требует аутентификации
         self.headers = {
             'Content-Type': 'application/json',
@@ -135,15 +148,6 @@ class V2RayProtocol(VPNProtocol):
             logger.debug(f"V2Ray headers present: {list(self.headers.keys())}")
             logger.debug(f"V2Ray key data: {key_data}")
                 
-            # Сначала проверим статус API сервера
-            try:
-                async with session.get(f"{self.api_url}/", headers=self.headers) as status_response:
-                    logger.debug(f"V2Ray API status check: {status_response.status}")
-                    if status_response.status != 200:
-                        logger.warning(f"V2Ray API status check failed: {status_response.status}")
-            except Exception as status_error:
-                logger.warning(f"Could not check V2Ray API status: {status_error}")
-                
             async with session.post(
                 f"{self.api_url}/keys",
                 headers=self.headers,
@@ -153,7 +157,7 @@ class V2RayProtocol(VPNProtocol):
                 logger.debug(f"V2Ray create response status: {response.status}")
                 logger.debug(f"V2Ray create response text: {response_text}")
                 
-                if response.status == 200:
+                if response.status in (200, 201):
                     try:
                         result = await response.json()
                         
@@ -180,7 +184,7 @@ class V2RayProtocol(VPNProtocol):
                                     logger.debug(f"Alternative V2Ray create response status: {alt_response.status}")
                                     logger.debug(f"Alternative V2Ray create response text: {alt_response_text}")
                                     
-                                    if alt_response.status == 200:
+                                    if alt_response.status in (200, 201):
                                         alt_result = await alt_response.json()
                                         if isinstance(alt_result, list) and len(alt_result) > 0:
                                             result = alt_result[0]
@@ -200,8 +204,13 @@ class V2RayProtocol(VPNProtocol):
                         
                         logger.info(f"Successfully created V2Ray key {key_id} with UUID {uuid_value}")
                         
-                        # Извлекаем client_config из ответа API, если он есть
+                        # Извлекаем client_config / vless_url из ответа API, если он есть
                         client_config = None
+                        vless_url = result.get('vless_url')
+                        if not vless_url and isinstance(result.get('key'), dict):
+                            vless_url = result['key'].get('vless_url')
+                        if isinstance(vless_url, str) and vless_url.strip():
+                            client_config = vless_url.strip()
                         logger.debug(f"Checking for client_config in API response. Keys: {list(result.keys())}")
                         logger.debug(f"Full API response (sanitized): {str(result).replace(email, 'EMAIL')[:500]}")
                         
@@ -238,6 +247,9 @@ class V2RayProtocol(VPNProtocol):
                             logger.debug(f"Extracted client_config from key: {client_config[:100]}...")
                         else:
                             logger.warning(f"No client_config found in create_user response for email {email}. Will need to fetch via get_user_config")
+                        
+                        if client_config and isinstance(client_config, str):
+                            client_config = client_config.strip()
                         
                         return {
                             'id': key_id,
@@ -312,6 +324,15 @@ class V2RayProtocol(VPNProtocol):
                         if response.status == 200:
                             result = await response.json()
                             logger.debug(f"[GET_CONFIG] API response status 200. Keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
+                            
+                            vless_url = None
+                            if isinstance(result, dict):
+                                vless_url = result.get('vless_url')
+                                if not vless_url and isinstance(result.get('key'), dict):
+                                    vless_url = result['key'].get('vless_url')
+                            if isinstance(vless_url, str) and vless_url.strip():
+                                logger.info(f"[GET_CONFIG] Using vless_url from API response on attempt {attempt + 1}")
+                                return vless_url.strip()
                             
                             # Проверяем новую структуру ответа
                             if result.get('client_config'):

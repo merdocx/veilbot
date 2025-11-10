@@ -133,18 +133,25 @@ async def resend_key(request: Request, key_id: int, csrf_token: str = Form(...))
                 access_url = row[1]
                 protocol = 'outline'
             else:
-                c.execute("SELECT user_id, v2ray_uuid, server_id FROM v2ray_keys WHERE id = ?", (key_id,))
+                c.execute("SELECT user_id, v2ray_uuid, server_id, client_config FROM v2ray_keys WHERE id = ?", (key_id,))
                 r = c.fetchone()
                 if r:
                     user_id = r[0]
                     v2_uuid = r[1]
                     server_id = r[2]
-                    c.execute("SELECT domain, COALESCE(v2ray_path,'/v2ray') FROM servers WHERE id = ?", (server_id,))
-                    s = c.fetchone()
-                    domain = s[0] if s else ''
-                    v2path = s[1] if s else '/v2ray'
-                    access_url = f"vless://{v2_uuid}@{domain}:443?path={v2path}&security=tls&type=ws#VeilBot-V2Ray"
+                    stored_config = r[3] or ""
                     protocol = 'v2ray'
+                    if stored_config:
+                        access_url = stored_config.strip()
+                    else:
+                        c.execute("SELECT domain, COALESCE(v2ray_path,'/v2ray') FROM servers WHERE id = ?", (server_id,))
+                        s = c.fetchone()
+                        domain = (s[0] or '').strip() if s else ''
+                        v2path = s[1] if s else '/v2ray'
+                        if domain:
+                            access_url = f"vless://{v2_uuid}@{domain}:443?path={v2path}&security=tls&type=ws#VeilBot-V2Ray"
+                        else:
+                            access_url = ""
         
         if user_id and access_url and protocol:
             try:

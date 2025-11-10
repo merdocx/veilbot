@@ -7,6 +7,7 @@ from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
 import logging
+from urllib.parse import urlparse, urlunparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.repositories.server_repository import ServerRepository
@@ -20,6 +21,21 @@ from .models import ServerForm
 router = APIRouter()
 
 DATABASE_PATH = settings.DATABASE_PATH
+
+
+def _normalize_v2ray_api_url(api_url: str) -> str:
+    """Ensure V2Ray API URL contains /api suffix."""
+    parsed = urlparse(api_url.strip())
+    path = (parsed.path or "").rstrip('/')
+    segments = [seg for seg in path.split('/') if seg]
+    if not segments:
+        path = "/api"
+    elif "api" not in segments:
+        path = f"{path}/api" if path else "/api"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    normalized = parsed._replace(path=path)
+    return urlunparse(normalized).rstrip('/')
 
 
 @router.get("/servers", response_class=HTMLResponse)
@@ -98,9 +114,13 @@ async def add_server(
             v2ray_path=v2ray_path
         )
         
+        api_url_to_store = server_data.api_url
+        if server_data.protocol == 'v2ray':
+            api_url_to_store = _normalize_v2ray_api_url(server_data.api_url)
+
         ServerRepository(DATABASE_PATH).add_server(
             name=server_data.name,
-            api_url=server_data.api_url,
+            api_url=api_url_to_store,
             cert_sha256=server_data.cert_sha256,
             max_keys=server_data.max_keys,
             country=country,
@@ -121,7 +141,7 @@ async def add_server(
         log_admin_action(
             request,
             "ADD_SERVER",
-            f"Name: {server_data.name}, URL: {server_data.api_url}, Protocol: {server_data.protocol}, Country: {country}"
+            f"Name: {server_data.name}, URL: {api_url_to_store}, Protocol: {server_data.protocol}, Country: {country}"
         )
         
         return RedirectResponse(url="/servers", status_code=HTTP_303_SEE_OTHER)
@@ -249,10 +269,14 @@ async def edit_server(
             v2ray_path=v2ray_path
         )
         
+        api_url_to_store = server_data.api_url
+        if server_data.protocol == 'v2ray':
+            api_url_to_store = _normalize_v2ray_api_url(server_data.api_url)
+
         ServerRepository(DATABASE_PATH).update_server(
             server_id=server_id,
             name=server_data.name,
-            api_url=server_data.api_url,
+            api_url=api_url_to_store,
             cert_sha256=server_data.cert_sha256,
             max_keys=server_data.max_keys,
             country=country,

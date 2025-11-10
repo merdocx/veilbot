@@ -67,9 +67,10 @@
             
             <!-- V2Ray-specific fields -->
             <div class="form-group v2ray-fields {% if server.protocol != 'v2ray' %}hidden{% endif %}">
-                <label class="form-label">Домен *</label>
+                <label class="form-label">Домен</label>
                 <input type="text" name="domain" class="form-input" 
                        value="{{ server.domain }}" placeholder="example.com">
+                <small class="form-help-text">Можно оставить пустым, если сервер возвращает готовый VLESS URL.</small>
             </div>
             
             <div class="form-group v2ray-fields {% if server.protocol != 'v2ray' %}hidden{% endif %}">
