@@ -321,8 +321,8 @@ def register_key_management_handlers(
                     'country': key_data[5],
                     'tariff_id': key_data[6],
                     'email': key_data[7],
-                        'protocol': key_data[8],
-                        'traffic_limit_mb': key_data[9],
+                    'protocol': key_data[8],
+                    'traffic_limit_mb': key_data[9],
                     'type': 'outline'
                 }
             else:
@@ -334,10 +334,10 @@ def register_key_management_handlers(
                     'country': key_data[4],
                     'tariff_id': key_data[5],
                     'email': key_data[6],
-                        'protocol': key_data[7],
-                        'domain': key_data[8],
-                        'v2ray_path': key_data[9],
-                        'traffic_limit_mb': key_data[10],
+                    'protocol': key_data[7],
+                    'domain': key_data[8],
+                    'v2ray_path': key_data[9],
+                    'traffic_limit_mb': key_data[10],
                     'type': 'v2ray'
                 }
         
