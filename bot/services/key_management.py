@@ -11,7 +11,7 @@ from aiogram import types
 
 from utils import get_db_cursor
 from outline import create_key, delete_key
-from vpn_protocols import format_duration, ProtocolFactory
+from vpn_protocols import format_duration, ProtocolFactory, normalize_vless_host
 from bot.utils import format_key_message_unified, safe_send_message
 from bot.keyboards import get_main_menu
 from bot.core import get_bot_instance
@@ -1511,6 +1511,8 @@ async def change_country_for_key(
                         'path': v2ray_path or '/v2ray',
                         'email': old_email_val
                     }, max_retries=5, retry_delay=1.5)
+                
+                config = normalize_vless_host(config, domain, api_url)
                 
                 # Удаляем старый ключ из V2Ray сервера
                 old_uuid = old_key_data.get('v2ray_uuid')

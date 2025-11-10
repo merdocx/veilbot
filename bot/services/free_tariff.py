@@ -17,7 +17,7 @@ from bot.services.key_creation import create_new_key_flow_with_protocol, select_
 from bot.utils import safe_send_message
 from bot.core import get_bot_instance
 from utils import get_db_cursor
-from vpn_protocols import ProtocolFactory
+from vpn_protocols import ProtocolFactory, normalize_vless_host
 from app.infra.foreign_keys import safe_foreign_keys_off
 from memory_optimizer import get_security_logger
 
@@ -598,7 +598,11 @@ async def _extract_vless_config(
     if config and "vless://" in config:
         for line in config.splitlines():
             if line.strip().startswith("vless://"):
-                return line.strip()
+                return normalize_vless_host(
+                    line.strip(),
+                    server_config.get("domain"),
+                    server_config.get("api_url", ""),
+                )
 
     raw_config = await protocol_client.get_user_config(
         user_data["uuid"],
@@ -613,13 +617,22 @@ async def _extract_vless_config(
     if config and "vless://" in config:
         for line in config.splitlines():
             if line.strip().startswith("vless://"):
-                return line.strip()
+                return normalize_vless_host(
+                    line.strip(),
+                    server_config.get("domain"),
+                    server_config.get("api_url", ""),
+                )
     # Fallback на простую ссылку если API вернул неожиданный формат
     domain = cast(str, server_config.get("domain") or "example.com")
     path = cast(str, server_config.get("path") or "/v2ray")
     uuid = str(user_data["uuid"])
-    return (
+    fallback = (
         f"vless://{uuid}@{domain}:443?path={path}&security=tls&type=ws"
         f"#{email or 'VeilBot-V2Ray'}"
+    )
+    return normalize_vless_host(
+        fallback,
+        server_config.get("domain"),
+        server_config.get("api_url", ""),
     )
 

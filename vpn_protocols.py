@@ -10,6 +10,57 @@ from outline import create_key as outline_create_key, delete_key as outline_dele
 
 logger = logging.getLogger(__name__)
 
+
+def normalize_vless_host(config: str, domain: Optional[str], api_url: str) -> str:
+    """
+    Подменяет хост в VLESS ссылке на указанный домен или host из API URL.
+    Это нужно для серверов, где API возвращает дефолтный хост, а подключаться нужно по реальному IP/домену.
+    """
+    if not config or "vless://" not in config:
+        return config
+
+    host_override = (domain or "").strip()
+    if not host_override:
+        try:
+            parsed_api = urlparse(api_url or "")
+            host_override = parsed_api.hostname or ""
+        except Exception:
+            host_override = ""
+
+    if not host_override:
+        return config
+
+    try:
+        fake_url = config.replace("vless://", "https://", 1)
+        parsed = urlparse(fake_url)
+        netloc = parsed.netloc
+        if "@" not in netloc:
+            return config
+        userinfo, host_port = netloc.split("@", 1)
+        if not userinfo:
+            return config
+
+        # IPv6 в [] или обычный хост:порт
+        if host_port.startswith("["):
+            closing = host_port.find("]")
+            if closing != -1:
+                port_part = host_port[closing + 1 :]
+                new_host_port = f"[{host_override}]{port_part}"
+            else:
+                new_host_port = host_override
+        elif ":" in host_port:
+            _, port = host_port.rsplit(":", 1)
+            new_host_port = f"{host_override}:{port}"
+        else:
+            new_host_port = host_override
+
+        new_netloc = f"{userinfo}@{new_host_port}"
+        rebuilt = parsed._replace(netloc=new_netloc)
+        return urlunparse(rebuilt).replace("https://", "vless://", 1)
+    except Exception:
+        return config
+
+
 class VPNProtocol(ABC):
     """Абстрактный класс для VPN протоколов"""
     
