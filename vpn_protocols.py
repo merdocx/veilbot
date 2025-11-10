@@ -11,13 +11,13 @@ from outline import create_key as outline_create_key, delete_key as outline_dele
 logger = logging.getLogger(__name__)
 
 
-def normalize_vless_host(config: str, domain: Optional[str], api_url: str) -> str:
+def normalize_vless_host(config: Optional[str], domain: Optional[str], api_url: str) -> str:
     """
     Подменяет хост в VLESS ссылке на указанный домен или host из API URL.
     Это нужно для серверов, где API возвращает дефолтный хост, а подключаться нужно по реальному IP/домену.
     """
     if not config or "vless://" not in config:
-        return config
+        return config or ""
 
     host_override = (domain or "").strip()
     if not host_override:
@@ -58,7 +58,7 @@ def normalize_vless_host(config: str, domain: Optional[str], api_url: str) -> st
         rebuilt = parsed._replace(netloc=new_netloc)
         return urlunparse(rebuilt).replace("https://", "vless://", 1)
     except Exception:
-        return config
+        return config or ""
 
 
 class VPNProtocol(ABC):

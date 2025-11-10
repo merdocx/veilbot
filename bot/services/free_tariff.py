@@ -598,10 +598,13 @@ async def _extract_vless_config(
     if config and "vless://" in config:
         for line in config.splitlines():
             if line.strip().startswith("vless://"):
-                return normalize_vless_host(
+                return cast(
+                    str,
+                    normalize_vless_host(
                     line.strip(),
                     server_config.get("domain"),
                     server_config.get("api_url", ""),
+                    ),
                 )
 
     raw_config = await protocol_client.get_user_config(
@@ -617,10 +620,13 @@ async def _extract_vless_config(
     if config and "vless://" in config:
         for line in config.splitlines():
             if line.strip().startswith("vless://"):
-                return normalize_vless_host(
+                return cast(
+                    str,
+                    normalize_vless_host(
                     line.strip(),
                     server_config.get("domain"),
                     server_config.get("api_url", ""),
+                    ),
                 )
     # Fallback на простую ссылку если API вернул неожиданный формат
     domain = cast(str, server_config.get("domain") or "example.com")
@@ -630,9 +636,12 @@ async def _extract_vless_config(
         f"vless://{uuid}@{domain}:443?path={path}&security=tls&type=ws"
         f"#{email or 'VeilBot-V2Ray'}"
     )
-    return normalize_vless_host(
-        fallback,
-        server_config.get("domain"),
-        server_config.get("api_url", ""),
+    return cast(
+        str,
+        normalize_vless_host(
+            fallback,
+            server_config.get("domain"),
+            server_config.get("api_url", ""),
+        ),
     )
 
