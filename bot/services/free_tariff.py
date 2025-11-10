@@ -23,10 +23,11 @@ from memory_optimizer import get_security_logger
 
 
 def check_free_tariff_limit_by_protocol_and_country(
-    cursor: sqlite3.Cursor, 
-    user_id: int, 
-    protocol: str = "outline", 
-    country: Optional[str] = None
+    cursor: sqlite3.Cursor,
+    user_id: int,
+    protocol: str = "outline",
+    country: Optional[str] = None,
+    enforce_global: bool = False,
 ) -> bool:
     """
     Проверка лимита бесплатных ключей для конкретного протокола и страны - один раз навсегда
@@ -41,16 +42,17 @@ def check_free_tariff_limit_by_protocol_and_country(
         True если пользователь уже получал бесплатный ключ, False иначе
     """
     # Если пользователь уже когда-либо пользовался бесплатным тарифом (любым протоколом) — запрещаем повтор
-    cursor.execute(
-        """
-        SELECT 1 FROM free_key_usage 
-        WHERE user_id = ?
-        LIMIT 1
-        """,
-        (user_id,),
-    )
-    if cursor.fetchone():
-        return True
+    if enforce_global:
+        cursor.execute(
+            """
+            SELECT 1 FROM free_key_usage 
+            WHERE user_id = ?
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        if cursor.fetchone():
+            return True
 
     # Проверяем в таблице free_key_usage для конкретного протокола и страны (на случай отсутствия общего следа)
     cursor.execute("""
@@ -126,10 +128,19 @@ def check_free_tariff_limit(cursor: sqlite3.Cursor, user_id: int) -> bool:
     Returns:
         True если пользователь уже получал бесплатный ключ, False иначе
     """
-    return check_free_tariff_limit_by_protocol_and_country(cursor, user_id, "outline")
+    return check_free_tariff_limit_by_protocol_and_country(
+        cursor,
+        user_id,
+        "outline",
+        enforce_global=True,
+    )
 
 
-def check_free_tariff_limit_by_protocol(cursor: sqlite3.Cursor, user_id: int, protocol: str = "outline") -> bool:
+def check_free_tariff_limit_by_protocol(
+    cursor: sqlite3.Cursor,
+    user_id: int,
+    protocol: str = "outline",
+) -> bool:
     """
     Проверка лимита бесплатных ключей для конкретного протокола - один раз навсегда (для обратной совместимости)
     
@@ -141,7 +152,12 @@ def check_free_tariff_limit_by_protocol(cursor: sqlite3.Cursor, user_id: int, pr
     Returns:
         True если пользователь уже получал бесплатный ключ, False иначе
     """
-    return check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol)
+    return check_free_tariff_limit_by_protocol_and_country(
+        cursor,
+        user_id,
+        protocol,
+        enforce_global=False,
+    )
 
 
 def record_free_key_usage(
@@ -247,7 +263,13 @@ async def handle_free_tariff_with_protocol(
     main_menu = get_main_menu()
     
     # Проверяем лимит бесплатных ключей для выбранного протокола и страны
-    if check_free_tariff_limit_by_protocol_and_country(cursor, user_id, protocol, country):
+    if check_free_tariff_limit_by_protocol_and_country(
+        cursor,
+        user_id,
+        protocol,
+        country,
+        enforce_global=True,
+    ):
         if country:
             await message.answer(f"Вы уже получали бесплатный тариф {PROTOCOLS[protocol]['name']} для страны {country} ранее. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
         else:
@@ -346,6 +368,7 @@ async def issue_free_v2ray_key_on_start(message: types.Message) -> Dict[str, Any
             user_id,
             protocol="v2ray",
             country=FREE_V2RAY_COUNTRY,
+            enforce_global=True,
         ):
             return {"status": "already_issued"}
 
