@@ -40,8 +40,19 @@ def check_free_tariff_limit_by_protocol_and_country(
     Returns:
         True если пользователь уже получал бесплатный ключ, False иначе
     """
-    # Проверяем в таблице free_key_usage - это основная проверка
-    # Сначала проверяем, получал ли пользователь бесплатный ключ для этого протокола вообще
+    # Если пользователь уже когда-либо пользовался бесплатным тарифом (любым протоколом) — запрещаем повтор
+    cursor.execute(
+        """
+        SELECT 1 FROM free_key_usage 
+        WHERE user_id = ?
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    if cursor.fetchone():
+        return True
+
+    # Проверяем в таблице free_key_usage для конкретного протокола и страны (на случай отсутствия общего следа)
     cursor.execute("""
         SELECT created_at FROM free_key_usage 
         WHERE user_id = ? AND protocol = ?
