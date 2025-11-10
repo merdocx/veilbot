@@ -336,10 +336,7 @@ async def issue_free_v2ray_key_on_start(message: types.Message) -> Dict[str, Any
             protocol="v2ray",
             country=FREE_V2RAY_COUNTRY,
         ):
-            return {
-                "status": "already_issued",
-                "message": "Вы уже получали бесплатный V2Ray ключ ранее. Его можно найти в разделе «Мои ключи».",
-            }
+            return {"status": "already_issued"}
 
         cursor.execute(
             "SELECT id, name, duration_sec, traffic_limit_mb, price_rub "
@@ -388,10 +385,7 @@ async def issue_free_v2ray_key_on_start(message: types.Message) -> Dict[str, Any
             )
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to create free V2Ray key for user %s: %s", user_id, exc)
-            return {
-                "status": "error",
-                "message": "Не удалось подготовить бесплатный ключ. Попробуйте позже.",
-            }
+            return {"status": "error"}
 
         record_free_key_usage(
             cursor,

@@ -92,11 +92,21 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
             disable_web_page_preview=True,
             parse_mode="Markdown",
         )
+    elif status == "already_issued":
+        await message.answer(
+            "Нажмите «Купить доступ» для получения доступа",
+            reply_markup=main_menu,
+        )
+    elif status == "no_server":
+        await message.answer(
+            "Нет свободных V2Ray серверов в Нидерландах. Попробуйте позже или выберите платный тариф.",
+            reply_markup=main_menu,
+        )
     else:
-        user_message = result.get("message") or "Бесплатный ключ сейчас недоступен."
-        await message.answer(user_message, reply_markup=main_menu)
-        if status != "already_issued":
-            await message.answer("Нажмите «Купить доступ» для получения доступа", reply_markup=main_menu)
+        await message.answer(
+            "❌ Не удалось подготовить бесплатный ключ. Попробуйте позже.",
+            reply_markup=main_menu,
+        )
 
 def register_start_handler(dp: Dispatcher, user_states: Dict[int, Dict[str, Any]]) -> None:
     """Регистрация обработчика команды /start"""
