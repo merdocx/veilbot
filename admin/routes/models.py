@@ -50,9 +50,13 @@ class ServerForm(BaseModel):
     def validate_domain(cls, v):
         if v in [None, "None", ""]:
             return ""
-        if not re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', v):
-            raise ValueError('Invalid domain format')
-        return v.strip()
+        value = v.strip()
+        # Разрешаем домен или IP
+        if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', value):
+            return value
+        if re.match(r'^\\d{1,3}(\\.\\d{1,3}){3}$', value):
+            return value
+        raise ValueError('Invalid domain or IP format')
     
     @validator('api_key')
     def validate_api_key(cls, v, values):
