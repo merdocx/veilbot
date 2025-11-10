@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     )
 
     FREE_V2RAY_TARIFF_ID: int = Field(default=2, description="ID бесплатного тарифа для авто-выдачи V2Ray")
-    FREE_V2RAY_COUNTRY: str = Field(default="Netherlands", description="Страна для авто-выдачи V2Ray ключей")
+    FREE_V2RAY_COUNTRY: str = Field(default="Нидерланды", description="Страна для авто-выдачи V2Ray ключей")
 
     # Admin CORS
     ADMIN_ALLOWED_ORIGINS: list[str] | str = Field(default_factory=list)
