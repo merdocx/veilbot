@@ -4,7 +4,7 @@
 import time
 import sqlite3
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, cast
 from aiogram import types
 from config import (
     PROTOCOLS,
@@ -561,17 +561,19 @@ async def _extract_vless_config(
     """
     Извлекает VLESS-конфиг из ответа create_user или через дополнительный запрос.
     """
-    if user_data.get("client_config"):
-        config = user_data["client_config"]
-    else:
-        config = None
+    config_data = user_data.get("client_config")
+    config: Optional[str] = None
+    if isinstance(config_data, str):
+        config = config_data
+    elif config_data is not None:
+        config = str(config_data)
 
     if config and "vless://" in config:
         for line in config.splitlines():
             if line.strip().startswith("vless://"):
                 return line.strip()
 
-    config = await protocol_client.get_user_config(
+    raw_config = await protocol_client.get_user_config(
         user_data["uuid"],
         {
             "domain": server_config.get("domain"),
@@ -580,15 +582,17 @@ async def _extract_vless_config(
             "email": email,
         },
     )
+    config = raw_config if isinstance(raw_config, str) else str(raw_config)
     if config and "vless://" in config:
         for line in config.splitlines():
             if line.strip().startswith("vless://"):
                 return line.strip()
     # Fallback на простую ссылку если API вернул неожиданный формат
-    domain = server_config.get("domain") or "example.com"
-    path = server_config.get("path") or "/v2ray"
+    domain = cast(str, server_config.get("domain") or "example.com")
+    path = cast(str, server_config.get("path") or "/v2ray")
+    uuid = str(user_data["uuid"])
     return (
-        f"vless://{user_data['uuid']}@{domain}:443?path={path}&security=tls&type=ws"
+        f"vless://{uuid}@{domain}:443?path={path}&security=tls&type=ws"
         f"#{email or 'VeilBot-V2Ray'}"
     )
 
