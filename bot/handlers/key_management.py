@@ -205,7 +205,7 @@ def register_key_management_handlers(
             with get_db_cursor() as cursor:
                 # Получаем все активные ключи пользователя
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
+                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.user_id = ? AND k.expiry_at > ?
@@ -215,7 +215,7 @@ def register_key_management_handlers(
                 logging.debug(f"Найдено {len(outline_keys)} Outline ключей")
                 
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, 'v2ray' as key_type, s.domain, s.v2ray_path
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, 'v2ray' as key_type, s.domain, s.v2ray_path, k.traffic_limit_mb
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.user_id = ? AND k.expiry_at > ?
@@ -237,7 +237,8 @@ def register_key_management_handlers(
                         'tariff_id': key[6],
                         'email': key[7],
                         'protocol': key[8],
-                        'type': 'outline'
+                        'type': 'outline',
+                        'traffic_limit_mb': key[10]
                     })
                 
                 for key in v2ray_keys:
@@ -252,7 +253,8 @@ def register_key_management_handlers(
                         'protocol': key[7],
                         'type': key[8],
                         'domain': key[9],
-                        'v2ray_path': key[10]
+                        'v2ray_path': key[10],
+                        'traffic_limit_mb': key[11]
                     })
                 
                 logging.debug(f"Всего активных ключей: {len(all_keys)}")
