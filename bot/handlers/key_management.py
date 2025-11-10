@@ -128,7 +128,7 @@ def register_key_management_handlers(
                 
                 # Получаем Outline ключи
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol
+                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.user_id = ? AND k.expiry_at > ?
@@ -137,7 +137,7 @@ def register_key_management_handlers(
                 
                 # Получаем V2Ray ключи
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path, k.traffic_limit_mb
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.user_id = ? AND k.expiry_at > ?
@@ -157,7 +157,8 @@ def register_key_management_handlers(
                         'tariff_id': key[6],
                         'email': key[7],
                         'protocol': key[8],
-                        'type': 'outline'
+                        'type': 'outline',
+                        'traffic_limit_mb': key[9]
                     })
                 
                 for key in v2ray_keys:
@@ -172,7 +173,8 @@ def register_key_management_handlers(
                         'protocol': key[7],
                         'type': 'v2ray',
                         'domain': key[8],
-                        'v2ray_path': key[9]
+                        'v2ray_path': key[9],
+                        'traffic_limit_mb': key[10]
                     })
                 
                 logging.debug(f"Всего активных ключей для смены страны: {len(all_keys)}")
