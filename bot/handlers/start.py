@@ -64,25 +64,13 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
         result = await issue_free_v2ray_key_on_start(message)
     except Exception as exc:  # noqa: BLE001
         logging.exception("Failed to auto-issue free V2Ray key for %s: %s", user_id, exc)
+        result = {"status": "error"}
+    finally:
         if placeholder_message:
             try:
-                await placeholder_message.edit_text(
-                    "❌ Не удалось подготовить бесплатный ключ. Попробуйте позже."
-                )
+                await placeholder_message.delete()
             except Exception:
-                await message.answer(
-                    "❌ Не удалось подготовить бесплатный ключ. Попробуйте позже.",
-                    reply_markup=main_menu,
-                )
-                return
-        await message.answer("Нажмите «Купить доступ» для получения доступа", reply_markup=main_menu)
-        return
-
-    if placeholder_message:
-        try:
-            await placeholder_message.delete()
-        except Exception:
-            pass
+                pass
 
     status = result.get("status")
     if status == "issued":
@@ -92,19 +80,13 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
             disable_web_page_preview=True,
             parse_mode="Markdown",
         )
-    elif status == "already_issued":
+    else:
+        if status == "no_server":
+            logging.info("No free V2Ray servers available for user %s", user_id)
+        elif status == "error":
+            logging.info("Free V2Ray issuance failed for user %s", user_id)
         await message.answer(
             "Нажмите «Купить доступ» для получения доступа",
-            reply_markup=main_menu,
-        )
-    elif status == "no_server":
-        await message.answer(
-            "Нет свободных V2Ray серверов в Нидерландах. Попробуйте позже или выберите платный тариф.",
-            reply_markup=main_menu,
-        )
-    else:
-        await message.answer(
-            "❌ Не удалось подготовить бесплатный ключ. Попробуйте позже.",
             reply_markup=main_menu,
         )
 
