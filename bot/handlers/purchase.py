@@ -5,7 +5,7 @@ import time
 import logging
 from typing import Dict, Any, Callable, Optional
 from aiogram import Dispatcher, types, Bot
-from config import PROTOCOLS, ADMIN_ID
+from config import PROTOCOLS, ADMIN_ID, FREE_V2RAY_TARIFF_ID
 from utils import get_db_cursor
 from validators import input_validator, ValidationError
 from bot.keyboards import (
@@ -599,6 +599,8 @@ def register_purchase_handlers(
                             row = (*row, 0)
                     else:
                         raise
+                if row and row[0] == FREE_V2RAY_TARIFF_ID:
+                    row = None
                 if row:
                     tariff = {
                         "id": row[0],

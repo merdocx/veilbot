@@ -3,7 +3,7 @@
 """
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from utils import get_db_cursor
-from config import PROTOCOLS
+from config import PROTOCOLS, FREE_V2RAY_TARIFF_ID
 from app.infra.cache import SimpleCache
 
 # Кэш для меню
@@ -105,7 +105,9 @@ def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> Repl
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
     has_available_tariffs = False
     
-    for _, name, price, duration, price_crypto in tariffs:
+    for tariff_id, name, price, duration, price_crypto in tariffs:
+        if tariff_id == FREE_V2RAY_TARIFF_ID:
+            continue
         if price > 0:
             # Если выбран способ оплаты, показываем соответствующую цену
             if payment_method == "cryptobot":
@@ -130,6 +132,8 @@ def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> Repl
         else:
             # Бесплатные тарифы показываем только если не выбрана крипта
             if payment_method != "cryptobot":
+                if tariff_id == FREE_V2RAY_TARIFF_ID:
+                    continue
                 label = f"{name} — бесплатно"
                 menu.add(KeyboardButton(label))
                 has_available_tariffs = True

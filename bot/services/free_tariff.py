@@ -6,9 +6,20 @@ import sqlite3
 import logging
 from typing import Optional, Dict, Any
 from aiogram import types
-from config import PROTOCOLS
+from config import (
+    PROTOCOLS,
+    ADMIN_ID,
+    FREE_V2RAY_TARIFF_ID,
+    FREE_V2RAY_COUNTRY,
+)
 from bot.keyboards import get_main_menu
-from bot.services.key_creation import create_new_key_flow_with_protocol
+from bot.services.key_creation import create_new_key_flow_with_protocol, select_available_server_by_protocol
+from bot.utils import safe_send_message
+from bot.core import get_bot_instance
+from utils import get_db_cursor
+from vpn_protocols import ProtocolFactory
+from app.infra.foreign_keys import safe_foreign_keys_off
+from memory_optimizer import get_security_logger
 
 
 def check_free_tariff_limit_by_protocol_and_country(
@@ -308,4 +319,282 @@ async def handle_free_tariff_with_protocol(
             for_renewal=False,
             user_states=user_states
         )
+
+
+async def issue_free_v2ray_key_on_start(message: types.Message) -> Dict[str, Any]:
+    """
+    Автоматическая выдача бесплатного V2Ray ключа при первом /start.
+    Возвращает статус операции и данные ключа (если успешно).
+    """
+    user_id = message.from_user.id
+    telegram_user = message.from_user
+
+    with get_db_cursor(commit=True) as cursor:
+        if check_free_tariff_limit_by_protocol_and_country(
+            cursor,
+            user_id,
+            protocol="v2ray",
+            country=FREE_V2RAY_COUNTRY,
+        ):
+            return {
+                "status": "already_issued",
+                "message": "Вы уже получали бесплатный V2Ray ключ ранее. Его можно найти в разделе «Мои ключи».",
+            }
+
+        cursor.execute(
+            "SELECT id, name, duration_sec, traffic_limit_mb, price_rub "
+            "FROM tariffs WHERE id = ?",
+            (FREE_V2RAY_TARIFF_ID,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            logging.error("Tariff with id %s not found for free issuance", FREE_V2RAY_TARIFF_ID)
+            return {
+                "status": "tariff_missing",
+                "message": "Бесплатный тариф временно недоступен.",
+            }
+
+        tariff = {
+            "id": row[0],
+            "name": row[1],
+            "duration_sec": row[2],
+            "traffic_limit_mb": row[3] or 0,
+            "price_rub": row[4] or 0,
+        }
+
+        server = select_available_server_by_protocol(
+            cursor,
+            country=FREE_V2RAY_COUNTRY,
+            protocol="v2ray",
+            for_renewal=False,
+        )
+        if not server:
+            logging.warning(
+                "No available V2Ray servers in %s for free issuance",
+                FREE_V2RAY_COUNTRY,
+            )
+            return {
+                "status": "no_server",
+                "message": "Нет свободных V2Ray серверов в Нидерландах. Попробуйте позже или выберите платный тариф.",
+            }
+
+        try:
+            key_data = await _create_v2ray_key_for_start(
+                cursor,
+                server=server,
+                user_id=user_id,
+                tariff=tariff,
+                telegram_user=telegram_user,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("Failed to create free V2Ray key for user %s: %s", user_id, exc)
+            return {
+                "status": "error",
+                "message": "Не удалось подготовить бесплатный ключ. Попробуйте позже.",
+            }
+
+        record_free_key_usage(
+            cursor,
+            user_id=user_id,
+            protocol="v2ray",
+            country=FREE_V2RAY_COUNTRY,
+        )
+
+    # Уведомление администратора (вне транзакции)
+    try:
+        bot = get_bot_instance()
+        admin_message = (
+            "🎁 *Выдан бесплатный V2Ray ключ*\n"
+            f"Пользователь: `{user_id}`\n"
+            f"Страна: *{FREE_V2RAY_COUNTRY}*\n"
+            f"Тариф: *{tariff['name']}*"
+        )
+        await safe_send_message(
+            bot,
+            ADMIN_ID,
+            admin_message,
+            disable_web_page_preview=True,
+            parse_mode="Markdown",
+            mark_blocked=False,
+        )
+    except Exception as notify_exc:  # noqa: BLE001
+        logging.warning("Failed to notify admin about free key issuance: %s", notify_exc)
+
+    return {
+        "status": "issued",
+        "config": key_data["config"],
+        "tariff": tariff,
+        "server": key_data["server"],
+        "expires_at": key_data["expires_at"],
+    }
+
+
+async def _create_v2ray_key_for_start(
+    cursor: sqlite3.Cursor,
+    server: tuple,
+    user_id: int,
+    tariff: Dict[str, Any],
+    telegram_user: types.User | None = None,
+) -> Dict[str, Any]:
+    """
+    Создание V2Ray ключа для автоматической выдачи при /start.
+    Возвращает словарь с конфигурацией и данными ключа.
+    """
+    now = int(time.time())
+    expiry = now + int(tariff["duration_sec"] or 0)
+    traffic_limit_mb = int(tariff.get("traffic_limit_mb") or 0)
+
+    server_id, server_name, api_url, cert_sha256, domain, api_key, v2ray_path = server
+    server_config = {
+        "api_url": api_url,
+        "cert_sha256": cert_sha256,
+        "api_key": api_key,
+        "domain": domain,
+        "path": v2ray_path,
+    }
+
+    protocol_client = None
+    user_data = None
+    user_email = None
+
+    try:
+        protocol_client = ProtocolFactory.create_protocol("v2ray", server_config)
+        user_email = (
+            f"{telegram_user.username or 'user'}_{user_id}@veilbot.com"
+            if telegram_user and telegram_user.username
+            else f"user_{user_id}@veilbot.com"
+        )
+        user_data = await protocol_client.create_user(user_email)
+        if not user_data or not user_data.get("uuid"):
+            raise RuntimeError("Invalid response from V2Ray server while creating user")
+
+        config = await _extract_vless_config(user_data, server_config, user_email, protocol_client)
+
+        with safe_foreign_keys_off(cursor):
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO users (user_id, username, first_name, last_name, created_at, last_active_at, blocked)
+                VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM users WHERE user_id = ?), ?), ?, 0)
+                """,
+                (
+                    user_id,
+                    getattr(telegram_user, "username", None),
+                    getattr(telegram_user, "first_name", None),
+                    getattr(telegram_user, "last_name", None),
+                    user_id,
+                    now,
+                    now,
+                ),
+            )
+
+            cursor.execute(
+                """
+                INSERT INTO v2ray_keys (
+                    server_id,
+                    user_id,
+                    v2ray_uuid,
+                    email,
+                    created_at,
+                    expiry_at,
+                    tariff_id,
+                    client_config,
+                    notified,
+                    traffic_limit_mb,
+                    traffic_usage_bytes,
+                    traffic_over_limit_at,
+                    traffic_over_limit_notified
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, NULL, 0)
+                """,
+                (
+                    server_id,
+                    user_id,
+                    user_data["uuid"],
+                    user_email,
+                    now,
+                    expiry,
+                    tariff["id"],
+                    config,
+                    traffic_limit_mb,
+                ),
+            )
+
+        try:
+            security_logger = get_security_logger()
+            if security_logger:
+                security_logger.log_key_creation(
+                    user_id=user_id,
+                    key_id=user_data["uuid"],
+                    protocol="v2ray",
+                    server_id=server_id,
+                    tariff_id=tariff["id"],
+                    ip_address=None,
+                    user_agent="Telegram Bot (/start auto-issue)",
+                )
+        except Exception as sec_exc:  # noqa: BLE001
+            logging.warning("Failed to log security event for free V2Ray key: %s", sec_exc)
+
+        return {
+            "config": config,
+            "server": {
+                "id": server_id,
+                "name": server_name,
+                "country": FREE_V2RAY_COUNTRY,
+            },
+            "expires_at": expiry,
+        }
+    except Exception:
+        if protocol_client and user_data and user_data.get("uuid"):
+            try:
+                await protocol_client.delete_user(user_data["uuid"])
+            except Exception as cleanup_exc:  # noqa: BLE001
+                logging.warning("Failed to cleanup V2Ray user after error: %s", cleanup_exc)
+        raise
+    finally:
+        if protocol_client:
+            try:
+                await protocol_client.close()
+            except Exception as close_exc:  # noqa: BLE001
+                logging.debug("Failed to close V2Ray client cleanly: %s", close_exc)
+
+
+async def _extract_vless_config(
+    user_data: Dict[str, Any],
+    server_config: Dict[str, Any],
+    email: str,
+    protocol_client,
+) -> str:
+    """
+    Извлекает VLESS-конфиг из ответа create_user или через дополнительный запрос.
+    """
+    if user_data.get("client_config"):
+        config = user_data["client_config"]
+    else:
+        config = None
+
+    if config and "vless://" in config:
+        for line in config.splitlines():
+            if line.strip().startswith("vless://"):
+                return line.strip()
+
+    config = await protocol_client.get_user_config(
+        user_data["uuid"],
+        {
+            "domain": server_config.get("domain"),
+            "port": 443,
+            "path": server_config.get("path") or "/v2ray",
+            "email": email,
+        },
+    )
+    if config and "vless://" in config:
+        for line in config.splitlines():
+            if line.strip().startswith("vless://"):
+                return line.strip()
+    # Fallback на простую ссылку если API вернул неожиданный формат
+    domain = server_config.get("domain") or "example.com"
+    path = server_config.get("path") or "/v2ray"
+    return (
+        f"vless://{user_data['uuid']}@{domain}:443?path={path}&security=tls&type=ws"
+        f"#{email or 'VeilBot-V2Ray'}"
+    )
 

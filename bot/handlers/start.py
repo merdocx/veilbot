@@ -8,6 +8,8 @@ from aiogram import Dispatcher, types
 from utils import get_db_cursor
 from bot.keyboards import get_main_menu
 from app.infra.foreign_keys import safe_foreign_keys_off
+from bot.services.free_tariff import issue_free_v2ray_key_on_start
+from bot.utils import format_key_message_unified
 
 async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, Any]]) -> None:
     """
@@ -53,7 +55,48 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
         del user_states[user_id]
     
     main_menu = get_main_menu()
-    await message.answer("Нажмите «Купить доступ» для получения доступа", reply_markup=main_menu)
+
+    placeholder_message = None
+    try:
+        placeholder_message = await message.answer(
+            "🔄 Готовим ваш бесплатный V2Ray ключ... Это займет несколько секунд."
+        )
+        result = await issue_free_v2ray_key_on_start(message)
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("Failed to auto-issue free V2Ray key for %s: %s", user_id, exc)
+        if placeholder_message:
+            try:
+                await placeholder_message.edit_text(
+                    "❌ Не удалось подготовить бесплатный ключ. Попробуйте позже."
+                )
+            except Exception:
+                await message.answer(
+                    "❌ Не удалось подготовить бесплатный ключ. Попробуйте позже.",
+                    reply_markup=main_menu,
+                )
+                return
+        await message.answer("Нажмите «Купить доступ» для получения доступа", reply_markup=main_menu)
+        return
+
+    if placeholder_message:
+        try:
+            await placeholder_message.delete()
+        except Exception:
+            pass
+
+    status = result.get("status")
+    if status == "issued":
+        await message.answer(
+            format_key_message_unified(result["config"], "v2ray", result["tariff"]),
+            reply_markup=main_menu,
+            disable_web_page_preview=True,
+            parse_mode="Markdown",
+        )
+    else:
+        user_message = result.get("message") or "Бесплатный ключ сейчас недоступен."
+        await message.answer(user_message, reply_markup=main_menu)
+        if status != "already_issued":
+            await message.answer("Нажмите «Купить доступ» для получения доступа", reply_markup=main_menu)
 
 def register_start_handler(dp: Dispatcher, user_states: Dict[int, Dict[str, Any]]) -> None:
     """Регистрация обработчика команды /start"""

@@ -4,7 +4,7 @@
 import sqlite3
 from typing import Optional, Dict, Any
 from aiogram import types
-from config import PROTOCOLS
+from config import PROTOCOLS, FREE_V2RAY_TARIFF_ID
 from bot.keyboards import get_payment_method_keyboard
 
 
@@ -49,6 +49,8 @@ def get_tariff_by_name_and_price(
         raise
     row = cursor.fetchone()
     if not row:
+        return None
+    if row[0] == FREE_V2RAY_TARIFF_ID:
         return None
     return {
         "id": row[0],
