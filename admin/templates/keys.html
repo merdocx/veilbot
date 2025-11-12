@@ -55,7 +55,7 @@
                     <th>Сервер</th>
                     <th>Создан</th>
                     <th>Истекает</th>
-                    <th>Статус</th>
+                    <th class="text-left">Статус</th>
                     <th>Трафик</th>
                     <th>Действия</th>
                 </tr>
@@ -66,8 +66,8 @@
                     <td class="keys-table__cell keys-table__cell--id">
                         <span class="text-muted">#{{ key.id }}</span>
                     </td>
-                    <td class="keys-table__cell keys-table__cell--copy text-center">
-                        <button class="btn btn-icon" data-action="copy-key" data-key="{{ key.access_url|e }}" data-key-id="{{ key.id }}" title="Скопировать ключ">
+                    <td class="keys-table__cell keys-table__cell--copy">
+                        <button class="btn btn-icon" type="button" data-action="copy-key" data-key="{{ key.access_url|e }}" data-key-id="{{ key.id }}" title="Скопировать ключ">
                             <span class="material-icons icon-small">content_copy</span>
                         </button>
                     </td>
@@ -189,5 +189,5 @@
 
 {% block extra_scripts %}
     {{ super() }}
-    <script type="module" src="/static/js/keys.js"></script>
+    <script src="/static/js/keys.js?v=20251111c"></script>
 {% endblock %}

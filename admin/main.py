@@ -123,11 +123,12 @@ class CachedStaticFiles(StaticFiles):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
     
-    def file_response(self, *args, **kwargs):
-        response = super().file_response(*args, **kwargs)
+    def file_response(self, path, stat_result, scope):
+        response = super().file_response(path, stat_result, scope)
         # Add cache headers for static files
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        response.headers["ETag"] = f'"{hash(str(response.file_path))}"'
+        etag_value = f'W/"{int(stat_result.st_mtime)}-{stat_result.st_size}"'
+        response.headers["ETag"] = etag_value
         return response
 
 app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")

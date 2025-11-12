@@ -180,6 +180,57 @@
     </table>
   </div>
 </div>
+
+<div class="table-container mt-2">
+  <div class="table-header">
+    <h2>Рефералы</h2>
+  </div>
+  <div class="table-scroll">
+    <table class="material-table">
+      <thead>
+        <tr>
+          <th>User ID</th>
+          <th>Email</th>
+          <th>Дата приглашения</th>
+          <th>Бонус</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for referral in referrals %}
+        <tr>
+          <td>
+            <div class="cell-primary">{{ referral.user_id }}</div>
+          </td>
+          <td>
+            {% if referral.email %}
+              <div class="cell-primary" title="{{ referral.email }}">{{ referral.email }}</div>
+            {% else %}
+              <div class="cell-primary text-muted">—</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if referral.created_at %}
+              <div class="cell-primary">{{ referral.created_at|timestamp }}</div>
+            {% else %}
+              <div class="cell-primary text-muted">—</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if referral.bonus_issued %}
+              <span class="badge badge-success">Выдан</span>
+            {% else %}
+              <span class="badge badge-neutral">Не выдан</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not referrals %}
+        <tr><td colspan="4" class="text-center text-muted">Рефералы отсутствуют</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}

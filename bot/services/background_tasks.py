@@ -422,6 +422,15 @@ async def monitor_v2ray_traffic_limits() -> None:
         with get_db_cursor() as cursor:
             cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS v2ray_usage_snapshots (
+                    key_id INTEGER PRIMARY KEY,
+                    server_bytes INTEGER DEFAULT 0,
+                    updated_at INTEGER DEFAULT 0
+                )
+                """
+            )
+            cursor.execute(
+                """
                 SELECT 
                     k.id,
                     k.user_id,
@@ -446,10 +455,29 @@ async def monitor_v2ray_traffic_limits() -> None:
             )
             rows = cursor.fetchall()
 
-        if not rows:
+            rows_data = [dict(row) for row in rows]
+            if rows_data:
+                key_ids = [row["id"] for row in rows_data]
+            else:
+                key_ids = []
+
+            snapshot_map: Dict[int, int] = {}
+            if key_ids:
+                placeholders = ",".join("?" for _ in key_ids)
+                cursor.execute(
+                    f"SELECT key_id, server_bytes FROM v2ray_usage_snapshots WHERE key_id IN ({placeholders})",
+                    key_ids,
+                )
+                snapshot_map = {
+                    int(row[0]): int(row[1] or 0)
+                    for row in cursor.fetchall()
+                }
+            else:
+                snapshot_map = {}
+
+        if not rows_data:
             return
 
-        rows_data = [dict(row) for row in rows]
         server_configs: Dict[int, Dict[str, str]] = {}
         server_keys_map: Dict[int, list[Dict[str, Any]]] = defaultdict(list)
 
@@ -483,6 +511,7 @@ async def monitor_v2ray_traffic_limits() -> None:
         warn_notifications = []
         disable_notifications = []
         updates = []
+        snapshot_updates: list[tuple[int, int, int]] = []
 
         for row in rows_data:
             key_id = row["id"]
@@ -493,11 +522,34 @@ async def monitor_v2ray_traffic_limits() -> None:
                 limit_mb_value = 0.0
             limit_bytes = max(0, int(limit_mb_value * 1024 * 1024))
 
-            usage_bytes = usage_map.get(key_id)
-            if usage_bytes is None:
-                usage_bytes = row["traffic_usage_bytes"] or 0
-            else:
-                usage_bytes = int(usage_bytes)
+            stored_total = int(row["traffic_usage_bytes"] or 0)
+            usage_bytes = stored_total
+            server_usage = usage_map.get(key_id)
+            server_usage_int: Optional[int] = None
+            if server_usage is not None:
+                server_usage_int = max(int(server_usage), 0)
+                last_server = snapshot_map.get(key_id)
+                if last_server is None:
+                    if stored_total > server_usage_int:
+                        delta = server_usage_int
+                    elif stored_total == server_usage_int:
+                        delta = 0
+                    else:
+                        delta = server_usage_int - stored_total
+                else:
+                    delta = server_usage_int - last_server
+                    if delta < 0:
+                        if stored_total > server_usage_int:
+                            delta = server_usage_int
+                        elif stored_total == server_usage_int:
+                            delta = 0
+                        else:
+                            delta = server_usage_int - stored_total
+                if delta < 0:
+                    delta = 0
+                usage_bytes = stored_total + delta
+                snapshot_updates.append((key_id, server_usage_int, now))
+                snapshot_map[key_id] = server_usage_int
 
             over_limit_at = row.get("traffic_over_limit_at")
             notified_flags = row.get("traffic_over_limit_notified") or 0
@@ -596,6 +648,17 @@ async def monitor_v2ray_traffic_limits() -> None:
                     """,
                     updates,
                 )
+                if snapshot_updates:
+                    cursor.executemany(
+                        """
+                        INSERT INTO v2ray_usage_snapshots (key_id, server_bytes, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key_id) DO UPDATE
+                        SET server_bytes = excluded.server_bytes,
+                            updated_at = excluded.updated_at
+                        """,
+                        snapshot_updates,
+                    )
 
         if warn_notifications or disable_notifications:
             bot = get_bot_instance()

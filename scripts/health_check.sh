@@ -8,6 +8,9 @@ NGINX_SERVICE="nginx"
 DB_PATH="/root/veilbot/vpn.db"
 LOG_DIR="${VEILBOT_LOG_DIR:-/var/log/veilbot}"
 mkdir -p "$LOG_DIR" >/dev/null 2>&1 || true
+LOG_FILE="$LOG_DIR/health_check.log"
+
+exec >> "$LOG_FILE" 2>&1
 
 overall_status=0 # 0 = HEALTHY, 1 = ISSUES DETECTED
 

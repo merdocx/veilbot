@@ -568,11 +568,21 @@ body {
     text-overflow: ellipsis;
     padding: 8px 12px;
     word-break: break-word;
+    text-align: left;
+    vertical-align: middle;
+}
+
+.material-table th {
+    padding-left: 16px;
+}
+
+.material-table td {
+    padding-left: 16px;
 }
 
 .material-table th:not(:first-child),
 .material-table td:not(:first-child) {
-    box-shadow: inset 1px 0 0 rgba(15, 23, 42, 0.35);
+    box-shadow: inset 1px 0 0 rgba(15, 23, 42, 0.08);
 }
 
 /* Таблица ключей - оптимизировано без пустых мест */
@@ -597,54 +607,59 @@ body {
 
 #keys-table th:nth-child(2),
 #keys-table td:nth-child(2) {
-    width: 6%;
-    text-align: center;
+    width: 5%;
     padding: 6px 1px;
+    padding-left: 16px;
 }
 
 #keys-table th:nth-child(3),
 #keys-table td:nth-child(3) {
-    width: 16%;
+    width: 23%;
     padding: 6px 4px;
+    padding-left: 16px;
 }
 
 #keys-table th:nth-child(4),
 #keys-table td:nth-child(4) {
-    width: 16%;
+    width: 10%;
     padding: 6px 4px;
+    padding-left: 16px;
 }
 
 #keys-table th:nth-child(5),
 #keys-table td:nth-child(5) {
-    width: 18%;
+    width: 13%;
     padding: 6px 4px;
+    padding-left: 16px;
 }
 
 #keys-table th:nth-child(6),
 #keys-table td:nth-child(6) {
-    width: 11%;
+    width: 15%;
     padding: 6px 4px;
+    padding-left: 16px;
 }
 
 #keys-table th:nth-child(7),
 #keys-table td:nth-child(7) {
-    width: 8%;
+    width: 7%;
     padding: 6px 2px;
-    text-align: center;
     white-space: nowrap;
+    padding-left: 16px;
 }
 
 #keys-table th:nth-child(8),
 #keys-table td:nth-child(8) {
     width: 10%;
     padding: 6px 3px;
+    padding-left: 16px;
 }
 
 #keys-table th:nth-child(9),
 #keys-table td:nth-child(9) {
-    width: 10%;
-    text-align: center;
+    width: 12%;
     padding: 6px 3px;
+    padding-left: 16px;
 }
 
 /* Таблица пользователей */
@@ -656,28 +671,33 @@ body {
 
 #users-table th:nth-child(1),
 #users-table td:nth-child(1) { 
-    width: 26%;
+    width: 22%;
 }
 
 #users-table th:nth-child(2),
 #users-table td:nth-child(2) { 
-    width: 10%;
+    width: 26%;
+    white-space: normal;
 }
 
 #users-table th:nth-child(3),
 #users-table td:nth-child(3) { 
-    width: 28%;
-    white-space: normal;
+    width: 10%;
 }
 
 #users-table th:nth-child(4),
 #users-table td:nth-child(4) { 
-    width: 10%;
+    width: 18%;
 }
 
 #users-table th:nth-child(5),
 #users-table td:nth-child(5) { 
-    width: 26%;
+    width: 10%;
+}
+
+#users-table th:nth-child(6),
+#users-table td:nth-child(6) { 
+    width: 14%;
 }
 
 /* Таблица серверов */
@@ -687,64 +707,81 @@ body {
     max-width: 100%;
 }
 
-/* Уменьшенные отступы для таблицы серверов */
+/* Компактирование столбцов */
 #servers-table th {
-    padding: 10px 8px;
+    padding: 8px 12px;
+    white-space: nowrap;
+    text-align: left;
+    padding-left: 16px;
 }
 
 #servers-table td {
-    padding: 8px 6px;
+    padding: 12px 16px;
 }
 
 #servers-table th:nth-child(1),
 #servers-table td:nth-child(1) { 
-    width: 5%;
+    width: 6%;
 }
 
 #servers-table th:nth-child(2),
 #servers-table td:nth-child(2) { 
-    width: 9%;
+    width: 12%;
+    max-width: 156px;
 }
 
 #servers-table th:nth-child(3),
 #servers-table td:nth-child(3) { 
-    width: 12%;
-    text-align: center;
-    padding: 8px 2px;
+    width: 15%;
 }
 
 #servers-table th:nth-child(4),
 #servers-table td:nth-child(4) { 
-    width: 9%;
+    width: 8%;
 }
 
 #servers-table th:nth-child(5),
 #servers-table td:nth-child(5) { 
-    width: 9%;
+    width: 8%;
 }
 
 #servers-table th:nth-child(6),
 #servers-table td:nth-child(6) { 
-    width: 8%;
-    text-align: center;
-    padding: 8px 2px;
+    width: 9%;
 }
 
 #servers-table th:nth-child(7),
 #servers-table td:nth-child(7) { 
-    width: 12%;
-    text-align: center;
-    padding: 8px 2px;
+    width: 9%;
 }
 
 #servers-table th:nth-child(8),
 #servers-table td:nth-child(8) { 
-    width: 14%;
+    width: 21%;
 }
 
 #servers-table th:nth-child(9),
 #servers-table td:nth-child(9) { 
-    width: 12%;
+    width: 10%;
+}
+
+#servers-table .cell-secondary {
+    margin-top: 2px;
+}
+
+.servers-table__cell--keys .badge {
+    min-width: 36px;
+    justify-content: center;
+}
+
+.servers-table__cell--actions .btn-icon:not(.btn-danger) {
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    color: var(--text-secondary);
+}
+
+.servers-table__cell--actions .btn-icon:not(.btn-danger):hover {
+    background: #e2e8f0;
 }
 
 /* Таблица платежей - используем auto для гибкости, но ограничиваем ширину колонок */
@@ -771,7 +808,7 @@ body {
 
 #payments-table th:nth-child(3),
 #payments-table td:nth-child(3) { 
-    width: 10%;
+    width: 8%;
 }
 
 #payments-table th:nth-child(4),
@@ -796,7 +833,7 @@ body {
 
 #payments-table th:nth-child(8),
 #payments-table td:nth-child(8) { 
-    width: 7%;
+    width: 9%;
 }
 
 #payments-table th:nth-child(9),
@@ -822,22 +859,22 @@ body {
 
 #tariffs-table th:nth-child(3),
 #tariffs-table td:nth-child(3) {
-    width: 16%;
+    width: 18%;
 }
 
 #tariffs-table th:nth-child(4),
 #tariffs-table td:nth-child(4) {
-    width: 20%;
+    width: 18%;
 }
 
 #tariffs-table th:nth-child(5),
 #tariffs-table td:nth-child(5) {
-    width: 14%;
+    width: 18%;
 }
 
 #tariffs-table th:nth-child(6),
 #tariffs-table td:nth-child(6) {
-    width: 15%;
+    width: 11%;
 }
 
 .tariff-price {

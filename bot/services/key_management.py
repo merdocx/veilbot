@@ -106,6 +106,59 @@ def _table_has_column(cursor: sqlite3.Cursor, table_name: str, column_name: str)
     return column_name in columns
 
 
+def _resolve_v2ray_usage_metadata(
+    cursor: sqlite3.Cursor,
+    key_id: Optional[int],
+    fallback_usage: Any = 0,
+    fallback_over_limit_at: Optional[int] = None,
+    fallback_over_limit_notified: Any = 0,
+) -> tuple[int, Optional[int], int]:
+    """
+    Возвращает актуальные значения трафика для V2Ray ключа из базы данных.
+
+    Args:
+        cursor: активный курсор SQLite.
+        key_id: ID записи ключа в таблице v2ray_keys.
+        fallback_usage: значение трафика, полученное ранее (по умолчанию 0).
+        fallback_over_limit_at: время превышения лимита из внешних данных.
+        fallback_over_limit_notified: флаг уведомления о превышении из внешних данных.
+
+    Returns:
+        Кортеж (traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified).
+    """
+    usage = fallback_usage or 0
+    over_limit_at = fallback_over_limit_at
+    over_limit_notified = fallback_over_limit_notified or 0
+
+    if not key_id:
+        return int(usage or 0), over_limit_at, int(over_limit_notified or 0)
+
+    try:
+        cursor.execute(
+            """
+            SELECT traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified
+            FROM v2ray_keys
+            WHERE id = ?
+            """,
+            (key_id,),
+        )
+        row = cursor.fetchone()
+    except sqlite3.OperationalError as exc:  # noqa: BLE001
+        logger.warning("Failed to read V2Ray usage metadata for key %s: %s", key_id, exc)
+        return int(usage or 0), over_limit_at, int(over_limit_notified or 0)
+
+    if row:
+        usage_db, over_limit_db, notified_db = row
+        if usage_db is not None:
+            usage = usage_db
+        if over_limit_db is not None:
+            over_limit_at = over_limit_db
+        if notified_db is not None:
+            over_limit_notified = notified_db
+
+    return int(usage or 0), over_limit_at, int(over_limit_notified or 0)
+
+
 # ============================================================================
 # Функции продления ключей
 # ============================================================================
@@ -482,6 +535,10 @@ async def delete_old_key_after_success(
                 with safe_foreign_keys_off(cursor):
                     cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (db_id,))
                     logging.info(f"Удален старый V2Ray ключ {db_id} из базы")
+                    try:
+                        cursor.execute("DELETE FROM v2ray_usage_snapshots WHERE key_id = ?", (db_id,))
+                    except sqlite3.OperationalError:
+                        logging.debug("[DELETE OLD KEY] v2ray_usage_snapshots table not present while deleting key %s", db_id)
             else:
                 logging.warning(f"[DELETE OLD KEY] DB ID не найден для удаления V2Ray ключа из базы")
         else:
@@ -542,6 +599,17 @@ async def switch_protocol_and_extend(
     
     old_server_id = old_key_data['server_id']
     old_email = old_key_data.get('email') or email
+    if old_key_data.get('type') == 'v2ray':
+        usage_resolved, over_limit_resolved, notified_resolved = _resolve_v2ray_usage_metadata(
+            cursor,
+            old_key_data.get('id') or old_key_data.get('db_id'),
+            old_key_data.get('traffic_usage_bytes'),
+            old_key_data.get('traffic_over_limit_at'),
+            old_key_data.get('traffic_over_limit_notified'),
+        )
+        old_key_data['traffic_usage_bytes'] = usage_resolved
+        old_key_data['traffic_over_limit_at'] = over_limit_resolved
+        old_key_data['traffic_over_limit_notified'] = notified_resolved
     traffic_limit_mb = 0
     try:
         traffic_limit_mb = int(old_key_data.get('traffic_limit_mb') or 0)
@@ -898,15 +966,26 @@ async def change_country_and_extend(
     new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
     
     # Сохраняем данные старого ключа для удаления
+    usage_default = key_data.get('traffic_usage_bytes')
+    over_limit_default = key_data.get('traffic_over_limit_at')
+    notified_default = key_data.get('traffic_over_limit_notified')
+    if key_data['type'] == 'v2ray':
+        usage_default, over_limit_default, notified_default = _resolve_v2ray_usage_metadata(
+            cursor,
+            key_data.get('id'),
+            usage_default,
+            over_limit_default,
+            notified_default,
+        )
     old_key_data = {
         'type': key_data['type'],
         'server_id': old_server_id,
         'key_id': key_data.get('key_id'),
         'v2ray_uuid': key_data.get('v2ray_uuid'),
         'db_id': key_data['id'],
-        'traffic_usage_bytes': key_data.get('traffic_usage_bytes', 0),
-        'traffic_over_limit_at': key_data.get('traffic_over_limit_at'),
-        'traffic_over_limit_notified': key_data.get('traffic_over_limit_notified', 0),
+        'traffic_usage_bytes': usage_default or 0,
+        'traffic_over_limit_at': over_limit_default,
+        'traffic_over_limit_notified': notified_default or 0,
     }
     
     try:
@@ -995,9 +1074,14 @@ async def change_country_and_extend(
                         access_url = config
                 
                 # Добавляем новый ключ с конфигурацией
-                usage_bytes_new = 0 if reset_usage else key_data.get('traffic_usage_bytes', 0)
-                over_limit_at_new = None if reset_usage else key_data.get('traffic_over_limit_at')
-                over_limit_notified_new = 0 if reset_usage else key_data.get('traffic_over_limit_notified', 0)
+                if reset_usage:
+                    usage_bytes_new = 0
+                    over_limit_at_new = None
+                    over_limit_notified_new = 0
+                else:
+                    usage_bytes_new = usage_default or 0
+                    over_limit_at_new = over_limit_default
+                    over_limit_notified_new = notified_default or 0
 
                 cursor.execute(
                     "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config, "
@@ -1149,6 +1233,18 @@ async def change_protocol_for_key(
             'price_rub': tariff_row[2],
             'traffic_limit_mb': tariff_row[3],
         }
+
+        usage_default = key_data.get('traffic_usage_bytes')
+        over_limit_default = key_data.get('traffic_over_limit_at')
+        notified_default = key_data.get('traffic_over_limit_notified')
+        if (key_data.get('type') or key_data['protocol']) == 'v2ray':
+            usage_default, over_limit_default, notified_default = _resolve_v2ray_usage_metadata(
+                cursor,
+                key_data.get('id'),
+                usage_default,
+                over_limit_default,
+                notified_default,
+            )
         
         # Считаем оставшееся время
         remaining = key_data['expiry_at'] - now
@@ -1186,9 +1282,9 @@ async def change_protocol_for_key(
             'key_id': key_data.get('key_id'),
             'v2ray_uuid': key_data.get('v2ray_uuid'),
             'db_id': key_data['id'],
-            'traffic_usage_bytes': key_data.get('traffic_usage_bytes', 0),
-            'traffic_over_limit_at': key_data.get('traffic_over_limit_at'),
-            'traffic_over_limit_notified': key_data.get('traffic_over_limit_notified', 0),
+            'traffic_usage_bytes': usage_default or 0,
+            'traffic_over_limit_at': over_limit_default,
+            'traffic_over_limit_notified': notified_default or 0,
         }
         logging.info(f"[PROTOCOL CHANGE] Old key data: type={old_key_data['type']}, old_protocol={old_protocol}, key_data_type={key_data.get('type')}, db_id={old_key_data['db_id']}, v2ray_uuid={old_key_data.get('v2ray_uuid')}, key_id={old_key_data.get('key_id')}")
         
@@ -1406,13 +1502,28 @@ async def change_country_for_key(
         # Берём первый подходящий сервер
         new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
         
+        usage_default = key_data.get('traffic_usage_bytes')
+        over_limit_default = key_data.get('traffic_over_limit_at')
+        notified_default = key_data.get('traffic_over_limit_notified')
+        if (key_data.get('type') or protocol) == 'v2ray':
+            usage_default, over_limit_default, notified_default = _resolve_v2ray_usage_metadata(
+                cursor,
+                key_data.get('id'),
+                usage_default,
+                over_limit_default,
+                notified_default,
+            )
+
         # Сохраняем данные старого ключа для удаления после успешного создания нового
         old_key_data = {
             'type': key_data.get('type') or protocol,  # Используем type из key_data или протокол
             'server_id': old_server_id,
             'key_id': key_data.get('key_id'),
             'v2ray_uuid': key_data.get('v2ray_uuid'),
-            'db_id': key_data.get('id')
+            'db_id': key_data.get('id'),
+            'traffic_usage_bytes': usage_default or 0,
+            'traffic_over_limit_at': over_limit_default,
+            'traffic_over_limit_notified': notified_default or 0,
         }
         
         if not old_key_data['db_id']:
@@ -1533,9 +1644,9 @@ async def change_country_for_key(
                 # Добавляем новый ключ с client_config в базу данных (до удаления старого)
                 # Временно отключаем foreign key проверку для INSERT
                 with safe_foreign_keys_off(cursor):
-                    usage_bytes_new = old_key_data.get('traffic_usage_bytes', 0)
-                    over_limit_at_new = old_key_data.get('traffic_over_limit_at')
-                    over_limit_notified_new = old_key_data.get('traffic_over_limit_notified', 0)
+                    usage_bytes_new = usage_default or 0
+                    over_limit_at_new = over_limit_default
+                    over_limit_notified_new = notified_default or 0
                     cursor.execute(
                         "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, expiry_at, created_at, email, tariff_id, client_config, "
                         "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "
@@ -1894,10 +2005,14 @@ async def reissue_specific_key(
                 
                 # Добавляем новый ключ с client_config в базу данных (до удаления старого)
                 # Временно отключаем foreign key проверку для INSERT
+                usage_bytes_new, over_limit_at_new, over_limit_notified_new = _resolve_v2ray_usage_metadata(
+                    cursor,
+                    key_data.get('id'),
+                    key_data.get('traffic_usage_bytes'),
+                    key_data.get('traffic_over_limit_at'),
+                    key_data.get('traffic_over_limit_notified'),
+                )
                 with safe_foreign_keys_off(cursor):
-                    usage_bytes_new = key_data.get('traffic_usage_bytes', 0)
-                    over_limit_at_new = key_data.get('traffic_over_limit_at')
-                    over_limit_notified_new = key_data.get('traffic_over_limit_notified', 0)
                     cursor.execute(
                         "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, "
                         "traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified) "

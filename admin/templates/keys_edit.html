@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Редактирование ключа #{{ key.id }}{% endblock %}
+
+{% block page_title %}
+Редактирование ключа #{{ key.id }}
+{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="breadcrumbs">
+    <a href="/keys" class="breadcrumbs__item">Ключи</a>
+    <span class="breadcrumbs__separator">/</span>
+    <span class="breadcrumbs__current">Редактирование</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <header class="card__header">
+        <h2 class="card__title">Параметры ключа</h2>
+        <p class="card__subtitle">
+            Используйте эту страницу, если всплывающее окно редактирования недоступно. Все действия выполняются напрямую через сервер.
+        </p>
+    </header>
+    <div class="card__body">
+        <section class="key-summary">
+            <div class="key-summary__item">
+                <span class="key-summary__label">Email</span>
+                <span class="key-summary__value">{{ key.email or '—' }}</span>
+            </div>
+            <div class="key-summary__item">
+                <span class="key-summary__label">Сервер</span>
+                <span class="key-summary__value">{{ key.server or '—' }}</span>
+            </div>
+            <div class="key-summary__item">
+                <span class="key-summary__label">Протокол</span>
+                <span class="key-summary__value">{{ key.protocol_label or key.protocol }}</span>
+            </div>
+            <div class="key-summary__item">
+                <span class="key-summary__label">Статус</span>
+                <span class="key-summary__value">{{ key.status_label }}</span>
+            </div>
+            <div class="key-summary__item">
+                <span class="key-summary__label">Создан</span>
+                <span class="key-summary__value">{{ key.created_display }}</span>
+            </div>
+            <div class="key-summary__item">
+                <span class="key-summary__label">Истекает</span>
+                <span class="key-summary__value">{{ key.expiry_display }}</span>
+            </div>
+        </section>
+
+        <section class="key-config">
+            <label class="form-label">Подключение</label>
+            <textarea class="form-control" rows="4" readonly>{{ key.access_url }}</textarea>
+            <p class="form-hint">
+                Если кнопка «Копировать» на основной странице не работает, выделите текст и скопируйте его вручную (Ctrl/Cmd + C).
+            </p>
+        </section>
+
+        <form method="post" action="/keys/edit/{{ key.id }}" class="form-grid">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-field">
+                <label for="new_expiry" class="form-label">Новая дата истечения</label>
+                <input id="new_expiry"
+                       name="new_expiry"
+                       type="datetime-local"
+                       class="form-control"
+                       value="{{ key.expiry_iso }}"
+                       required>
+                <p class="form-hint">Дата и время указываются в часовом поясе сервера (UTC).</p>
+            </div>
+            <div class="form-field">
+                <label for="traffic_limit_mb" class="form-label">Лимит трафика (МБ)</label>
+                <input id="traffic_limit_mb"
+                       name="traffic_limit_mb"
+                       type="number"
+                       min="0"
+                       step="1"
+                       placeholder="Без ограничений"
+                       class="form-control"
+                       value="{{ key.traffic.limit_mb if key.traffic else '' }}">
+                <p class="form-hint">Укажите 0 или оставьте пустым, чтобы снять ограничение.</p>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">
+                    Сохранить изменения
+                </button>
+                <a href="/keys" class="btn">
+                    Отмена
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+
+
+
+
+

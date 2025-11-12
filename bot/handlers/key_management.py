@@ -64,7 +64,9 @@ def register_key_management_handlers(
             outline_keys = cursor.fetchall()
             
             cursor.execute("""
-                SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, 'v2ray' as key_type, s.domain, s.v2ray_path
+                SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                       'v2ray' as key_type, s.domain, s.v2ray_path, k.traffic_limit_mb,
+                       k.traffic_usage_bytes, k.traffic_over_limit_at, k.traffic_over_limit_notified
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.user_id = ? AND k.expiry_at > ?
@@ -100,7 +102,11 @@ def register_key_management_handlers(
                     'protocol': key[7],
                     'type': key[8],
                     'domain': key[9],
-                    'v2ray_path': key[10]
+                    'v2ray_path': key[10],
+                    'traffic_limit_mb': key[11],
+                    'traffic_usage_bytes': key[12],
+                    'traffic_over_limit_at': key[13],
+                    'traffic_over_limit_notified': key[14],
                 })
             
             if not all_keys:
@@ -137,7 +143,9 @@ def register_key_management_handlers(
                 
                 # Получаем V2Ray ключи
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path, k.traffic_limit_mb
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                           s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
+                           k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.user_id = ? AND k.expiry_at > ?
@@ -174,7 +182,10 @@ def register_key_management_handlers(
                         'type': 'v2ray',
                         'domain': key[8],
                         'v2ray_path': key[9],
-                        'traffic_limit_mb': key[10]
+                        'traffic_limit_mb': key[10],
+                        'traffic_usage_bytes': key[11],
+                        'traffic_over_limit_at': key[12],
+                        'traffic_over_limit_notified': key[13],
                     })
                 
                 logging.debug(f"Всего активных ключей для смены страны: {len(all_keys)}")
@@ -217,7 +228,9 @@ def register_key_management_handlers(
                 logging.debug(f"Найдено {len(outline_keys)} Outline ключей")
                 
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, 'v2ray' as key_type, s.domain, s.v2ray_path, k.traffic_limit_mb
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                           'v2ray' as key_type, s.domain, s.v2ray_path, k.traffic_limit_mb,
+                           k.traffic_usage_bytes, k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.user_id = ? AND k.expiry_at > ?
@@ -256,7 +269,10 @@ def register_key_management_handlers(
                         'type': key[8],
                         'domain': key[9],
                         'v2ray_path': key[10],
-                        'traffic_limit_mb': key[11]
+                        'traffic_limit_mb': key[11],
+                        'traffic_usage_bytes': key[12],
+                        'traffic_over_limit_at': key[13],
+                        'traffic_over_limit_notified': key[14],
                     })
                 
                 logging.debug(f"Всего активных ключей: {len(all_keys)}")
@@ -303,7 +319,9 @@ def register_key_management_handlers(
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path, k.traffic_limit_mb
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                           s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
+                           k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
@@ -342,6 +360,9 @@ def register_key_management_handlers(
                     'domain': key_data[8],
                     'v2ray_path': key_data[9],
                     'traffic_limit_mb': key_data[10],
+                    'traffic_usage_bytes': key_data[11],
+                    'traffic_over_limit_at': key_data[12],
+                    'traffic_over_limit_notified': key_data[13],
                     'type': 'v2ray'
                 }
         
@@ -382,7 +403,9 @@ def register_key_management_handlers(
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path, k.traffic_limit_mb
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                           s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
+                           k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
@@ -421,7 +444,10 @@ def register_key_management_handlers(
                     'type': 'v2ray',
                     'domain': key_data[8],
                     'v2ray_path': key_data[9],
-                    'traffic_limit_mb': key_data[10]
+                    'traffic_limit_mb': key_data[10],
+                    'traffic_usage_bytes': key_data[11],
+                    'traffic_over_limit_at': key_data[12],
+                    'traffic_over_limit_notified': key_data[13],
                 }
         
         await callback_query.answer()
@@ -459,7 +485,9 @@ def register_key_management_handlers(
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol, s.domain, s.v2ray_path, k.traffic_limit_mb
+                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                           s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
+                           k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     WHERE k.id = ? AND k.user_id = ?
@@ -498,6 +526,9 @@ def register_key_management_handlers(
                     'domain': key_data[8],
                     'v2ray_path': key_data[9],
                     'traffic_limit_mb': key_data[10],
+                    'traffic_usage_bytes': key_data[11],
+                    'traffic_over_limit_at': key_data[12],
+                    'traffic_over_limit_notified': key_data[13],
                     'type': 'v2ray'
                 }
         

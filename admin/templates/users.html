@@ -44,6 +44,7 @@
             <thead>
                 <tr>
                     <th>User ID</th>
+                    <th>Email</th>
                     <th>Рефералов</th>
                     <th>Последняя активность</th>
                     <th>Статус</th>
@@ -57,6 +58,13 @@
                         <div class="cell-primary">{{ user.user_id }}</div>
                     </td>
                     <td>
+                        {% if user.email %}
+                            <div class="cell-primary" title="{{ user.email }}">{{ user.email }}</div>
+                        {% else %}
+                            <div class="cell-primary text-muted">—</div>
+                        {% endif %}
+                    </td>
+                    <td>
                         <div class="cell-primary">{{ user.referral_count }}</div>
                     </td>
                     <td>
@@ -68,9 +76,9 @@
                     </td>
                     <td>
                         {% if user.is_active %}
-                            <div class="cell-primary">Активен</div>
+                            <span class="badge badge-success">Активен</span>
                         {% else %}
-                            <div class="cell-primary">Неактивен</div>
+                            <span class="badge badge-neutral">Неактивен</span>
                         {% endif %}
                     </td>
                     <td>
@@ -85,7 +93,7 @@
                 {% endfor %}
                 {% if not users %}
                 <tr>
-                    <td colspan="5" class="text-center text-muted">
+                    <td colspan="6" class="text-center text-muted">
                         <span class="material-icons icon">inbox</span>
                         <br>Нет пользователей
                     </td>

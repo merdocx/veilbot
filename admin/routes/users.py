@@ -47,17 +47,25 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
     offset = (max(page, 1) - 1) * limit
     total = repo.count_users(query=q)
     rows = repo.list_users(query=q, limit=limit, offset=offset)
-    user_list = [{"user_id": uid, "referral_count": ref_cnt} for (uid, ref_cnt) in rows]
+    user_list = []
+    for uid, ref_cnt in rows:
+        ref_cnt = ref_cnt or 0
+        overview = repo.get_user_overview(uid)
+        last_activity = overview.get("last_activity") or None
+        if last_activity == 0:
+            last_activity = None
+        user_list.append({
+            "user_id": uid,
+            "email": overview.get("email") or "",
+            "referral_count": ref_cnt,
+            "last_activity": last_activity,
+            "is_active": bool((overview.get("outline_count") or 0) + (overview.get("v2ray_count") or 0)),
+        })
     
     # Дополнительная статистика
-    active_users = total
+    active_users = sum(1 for user in user_list if user["is_active"])
     referral_count = sum(user["referral_count"] for user in user_list)
     pages = (total + limit - 1) // limit
-    
-    # Добавляем mock данные для отсутствующих полей
-    for user in user_list:
-        user["last_activity"] = None
-        user["is_active"] = True
     
     return templates.TemplateResponse("users.html", {
         "request": request,
@@ -95,12 +103,14 @@ async def user_detail(request: Request, user_id: int, page: int = 1, limit: int 
         sort_by="created_at",
         sort_order="DESC"
     )
+    referrals = repo.list_referrals(user_id)
     
     return templates.TemplateResponse("user_detail.html", {
         "request": request,
         "user": overview,
         "keys": keys,
         "payments": payments,
+        "referrals": referrals,
         "page": page,
         "limit": limit,
         "total": total,

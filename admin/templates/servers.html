@@ -83,57 +83,59 @@
                 </tr>
             </thead>
             <tbody>
-                {% for s in servers %}
-                <tr>
-                    <td>
-                        <div class="cell-primary">{{ s[0] }}</div>
+                {% for server in servers %}
+                <tr class="servers-table__row" data-server-id="{{ server.id }}">
+                    <td class="servers-table__cell servers-table__cell--id">
+                        <span class="text-muted">#{{ server.id }}</span>
                     </td>
-                    <td>
-                        <div class="cell-primary" title="{{ s[1] }}">{{ s[1] }}</div>
+                    <td class="servers-table__cell servers-table__cell--name">
+                        <div class="cell-primary" title="{{ server.name }}">{{ server.name }}</div>
+                        {% if server.display_host %}
+                        <div class="cell-secondary text-muted">{{ server.display_host }}</div>
+                        {% endif %}
                     </td>
-                    <td>
-                        {% set protocol = s[7] if s|length > 7 else 'outline' %}
-                        <span class="protocol-badge {% if protocol == 'v2ray' %}protocol-badge--v2ray{% elif protocol == 'outline' %}protocol-badge--outline{% else %}protocol-badge--neutral{% endif %}">
-                            <span class="material-icons icon-small">
-                                {% if protocol == 'v2ray' %}security{% elif protocol == 'outline' %}lock{% else %}device_hub{% endif %}
-                            </span>
-                            {{ protocol|upper }}
+                    <td class="servers-table__cell servers-table__cell--protocol">
+                        <span class="protocol-badge {{ server.protocol_badge_class }}">
+                            <span class="material-icons icon-small">{{ server.protocol_icon }}</span>
+                            {{ server.protocol_label }}
                         </span>
                     </td>
-                    <td>
-                        {% if s[12] %}
-                            <div class="cell-primary">{{ s[12] }}</div>
+                    <td class="servers-table__cell servers-table__cell--keys">
+                        {% if server.keys_total %}
+                        <span class="badge badge-info">{{ server.keys_total }}</span>
                         {% else %}
-                            <div class="cell-primary text-muted">—</div>
+                        <span class="badge badge-neutral">0</span>
                         {% endif %}
                     </td>
-                    <td>
-                        <div class="cell-primary">{{ s[4] }}</div>
+                    <td class="servers-table__cell servers-table__cell--capacity">
+                        <div class="cell-primary">{{ server.max_keys }}</div>
                     </td>
-                    <td class="text-center">
-                        {% if s[5] %}
-                            <span class="material-icons status-icon icon-success" title="Активен">check_circle</span>
+                    <td class="servers-table__cell servers-table__cell--status text-center">
+                        {% if server.active %}
+                        <span class="material-icons status-icon icon-success" title="Активен">check_circle</span>
                         {% else %}
-                            <span class="material-icons status-icon icon-danger" title="Неактивен">cancel</span>
+                        <span class="material-icons status-icon icon-danger" title="Неактивен">cancel</span>
                         {% endif %}
                     </td>
-                    <td class="text-center">
-                        {% set available_for_purchase = s[11] if s|length > 11 else 1 %}
-                        {% if available_for_purchase %}
-                            <span class="material-icons status-icon icon-success" title="Доступен к покупке">check_circle</span>
+                    <td class="servers-table__cell servers-table__cell--purchase text-center">
+                        {% if server.available_for_purchase %}
+                        <span class="material-icons status-icon icon-success" title="Доступен к покупке">check_circle</span>
                         {% else %}
-                            <span class="material-icons status-icon icon-warning" title="Недоступен к покупке">remove_circle</span>
+                        <span class="material-icons status-icon icon-warning" title="Недоступен к покупке">remove_circle</span>
                         {% endif %}
                     </td>
-                    <td>
-                        <div class="cell-primary">{{ s[6] or '—' }}</div>
+                    <td class="servers-table__cell servers-table__cell--country">
+                        <div class="cell-primary">{{ server.country or '—' }}</div>
+                        {% if server.domain %}
+                        <div class="cell-secondary text-muted">{{ server.domain }}</div>
+                        {% endif %}
                     </td>
-                    <td>
+                    <td class="servers-table__cell servers-table__cell--actions text-center">
                         <div class="action-buttons">
-                            <a href="/servers/edit/{{ s[0] }}" class="btn btn-primary" title="Редактировать">
+                            <a href="/servers/edit/{{ server.id }}" class="btn btn-icon" title="Редактировать">
                                 <span class="material-icons icon-small">edit</span>
                             </a>
-                            <a href="/delete_server/{{ s[0] }}" class="btn btn-danger" 
+                            <a href="/delete_server/{{ server.id }}" class="btn btn-icon btn-danger" 
                                data-confirm="Удалить сервер?" title="Удалить">
                                 <span class="material-icons icon-small">delete</span>
                             </a>

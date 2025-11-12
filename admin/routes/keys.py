@@ -11,10 +11,10 @@ import asyncio
 import math
 import re
 from datetime import datetime
-from collections import defaultdict
 from io import StringIO
 import csv
 from typing import Any, Dict, Optional
+from starlette import status
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.repositories.key_repository import KeyRepository
@@ -214,7 +214,7 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
         traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
 
     traffic_usage_bytes_db = row[12] if len(row) > 12 else 0
-    if traffic_info["bytes"] is None and traffic_usage_bytes_db:
+    if traffic_usage_bytes_db is not None:
         try:
             traffic_info["bytes"] = float(traffic_usage_bytes_db)
             traffic_info["display"] = _format_bytes(traffic_usage_bytes_db)
@@ -222,9 +222,7 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
         except (TypeError, ValueError):
             parsed_usage = _parse_traffic_value(str(traffic_usage_bytes_db))
             if parsed_usage["bytes"] is not None:
-                traffic_info["bytes"] = parsed_usage["bytes"]
-                traffic_info["display"] = parsed_usage["display"]
-                traffic_info["state"] = parsed_usage["state"]
+                traffic_info.update(parsed_usage)
 
     over_limit_at = row[13] if len(row) > 13 and row[13] else None
     over_limit_notified = bool(row[14]) if len(row) > 14 and row[14] else False
@@ -576,17 +574,6 @@ async def keys_page(
     # ИСПРАВЛЕНИЕ: Сохраняем исходный порядок ключей из БД
     keys_with_traffic = []
     
-    # Сначала получаем server_id для всех V2Ray ключей одним запросом
-    v2ray_key_ids = [key[0] for key in rows if len(key) > 8 and key[8] == 'v2ray']
-    server_id_map = {}
-    if v2ray_key_ids:
-        with open_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            placeholders = ','.join('?' * len(v2ray_key_ids))
-            c.execute(f"SELECT id, server_id FROM v2ray_keys WHERE id IN ({placeholders})", v2ray_key_ids)
-            for key_id, srv_id in c.fetchall():
-                server_id_map[key_id] = srv_id
-    
     # ИСПРАВЛЕНИЕ: Сохраняем исходный порядок из rows для правильной сортировки
     # Создаем словарь для хранения всех ключей в исходном порядке
     all_keys_dict = {}
@@ -636,7 +623,7 @@ async def keys_page(
         if len(key) > 8 and key[8] == 'v2ray':
             v2ray_keys_data[key_id] = key
             v2ray_tasks.append(fetch_v2ray_config(key))
-            all_keys_dict[key_id] = {'type': 'v2ray', 'data': key}
+            all_keys_dict[key_id] = {'type': 'v2ray', 'data': list(key) + ["—"]}
         else:
             # Outline keys - сохраняем данные
             all_keys_dict[key_id] = {'type': 'outline', 'data': list(key) + ["N/A"]}
@@ -645,8 +632,6 @@ async def keys_page(
     if v2ray_tasks:
         config_results = await asyncio.gather(*v2ray_tasks, return_exceptions=True)
         
-        # Обрабатываем результаты конфигураций и группируем по серверам для батчинга трафика
-        server_keys_map = defaultdict(list)
         processed_configs = {}
         
         for result in config_results:
@@ -658,141 +643,12 @@ async def keys_page(
             key = v2ray_keys_data[key_id]
             key_list = list(key)
             key_list[2] = real_config  # Update access_url
-            processed_configs[key_id] = (key_list, real_config)
-            
-            # Группируем по серверам для батчинга трафика
-            srv_id = server_id_map.get(key_id)
-            if srv_id:
-                api_url = key[10] if len(key) > 10 else ''
-                api_key = key[11] if len(key) > 11 else ''
-                server_keys_map[srv_id].append({
-                    'key_id': key_id,
-                    'uuid': key[1],
-                    'api_url': api_url,
-                    'api_key': api_key
-                })
-        
-        # Функция для батчинга трафика по серверу
-        async def fetch_server_traffic_batch(server_id: int, server_keys_list: list):
-            """Загрузить трафик для всех ключей одного сервера через /api/keys/{key_id}/traffic/history"""
-            if not server_keys_list:
-                return {}
-            
-            api_url = server_keys_list[0]['api_url']
-            api_key = server_keys_list[0]['api_key']
-            
-            if not api_url or not api_key:
-                return {k['key_id']: "N/A" for k in server_keys_list}
-            
-            server_config = {'api_url': api_url, 'api_key': api_key}
-            traffic_map = {}
-            
-            try:
-                v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
-                try:
-                    # ИСПРАВЛЕНИЕ: Используем get_key_traffic_history() для каждого ключа
-                    # Сначала получаем key_id (id из API) для каждого UUID
-                    async def get_traffic_for_key(key_info):
-                        """Получить трафик для одного ключа"""
-                        uuid = key_info['uuid']
-                        try:
-                            # Получаем key_id (id из API) по UUID
-                            key_info_data = await v2ray.get_key_info(uuid)
-                            api_key_id = key_info_data.get('id') or key_info_data.get('uuid')
-                            
-                            if not api_key_id:
-                                logging.warning(f"[TRAFFIC BATCH] No key_id found for UUID {uuid}")
-                                return key_info['key_id'], "0 GB"
-                            
-                            # Получаем traffic/history для этого ключа
-                            history = await v2ray.get_key_traffic_history(str(api_key_id))
-                            
-                            if history and history.get('data'):
-                                data = history.get('data', {})
-                                total_traffic = data.get('total_traffic', {})
-                                
-                                if total_traffic and isinstance(total_traffic, dict):
-                                    total_bytes = total_traffic.get('total_bytes', 0)
-                                    
-                                    if total_bytes > 0:
-                                        # Форматируем трафик
-                                        if total_bytes >= (1024 ** 4):  # >= 1TB
-                                            traffic_tb = total_bytes / (1024 ** 4)
-                                            return key_info['key_id'], f"{traffic_tb:.2f} TB"
-                                        else:
-                                            traffic_gb = total_bytes / (1024 * 1024 * 1024)
-                                            return key_info['key_id'], f"{traffic_gb:.2f} GB"
-                            
-                            return key_info['key_id'], "0 GB"
-                        except Exception as e:
-                            logging.error(f"[TRAFFIC BATCH] Error getting traffic for key {uuid}: {e}")
-                            return key_info['key_id'], "Error"
-                    
-                    # Параллельно загружаем трафик для всех ключей
-                    traffic_tasks = [get_traffic_for_key(key_info) for key_info in server_keys_list]
-                    traffic_results = await asyncio.gather(*traffic_tasks, return_exceptions=True)
-                    
-                    # Собираем результаты
-                    for result in traffic_results:
-                        if isinstance(result, Exception):
-                            logging.error(f"[TRAFFIC BATCH] Exception in traffic fetch: {result}")
-                            continue
-                        if isinstance(result, tuple) and len(result) == 2:
-                            key_id, traffic_value = result
-                            traffic_map[key_id] = traffic_value
-                    
-                    # Если какие-то ключи не обработались, устанавливаем "0 GB"
-                    for key_info in server_keys_list:
-                        if key_info['key_id'] not in traffic_map:
-                            traffic_map[key_info['key_id']] = "0 GB"
-                    
-                finally:
-                    await v2ray.close()
-                
-            except Exception as e:
-                logging.error(f"Error fetching traffic batch for server {server_id}: {e}")
-                for key_info in server_keys_list:
-                    traffic_map[key_info['key_id']] = "Error"
-            
-            return traffic_map
-        
-        # Параллельно загружаем трафик для всех серверов
-        if server_keys_map:
-            traffic_tasks = [
-                fetch_server_traffic_batch(srv_id, keys)
-                for srv_id, keys in server_keys_map.items()
-            ]
-            traffic_results = await asyncio.gather(*traffic_tasks, return_exceptions=True)
-            
-            all_traffic_map = {}
-            for result in traffic_results:
-                if isinstance(result, Exception):
-                    logging.error(f"Error in traffic batch fetch: {result}")
-                    continue
-                if isinstance(result, dict):
-                    all_traffic_map.update(result)
-            
-            # ИСПРАВЛЕНИЕ: Добавляем ключи в исходном порядке из БД
-            # Обновляем данные в all_keys_dict с трафиком
-            for key_id, (key_list, real_config) in processed_configs.items():
-                if len(key_list) > 8 and key_list[8] == 'v2ray':
-                    # Используем загруженный трафик, если он есть
-                    traffic_value = all_traffic_map.get(key_id)
-                    
-                    # Если трафик не найден или ошибка, показываем "0 GB"
-                    if traffic_value is None or traffic_value == "Error":
-                        traffic_value = "0 GB"
-                    elif isinstance(traffic_value, str):
-                        # Если это "load", заменяем на "0 GB" (трафик уже должен был загрузиться)
-                        if traffic_value == "load":
-                            traffic_value = "0 GB"
-                    
-                    all_keys_dict[key_id] = {'type': 'v2ray', 'data': key_list + [traffic_value]}
-        else:
-            # Если нет server_keys_map, все V2Ray ключи получают "0 GB"
-            for key_id, (key_list, real_config) in processed_configs.items():
-                if len(key_list) > 8 and key_list[8] == 'v2ray':
-                    all_keys_dict[key_id] = {'type': 'v2ray', 'data': key_list + ["0 GB"]}
+            processed_configs[key_id] = key_list
+
+        for key_id, key_list in processed_configs.items():
+            if len(key_list) > 8 and key_list[8] == 'v2ray':
+                key_with_placeholder = list(key_list) + ["—"]
+                all_keys_dict[key_id] = {'type': 'v2ray', 'data': key_with_placeholder}
     
     # ИСПРАВЛЕНИЕ: Восстанавливаем исходный порядок из БД
     for key_id in keys_order:
@@ -871,6 +727,33 @@ async def keys_page(
     })
 
 
+@router.get("/keys/edit/{key_id}")
+async def keys_edit_page(request: Request, key_id: int):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/login", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+    key_repo = KeyRepository(DB_PATH)
+    now_ts = int(time.time())
+    try:
+        key_view = _load_key_view_model(key_repo, key_id, now_ts)
+    except Exception as error:
+        logging.error(f"[ADMIN][KEYS] Failed to load key {key_id}: {error}", exc_info=True)
+        key_view = None
+
+    if not key_view:
+        log_admin_action(request, "KEY_EDIT_NOT_FOUND", f"Tried to open edit page for missing key {key_id}")
+        return RedirectResponse("/keys", status_code=status.HTTP_303_SEE_OTHER)
+
+    return templates.TemplateResponse(
+        "keys_edit.html",
+        {
+            "request": request,
+            "key": key_view,
+            "csrf_token": get_csrf_token(request),
+        },
+    )
+
+
 @router.get("/api/keys/{key_id}/traffic")
 async def get_key_traffic_api(request: Request, key_id: int):
     """API endpoint для ленивой загрузки трафика ключа"""
@@ -879,46 +762,20 @@ async def get_key_traffic_api(request: Request, key_id: int):
     
     try:
         key_repo = KeyRepository(DB_PATH)
-        
-        # Получаем информацию о ключе
-        outline_key = key_repo.get_outline_key_brief(key_id)
-        if outline_key:
-            return JSONResponse({"traffic": "N/A", "protocol": "outline"})
-        
-        v2ray_key = key_repo.get_v2ray_key_brief(key_id)
-        if not v2ray_key:
-            return JSONResponse({"error": "Key not found"}, status_code=404)
-        
-        user_id, v2ray_uuid, server_id = v2ray_key
-        
-        # Получаем конфигурацию сервера
-        with open_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (server_id,))
-            server = c.fetchone()
-            if not server:
-                return JSONResponse({"error": "Server not found"}, status_code=404)
-        
-        api_url = server[0] or ''
-        api_key = server[1] or ''
-        server_config = {'api_url': api_url, 'api_key': api_key}
-        
-        # Загружаем трафик с логированием для отладки
-        logging.debug(f"Fetching traffic for key_id={key_id}, uuid={v2ray_uuid}, server_id={server_id}")
-        traffic = await get_key_monthly_traffic(v2ray_uuid, 'v2ray', server_config, server_id)
-        logging.debug(f"Traffic result for key_id={key_id}: {traffic}")
-        
-        key_repo = KeyRepository(DB_PATH)
         now_ts = int(time.time())
         key_view = _load_key_view_model(key_repo, key_id, now_ts)
-        if key_view and key_view.get("traffic"):
-            key_view["traffic"]["display"] = traffic
+        if not key_view:
+            return JSONResponse({"error": "Key not found"}, status_code=404)
+
+        traffic_info = key_view.get("traffic", {})
+        display_value = traffic_info.get("display", "—")
+        protocol = key_view.get("protocol", "outline")
+
         return JSONResponse({
-            "traffic": traffic,
-            "protocol": "v2ray",
+            "traffic": display_value,
+            "protocol": protocol,
             "key": key_view,
             "key_id": key_id,
-            "uuid": v2ray_uuid
         })
     except Exception as e:
         logging.error(f"Error getting traffic for key {key_id}: {e}", exc_info=True)

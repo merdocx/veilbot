@@ -38,33 +38,90 @@ def _normalize_v2ray_api_url(api_url: str) -> str:
     return urlunparse(normalized).rstrip('/')
 
 
+def _prepare_servers_context(repo: ServerRepository) -> tuple[list[dict], int]:
+    """Build a list of server dicts ready for template rendering."""
+    raw_servers = repo.list_servers()
+    if not raw_servers:
+        return [], 0
+
+    server_ids = [row[0] for row in raw_servers]
+    outline_key_counts = repo.outline_key_counts(server_ids)
+    v2ray_key_counts = repo.v2ray_key_counts(server_ids)
+
+    servers_for_template: list[dict] = []
+    for row in raw_servers:
+        (
+            server_id,
+            name,
+            api_url,
+            cert_sha256,
+            max_keys,
+            active,
+            country,
+            protocol,
+            domain,
+            api_key,
+            v2ray_path,
+            available_for_purchase,
+        ) = row
+
+        protocol = (protocol or "outline").lower()
+        total_keys = outline_key_counts.get(server_id, 0) + v2ray_key_counts.get(server_id, 0)
+        parsed_api = urlparse(api_url or "")
+        host_candidate = parsed_api.netloc or parsed_api.path
+        display_host = (domain or "").strip() or (host_candidate or "")
+
+        if protocol == "v2ray":
+            protocol_badge_class = "protocol-badge--v2ray"
+            protocol_icon = "security"
+        elif protocol == "outline":
+            protocol_badge_class = "protocol-badge--outline"
+            protocol_icon = "lock"
+        else:
+            protocol_badge_class = "protocol-badge--neutral"
+            protocol_icon = "device_hub"
+
+        servers_for_template.append(
+            {
+                "id": server_id,
+                "name": name,
+                "api_url": api_url,
+                "max_keys": max_keys,
+                "active": bool(active),
+                "country": country or "—",
+                "protocol": protocol,
+                "protocol_badge_class": protocol_badge_class,
+                "protocol_icon": protocol_icon,
+                "protocol_label": protocol.upper(),
+                "keys_total": total_keys,
+                "available_for_purchase": bool(available_for_purchase),
+                "domain": domain or "",
+                "display_host": display_host,
+            }
+        )
+
+    active_servers = sum(1 for server in servers_for_template if server["active"])
+    return servers_for_template, active_servers
+
+
 @router.get("/servers", response_class=HTMLResponse)
 async def servers_page(request: Request):
     """Страница списка серверов"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
-    
+
     repo = ServerRepository(DATABASE_PATH)
-    servers = repo.list_servers()
-    server_ids = [s[0] for s in servers]
-    outline_key_counts = repo.outline_key_counts(server_ids)
-    v2ray_key_counts = repo.v2ray_key_counts(server_ids)
-    servers_with_counts = []
-    for s in servers:
-        outline_count = outline_key_counts.get(s[0], 0)
-        v2ray_count = v2ray_key_counts.get(s[0], 0)
-        total_count = outline_count + v2ray_count
-        servers_with_counts.append(s + (total_count,))
-    
-    # Подсчет активных серверов
-    active_servers = sum(1 for s in servers if s[5])  # s[5] is the active field
-    
-    return templates.TemplateResponse("servers.html", {
-        "request": request, 
-        "servers": servers_with_counts,
-        "active_servers": active_servers,
-        "csrf_token": get_csrf_token(request)
-    })
+    servers_for_template, active_servers = _prepare_servers_context(repo)
+
+    return templates.TemplateResponse(
+        "servers.html",
+        {
+            "request": request,
+            "servers": servers_for_template,
+            "active_servers": active_servers,
+            "csrf_token": get_csrf_token(request),
+        },
+    )
 
 
 @router.post("/add_server")
@@ -148,23 +205,23 @@ async def add_server(
     except ValueError as e:
         log_admin_action(request, "ADD_SERVER_FAILED", f"Validation error: {str(e)}")
         repo = ServerRepository(DATABASE_PATH)
-        servers = repo.list_servers()
+        servers, active_servers = _prepare_servers_context(repo)
         return templates.TemplateResponse("servers.html", {
             "request": request, 
             "error": f"Validation error: {str(e)}",
             "servers": servers,
-            "active_servers": sum(1 for s in servers if s[5]),
+            "active_servers": active_servers,
             "csrf_token": get_csrf_token(request)
         })
     except Exception as e:
         log_admin_action(request, "ADD_SERVER_ERROR", f"Database error: {str(e)}")
         repo = ServerRepository(DATABASE_PATH)
-        servers = repo.list_servers()
+        servers, active_servers = _prepare_servers_context(repo)
         return templates.TemplateResponse("servers.html", {
             "request": request, 
             "error": "Database error occurred",
             "servers": servers,
-            "active_servers": sum(1 for s in servers if s[5]),
+            "active_servers": active_servers,
             "csrf_token": get_csrf_token(request)
         })
 

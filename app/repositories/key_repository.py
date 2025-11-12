@@ -71,7 +71,7 @@ class KeyRepository:
                 WHERE k.id = ?
                 UNION ALL
                 SELECT k.id, k.v2ray_uuid as key_id,
-                       ('PENDING_FROM_SERVER') as access_url,
+                       COALESCE(k.client_config, '') as access_url,
                        k.created_at, k.expiry_at,
                        IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'v2ray' as protocol,
                        COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
@@ -341,11 +341,9 @@ class KeyRepository:
                 parts.append(sql)
 
             def add_v2ray():
-                # TODO: Временная заглушка для access_url. 
-                # Реальная конфигурация будет получена с сервера в admin_routes
                 sql = (
                     "SELECT k.id, k.v2ray_uuid as key_id, "
-                    "('PENDING_FROM_SERVER') as access_url, "
+                    "COALESCE(k.client_config, '') as access_url, "
                     "k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, IFNULL(t.name,''), 'v2ray' as protocol, "
                     "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "
                     "COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes, k.traffic_over_limit_at, "
