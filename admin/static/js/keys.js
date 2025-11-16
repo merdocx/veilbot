@@ -384,6 +384,52 @@
             table.addEventListener('click', handleTableClick);
         }
 
+        // Initialize global search/filter on the keys table (robust, no external deps)
+        try {
+            const searchInput = document.getElementById('global-search');
+            const resetButton = document.getElementById('reset-search-btn');
+            if (searchInput) {
+                const container = searchInput.closest('.card') || document;
+                const tableEl = (searchInput.dataset.tableId
+                    ? document.getElementById(searchInput.dataset.tableId)
+                    : (container.querySelector('table') || document.getElementById('keys-table')));
+                const applyFilter = () => {
+                    if (!tableEl) return;
+                    const term = (searchInput.value || '').toLowerCase().trim();
+                    const rows = Array.from(tableEl.querySelectorAll('tbody tr'));
+                    if (!term) {
+                        rows.forEach(r => { r.style.display = ''; });
+                        return;
+                    }
+                    rows.forEach((row) => {
+                        const text = (row.textContent || '').toLowerCase();
+                        row.style.display = text.includes(term) ? '' : 'none';
+                    });
+                };
+                const onInput = () => applyFilter();
+                const onKey = (e) => {
+                    if (e.key === 'Enter' || e.key === 'Escape') {
+                        if (e.key === 'Escape') {
+                            searchInput.value = '';
+                        }
+                        applyFilter();
+                    }
+                };
+                searchInput.addEventListener('input', onInput);
+                searchInput.addEventListener('keyup', onKey);
+                if (resetButton) {
+                    resetButton.addEventListener('click', () => {
+                        searchInput.value = '';
+                        applyFilter();
+                        searchInput.focus();
+                    });
+                }
+            }
+        } catch (e) {
+            handleCoach = handleError; // ensure reference exists
+            handleError(e, 'Инициализация поиска по таблице');
+        }
+
         updateProgressBars();
     };
 

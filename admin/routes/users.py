@@ -105,6 +105,7 @@ async def user_detail(request: Request, user_id: int, page: int = 1, limit: int 
     )
     referrals = repo.list_referrals(user_id)
     
+    now_ts = int(time.time())
     return templates.TemplateResponse("user_detail.html", {
         "request": request,
         "user": overview,
@@ -115,7 +116,7 @@ async def user_detail(request: Request, user_id: int, page: int = 1, limit: int 
         "limit": limit,
         "total": total,
         "csrf_token": get_csrf_token(request),
-        "current_time": int(time.time()),
+        "current_time": now_ts,
     })
 
 
