@@ -384,50 +384,36 @@
             table.addEventListener('click', handleTableClick);
         }
 
-        // Initialize global search/filter on the keys table (robust, no external deps)
+        // Инициализация поиска/сброса через общий помощник (как было в рабочих коммитах)
         try {
+            if (window && window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
+                window.VeilBotCommon.initTableSearch();
+            }
+            // Доп. страховка: навешиваем обработчик на кнопку "Сбросить", чтобы триггерить событие input
             const searchInput = document.getElementById('global-search');
             const resetButton = document.getElementById('reset-search-btn');
-            if (searchInput) {
-                const container = searchInput.closest('.card') || document;
-                const tableEl = (searchInput.dataset.tableId
-                    ? document.getElementById(searchInput.dataset.tableId)
-                    : (container.querySelector('table') || document.getElementById('keys-table')));
-                const applyFilter = () => {
-                    if (!tableEl) return;
-                    const term = (searchInput.value || '').toLowerCase().trim();
-                    const rows = Array.from(tableEl.querySelectorAll('tbody tr'));
-                    if (!term) {
-                        rows.forEach(r => { r.style.display = ''; });
-                        return;
-                    }
-                    rows.forEach((row) => {
-                        const text = (row.textContent || '').toLowerCase();
-                        row.style.display = text.includes(term) ? '' : 'none';
-                    });
-                };
-                const onInput = () => applyFilter();
-                const onKey = (e) => {
-                    if (e.key === 'Enter' || e.key === 'Escape') {
-                        if (e.key === 'Escape') {
-                            searchInput.value = '';
+            if (searchInput && resetButton) {
+                resetButton.addEventListener('click', () => {
+                    const hadValue = !!searchInput.value;
+                    searchInput.value = '';
+                    // Сгенерировать событие input, чтобы сработал createTableFilter из common.js
+                    const ev = new Event('input', { bubbles: true });
+                    searchInput.dispatchEvent(ev);
+                    // На случай, если общая инициализация по какой-то причине не сработала — прямой фолбэк:
+                    if (!window.VeilBotCommon || typeof window.VeilBotCommon.createTableFilter !== 'function') {
+                        const table = document.getElementById(searchInput.dataset?.['tableId'] || 'keys-table');
+                        if (table) {
+                            const rows = Array.from(table.querySelectorAll('tbody tr'));
+                            rows.forEach(r => { r.style.display = ''; });
                         }
-                        applyFilter();
                     }
-                };
-                searchInput.addEventListener('input', onInput);
-                searchInput.addEventListener('keyup', onKey);
-                if (resetButton) {
-                    resetButton.addEventListener('click', () => {
-                        searchInput.value = '';
-                        applyFilter();
+                    if (hadValue) {
                         searchInput.focus();
-                    });
-                }
+                    }
+                });
             }
         } catch (e) {
-            handleCoach = handleError; // ensure reference exists
-            handleError(e, 'Инициализация поиска по таблице');
+            handleError(e, 'Инициализация поиска/сброса');
         }
 
         updateProgressBars();
