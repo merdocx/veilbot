@@ -12,40 +12,137 @@ const debounce = (fn, wait = 300) => {
     };
 };
 
-const createTableFilter = (tableId, debounceMs = 300) => {
-    const table = document.getElementById(tableId);
-    if (!table) {
-        console.warn(`Table with id "${tableId}" not found`);
-        return () => undefined;
+const resolveElement = (value, fallbackSelector) => {
+    if (value instanceof Element) {
+        return value;
+    }
+    if (typeof value === 'string') {
+        return document.querySelector(value);
+    }
+    if (fallbackSelector) {
+        return document.querySelector(fallbackSelector);
+    }
+    return null;
+};
+
+const initAutoTableSearch = (config = {}) => {
+    const searchInput = resolveElement(config.input, config.inputSelector || '#global-search');
+    if (!searchInput || searchInput.dataset.autoSearch === '1') {
+        return null;
     }
 
-    let cachedRows = null;
+    const table =
+        resolveElement(config.table, config.tableSelector)
+        || (searchInput.dataset.tableId ? document.getElementById(searchInput.dataset.tableId) : null)
+        || (searchInput.closest('.card') ? searchInput.closest('.card').querySelector('table') : null);
 
-    const performFilter = (searchTerm) => {
-        if (!cachedRows) {
-            cachedRows = Array.from(table.querySelectorAll('tbody tr'));
+    if (!table) {
+        console.warn('[VeilBot] Таблица для поиска не найдена');
+        return null;
+    }
+
+    const extraDataAttributes = Array.isArray(config.extraDataAttributes)
+        ? config.extraDataAttributes
+        : (searchInput.dataset.extraSearch
+            ? searchInput.dataset.extraSearch.split(',').map((item) => item.trim()).filter(Boolean)
+            : []);
+
+    const rowSelector = config.rowSelector || 'tbody tr';
+    const provideRows = () => Array.from(table.querySelectorAll(rowSelector));
+
+    const searchIndex = new WeakMap();
+    const getRowText = (row) => {
+        if (searchIndex.has(row)) {
+            return searchIndex.get(row);
         }
+        const baseText = row.textContent || '';
+        const extraText = extraDataAttributes.length
+            ? extraDataAttributes
+                .map((attr) => row.dataset?.[attr] || '')
+                .filter(Boolean)
+                .join(' ')
+            : '';
+        const combined = `${baseText} ${extraText}`.toLowerCase();
+        searchIndex.set(row, combined);
+        return combined;
+    };
 
-        const normalized = (searchTerm || '').toLowerCase().trim();
+    const filterRows = (term) => {
+        const normalized = (term || '').toLowerCase().trim();
+        const rows = provideRows();
         if (!normalized) {
-            cachedRows.forEach((row) => {
+            rows.forEach((row) => {
                 row.style.display = '';
             });
             return;
         }
 
-        cachedRows.forEach((row) => {
-            const cells = Array.from(row.querySelectorAll('td'));
-            const searchable = cells.slice(0, -1);
-            const found = searchable.some((cell) => {
-                const text = (cell.textContent || '').toLowerCase();
-                return text.includes(normalized);
-            });
-            row.style.display = found ? '' : 'none';
+        rows.forEach((row) => {
+            const text = getRowText(row);
+            row.style.display = text.includes(normalized) ? '' : 'none';
         });
     };
 
-    return debounce(performFilter, debounceMs);
+    let rafId = null;
+    const scheduleFilter = (value) => {
+        if (rafId && window.cancelAnimationFrame) {
+            window.cancelAnimationFrame(rafId);
+            rafId = null;
+        }
+        const runner = () => {
+            filterRows(value);
+            rafId = null;
+        };
+        if (window.requestAnimationFrame) {
+            rafId = window.requestAnimationFrame(runner);
+        } else {
+            rafId = window.setTimeout(runner, 0);
+        }
+    };
+
+    const onInput = (event) => {
+        scheduleFilter(event.target.value);
+    };
+
+    const onKeydown = (event) => {
+        if (event.key === 'Escape' && searchInput.value) {
+            searchInput.value = '';
+            scheduleFilter('');
+            event.preventDefault();
+        }
+    };
+
+    searchInput.addEventListener('input', onInput);
+    searchInput.addEventListener('keydown', onKeydown);
+
+    const resetButton = resolveElement(config.resetButton, config.resetSelector || '#reset-search-btn');
+    const onReset = () => {
+        if (searchInput.value) {
+            searchInput.value = '';
+        }
+        scheduleFilter('');
+        searchInput.focus();
+    };
+
+    if (resetButton) {
+        resetButton.addEventListener('click', onReset);
+    }
+
+    if (searchInput.value) {
+        scheduleFilter(searchInput.value);
+    }
+
+    searchInput.dataset.autoSearch = '1';
+
+    return {
+        destroy() {
+            searchInput.removeEventListener('input', onInput);
+            searchInput.removeEventListener('keydown', onKeydown);
+            if (resetButton) {
+                resetButton.removeEventListener('click', onReset);
+            }
+        },
+    };
 };
 
 const ensureNotificationStyles = () => {
@@ -357,28 +454,7 @@ const loadTraffic = async (keyId) => {
     }
 };
 
-const initTableSearch = () => {
-    const searchInput = document.getElementById('global-search');
-    if (!searchInput) return;
-
-    const tableId = searchInput.dataset.tableId
-        || searchInput.closest('.card')?.querySelector('table')?.id
-        || 'keys-table';
-
-    const filter = createTableFilter(tableId, 250);
-    searchInput.addEventListener('input', (event) => {
-        filter(event.target.value);
-    });
-
-    const resetButton = document.getElementById('reset-search-btn');
-    if (resetButton) {
-        resetButton.addEventListener('click', () => {
-            searchInput.value = '';
-            filter('');
-            searchInput.focus();
-        });
-    }
-};
+const initTableSearch = (config = {}) => initAutoTableSearch(config);
 
 const initLazyTrafficLoading = () => {
     // Placeholder for future IntersectionObserver integration.
@@ -573,16 +649,15 @@ const initializeCommon = () => {
 
 const VeilBotCommon = {
     debounce,
-    createTableFilter,
     showNotification,
     initTableSearch,
+    initAutoTableSearch,
     showLoadingIndicator,
     showPageLoader,
     handleError,
     loadTraffic,
     updateKeyRow,
     updateProgressBars,
-    updateKeyRow,
     ModalController,
     postForm,
     attachConfirmHandlers,
@@ -605,15 +680,14 @@ if (typeof window !== 'undefined') {
 
 export {
     debounce,
-    createTableFilter,
     showNotification,
     initTableSearch,
+    initAutoTableSearch,
     showLoadingIndicator,
     showPageLoader,
     handleError,
     loadTraffic,
     updateProgressBars,
-    updateKeyRow,
     updateKeyRow,
     ModalController,
     postForm,

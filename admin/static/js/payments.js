@@ -132,6 +132,14 @@ const initPaymentsPage = () => {
     });
 
     initStatusFilters();
+
+    if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
+        window.VeilBotCommon.initTableSearch({
+            tableSelector: '#payments-table',
+        });
+    } else {
+        console.warn('[VeilBot][payments] initTableSearch недоступен');
+    }
 };
 
 if (document.readyState === 'loading') {

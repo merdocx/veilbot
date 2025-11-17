@@ -29,9 +29,9 @@
 
     <!-- Filters -->
     <div class="filter-bar">
-        <div class="flex-wrap flex-1">
+        <div class="filter-bar__group flex-1">
             <input type="text" id="global-search" data-table-id="users-table" placeholder="Поиск по всем столбцам..." class="filter-input filter-input--grow">
-            <button type="button" class="btn" data-clear-target="#global-search" data-clear-event="input">
+            <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
             </button>
@@ -128,4 +128,8 @@
     {% endif %}
 </div>
 {% endif %}
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/users.js"></script>
+{% endblock %}
 {% endblock %}

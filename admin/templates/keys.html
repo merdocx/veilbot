@@ -36,7 +36,7 @@
     <!-- Filters -->
     <div class="filter-bar">
         <div class="filter-bar__group">
-            <input type="text" id="global-search" data-table-id="keys-table" placeholder="Поиск по всем столбцам..." class="filter-input">
+            <input type="text" id="global-search" data-table-id="keys-table" data-extra-search="serverName" placeholder="Поиск по всем столбцам..." class="filter-input">
             <button type="button" class="btn filter-bar__reset" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
@@ -62,7 +62,13 @@
             </thead>
             <tbody>
                 {% for key in keys %}
-                <tr class="keys-table__row" data-key-id="{{ key.id }}" data-protocol="{{ key.protocol }}" data-status="{{ key.status }}" data-expiry-ts="{{ key.expiry_at }}" data-expiry-iso="{{ key.expiry_iso }}">
+                <tr class="keys-table__row"
+                    data-key-id="{{ key.id }}"
+                    data-protocol="{{ key.protocol }}"
+                    data-status="{{ key.status }}"
+                    data-expiry-ts="{{ key.expiry_at }}"
+                    data-expiry-iso="{{ key.expiry_iso }}"
+                    data-server-name="{{ key.server or '' }}">
                     <td class="keys-table__cell keys-table__cell--id">
                         <span class="text-muted">#{{ key.id }}</span>
                     </td>
@@ -78,6 +84,7 @@
                             <div class="cell-primary text-muted">—</div>
                         {% endif %}
                         <div class="cell-secondary text-muted">{{ key.tariff or '—' }}</div>
+                        <div class="cell-secondary text-muted">TG: {{ key.telegram_id or '—' }}</div>
                     </td>
                     <td class="keys-table__cell keys-table__cell--server">
                         <div class="cell-primary">{{ key.server or '—' }}</div>

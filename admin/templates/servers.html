@@ -54,14 +54,11 @@
 
     <!-- Filters -->
     <div class="filter-bar">
-        <div class="flex-wrap flex-1">
-            <input type="text" id="filter-id" placeholder="Фильтр по ID" class="filter-input">
-            <input type="text" id="filter-name" placeholder="Фильтр по названию" class="filter-input">
-            <input type="text" id="filter-protocol" placeholder="Фильтр по протоколу" class="filter-input">
-            <input type="text" id="filter-country" placeholder="Фильтр по стране" class="filter-input">
-            <button class="btn" data-action="clear-server-filters">
+        <div class="filter-bar__group flex-1">
+            <input type="text" id="global-search" data-table-id="servers-table" placeholder="Поиск по всем столбцам..." class="filter-input filter-input--grow">
+            <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
-                Очистить
+                Сбросить
             </button>
         </div>
     </div>

@@ -65,29 +65,13 @@
 
     <!-- Filters -->
     <div class="filter-bar">
-        <form method="get" action="/payments" class="flex-wrap" data-payments-filter-form>
-            <input type="text" name="email" placeholder="Поиск по email" value="{{ email }}" class="filter-input">
-            <input type="text" name="user_id" placeholder="User ID" value="{{ user_id }}" class="filter-input">
-            <input type="text" name="payment_id" placeholder="Payment ID" value="{{ payment_id }}" class="filter-input">
-            <select name="status" class="form-control" id="payments-status-select" data-filter-status-select>
-                <option value="">Все статусы</option>
-                <option value="paid" {% if status == 'paid' %}selected{% endif %}>Оплачен</option>
-                <option value="pending" {% if status == 'pending' %}selected{% endif %}>Ожидает</option>
-                <option value="failed" {% if status == 'failed' %}selected{% endif %}>Ошибка</option>
-                <option value="cancelled" {% if status == 'cancelled' %}selected{% endif %}>Отменён</option>
-                <option value="expired" {% if status == 'expired' %}selected{% endif %}>Истёк</option>
-                <option value="refunded" {% if status == 'refunded' %}selected{% endif %}>Возврат</option>
-            </select>
-            <input type="hidden" name="preset" value="{{ preset }}" data-filter-preset-input>
-            <button type="submit" class="btn btn-primary">
-                <span class="material-icons icon-small">search</span>
-                Поиск
-            </button>
-            <a href="/payments" class="btn">
+        <div class="filter-bar__group flex-1">
+            <input type="text" id="global-search" data-table-id="payments-table" placeholder="Поиск по всем столбцам..." class="filter-input filter-input--grow">
+            <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
-            </a>
-        </form>
+            </button>
+        </div>
     </div>
 
     <!-- Table -->

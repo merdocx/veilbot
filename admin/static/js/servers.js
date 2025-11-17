@@ -1,51 +1,6 @@
 const state = {
     outlineFields: null,
     v2rayFields: null,
-    filters: {
-        id: null,
-        name: null,
-        protocol: null,
-        country: null,
-    },
-};
-
-const applyFilters = () => {
-    const table = document.getElementById('servers-table');
-    if (!table) return;
-
-    const rows = table.querySelectorAll('tbody tr');
-    const idFilter = (state.filters.id?.value || '').toLowerCase();
-    const nameFilter = (state.filters.name?.value || '').toLowerCase();
-    const protocolFilter = (state.filters.protocol?.value || '').toLowerCase();
-    const countryFilter = (state.filters.country?.value || '').toLowerCase();
-
-    rows.forEach((row) => {
-        const cells = row.querySelectorAll('td');
-        if (cells.length < 8) {
-            return;
-        }
-
-        const id = cells[0].textContent.toLowerCase();
-        const name = cells[1].textContent.toLowerCase();
-        const protocol = cells[2].textContent.toLowerCase();
-        const country = cells[7].textContent.toLowerCase();
-
-        const matches = (!idFilter || id.includes(idFilter)) &&
-            (!nameFilter || name.includes(nameFilter)) &&
-            (!protocolFilter || protocol.includes(protocolFilter)) &&
-            (!countryFilter || country.includes(countryFilter));
-
-        row.style.display = matches ? '' : 'none';
-    });
-};
-
-const clearFilters = () => {
-    Object.values(state.filters).forEach((input) => {
-        if (input) {
-            input.value = '';
-        }
-    });
-    applyFilters();
 };
 
 const toggleProtocolFields = () => {
@@ -73,24 +28,18 @@ const initServersPage = () => {
     state.outlineFields = document.getElementById('outline-fields');
     state.v2rayFields = document.getElementById('v2ray-fields');
 
-    state.filters.id = document.getElementById('filter-id');
-    state.filters.name = document.getElementById('filter-name');
-    state.filters.protocol = document.getElementById('filter-protocol');
-    state.filters.country = document.getElementById('filter-country');
-
-    const filterInputs = Object.values(state.filters).filter(Boolean);
-    filterInputs.forEach((input) => {
-        input.addEventListener('input', applyFilters);
-    });
-
-    document.querySelectorAll('[data-action="clear-server-filters"]').forEach((button) => {
-        button.addEventListener('click', clearFilters);
-    });
-
     const protocolSelect = document.getElementById('protocol');
     if (protocolSelect) {
         protocolSelect.addEventListener('change', toggleProtocolFields);
         toggleProtocolFields();
+    }
+
+    if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
+        window.VeilBotCommon.initTableSearch({
+            tableSelector: '#servers-table',
+        });
+    } else {
+        console.warn('[VeilBot][servers] initTableSearch недоступен');
     }
 };
 

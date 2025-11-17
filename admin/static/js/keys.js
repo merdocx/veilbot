@@ -384,36 +384,13 @@
             table.addEventListener('click', handleTableClick);
         }
 
-        // Инициализация поиска/сброса через общий помощник (как было в рабочих коммитах)
-        try {
-            if (window && window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
-                window.VeilBotCommon.initTableSearch();
-            }
-            // Доп. страховка: навешиваем обработчик на кнопку "Сбросить", чтобы триггерить событие input
-            const searchInput = document.getElementById('global-search');
-            const resetButton = document.getElementById('reset-search-btn');
-            if (searchInput && resetButton) {
-                resetButton.addEventListener('click', () => {
-                    const hadValue = !!searchInput.value;
-                    searchInput.value = '';
-                    // Сгенерировать событие input, чтобы сработал createTableFilter из common.js
-                    const ev = new Event('input', { bubbles: true });
-                    searchInput.dispatchEvent(ev);
-                    // На случай, если общая инициализация по какой-то причине не сработала — прямой фолбэк:
-                    if (!window.VeilBotCommon || typeof window.VeilBotCommon.createTableFilter !== 'function') {
-                        const table = document.getElementById(searchInput.dataset?.['tableId'] || 'keys-table');
-                        if (table) {
-                            const rows = Array.from(table.querySelectorAll('tbody tr'));
-                            rows.forEach(r => { r.style.display = ''; });
-                        }
-                    }
-                    if (hadValue) {
-                        searchInput.focus();
-                    }
-                });
-            }
-        } catch (e) {
-            handleError(e, 'Инициализация поиска/сброса');
+        if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
+            window.VeilBotCommon.initTableSearch({
+                tableSelector: '#keys-table',
+                extraDataAttributes: ['serverName'],
+            });
+        } else {
+            console.warn('[VeilBot][keys] initTableSearch недоступен');
         }
 
         updateProgressBars();

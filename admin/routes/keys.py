@@ -184,7 +184,7 @@ def _format_expiry_remaining(expiry_at: int, now_ts: int) -> Dict[str, str]:
 
 
 def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict[str, Any]:
-    traffic_raw = row[15] if len(row) > 15 else None
+    traffic_raw = row[16] if len(row) > 16 else None
     traffic_info = _parse_traffic_value(traffic_raw)
 
     key_id = int(row[0])
@@ -197,14 +197,14 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     is_active = bool(expiry_at and expiry_at > now_ts)
     status_label = "Активен" if is_active else "Истёк"
     status_icon = "check_circle" if is_active else "cancel"
-    protocol = (row[8] or '').lower()
+    protocol = (row[9] or '').lower()
     protocol_meta = {
         "outline": {"label": "Outline", "icon": "lock", "class": "protocol-badge--outline"},
         "v2ray": {"label": "V2Ray", "icon": "security", "class": "protocol-badge--v2ray"},
     }
     protocol_info = protocol_meta.get(protocol, {"label": protocol or "—", "icon": "help_outline", "class": "protocol-badge--neutral"})
 
-    raw_limit_value = row[9] if len(row) > 9 else 0
+    raw_limit_value = row[10] if len(row) > 10 else 0
     try:
         traffic_limit_mb = int(raw_limit_value)
     except (TypeError, ValueError):
@@ -213,7 +213,7 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     if traffic_limit_mb:
         traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
 
-    traffic_usage_bytes_db = row[12] if len(row) > 12 else 0
+    traffic_usage_bytes_db = row[13] if len(row) > 13 else 0
     if traffic_usage_bytes_db is not None:
         try:
             traffic_info["bytes"] = float(traffic_usage_bytes_db)
@@ -224,8 +224,8 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
             if parsed_usage["bytes"] is not None:
                 traffic_info.update(parsed_usage)
 
-    over_limit_at = row[13] if len(row) > 13 and row[13] else None
-    over_limit_notified = bool(row[14]) if len(row) > 14 and row[14] else False
+    over_limit_at = row[14] if len(row) > 14 and row[14] else None
+    over_limit_notified = bool(row[15]) if len(row) > 15 and row[15] else False
 
     usage_percent = None
     over_limit_deadline = over_limit_at + 86400 if over_limit_at else None
@@ -248,8 +248,9 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
         "uuid": row[1],
         "access_url": row[2],
         "email": row[6] or '',
+        "telegram_id": str(row[7]) if len(row) > 7 and row[7] else '',
         "server": row[5] or '',
-        "tariff": row[7] or '',
+        "tariff": row[8] or '',
         "protocol": protocol,
         "protocol_label": protocol_info["label"],
         "protocol_icon": protocol_info["icon"],
@@ -321,10 +322,10 @@ def _is_json_request(request: Request) -> bool:
 def _append_default_traffic(row: tuple[Any, ...] | list[Any]) -> list[Any]:
     extended = list(row)
     # Гарантируем наличие новых колонок (traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified)
-    while len(extended) < 15:
+    while len(extended) < 16:
         extended.append(None)
     # Последняя колонка предназначена для строкового представления трафика
-    if len(extended) == 15:
+    if len(extended) == 16:
         extended.append('—')
     return extended
 
