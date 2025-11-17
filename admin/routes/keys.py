@@ -184,7 +184,28 @@ def _format_expiry_remaining(expiry_at: int, now_ts: int) -> Dict[str, str]:
 
 
 def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict[str, Any]:
-    traffic_raw = row[16] if len(row) > 16 else None
+    row_len = len(row)
+    # Поддерживаем как новые расширенные строки, так и старый формат из тестов/фикстур
+    is_extended = row_len >= 17
+
+    def get(idx: int | None, default: Any = None) -> Any:
+        if idx is None:
+            return default
+        if idx < 0:
+            idx_mod = row_len + idx
+            return row[idx_mod] if 0 <= idx_mod < row_len else default
+        return row[idx] if row_len > idx else default
+
+    protocol_idx = 9 if is_extended else 8
+    tariff_idx = 8 if is_extended else 7
+    user_id_idx = 7 if is_extended else None
+    limit_idx = 10 if is_extended else 9
+    usage_idx = 13 if row_len > 13 else None
+    over_limit_idx = 14 if row_len > 14 else None
+    notified_idx = 15 if row_len > 15 else None
+    traffic_raw_idx = 16 if row_len > 16 else (12 if row_len > 12 else None)
+
+    traffic_raw = get(traffic_raw_idx)
     traffic_info = _parse_traffic_value(traffic_raw)
 
     key_id = int(row[0])
@@ -197,14 +218,14 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     is_active = bool(expiry_at and expiry_at > now_ts)
     status_label = "Активен" if is_active else "Истёк"
     status_icon = "check_circle" if is_active else "cancel"
-    protocol = (row[9] or '').lower()
+    protocol = (get(protocol_idx, '') or '').lower()
     protocol_meta = {
         "outline": {"label": "Outline", "icon": "lock", "class": "protocol-badge--outline"},
         "v2ray": {"label": "V2Ray", "icon": "security", "class": "protocol-badge--v2ray"},
     }
     protocol_info = protocol_meta.get(protocol, {"label": protocol or "—", "icon": "help_outline", "class": "protocol-badge--neutral"})
 
-    raw_limit_value = row[10] if len(row) > 10 else 0
+    raw_limit_value = get(limit_idx, 0)
     try:
         traffic_limit_mb = int(raw_limit_value)
     except (TypeError, ValueError):
@@ -213,7 +234,7 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     if traffic_limit_mb:
         traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
 
-    traffic_usage_bytes_db = row[13] if len(row) > 13 else 0
+    traffic_usage_bytes_db = get(usage_idx, None)
     if traffic_usage_bytes_db is not None:
         try:
             traffic_info["bytes"] = float(traffic_usage_bytes_db)
@@ -224,8 +245,9 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
             if parsed_usage["bytes"] is not None:
                 traffic_info.update(parsed_usage)
 
-    over_limit_at = row[14] if len(row) > 14 and row[14] else None
-    over_limit_notified = bool(row[15]) if len(row) > 15 and row[15] else False
+    over_limit_at = get(over_limit_idx)
+    notified_value = get(notified_idx)
+    over_limit_notified = bool(notified_value) if notified_value is not None else False
 
     usage_percent = None
     over_limit_deadline = over_limit_at + 86400 if over_limit_at else None
@@ -248,9 +270,9 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
         "uuid": row[1],
         "access_url": row[2],
         "email": row[6] or '',
-        "telegram_id": str(row[7]) if len(row) > 7 and row[7] else '',
+        "telegram_id": str(get(user_id_idx)) if get(user_id_idx) else '',
         "server": row[5] or '',
-        "tariff": row[8] or '',
+        "tariff": get(tariff_idx) or '',
         "protocol": protocol,
         "protocol_label": protocol_info["label"],
         "protocol_icon": protocol_info["icon"],
