@@ -7,7 +7,7 @@ from typing import Dict, Any
 from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import get_db_cursor
-from bot.keyboards import get_main_menu, get_cancel_keyboard
+from bot.keyboards import get_main_menu, get_cancel_keyboard, get_payment_method_keyboard
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService
 from vpn_protocols import format_duration
@@ -162,7 +162,6 @@ async def handle_get_access(message: types.Message):
             )
             
             # Показываем меню выбора способа оплаты (как в обычном flow)
-            from bot.keyboards import get_payment_method_keyboard
             await message.answer(
                 msg,
                 reply_markup=get_payment_method_keyboard(),
@@ -715,7 +714,6 @@ def register_subscription_handlers(dp: Dispatcher, user_states: Dict[int, Dict[s
             f"🔄 Автоматическое обновление при добавлении новых серверов\n\n"
             f"Выберите способ оплаты:"
         )
-        from bot.keyboards import get_payment_method_keyboard
         await message.answer(msg, reply_markup=get_payment_method_keyboard(), parse_mode="Markdown")
     
     @dp.message_handler(lambda m: _user_states.get(m.from_user.id, {}).get("state") == "waiting_email_for_subscription")

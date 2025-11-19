@@ -8,6 +8,7 @@ on:
   schedule:
     # Запуск тестов каждый день в 2:00 UTC
     - cron: '0 2 * * *'
+  workflow_dispatch:  # Позволяет запускать тесты вручную через GitHub UI
 
 jobs:
   test:
