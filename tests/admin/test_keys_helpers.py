@@ -25,7 +25,8 @@ def test_build_key_view_model_active_with_limit():
 
     view = _build_key_view_model(row, now_ts)
 
-    assert view['id'] == 42
+    assert view['id'] == '42_outline'  # ID теперь включает протокол
+    assert view['numeric_id'] == 42  # Числовой ID доступен отдельно
     assert view['status'] == 'active'
     assert view['status_label'] == 'Активен'
     assert view['status_icon'] == 'check_circle'
