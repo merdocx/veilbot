@@ -175,7 +175,7 @@ async def add_server(
         if server_data.protocol == 'v2ray':
             api_url_to_store = _normalize_v2ray_api_url(server_data.api_url)
 
-        ServerRepository(DATABASE_PATH).add_server(
+        server_id = ServerRepository(DATABASE_PATH).add_server(
             name=server_data.name,
             api_url=api_url_to_store,
             cert_sha256=server_data.cert_sha256,
@@ -187,6 +187,31 @@ async def add_server(
             v2ray_path=server_data.v2ray_path,
             available_for_purchase=1 if available_for_purchase else 0,
         )
+        
+        # Если это новый активный V2Ray сервер, создаем ключи для всех активных подписок
+        if server_data.protocol == 'v2ray' and available_for_purchase:
+            try:
+                # Запускаем фоновую задачу через отдельный механизм
+                # Используем threading для запуска задачи в фоне, чтобы не блокировать ответ
+                import threading
+                from bot.services.background_tasks import create_keys_for_new_server
+                import asyncio
+                
+                def run_task():
+                    """Запуск асинхронной задачи в отдельном потоке"""
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(create_keys_for_new_server(server_id))
+                        loop.close()
+                    except Exception as e:
+                        logging.error(f"Error in background task for server {server_id}: {e}", exc_info=True)
+                
+                thread = threading.Thread(target=run_task, daemon=True)
+                thread.start()
+                logging.info(f"Started background task to create keys for subscriptions on new server {server_id}")
+            except Exception as e:
+                logging.error(f"Failed to start background task for new server {server_id}: {e}", exc_info=True)
         
         # Инвалидируем кэш меню бота
         try:
@@ -237,6 +262,11 @@ async def delete_server(request: Request, server_id: int):
         server = repo.get_server(server_id)
         if server:
             log_admin_action(request, "DELETE_SERVER", f"ID: {server_id}, Name: {server[1]}")
+            # Сохраняем информацию о протоколе перед удалением для инвалидации кэша
+            server_protocol = server[7] if len(server) > 7 else None
+        else:
+            server_protocol = None
+        
         repo.delete_server(server_id)
         
         # Инвалидируем кэш меню бота
@@ -245,6 +275,14 @@ async def delete_server(request: Request, server_id: int):
             invalidate_menu_cache()
         except Exception as e:
             logging.warning(f"Failed to invalidate menu cache: {e}")
+        
+        # Инвалидируем кэш подписок, если это был V2Ray сервер
+        if server_protocol == 'v2ray':
+            try:
+                from bot.services.subscription_service import invalidate_subscriptions_cache_for_server
+                invalidate_subscriptions_cache_for_server(server_id)
+            except Exception as e:
+                logging.warning(f"Failed to invalidate subscription cache for server {server_id}: {e}")
         
         return RedirectResponse(url="/servers", status_code=HTTP_303_SEE_OTHER)
     except Exception as e:
@@ -313,6 +351,13 @@ async def edit_server(
     form_data = await request.form()
     available_for_purchase = form_data.get("available_for_purchase") == "on"
     
+    # Получаем текущее состояние сервера для сравнения
+    repo = ServerRepository(DATABASE_PATH)
+    current_server = repo.get_server(server_id)
+    current_active = current_server[5] if current_server and len(current_server) > 5 else 0
+    current_available = current_server[11] if current_server and len(current_server) > 11 else 1
+    current_protocol = current_server[7] if current_server and len(current_server) > 7 else None
+    
     try:
         # Валидация
         server_data = ServerForm(
@@ -330,7 +375,10 @@ async def edit_server(
         if server_data.protocol == 'v2ray':
             api_url_to_store = _normalize_v2ray_api_url(server_data.api_url)
 
-        ServerRepository(DATABASE_PATH).update_server(
+        new_active = 1 if active else 0
+        new_available = 1 if available_for_purchase else 0
+
+        repo.update_server(
             server_id=server_id,
             name=server_data.name,
             api_url=api_url_to_store,
@@ -341,8 +389,8 @@ async def edit_server(
             domain=server_data.domain,
             api_key=server_data.api_key,
             v2ray_path=server_data.v2ray_path,
-            active=1 if active else 0,
-            available_for_purchase=1 if available_for_purchase else 0,
+            active=new_active,
+            available_for_purchase=new_available,
         )
         
         # Инвалидируем кэш меню бота
@@ -351,6 +399,15 @@ async def edit_server(
             invalidate_menu_cache()
         except Exception as e:
             logging.warning(f"Failed to invalidate menu cache: {e}")
+        
+        # Инвалидируем кэш подписок, если это V2Ray сервер и изменились статусы
+        if server_data.protocol == 'v2ray' or current_protocol == 'v2ray':
+            if (current_active != new_active or current_available != new_available):
+                try:
+                    from bot.services.subscription_service import invalidate_subscriptions_cache_for_server
+                    invalidate_subscriptions_cache_for_server(server_id)
+                except Exception as e:
+                    logging.warning(f"Failed to invalidate subscription cache for server {server_id}: {e}")
         
         log_admin_action(request, "EDIT_SERVER", f"ID: {server_id}")
         return RedirectResponse(url="/servers", status_code=HTTP_303_SEE_OTHER)

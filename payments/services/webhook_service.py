@@ -6,6 +6,7 @@ from yookassa.domain.common import SecurityHelper
 
 from ..repositories.payment_repository import PaymentRepository
 from ..services.payment_service import PaymentService
+from ..services.subscription_purchase_service import SubscriptionPurchaseService
 from ..models.payment import PaymentStatus
 
 logger = logging.getLogger(__name__)
@@ -52,16 +53,32 @@ class WebhookService:
                 if success:
                     logger.info(f"Payment {payment_id} processed successfully via webhook")
                     
-                    # Создаем ключ для оплаченного платежа
-                    try:
-                        # Используем фоновую задачу для создания ключей
-                        # Это более надежно, чем создавать ключ здесь
-                        await self.payment_service.process_paid_payments_without_keys()
-                        logger.info(f"Key creation triggered for payment {payment_id} via webhook")
-                    except Exception as e:
-                        logger.error(f"Error creating key for payment {payment_id} via webhook: {e}")
-                        # Не возвращаем False, т.к. платеж уже обработан
-                        # Ключ будет создан фоновой задачей
+                    # Проверяем, является ли это платежом за подписку
+                    payment = await self.payment_repo.get_by_payment_id(payment_id)
+                    if payment and payment.metadata and payment.metadata.get('key_type') == 'subscription' and payment.protocol == 'v2ray':
+                        # Используем новый сервис для обработки подписки
+                        try:
+                            subscription_service = SubscriptionPurchaseService()
+                            success, error_msg = await subscription_service.process_subscription_purchase(payment_id)
+                            if success:
+                                logger.info(f"Subscription purchase processed successfully for payment {payment_id} via webhook")
+                            else:
+                                logger.error(f"Failed to process subscription purchase for payment {payment_id}: {error_msg}")
+                                # Не возвращаем False, т.к. платеж уже обработан
+                                # Подписка будет обработана фоновой задачей
+                        except Exception as e:
+                            logger.error(f"Error processing subscription purchase for payment {payment_id} via webhook: {e}")
+                            # Не возвращаем False, т.к. платеж уже обработан
+                            # Подписка будет обработана фоновой задачей
+                    else:
+                        # Для обычных платежей используем старую логику
+                        try:
+                            await self.payment_service.process_paid_payments_without_keys()
+                            logger.info(f"Key creation triggered for payment {payment_id} via webhook")
+                        except Exception as e:
+                            logger.error(f"Error creating key for payment {payment_id} via webhook: {e}")
+                            # Не возвращаем False, т.к. платеж уже обработан
+                            # Ключ будет создан фоновой задачей
                     
                     return True
                 else:

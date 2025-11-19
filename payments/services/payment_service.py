@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from typing import Optional, Tuple, List
-from datetime import datetime, timedelta
+from typing import Optional, Tuple, List, Dict, Any
+from datetime import datetime, timedelta, timezone
 
 from ..models.payment import Payment, PaymentStatus, PaymentCreate, PaymentFilter
 from ..models.enums import PaymentProvider, PaymentCurrency
@@ -54,7 +54,8 @@ class PaymentService:
         email: str,
         country: Optional[str] = None,
         protocol: str = "outline",
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         Создание платежа с полной логикой
@@ -90,18 +91,23 @@ class PaymentService:
             import uuid
             payment_id = str(uuid.uuid4())
             
+            # Подготавливаем метаданные
+            payment_metadata = {
+                "user_id": user_id,
+                "tariff_id": tariff_id,
+                "country": country,
+                "protocol": protocol
+            }
+            if metadata:
+                payment_metadata.update(metadata)
+            
             # Создаем платеж в YooKassa
             yookassa_payment_id, confirmation_url = await self.yookassa_service.create_payment(
                 amount=amount,
                 description=description,
                 email=email,
                 payment_id=payment_id,
-                metadata={
-                    "user_id": user_id,
-                    "tariff_id": tariff_id,
-                    "country": country,
-                    "protocol": protocol
-                }
+                metadata=payment_metadata
             )
             
             if not yookassa_payment_id:
@@ -118,12 +124,7 @@ class PaymentService:
                 country=country,
                 protocol=protocol,
                 description=description,
-                metadata={
-                    "user_id": user_id,
-                    "tariff_id": tariff_id,
-                    "country": country,
-                    "protocol": protocol
-                }
+                metadata=payment_metadata
             )
             
             await self.payment_repo.create(payment)
@@ -145,7 +146,8 @@ class PaymentService:
         protocol: str = "outline",
         description: Optional[str] = None,
         asset: str = "USDT",
-        network: str = "TRC20"
+        network: str = "TRC20",
+        metadata: Optional[Dict[str, Any]] = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         Создание криптоплатежа через CryptoBot
@@ -212,6 +214,21 @@ class PaymentService:
                 logger.error(f"Failed to create CryptoBot invoice for user {user_id}")
                 return None, None
             
+            # Подготавливаем метаданные
+            payment_metadata = {
+                "user_id": user_id,
+                "tariff_id": tariff_id,
+                "country": country,
+                "protocol": protocol,
+                "invoice_id": invoice_id,
+                "invoice_hash": invoice_hash,
+                "asset": asset,
+                "network": network,
+                "amount_usd": amount_usd
+            }
+            if metadata:
+                payment_metadata.update(metadata)
+            
             # Создаем запись в БД
             payment = Payment(
                 payment_id=str(invoice_id),  # Используем invoice_id как payment_id
@@ -224,17 +241,7 @@ class PaymentService:
                 protocol=protocol,
                 provider=PaymentProvider.CRYPTOBOT,
                 description=description,
-                metadata={
-                    "user_id": user_id,
-                    "tariff_id": tariff_id,
-                    "country": country,
-                    "protocol": protocol,
-                    "invoice_id": invoice_id,
-                    "invoice_hash": invoice_hash,
-                    "asset": asset,
-                    "network": network,
-                    "amount_usd": amount_usd
-                }
+                metadata=payment_metadata
             )
             
             # Сохраняем крипто-данные в метаданные (можно добавить отдельные поля позже)
@@ -461,7 +468,7 @@ class PaymentService:
                             
                             # Определяем, это продление или новая покупка
                             # Проверяем наличие активного ключа у пользователя
-                            now_ts = int(datetime.utcnow().timestamp())
+                            now_ts = int(datetime.now(timezone.utc).timestamp())
                             GRACE_PERIOD = 86400  # 24 часа
                             grace_threshold = now_ts - GRACE_PERIOD
                             
@@ -484,17 +491,40 @@ class PaymentService:
                                 f"Processing payment {payment.payment_id} for user {payment.user_id}: for_renewal={for_renewal}"
                             )
                             
-                            # Вызываем create_new_key_flow_with_protocol, которая обработает и продление, и создание нового ключа
-                            await create_new_key_flow_with_protocol(
-                                cursor=cursor,
-                                message=None,  # Отправка сообщения будет внутри функции
-                                user_id=payment.user_id,
-                                tariff=tariff,
-                                email=payment.email,
-                                country=payment.country,
-                                protocol=payment.protocol or 'outline',
-                                for_renewal=for_renewal,  # Если есть активный ключ, это продление
-                            )
+                            # Проверяем, нужно ли создавать подписку вместо отдельного ключа
+                            key_type = payment.metadata.get('key_type') if payment.metadata else None
+                            
+                            if key_type == 'subscription' and payment.protocol == 'v2ray':
+                                # Используем новый сервис для обработки подписки
+                                from ..services.subscription_purchase_service import SubscriptionPurchaseService
+                                
+                                subscription_service = SubscriptionPurchaseService()
+                                success, error_msg = await subscription_service.process_subscription_purchase(payment.payment_id)
+                                
+                                if success:
+                                    logger.info(
+                                        f"Subscription purchase processed successfully for payment {payment.payment_id}"
+                                    )
+                                    processed_count += 1
+                                else:
+                                    logger.error(
+                                        f"Failed to process subscription purchase for payment {payment.payment_id}: {error_msg}"
+                                    )
+                                    # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                                
+                                continue  # Пропускаем создание обычного ключа для подписок
+                            else:
+                                # Вызываем create_new_key_flow_with_protocol, которая обработает и продление, и создание нового ключа
+                                await create_new_key_flow_with_protocol(
+                                    cursor=cursor,
+                                    message=None,  # Отправка сообщения будет внутри функции
+                                    user_id=payment.user_id,
+                                    tariff=tariff,
+                                    email=payment.email,
+                                    country=payment.country,
+                                    protocol=payment.protocol or 'outline',
+                                    for_renewal=for_renewal,  # Если есть активный ключ, это продление
+                                )
 
                         # После успешной выдачи/продления ключа фиксируем статус платежа отдельно,
                         # чтобы обновление выполнялось после коммита в блоке get_db_cursor
@@ -511,7 +541,7 @@ class PaymentService:
                         continue
                     
                 except Exception as e:
-                    logger.error(f"Error processing payment {payment.payment_id}: {e}")
+                    logger.error(f"Error processing payment {payment.payment_id}: {e}", exc_info=True)
                     continue
             
             logger.info(f"Found {processed_count} paid payments without keys")
@@ -531,7 +561,7 @@ class PaymentService:
             # Проверяем, нет ли у пользователя активных ключей уже (как в get_paid_payments_without_keys)
             # Если есть — считаем, что ключ уже выдан
             from app.settings import settings as app_settings
-            now_ts = int(datetime.utcnow().timestamp())
+            now_ts = int(datetime.now(timezone.utc).timestamp())
             with open_connection(app_settings.DATABASE_PATH) as conn:
                 c = conn.cursor()
                 c.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now_ts))
@@ -599,7 +629,7 @@ class PaymentService:
             Словарь со статистикой
         """
         try:
-            since_date = datetime.utcnow() - timedelta(days=days)
+            since_date = datetime.now(timezone.utc) - timedelta(days=days)
             
             # Получаем все платежи за период
             filter_obj = PaymentFilter(
@@ -642,7 +672,7 @@ class PaymentService:
         """
         try:
             # Получаем истекшие платежи
-            since_date = datetime.utcnow() - timedelta(hours=hours)
+            since_date = datetime.now(timezone.utc) - timedelta(hours=hours)
             filter_obj = PaymentFilter(
                 created_before=since_date,
                 is_pending=True,

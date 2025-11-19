@@ -7,7 +7,7 @@
 import sqlite3
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 
 from ..models.payment import Payment, PaymentStatus
@@ -132,8 +132,8 @@ class PaymentMigration:
     def convert_timestamp(self, timestamp: int) -> datetime:
         """Конвертация временной метки"""
         if timestamp:
-            return datetime.fromtimestamp(timestamp)
-        return datetime.utcnow()
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        return datetime.now(timezone.utc)
     
     def create_new_payment(self, old_payment: Dict[str, Any]) -> Payment:
         """Создание нового объекта Payment из старого"""

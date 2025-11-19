@@ -61,8 +61,24 @@ def init_db():
         traffic_usage_bytes INTEGER DEFAULT 0,
         traffic_over_limit_at INTEGER,
         traffic_over_limit_notified INTEGER DEFAULT 0,
+        subscription_id INTEGER,
         FOREIGN KEY (server_id) REFERENCES servers(id),
         FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
+    )""")
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        subscription_token TEXT UNIQUE NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        tariff_id INTEGER,
+        is_active INTEGER DEFAULT 1,
+        last_updated_at INTEGER,
+        notified INTEGER DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES users(user_id),
         FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
     )""")
 
@@ -653,6 +669,69 @@ def migrate_add_available_for_purchase_to_servers():
     finally:
         conn.close()
 
+def migrate_add_subscriptions_table():
+    """Создание таблицы subscriptions для подписок V2Ray"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                subscription_token TEXT UNIQUE NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                tariff_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                last_updated_at INTEGER,
+                notified INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
+            )
+        """)
+        conn.commit()
+        logging.info("Таблица subscriptions создана")
+    except sqlite3.OperationalError as e:
+        if "already exists" in str(e).lower():
+            logging.info("Таблица subscriptions уже существует")
+        else:
+            raise
+    finally:
+        conn.close()
+
+def migrate_add_subscription_id_to_v2ray_keys():
+    """Добавление поля subscription_id в v2ray_keys для связи с подписками"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN subscription_id INTEGER")
+        conn.commit()
+        logging.info("Поле subscription_id добавлено в v2ray_keys")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name: subscription_id" in str(e).lower():
+            logging.info("Поле subscription_id уже существует в v2ray_keys")
+        else:
+            raise
+    finally:
+        conn.close()
+
+def migrate_add_subscription_indexes():
+    """Создание индексов для таблицы subscriptions"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_token ON subscriptions(subscription_token)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_expires_at ON subscriptions(expires_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_is_active ON subscriptions(is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_subscription_id ON v2ray_keys(subscription_id)")
+        conn.commit()
+        logging.info("Индексы для подписок созданы")
+    except sqlite3.OperationalError as e:
+        logging.warning(f"Ошибка при создании индексов для подписок: {e}")
+    finally:
+        conn.close()
+
 def migrate_fix_v2ray_keys_foreign_keys():
     """Исправление foreign key constraints в таблице v2ray_keys - замена users(id) на users(user_id)"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -762,6 +841,9 @@ def _run_all_migrations():
     migrate_add_traffic_monitoring_to_v2ray_keys()
     migrate_add_available_for_purchase_to_servers()
     migrate_fix_v2ray_keys_foreign_keys()
+    migrate_add_subscriptions_table()
+    migrate_add_subscription_id_to_v2ray_keys()
+    migrate_add_subscription_indexes()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

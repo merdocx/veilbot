@@ -3,7 +3,7 @@ import json
 import base64
 import logging
 from typing import Tuple, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 
 from ..models.payment import Payment
@@ -64,7 +64,7 @@ class YooKassaService:
         try:
             # Используем переданный ID платежа или генерируем новый
             if not payment_id:
-                payment_id = f"payment_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{amount}"
+                payment_id = f"payment_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{amount}"
             
             # Формируем данные платежа
             payment_data = {
@@ -108,7 +108,7 @@ class YooKassaService:
                 or self.shop_id in {"123456"}
                 or self.api_key in {"test_api_key"}
             ):
-                fake_id = payment_id or f"test_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+                fake_id = payment_id or f"test_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
                 fake_url = f"https://example.test/confirm/{fake_id}"
                 logger.info(f"[TEST_MODE] Returning fake YooKassa payment: {fake_id}")
                 return fake_id, fake_url

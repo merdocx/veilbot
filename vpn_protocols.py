@@ -61,6 +61,63 @@ def normalize_vless_host(config: Optional[str], domain: Optional[str], api_url: 
         return config or ""
 
 
+def remove_fragment_from_vless(config: Optional[str]) -> str:
+    """
+    Удаляет фрагмент (после #) из VLESS URL.
+    
+    Args:
+        config: VLESS URL
+        
+    Returns:
+        VLESS URL без фрагмента
+    """
+    if not config or "vless://" not in config:
+        return config or ""
+    
+    try:
+        # Разделяем URL на основную часть и фрагмент
+        if "#" in config:
+            base_url, _ = config.rsplit("#", 1)
+            return base_url
+        else:
+            return config
+    except Exception:
+        return config or ""
+
+
+def add_server_name_to_vless(config: Optional[str], server_name: Optional[str]) -> str:
+    """
+    Добавляет или обновляет название сервера в фрагменте VLESS URL.
+    
+    Args:
+        config: VLESS URL
+        server_name: Название сервера из админки
+        
+    Returns:
+        VLESS URL с обновленным фрагментом
+    """
+    if not config or "vless://" not in config:
+        return config or ""
+    
+    if not server_name:
+        return config
+    
+    try:
+        # Разделяем URL на основную часть и фрагмент
+        if "#" in config:
+            base_url, _ = config.rsplit("#", 1)
+        else:
+            base_url = config
+        
+        # URL-кодируем название сервера для фрагмента
+        from urllib.parse import quote
+        encoded_name = quote(server_name, safe="")
+        
+        return f"{base_url}#{encoded_name}"
+    except Exception:
+        return config or ""
+
+
 class VPNProtocol(ABC):
     """Абстрактный класс для VPN протоколов"""
     
@@ -185,16 +242,24 @@ class V2RayProtocol(VPNProtocol):
         self._connector = aiohttp.TCPConnector(ssl=self.ssl_context, force_close=False, enable_cleanup_closed=True)
         self._session = aiohttp.ClientSession(connector=self._connector, timeout=self._timeout)
     
-    async def create_user(self, email: str, level: int = 0) -> Dict:
-        """Создать пользователя V2Ray через новый API"""
+    async def create_user(self, email: str, level: int = 0, name: Optional[str] = None) -> Dict:
+        """Создать пользователя V2Ray через новый API
+        
+        Args:
+            email: Email для ключа (используется как fallback для name)
+            level: Уровень доступа (не используется в новом API)
+            name: Название ключа (если не указано, используется email)
+        """
         try:
             session = self._session
             # Создаем ключ через новый API
+            # Используем переданное название или email как fallback
+            key_name = name if name else email
             key_data = {
-                "name": email
+                "name": key_name
             }
                 
-            logger.debug(f"Creating V2Ray key with name: {email}")
+            logger.debug(f"Creating V2Ray key with name: {key_name} (email: {email})")
             logger.debug(f"V2Ray API URL: {self.api_url}/keys")
             logger.debug(f"V2Ray headers present: {list(self.headers.keys())}")
             logger.debug(f"V2Ray key data: {key_data}")

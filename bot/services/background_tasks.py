@@ -18,6 +18,8 @@ from bot.services.key_creation import select_available_server_by_protocol
 from app.infra.foreign_keys import safe_foreign_keys_off
 from memory_optimizer import optimize_memory, log_memory_usage
 from config import ADMIN_ID
+from app.repositories.subscription_repository import SubscriptionRepository
+from bot.services.subscription_service import invalidate_subscription_cache
 
 logger = logging.getLogger(__name__)
 
@@ -785,14 +787,16 @@ async def process_pending_paid_payments() -> None:
                         SELECT user_id FROM keys WHERE expiry_at > ?
                         UNION
                         SELECT user_id FROM v2ray_keys WHERE expiry_at > ?
+                        UNION
+                        SELECT user_id FROM subscriptions WHERE expires_at > ? AND is_active = 1
                     )
                 ''',
-                (int(time.time()), int(time.time())),
+                (int(time.time()), int(time.time()), int(time.time())),
             )
             payments = cursor.fetchall()
 
             for payment_db_id, user_id, tariff_id, email, protocol, country in payments:
-                cursor.execute("SELECT status, payment_id FROM payments WHERE id = ?", (payment_db_id,))
+                cursor.execute("SELECT status, payment_id, metadata FROM payments WHERE id = ?", (payment_db_id,))
                 status_row = cursor.fetchone()
                 if not status_row:
                     logging.warning("[AUTO-ISSUE] Payment id=%s not found, skipping", payment_db_id)
@@ -800,6 +804,7 @@ async def process_pending_paid_payments() -> None:
                 
                 payment_status = (status_row[0] or "").lower()
                 payment_uuid = status_row[1]
+                payment_metadata_str = status_row[2] if len(status_row) > 2 else None
                 
                 if payment_status == "completed":
                     logging.info(
@@ -809,6 +814,17 @@ async def process_pending_paid_payments() -> None:
                 
                 if payment_status != "paid":
                     cursor.execute("UPDATE payments SET status = 'paid' WHERE id = ?", (payment_db_id,))
+                
+                # Парсим метаданные
+                import json
+                payment_metadata = {}
+                if payment_metadata_str:
+                    try:
+                        payment_metadata = json.loads(payment_metadata_str) if isinstance(payment_metadata_str, str) else payment_metadata_str
+                    except (json.JSONDecodeError, TypeError):
+                        payment_metadata = {}
+                
+                # Получаем тариф сначала (нужен для всех типов платежей)
                 cursor.execute("SELECT name, duration_sec, price_rub, traffic_limit_mb FROM tariffs WHERE id=?", (tariff_id,))
                 tariff_row = cursor.fetchone()
                 if not tariff_row:
@@ -824,6 +840,41 @@ async def process_pending_paid_payments() -> None:
                 }
 
                 protocol = protocol or "outline"
+                
+                # Проверяем, нужно ли создавать подписку
+                key_type = payment_metadata.get('key_type') if payment_metadata else None
+                is_subscription = key_type == 'subscription' and protocol == 'v2ray'
+                
+                # Если это подписка, используем новый сервис для обработки
+                if is_subscription:
+                    try:
+                        from payments.services.subscription_purchase_service import SubscriptionPurchaseService
+                        
+                        subscription_service = SubscriptionPurchaseService()
+                        success, error_msg = await subscription_service.process_subscription_purchase(payment_uuid)
+                        
+                        if success:
+                            logging.info(
+                                f"[AUTO-ISSUE] Subscription purchase processed successfully for payment {payment_uuid}, user {user_id}"
+                            )
+                            cursor.execute("UPDATE payments SET status = 'completed' WHERE id = ?", (payment_db_id,))
+                        else:
+                            logging.error(
+                                f"[AUTO-ISSUE] Failed to process subscription purchase for payment {payment_uuid}, "
+                                f"user {user_id}: {error_msg}"
+                            )
+                            # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                    except Exception as exc:
+                        logging.error(
+                            f"[AUTO-ISSUE] Error processing subscription purchase for payment {payment_uuid}, "
+                            f"user {user_id}: {exc}",
+                            exc_info=True
+                        )
+                        # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                    # ВАЖНО: continue здесь гарантирует, что код не продолжит создание обычного ключа
+                    continue
+                # Старый код обработки подписок удален - теперь используется SubscriptionPurchaseService
+                # Продолжаем обработку обычных ключей для не-подписок
                 server = select_available_server_by_protocol(cursor, country, protocol)
                 if not server:
                     logging.error(
@@ -862,6 +913,24 @@ async def process_pending_paid_payments() -> None:
                             "[AUTO-ISSUE] Не удалось создать Outline ключ для user_id=%s, тариф=%s",
                             user_id,
                             tariff,
+                        )
+                        continue
+                    
+                    # Проверяем, что key - это словарь, а не кортеж
+                    if not isinstance(key, dict):
+                        logging.error(
+                            "[AUTO-ISSUE] Invalid key format for user_id=%s: expected dict, got %s",
+                            user_id,
+                            type(key).__name__,
+                        )
+                        continue
+                    
+                    # Проверяем наличие необходимых полей
+                    if "accessUrl" not in key or "id" not in key:
+                        logging.error(
+                            "[AUTO-ISSUE] Missing required fields in key for user_id=%s: %s",
+                            user_id,
+                            list(key.keys()) if isinstance(key, dict) else "not a dict",
                         )
                         continue
 
@@ -1076,3 +1145,515 @@ async def process_pending_paid_payments() -> None:
         max_backoff=1800,
     )
 
+
+
+async def auto_delete_expired_subscriptions() -> None:
+    """Автоматическое удаление истекших подписок с grace period 24 часа."""
+    
+    GRACE_PERIOD = 86400  # 24 часа в секундах
+    
+    async def job() -> None:
+        repo = SubscriptionRepository()
+        with get_db_cursor(commit=True) as cursor:
+            now = int(time.time())
+            grace_threshold = now - GRACE_PERIOD
+            
+            # Получить истекшие подписки
+            expired_subscriptions = repo.get_expired_subscriptions(grace_threshold)
+            
+            deleted_count = 0
+            
+            for subscription_id, user_id, token in expired_subscriptions:
+                try:
+                    # Получить все ключи подписки
+                    subscription_keys = repo.get_subscription_keys_for_deletion(subscription_id)
+                    
+                    # Удалить ключи через V2Ray API
+                    for v2ray_uuid, api_url, api_key in subscription_keys:
+                        if v2ray_uuid and api_url and api_key:
+                            protocol_client = None
+                            try:
+                                from vpn_protocols import V2RayProtocol
+                                protocol_client = V2RayProtocol(api_url, api_key)
+                                await protocol_client.delete_user(v2ray_uuid)
+                                logging.info(
+                                    "Successfully deleted V2Ray key %s for subscription %s",
+                                    v2ray_uuid, subscription_id
+                                )
+                            except Exception as exc:
+                                logging.warning(
+                                    "Failed to delete V2Ray key %s for subscription %s: %s",
+                                    v2ray_uuid, subscription_id, exc
+                                )
+                            finally:
+                                if protocol_client:
+                                    try:
+                                        await protocol_client.close()
+                                    except Exception:
+                                        pass
+                    
+                    # Удалить ключи из БД
+                    with safe_foreign_keys_off(cursor):
+                        deleted_keys_count = repo.delete_subscription_keys(subscription_id)
+                    
+                    # Деактивировать подписку
+                    repo.deactivate_subscription(subscription_id)
+                    
+                    # Инвалидировать кэш
+                    invalidate_subscription_cache(token)
+                    
+                    deleted_count += 1
+                    logging.info(
+                        "Deleted expired subscription %s (user_id=%s, keys_count=%s)",
+                        subscription_id, user_id, len(subscription_keys)
+                    )
+                except Exception as exc:
+                    logging.error(
+                        "Error deleting expired subscription %s: %s",
+                        subscription_id, exc, exc_info=True
+                    )
+            
+            if deleted_count > 0:
+                logging.info("Deleted %s expired subscriptions (grace period 24h)", deleted_count)
+        
+        try:
+            optimize_memory()
+            log_memory_usage()
+        except Exception as exc:
+            logging.error("Ошибка при оптимизации памяти: %s", exc)
+    
+    await _run_periodic(
+        "auto_delete_expired_subscriptions",
+        interval_seconds=600,
+        job=job,
+        max_backoff=3600,
+    )
+
+
+async def notify_expiring_subscriptions() -> None:
+    """Уведомление пользователей об истекающих подписках."""
+    
+    async def job() -> None:
+        bot = get_bot_instance()
+        if not bot:
+            logging.debug("Bot instance is not available for notify_expiring_subscriptions")
+            return
+        
+        repo = SubscriptionRepository()
+        updates = []
+        notifications_to_send = []
+        
+        with get_db_cursor() as cursor:
+            now = int(time.time())
+            one_day = 86400
+            one_hour = 3600
+            ten_minutes = 600
+            
+            subscriptions = repo.get_expiring_subscriptions(now)
+            
+            for sub_id, user_id, token, expiry, created_at, notified in subscriptions:
+                remaining_time = expiry - now
+                if created_at is None:
+                    logging.warning("Skipping subscription %s - created_at is None", sub_id)
+                    continue
+                
+                original_duration = expiry - created_at
+                ten_percent_threshold = int(original_duration * 0.1)
+                message = None
+                new_notified = notified
+                
+                if (
+                    original_duration > one_day
+                    and one_hour < remaining_time <= one_day
+                    and (notified & 4) == 0
+                ):
+                    time_str = format_duration(remaining_time)
+                    message = (
+                        f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
+                        f"🔗 https://veil-bot.ru/api/subscription/{token}\n\n"
+                        f"Продлите доступ:"
+                    )
+                    new_notified = notified | 4
+                elif (
+                    original_duration > one_hour
+                    and ten_minutes < remaining_time <= (one_hour + 60)
+                    and (notified & 2) == 0
+                ):
+                    time_str = format_duration(remaining_time)
+                    message = (
+                        f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
+                        f"🔗 https://veil-bot.ru/api/subscription/{token}\n\n"
+                        f"Продлите доступ:"
+                    )
+                    new_notified = notified | 2
+                elif remaining_time > 0 and remaining_time <= ten_minutes and (notified & 8) == 0:
+                    time_str = format_duration(remaining_time)
+                    message = (
+                        f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
+                        f"🔗 https://veil-bot.ru/api/subscription/{token}\n\n"
+                        f"Продлите доступ:"
+                    )
+                    new_notified = notified | 8
+                elif remaining_time > 0 and remaining_time <= ten_percent_threshold and (notified & 1) == 0:
+                    time_str = format_duration(remaining_time)
+                    message = (
+                        f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
+                        f"🔗 https://veil-bot.ru/api/subscription/{token}\n\n"
+                        f"Продлите доступ:"
+                    )
+                    new_notified = notified | 1
+                
+                if message:
+                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                    keyboard = InlineKeyboardMarkup()
+                    keyboard.add(InlineKeyboardButton("🔁 Продлить", callback_data="buy"))
+                    notifications_to_send.append((user_id, message, keyboard))
+                    updates.append((sub_id, new_notified))
+        
+        # Отправка уведомлений
+        for user_id, message, keyboard in notifications_to_send:
+            result = await safe_send_message(
+                bot,
+                user_id,
+                message,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+                parse_mode="Markdown",
+            )
+            if result:
+                logging.info("Sent expiry notification for subscription to user %s", user_id)
+            else:
+                logging.warning("Failed to deliver expiry notification to user %s", user_id)
+        
+        # Обновление БД
+        if updates:
+            for sub_id, notified in updates:
+                repo.update_subscription_notified(sub_id, notified)
+            logging.info("Updated %s subscriptions with expiry notifications", len(updates))
+    
+    await _run_periodic(
+        "notify_expiring_subscriptions",
+        interval_seconds=60,
+        job=job,
+        max_backoff=600,
+    )
+
+
+async def create_keys_for_new_server(server_id: int) -> None:
+    """
+    Создать ключи на новом сервере для всех активных подписок
+    
+    Args:
+        server_id: ID нового сервера
+    """
+    logger.info(f"Starting to create keys for new server {server_id} for all active subscriptions")
+    
+    try:
+        # Получить информацию о сервере
+        from app.repositories.server_repository import ServerRepository
+        repo = ServerRepository()
+        server = repo.get_server(server_id)
+        
+        if not server:
+            logger.warning(f"Server {server_id} not found")
+            return
+        
+        server_id_db, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase = server
+        
+        if protocol != 'v2ray' or not active:
+            logger.info(f"Server {server_id} is not an active V2Ray server, skipping")
+            return
+        
+        # Получить все активные подписки
+        subscription_repo = SubscriptionRepository()
+        now = int(time.time())
+        
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT id, user_id, subscription_token, expires_at, tariff_id
+                FROM subscriptions
+                WHERE is_active = 1 AND expires_at > ?
+            """, (now,))
+            active_subscriptions = cursor.fetchall()
+        
+        if not active_subscriptions:
+            logger.info(f"No active subscriptions found for server {server_id}")
+            return
+        
+        logger.info(f"Found {len(active_subscriptions)} active subscriptions for server {server_id}")
+        
+        created_count = 0
+        failed_count = 0
+        
+        # Для каждой подписки
+        for subscription_id, user_id, token, expires_at, tariff_id in active_subscriptions:
+            try:
+                # Проверить, что у пользователя еще нет ключа на этом сервере для этой подписки
+                with get_db_cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id FROM v2ray_keys
+                        WHERE server_id = ? AND user_id = ? AND subscription_id = ?
+                    """, (server_id, user_id, subscription_id))
+                    existing_key = cursor.fetchone()
+                
+                if existing_key:
+                    logger.debug(f"Key already exists for subscription {subscription_id} on server {server_id}")
+                    continue
+                
+                # Генерация email для ключа
+                key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
+                
+                # Создать ключ на новом сервере
+                server_config = {
+                    'api_url': api_url,
+                    'api_key': api_key,
+                    'domain': domain,
+                }
+                
+                from vpn_protocols import ProtocolFactory
+                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                # Передаем название сервера вместо email для name в V2Ray API
+                user_data = await protocol_client.create_user(key_email, name=name)
+                
+                if not user_data or not user_data.get('uuid'):
+                    raise Exception("Failed to create user on V2Ray server")
+                
+                v2ray_uuid = user_data['uuid']
+                
+                # Получить client_config
+                client_config = await protocol_client.get_user_config(
+                    v2ray_uuid,
+                    {
+                        'domain': domain or 'veil-bot.ru',
+                        'port': 443,
+                        'email': key_email,
+                    }
+                )
+                
+                # Извлекаем VLESS URL из конфигурации
+                if 'vless://' in client_config:
+                    lines = client_config.split('\n')
+                    for line in lines:
+                        if line.strip().startswith('vless://'):
+                            client_config = line.strip()
+                            break
+                
+                # Сохранить ключ в БД
+                # Временно отключаем проверку внешних ключей из-за несоответствия структуры users(id) vs users(user_id)
+                with get_db_cursor(commit=True) as cursor:
+                    cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                    try:
+                        cursor.execute("""
+                            INSERT INTO v2ray_keys 
+                            (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            server_id,
+                            user_id,
+                            v2ray_uuid,
+                            key_email,
+                            int(time.time()),
+                            expires_at,
+                            tariff_id,
+                            client_config,
+                            subscription_id,
+                        ))
+                    finally:
+                        cursor.connection.execute("PRAGMA foreign_keys = ON")
+                
+                # Инвалидировать кэш подписки
+                invalidate_subscription_cache(token)
+                
+                created_count += 1
+                logger.info(
+                    f"Created key for subscription {subscription_id} on server {server_id} "
+                    f"(user_id={user_id})"
+                )
+                
+            except Exception as e:
+                failed_count += 1
+                logger.error(
+                    f"Failed to create key for subscription {subscription_id} on server {server_id}: {e}",
+                    exc_info=True
+                )
+                # Продолжаем создание ключей для других подписок
+                continue
+        
+        logger.info(
+            f"Finished creating keys for server {server_id}: "
+            f"{created_count} created, {failed_count} failed"
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Error in create_keys_for_new_server for server {server_id}: {e}",
+            exc_info=True
+        )
+
+
+async def check_and_create_keys_for_new_servers() -> None:
+    """
+    Периодическая проверка наличия новых серверов без ключей для активных подписок
+    Запускается каждые 15 минут
+    """
+    async def job() -> None:
+        try:
+            from app.repositories.server_repository import ServerRepository
+            from app.repositories.subscription_repository import SubscriptionRepository
+            
+            server_repo = ServerRepository()
+            subscription_repo = SubscriptionRepository()
+            now = int(time.time())
+            
+            # Получаем все активные V2Ray серверы
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, name, api_url, api_key, domain, v2ray_path, available_for_purchase
+                    FROM servers
+                    WHERE protocol = 'v2ray' AND active = 1 AND available_for_purchase = 1
+                """)
+                active_v2ray_servers = cursor.fetchall()
+            
+            if not active_v2ray_servers:
+                logger.debug("No active V2Ray servers found for periodic check")
+                return
+            
+            # Получаем все активные подписки
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, user_id, subscription_token, expires_at, tariff_id
+                    FROM subscriptions
+                    WHERE is_active = 1 AND expires_at > ?
+                """, (now,))
+                active_subscriptions = cursor.fetchall()
+            
+            if not active_subscriptions:
+                logger.debug("No active subscriptions found for periodic check")
+                return
+            
+            logger.info(
+                f"Periodic check: Found {len(active_v2ray_servers)} active V2Ray servers "
+                f"and {len(active_subscriptions)} active subscriptions"
+            )
+            
+            total_created = 0
+            total_failed = 0
+            
+            # Для каждого сервера проверяем наличие ключей для всех подписок
+            for server_id, name, api_url, api_key, domain, v2ray_path, available_for_purchase in active_v2ray_servers:
+                if not available_for_purchase:
+                    continue
+                
+                for subscription_id, user_id, token, expires_at, tariff_id in active_subscriptions:
+                    try:
+                        # Проверяем, есть ли уже ключ для этой подписки на этом сервере
+                        with get_db_cursor() as cursor:
+                            cursor.execute("""
+                                SELECT id FROM v2ray_keys
+                                WHERE server_id = ? AND user_id = ? AND subscription_id = ?
+                            """, (server_id, user_id, subscription_id))
+                            existing_key = cursor.fetchone()
+                        
+                        if existing_key:
+                            continue  # Ключ уже существует
+                        
+                        # Создаем ключ
+                        logger.info(
+                            f"Periodic check: Creating missing key for subscription {subscription_id} "
+                            f"on server {server_id} (user_id={user_id})"
+                        )
+                        
+                        # Генерация email для ключа
+                        key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
+                        
+                        # Создать ключ на сервере
+                        server_config = {
+                            'api_url': api_url,
+                            'api_key': api_key,
+                            'domain': domain,
+                        }
+                        
+                        from vpn_protocols import ProtocolFactory
+                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                        # Передаем название сервера вместо email для name в V2Ray API
+                        user_data = await protocol_client.create_user(key_email, name=name)
+                        
+                        if not user_data or not user_data.get('uuid'):
+                            raise Exception("Failed to create user on V2Ray server")
+                        
+                        v2ray_uuid = user_data['uuid']
+                        
+                        # Получить client_config
+                        client_config = await protocol_client.get_user_config(
+                            v2ray_uuid,
+                            {
+                                'domain': domain or 'veil-bot.ru',
+                                'port': 443,
+                                'email': key_email,
+                            }
+                        )
+                        
+                        # Извлекаем VLESS URL из конфигурации
+                        if 'vless://' in client_config:
+                            lines = client_config.split('\n')
+                            for line in lines:
+                                if line.strip().startswith('vless://'):
+                                    client_config = line.strip()
+                                    break
+                        
+                        # Сохранить ключ в БД
+                        # Временно отключаем проверку внешних ключей из-за несоответствия структуры users(id) vs users(user_id)
+                        with get_db_cursor(commit=True) as cursor:
+                            cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                            try:
+                                cursor.execute("""
+                                    INSERT INTO v2ray_keys 
+                                    (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (
+                                    server_id,
+                                    user_id,
+                                    v2ray_uuid,
+                                    key_email,
+                                    now,
+                                    expires_at,
+                                    tariff_id,
+                                    client_config,
+                                    subscription_id,
+                                ))
+                            finally:
+                                cursor.connection.execute("PRAGMA foreign_keys = ON")
+                        
+                        # Инвалидировать кэш подписки
+                        from bot.services.subscription_service import invalidate_subscription_cache
+                        invalidate_subscription_cache(token)
+                        
+                        total_created += 1
+                        logger.info(
+                            f"Periodic check: Created key for subscription {subscription_id} "
+                            f"on server {server_id}"
+                        )
+                        
+                    except Exception as e:
+                        total_failed += 1
+                        logger.error(
+                            f"Periodic check: Failed to create key for subscription {subscription_id} "
+                            f"on server {server_id}: {e}",
+                            exc_info=True
+                        )
+                        continue
+            
+            if total_created > 0 or total_failed > 0:
+                logger.info(
+                    f"Periodic check completed: {total_created} keys created, {total_failed} failed"
+                )
+        
+        except Exception as e:
+            logger.error(f"Error in periodic check for new servers: {e}", exc_info=True)
+    
+    await _run_periodic(
+        "check_and_create_keys_for_new_servers",
+        interval_seconds=900,  # 15 минут
+        job=job,
+        max_backoff=3600,
+    )

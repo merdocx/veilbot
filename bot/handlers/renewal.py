@@ -7,7 +7,8 @@ from aiogram import Dispatcher, types
 from config import PROTOCOLS
 from utils import get_db_cursor
 from bot.utils import safe_send_message
-from bot.keyboards import get_main_menu, get_payment_method_keyboard
+from bot.keyboards import get_main_menu, get_payment_method_keyboard, get_country_menu, get_countries_by_protocol
+from bot.services.key_creation import create_new_key_flow_with_protocol
 from bot_rate_limiter import rate_limit
 
 def register_renewal_handlers(
@@ -96,4 +97,50 @@ def register_renewal_handlers(
             await callback_query.answer()
         except Exception:
             pass
+    
+    @dp.message_handler(lambda m: user_states.get(m.from_user.id, {}).get("state") == "reactivation_country_selection")
+    async def handle_reactivation_country_selection(message: types.Message) -> None:
+        """Обработчик выбора страны при реактивации истекшего ключа"""
+        user_id = message.from_user.id
+        text = message.text or ""
+        
+        # Проверяем, что это кнопка "Отмена"
+        if text == "🔙 Отмена":
+            user_states.pop(user_id, None)
+            await message.answer("Покупка отменена.", reply_markup=get_main_menu(user_id))
+            return
+        
+        # Получаем сохраненное состояние
+        state = user_states.get(user_id, {})
+        tariff = state.get("tariff")
+        email = state.get("email")
+        protocol = state.get("protocol", "outline")
+        last_country = state.get("last_country")
+        
+        if not tariff:
+            await message.answer("Ошибка: данные тарифа не найдены. Попробуйте еще раз.", reply_markup=get_main_menu(user_id))
+            user_states.pop(user_id, None)
+            return
+        
+        # Извлекаем название страны из текста
+        selected_country = text
+        if text.startswith("🔄 ") and "(как раньше)" in text:
+            # Убираем "🔄 " и " (как раньше)"
+            selected_country = text[2:].replace(" (как раньше)", "")
+        
+        # Проверяем, что страна доступна для выбранного протокола
+        countries = get_countries_by_protocol(protocol)
+        if selected_country not in countries:
+            await message.answer(
+                f"Пожалуйста, выберите страну из списка для {PROTOCOLS[protocol]['name']}:",
+                reply_markup=get_country_menu(countries)
+            )
+            return
+        
+        # Очищаем состояние и создаем ключ с выбранной страной
+        user_states.pop(user_id, None)
+        
+        # Создаем ключ через существующую функцию
+        with get_db_cursor(commit=True) as cursor:
+            await create_new_key_flow_with_protocol(cursor, message, user_id, tariff, email, selected_country, protocol)
 

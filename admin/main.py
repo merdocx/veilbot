@@ -192,6 +192,7 @@ from admin.routes import (
     payments_router,
     webhooks_router,
     cleanup_router,
+    subscriptions_router,
 )
 
 # Подключаем все модульные роутеры
@@ -204,6 +205,7 @@ app.include_router(keys_router)
 app.include_router(payments_router)
 app.include_router(webhooks_router)
 app.include_router(cleanup_router)
+app.include_router(subscriptions_router)
 
 # Глобальная обработка ошибок
 from admin.middleware.error_handler import (

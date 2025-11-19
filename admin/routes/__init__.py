@@ -10,6 +10,7 @@ from .keys import router as keys_router
 from .payments import router as payments_router
 from .webhooks import router as webhooks_router
 from .cleanup import router as cleanup_router
+from .subscriptions import router as subscriptions_router
 
 __all__ = [
     'auth_router',
@@ -21,5 +22,6 @@ __all__ = [
     'payments_router',
     'webhooks_router',
     'cleanup_router',
+    'subscriptions_router',
 ]
 

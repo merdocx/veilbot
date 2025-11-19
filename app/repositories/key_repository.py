@@ -61,7 +61,7 @@ class KeyRepository:
             c = conn.cursor()
             c.execute(
                 """
-                SELECT k.id, k.key_id, k.access_url, k.created_at, k.expiry_at,
+                SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, k.expiry_at,
                        IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol,
                        COALESCE(k.traffic_limit_mb, 0), '' as api_url, '' as api_key,
                        0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified
@@ -70,7 +70,7 @@ class KeyRepository:
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
                 WHERE k.id = ?
                 UNION ALL
-                SELECT k.id, k.v2ray_uuid as key_id,
+                SELECT k.id || '_v2ray' as id, k.v2ray_uuid as key_id,
                        COALESCE(k.client_config, '') as access_url,
                        k.created_at, k.expiry_at,
                        IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
@@ -318,7 +318,7 @@ class KeyRepository:
 
             def add_outline():
                 sql = (
-                    "SELECT k.id, k.key_id, k.access_url, k.created_at, k.expiry_at, "
+                    "SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, k.expiry_at, "
                     "IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol, "
                     "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, '' as api_url, '' as api_key, "
                     "0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified "
@@ -342,7 +342,7 @@ class KeyRepository:
 
             def add_v2ray():
                 sql = (
-                    "SELECT k.id, k.v2ray_uuid as key_id, "
+                    "SELECT k.id || '_v2ray' as id, k.v2ray_uuid as key_id, "
                     "COALESCE(k.client_config, '') as access_url, "
                     "k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol, "
                     "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "

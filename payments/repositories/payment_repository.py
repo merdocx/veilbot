@@ -1,7 +1,8 @@
 import sqlite3
 import logging
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+import os
+from typing import List, Optional, Dict, Any, Tuple
+from datetime import datetime, timezone
 
 from ..models.payment import Payment, PaymentStatus, PaymentFilter
 import json
@@ -15,7 +16,14 @@ logger = logging.getLogger(__name__)
 class PaymentRepository:
     """Асинхронный репозиторий для работы с платежами в БД"""
     
-    def __init__(self, db_path: str = "vpn.db"):
+    def __init__(self, db_path: str = None):
+        # Используем абсолютный путь для обеспечения консистентности
+        if db_path is None:
+            from app.settings import settings
+            db_path = settings.DATABASE_PATH
+        # Преобразуем в абсолютный путь если относительный
+        if not os.path.isabs(db_path):
+            db_path = os.path.abspath(db_path)
         self.db_path = db_path
         # Инициализация таблицы будет выполнена при первом обращении к БД
     
@@ -75,24 +83,19 @@ class PaymentRepository:
                             pass
 
                 # Индексы
-                try:
-                    await conn.execute(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)"
-                    )
-                except Exception:
-                    pass
-                try:
-                    await conn.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)"
-                    )
-                except Exception:
-                    pass
-                try:
-                    await conn.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments(created_at)"
-                    )
-                except Exception:
-                    pass
+                indexes = [
+                    ("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)", "payment_id"),
+                    ("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)", "status"),
+                    ("CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments(created_at)", "created_at"),
+                    ("CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id)", "user_id"),
+                    ("CREATE INDEX IF NOT EXISTS idx_payments_tariff_id ON payments(tariff_id)", "tariff_id"),
+                    ("CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status)", "user_status"),
+                ]
+                for index_sql, index_name in indexes:
+                    try:
+                        await conn.execute(index_sql)
+                    except Exception as idx_error:
+                        logger.warning(f"Failed to create index {index_name}: {idx_error}")
 
             except Exception as e:
                 logger.warning(f"Payments table migration check failed: {e}")
@@ -108,7 +111,7 @@ class PaymentRepository:
                 if value is None:
                     return None
                 try:
-                    return datetime.fromtimestamp(int(value))
+                    return datetime.fromtimestamp(int(value), tz=timezone.utc)
                 except (ValueError, TypeError):
                     return None
             
@@ -205,6 +208,58 @@ class PaymentRepository:
             logger.error(f"Error creating Payment from row: {e}, row: {row}")
             raise
     
+    def _build_filter_conditions(self, filter_obj: PaymentFilter) -> Tuple[str, list]:
+        """Построение условий WHERE и параметров для фильтрации платежей"""
+        conditions = []
+        params = []
+        
+        if filter_obj.user_id is not None:
+            conditions.append("user_id = ?")
+            params.append(filter_obj.user_id)
+        
+        if filter_obj.tariff_id is not None:
+            conditions.append("tariff_id = ?")
+            params.append(filter_obj.tariff_id)
+        
+        if filter_obj.status is not None:
+            conditions.append("status = ?")
+            params.append(filter_obj.status.value)
+        
+        if filter_obj.provider is not None:
+            conditions.append("provider = ?")
+            params.append(filter_obj.provider.value)
+        
+        if filter_obj.country is not None:
+            conditions.append("country = ?")
+            params.append(filter_obj.country)
+        
+        if filter_obj.protocol is not None:
+            conditions.append("protocol = ?")
+            params.append(filter_obj.protocol)
+        
+        if filter_obj.is_paid is not None:
+            if filter_obj.is_paid:
+                conditions.append("status = 'paid'")
+            else:
+                conditions.append("status != 'paid'")
+        
+        if filter_obj.is_pending is not None:
+            if filter_obj.is_pending:
+                conditions.append("status = 'pending'")
+            else:
+                conditions.append("status != 'pending'")
+        
+        if filter_obj.created_after is not None:
+            conditions.append("created_at >= ?")
+            params.append(int(filter_obj.created_after.timestamp()))
+        
+        if filter_obj.created_before is not None:
+            conditions.append("created_at <= ?")
+            params.append(int(filter_obj.created_before.timestamp()))
+        
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        return where_clause, params
+    
     def _payment_to_row(self, payment: Payment) -> tuple:
         """Преобразование объекта Payment в строку БД"""
         return (
@@ -246,13 +301,23 @@ class PaymentRepository:
                     await conn.commit()
                     logger.info(f"Payment created: {payment.payment_id}")
                     return payment
-                except sqlite3.IntegrityError:
+                except sqlite3.IntegrityError as e:
                     # Duplicate payment_id — return existing row rather than failing tests
-                    existing = await self.get_by_payment_id(payment.payment_id)
-                    if existing is not None:
-                        logger.info(f"Payment already exists, returning existing: {payment.payment_id}")
-                        return existing
-                    raise
+                    # Используем то же соединение вместо открытия нового
+                    try:
+                        async with conn.execute(
+                            "SELECT * FROM payments WHERE payment_id = ?",
+                            (payment.payment_id,)
+                        ) as cursor:
+                            row = await cursor.fetchone()
+                            if row:
+                                existing = self._payment_from_row(row)
+                                logger.info(f"Payment already exists, returning existing: {payment.payment_id}")
+                                return existing
+                    except Exception as get_error:
+                        logger.warning(f"Error getting existing payment {payment.payment_id}: {get_error}")
+                    # Re-raise original IntegrityError if we couldn't get existing payment
+                    raise e
                 
         except Exception as e:
             logger.error(f"Error creating payment: {e}")
@@ -300,7 +365,7 @@ class PaymentRepository:
                 # Исключаем payment_id из данных для UPDATE (он идет в WHERE)
                 update_data = row_data[1:] + (payment.payment_id,)
                 
-                await conn.execute("""
+                cursor = await conn.execute("""
                     UPDATE payments SET 
                         user_id = ?, tariff_id = ?, amount = ?, currency = ?, 
                         email = ?, status = ?, country = ?, protocol = ?, 
@@ -310,6 +375,10 @@ class PaymentRepository:
                 """, update_data)
                 
                 await conn.commit()
+                
+                if cursor.rowcount == 0:
+                    logger.warning(f"Payment {payment.payment_id} not found for update")
+                    raise ValueError(f"Payment {payment.payment_id} not found")
                 
                 logger.info(f"Payment updated: {payment.payment_id}")
                 return payment
@@ -324,7 +393,7 @@ class PaymentRepository:
             async with open_async_connection(self.db_path) as conn:
                 cursor = await conn.execute(
                     "UPDATE payments SET status = ?, updated_at = ? WHERE payment_id = ?",
-                    (status.value, int(datetime.utcnow().timestamp()), payment_id)
+                    (status.value, int(datetime.now(timezone.utc).timestamp()), payment_id)
                 )
                 await conn.commit()
                 
@@ -374,54 +443,7 @@ class PaymentRepository:
     async def filter(self, filter_obj: PaymentFilter, sort_by: str = "created_at", sort_order: str = "DESC") -> List[Payment]:
         """Фильтрация платежей с сортировкой"""
         try:
-            conditions = []
-            params = []
-            
-            if filter_obj.user_id is not None:
-                conditions.append("user_id = ?")
-                params.append(filter_obj.user_id)
-            
-            if filter_obj.tariff_id is not None:
-                conditions.append("tariff_id = ?")
-                params.append(filter_obj.tariff_id)
-            
-            if filter_obj.status is not None:
-                conditions.append("status = ?")
-                params.append(filter_obj.status.value)
-            
-            if filter_obj.provider is not None:
-                conditions.append("provider = ?")
-                params.append(filter_obj.provider.value)
-            
-            if filter_obj.country is not None:
-                conditions.append("country = ?")
-                params.append(filter_obj.country)
-            
-            if filter_obj.protocol is not None:
-                conditions.append("protocol = ?")
-                params.append(filter_obj.protocol)
-            
-            if filter_obj.is_paid is not None:
-                if filter_obj.is_paid:
-                    conditions.append("status = 'paid'")
-                else:
-                    conditions.append("status != 'paid'")
-            
-            if filter_obj.is_pending is not None:
-                if filter_obj.is_pending:
-                    conditions.append("status = 'pending'")
-                else:
-                    conditions.append("status != 'pending'")
-            
-            if filter_obj.created_after is not None:
-                conditions.append("created_at >= ?")
-                params.append(int(filter_obj.created_after.timestamp()))
-            
-            if filter_obj.created_before is not None:
-                conditions.append("created_at <= ?")
-                params.append(int(filter_obj.created_before.timestamp()))
-            
-            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            where_clause, params = self._build_filter_conditions(filter_obj)
 
             # Сортировка (белый список столбцов)
             sort_columns = {
@@ -451,45 +473,7 @@ class PaymentRepository:
     async def count_filtered(self, filter_obj: PaymentFilter) -> int:
         """Подсчет количества платежей по фильтру"""
         try:
-            conditions = []
-            params = []
-
-            if filter_obj.user_id is not None:
-                conditions.append("user_id = ?")
-                params.append(filter_obj.user_id)
-            if filter_obj.tariff_id is not None:
-                conditions.append("tariff_id = ?")
-                params.append(filter_obj.tariff_id)
-            if filter_obj.status is not None:
-                conditions.append("status = ?")
-                params.append(filter_obj.status.value)
-            if filter_obj.provider is not None:
-                conditions.append("provider = ?")
-                params.append(filter_obj.provider.value)
-            if filter_obj.country is not None:
-                conditions.append("country = ?")
-                params.append(filter_obj.country)
-            if filter_obj.protocol is not None:
-                conditions.append("protocol = ?")
-                params.append(filter_obj.protocol)
-            if filter_obj.is_paid is not None:
-                if filter_obj.is_paid:
-                    conditions.append("status = 'paid'")
-                else:
-                    conditions.append("status != 'paid'")
-            if filter_obj.is_pending is not None:
-                if filter_obj.is_pending:
-                    conditions.append("status = 'pending'")
-                else:
-                    conditions.append("status != 'pending'")
-            if filter_obj.created_after is not None:
-                conditions.append("created_at >= ?")
-                params.append(int(filter_obj.created_after.timestamp()))
-            if filter_obj.created_before is not None:
-                conditions.append("created_at <= ?")
-                params.append(int(filter_obj.created_before.timestamp()))
-
-            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            where_clause, params = self._build_filter_conditions(filter_obj)
 
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
@@ -534,17 +518,30 @@ class PaymentRepository:
     async def get_paid_payments_without_keys(self) -> List[Payment]:
         """Получение оплаченных платежей без ключей (исключая закрытые платежи)"""
         try:
+            now_ts = int(datetime.now(timezone.utc).timestamp())
             async with open_async_connection(self.db_path) as conn:
+                # Запрос теперь исключает:
+                # 1. Для платежей подписки: НЕ исключаем по наличию активной подписки (нужно продлевать)
+                # 2. Для обычных платежей: исключаем если есть активные ключи или подписки
                 async with conn.execute("""
                     SELECT p.* FROM payments p
                     WHERE p.status = 'paid' 
-                    AND p.user_id NOT IN (
-                        SELECT user_id FROM keys WHERE expiry_at > ?
-                        UNION
-                        SELECT user_id FROM v2ray_keys WHERE expiry_at > ?
+                    AND (
+                        -- Для платежей подписки: включаем все (логика продления будет в коде)
+                        (p.metadata LIKE '%subscription%' AND p.protocol = 'v2ray')
+                        OR
+                        -- Для обычных платежей: исключаем если есть активные ключи или подписки
+                        (NOT (p.metadata LIKE '%subscription%' AND p.protocol = 'v2ray')
+                         AND p.user_id NOT IN (
+                             SELECT user_id FROM keys WHERE expiry_at > ?
+                             UNION
+                             SELECT user_id FROM v2ray_keys WHERE expiry_at > ?
+                             UNION
+                             SELECT user_id FROM subscriptions WHERE expires_at > ? AND is_active = 1
+                         ))
                     )
                     ORDER BY p.created_at ASC
-                """, (int(datetime.utcnow().timestamp()), int(datetime.utcnow().timestamp()))) as cursor:
+                """, (now_ts, now_ts, now_ts)) as cursor:
                     rows = await cursor.fetchall()
                     return [self._payment_from_row(row) for row in rows]
                     

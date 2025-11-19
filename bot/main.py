@@ -20,6 +20,7 @@ from bot.handlers.purchase import register_purchase_handlers
 from bot.handlers.renewal import register_renewal_handlers
 from bot.handlers.common import register_common_handlers
 from bot.handlers.key_management import register_key_management_handlers
+from bot.handlers.subscriptions import register_subscription_handlers
 
 # Импортируем фоновые задачи
 from bot.services.background_tasks import (
@@ -127,7 +128,8 @@ def register_all_handlers(dp: Dispatcher, bot_instance, user_states: dict):
     register_start_handler(dp, user_states)
     register_keys_handler(dp)
     register_renewal_handlers(dp, user_states, bot_instance)
-    register_common_handlers(dp)
+    register_common_handlers(dp, user_states)
+    register_subscription_handlers(dp, user_states)
     
     # Устанавливаем dp и bot в модуль bot перед регистрацией handlers
     # Это нужно для декораторов @dp.message_handler в bot.py
@@ -155,11 +157,7 @@ def register_all_handlers(dp: Dispatcher, bot_instance, user_states: dict):
         bot_module.change_country_for_key,
         bot_module.change_protocol_for_key,
         bot_module.reissue_specific_key,
-        bot_module.delete_old_key_after_success,
-        bot_module.show_key_selection_menu,
-        bot_module.show_protocol_change_menu,
-        bot_module.show_key_selection_for_country_change,
-        bot_module.show_country_change_menu
+        bot_module.delete_old_key_after_success
     )
     
     # Дополнительные handlers из bot.py регистрируются автоматически через декораторы
@@ -173,12 +171,21 @@ def start_background_tasks(loop):
     Args:
         loop: Event loop
     """
+    from bot.services.background_tasks import (
+        auto_delete_expired_subscriptions,
+        notify_expiring_subscriptions,
+        check_and_create_keys_for_new_servers,
+    )
+    
     background_tasks = [
         process_pending_paid_payments(),
         auto_delete_expired_keys(),
         notify_expiring_keys(),
         check_key_availability(),
         monitor_v2ray_traffic_limits(),
+        auto_delete_expired_subscriptions(),
+        notify_expiring_subscriptions(),
+        check_and_create_keys_for_new_servers(),
     ]
     
     for task in background_tasks:

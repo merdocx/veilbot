@@ -54,7 +54,7 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
     if user_id in user_states:
         del user_states[user_id]
     
-    main_menu = get_main_menu()
+    main_menu = get_main_menu(user_id)
 
     placeholder_message = None
     try:

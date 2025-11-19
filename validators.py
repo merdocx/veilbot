@@ -374,4 +374,17 @@ def sanitize_user_input(data: Dict[str, Any]) -> Dict[str, Any]:
         else:
             sanitized[key] = value
     
-    return sanitized 
+    return sanitized
+
+
+def is_valid_email(email: str) -> bool:
+    """
+    Валидация email адреса
+    
+    Args:
+        email: Email адрес для проверки
+    
+    Returns:
+        True если email валиден, False в противном случае
+    """
+    return input_validator.validate_email(email)

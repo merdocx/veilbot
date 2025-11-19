@@ -4,17 +4,230 @@
 import asyncio
 import time
 import logging
-from typing import Dict, Any, Callable
+from typing import Dict, Any, Callable, List, Optional
 from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from config import PROTOCOLS, ADMIN_ID
 from utils import get_db_cursor
 from outline import create_key, delete_key
 from vpn_protocols import ProtocolFactory
-from bot.keyboards import get_main_menu, get_country_menu, get_countries_by_protocol
+from bot.keyboards import get_main_menu, get_country_menu, get_countries_by_protocol, get_help_keyboard
 from bot.utils import format_key_message_unified
 from bot_error_handler import BotErrorHandler
 from bot_rate_limiter import rate_limit
+
+
+# Функции показа меню для управления ключами
+async def show_key_selection_menu(
+    message: types.Message, 
+    user_id: int, 
+    keys: List[Dict[str, Any]]
+) -> None:
+    """
+    Показывает меню выбора ключа для перевыпуска
+    
+    Отображает список доступных ключей пользователя с возможностью выбора
+    конкретного ключа для перевыпуска.
+    
+    Args:
+        message: Telegram сообщение для отправки меню
+        user_id: ID пользователя
+        keys: Список словарей с данными ключей, каждый должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Протокол VPN
+            - country: Страна сервера
+            - expiry_at: Время истечения ключа
+            - tariff_id: ID тарифа
+    """
+    
+    # Создаем клавиатуру для выбора ключа
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    for i, key in enumerate(keys):
+        # Получаем информацию о тарифе
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT name FROM tariffs WHERE id = ?", (key['tariff_id'],))
+            tariff_result = cursor.fetchone()
+            tariff_name = tariff_result[0] if tariff_result else "Неизвестно"
+        
+        # Форматируем время истечения
+        expiry_time = time.strftime('%d.%m.%Y %H:%M', time.localtime(key['expiry_at']))
+        
+        # Создаем текст кнопки
+        protocol_icon = PROTOCOLS[key['protocol']]['icon']
+        button_text = f"{protocol_icon} {key['country']} - {tariff_name} (до {expiry_time})"
+        
+        keyboard.add(InlineKeyboardButton(
+            text=button_text,
+            callback_data=f"reissue_key_{key['type']}_{key['id']}"
+        ))
+    
+    keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_reissue"))
+    
+    await message.answer(
+        "Выберите ключ для перевыпуска:",
+        reply_markup=keyboard
+    )
+
+
+async def show_protocol_change_menu(
+    message: types.Message, 
+    user_id: int, 
+    keys: List[Dict[str, Any]]
+) -> None:
+    """
+    Показывает меню выбора ключа для смены протокола
+    
+    Отображает список доступных ключей пользователя с возможностью выбора
+    конкретного ключа для смены протокола VPN (Outline ↔ V2Ray).
+    
+    Args:
+        message: Telegram сообщение для отправки меню
+        user_id: ID пользователя
+        keys: Список словарей с данными ключей, каждый должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Протокол VPN
+            - country: Страна сервера
+            - expiry_at: Время истечения ключа
+            - tariff_id: ID тарифа
+    """
+    
+    # Создаем клавиатуру для выбора ключа
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    for i, key in enumerate(keys):
+        # Получаем информацию о тарифе
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT name FROM tariffs WHERE id = ?", (key['tariff_id'],))
+            tariff_result = cursor.fetchone()
+            tariff_name = tariff_result[0] if tariff_result else "Неизвестно"
+        
+        # Форматируем время истечения
+        expiry_time = time.strftime('%d.%m.%Y %H:%M', time.localtime(key['expiry_at']))
+        
+        # Создаем текст кнопки
+        protocol_icon = PROTOCOLS[key['protocol']]['icon']
+        button_text = f"{protocol_icon} {key['country']} - {tariff_name} (до {expiry_time})"
+        
+        keyboard.add(InlineKeyboardButton(
+            text=button_text,
+            callback_data=f"change_protocol_{key['type']}_{key['id']}"
+        ))
+    
+    keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_protocol_change"))
+    
+    await message.answer(
+        "Выберите ключ для смены протокола:",
+        reply_markup=keyboard
+    )
+
+
+async def show_key_selection_for_country_change(
+    message: types.Message, 
+    user_id: int, 
+    all_keys: List[Dict[str, Any]]
+) -> None:
+    """
+    Показывает меню выбора ключа для смены страны
+    
+    Отображает список доступных ключей пользователя с возможностью выбора
+    конкретного ключа для смены страны сервера.
+    
+    Args:
+        message: Telegram сообщение для отправки меню
+        user_id: ID пользователя
+        all_keys: Список словарей с данными ключей, каждый должен содержать:
+            - id: ID ключа в базе данных
+            - type: Тип ключа ('outline' или 'v2ray')
+            - protocol: Протокол VPN
+            - country: Страна сервера
+            - expiry_at: Время истечения ключа
+    """
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    for key in all_keys:
+        protocol_name = PROTOCOLS[key['protocol']]['name']
+        country_name = key['country']
+        expiry_date = time.strftime('%d.%m.%Y', time.localtime(key['expiry_at']))
+        
+        button_text = f"{PROTOCOLS[key['protocol']]['icon']} {protocol_name} ({country_name}) - до {expiry_date}"
+        callback_data = f"change_country_{key['type']}_{key['id']}"
+        
+        keyboard.add(InlineKeyboardButton(button_text, callback_data=callback_data))
+    
+    keyboard.add(InlineKeyboardButton("🔙 Отмена", callback_data="cancel_country_change"))
+    
+    await message.answer(
+        "Выберите ключ для смены страны:",
+        reply_markup=keyboard
+    )
+
+
+async def show_country_change_menu(
+    message: types.Message, 
+    user_id: int, 
+    key_data: Dict[str, Any], 
+    user_states_dict: Dict[int, Dict[str, Any]]
+) -> None:
+    """
+    Показывает меню выбора страны для смены
+    
+    Отображает список доступных стран для выбранного протокола VPN,
+    позволяя пользователю выбрать новую страну для своего ключа.
+    
+    Args:
+        message: Telegram сообщение для отправки меню
+        user_id: ID пользователя
+        key_data: Словарь с данными ключа, должен содержать:
+            - protocol: Протокол VPN ('outline' или 'v2ray')
+            - country: Текущая страна сервера
+        user_states_dict: Словарь состояний пользователей
+    """
+    try:
+        protocol = key_data.get('protocol')
+        current_country = key_data.get('country')
+        
+        if not protocol or not current_country:
+            logging.error(f"[COUNTRY CHANGE MENU] Missing protocol or country in key_data: {key_data}")
+            await message.answer("Ошибка: неполные данные ключа.", reply_markup=get_help_keyboard())
+            return
+        
+        # Получаем доступные страны для того же протокола
+        available_countries = get_countries_by_protocol(protocol)
+        
+        # Исключаем текущую страну
+        available_countries = [country for country in available_countries if country != current_country]
+        
+        if not available_countries:
+            await message.answer(
+                f"К сожалению, для протокола {PROTOCOLS[protocol]['name']} нет других доступных стран.",
+                reply_markup=get_help_keyboard()
+            )
+            return
+        
+        # Сохраняем данные ключа в состоянии пользователя
+        user_states_dict[user_id] = {
+            'state': 'country_change_selection',
+            'key_data': key_data
+        }
+        
+        # Создаем клавиатуру с доступными странами
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        for country in available_countries:
+            keyboard.add(KeyboardButton(f"🌍 {country}"))
+        keyboard.add(KeyboardButton("🔙 Назад"))
+        
+        await message.answer(
+            f"Текущая страна: {current_country}\n\n"
+            f"Выберите новую страну для протокола {PROTOCOLS[protocol]['name']}:",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logging.error(f"[COUNTRY CHANGE MENU] Error: {e}", exc_info=True)
+        await message.answer("Ошибка при отображении меню смены страны.", reply_markup=get_help_keyboard())
+
 
 def register_key_management_handlers(
     dp: Dispatcher,
@@ -23,11 +236,7 @@ def register_key_management_handlers(
     change_country_for_key: Callable,
     change_protocol_for_key: Callable,
     reissue_specific_key: Callable,
-    delete_old_key_after_success: Callable,
-    show_key_selection_menu: Callable,
-    show_protocol_change_menu: Callable,
-    show_key_selection_for_country_change: Callable,
-    show_country_change_menu: Callable
+    delete_old_key_after_success: Callable
 ) -> None:
     """
     Регистрация обработчиков управления ключами
@@ -40,10 +249,6 @@ def register_key_management_handlers(
         change_protocol_for_key: Функция смены протокола
         reissue_specific_key: Функция перевыпуска ключа
         delete_old_key_after_success: Функция удаления старого ключа
-        show_key_selection_menu: Функция показа меню выбора ключа
-        show_protocol_change_menu: Функция показа меню смены протокола
-        show_key_selection_for_country_change: Функция показа меню выбора ключа для смены страны
-        show_country_change_menu: Функция показа меню смены страны
     """
     
     @dp.message_handler(lambda m: m.text == "Перевыпустить ключ")
@@ -110,7 +315,7 @@ def register_key_management_handlers(
                 })
             
             if not all_keys:
-                await message.answer("У вас нет активных ключей для перевыпуска.", reply_markup=get_main_menu())
+                await message.answer("У вас нет активных ключей для перевыпуска.", reply_markup=get_main_menu(user_id))
                 return
             
             if len(all_keys) == 1:
@@ -191,7 +396,7 @@ def register_key_management_handlers(
                 logging.debug(f"Всего активных ключей для смены страны: {len(all_keys)}")
                 
                 if not all_keys:
-                    await message.answer("У вас нет активных ключей для смены страны.", reply_markup=get_main_menu())
+                    await message.answer("У вас нет активных ключей для смены страны.", reply_markup=get_main_menu(user_id))
                     return
                 
                 if len(all_keys) == 1:
@@ -278,7 +483,7 @@ def register_key_management_handlers(
                 logging.debug(f"Всего активных ключей: {len(all_keys)}")
                 
                 if not all_keys:
-                    await message.answer("У вас нет активных ключей для смены протокола.", reply_markup=get_main_menu())
+                    await message.answer("У вас нет активных ключей для смены протокола.", reply_markup=get_main_menu(user_id))
                     return
                 
                 if len(all_keys) == 1:
@@ -457,7 +662,8 @@ def register_key_management_handlers(
     async def handle_cancel_country_change(callback_query: types.CallbackQuery):
         """Обработчик отмены смены страны"""
         await callback_query.answer()
-        await callback_query.message.answer("Смена страны отменена.", reply_markup=get_main_menu())
+        user_id = callback_query.from_user.id
+        await callback_query.message.answer("Смена страны отменена.", reply_markup=get_main_menu(user_id))
     
     @dp.callback_query_handler(lambda c: c.data.startswith("change_protocol_"))
     @rate_limit("change_protocol")
@@ -551,7 +757,7 @@ def register_key_management_handlers(
         # Проверяем, что это кнопка "Назад"
         if text == "🔙 Назад":
             user_states.pop(user_id, None)
-            await message.answer("Главное меню:", reply_markup=get_main_menu())
+            await message.answer("Главное меню:", reply_markup=get_main_menu(user_id))
             return
         
         # Извлекаем название страны из текста (убираем эмодзи)
@@ -565,7 +771,7 @@ def register_key_management_handlers(
         key_data = state.get("key_data")
         
         if not key_data:
-            await message.answer("Ошибка: данные ключа не найдены. Попробуйте еще раз.", reply_markup=get_main_menu())
+            await message.answer("Ошибка: данные ключа не найдены. Попробуйте еще раз.", reply_markup=get_main_menu(user_id))
             return
         
         # Очищаем состояние

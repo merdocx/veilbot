@@ -208,7 +208,12 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     traffic_raw = get(traffic_raw_idx)
     traffic_info = _parse_traffic_value(traffic_raw)
 
-    key_id = int(row[0])
+    # Извлекаем числовой ID из строки вида "206_outline" или "206_v2ray"
+    key_id_str = str(row[0])
+    if '_' in key_id_str:
+        key_id = int(key_id_str.split('_')[0])
+    else:
+        key_id = int(key_id_str)
     created_at = int(row[3] or 0)
     expiry_at = int(row[4] or 0)
     lifetime_total = max(expiry_at - created_at, 0)
@@ -265,8 +270,12 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
 
     expiry_remaining = _format_expiry_remaining(expiry_at, now_ts)
 
+    # Формируем ID с протоколом для отображения (чтобы различать ключи с одинаковым ID из разных таблиц)
+    display_id = f"{key_id}_{protocol}" if protocol else str(key_id)
+
     return {
-        "id": key_id,
+        "id": display_id,
+        "numeric_id": key_id,  # Сохраняем числовой ID для операций
         "uuid": row[1],
         "access_url": row[2],
         "email": row[6] or '',
@@ -380,7 +389,15 @@ async def _update_key_expiry_internal(
     raise ValueError("Key not found")
 
 
-async def _delete_key_internal(request: Request, key_id: int, key_repo: KeyRepository) -> Dict[str, Any]:
+async def _delete_key_internal(request: Request, key_id: int | str, key_repo: KeyRepository) -> Dict[str, Any]:
+    # Парсим ID если он в формате "206_outline" или "206_v2ray"
+    if isinstance(key_id, str) and '_' in key_id:
+        parts = key_id.split('_')
+        key_id = int(parts[0])
+        protocol = parts[1] if len(parts) > 1 else None
+    else:
+        protocol = None
+    
     outline_key = key_repo.get_outline_key_brief(key_id)
     if outline_key:
         user_id, outline_key_id, server_id = outline_key
@@ -471,10 +488,66 @@ async def _delete_key_internal(request: Request, key_id: int, key_repo: KeyRepos
     raise ValueError("Key not found")
 
 
-def _load_key_view_model(key_repo: KeyRepository, key_id: int, now_ts: int) -> Optional[Dict[str, Any]]:
-    row = key_repo.get_key_unified_by_id(key_id)
+def _load_key_view_model(key_repo: KeyRepository, key_id: int | str, now_ts: int) -> Optional[Dict[str, Any]]:
+    # Парсим ID если он в формате "206_outline" или "206_v2ray"
+    if isinstance(key_id, str) and '_' in key_id:
+        parts = key_id.split('_')
+        numeric_id = int(parts[0])
+        protocol_hint = parts[1] if len(parts) > 1 else None
+    else:
+        protocol_hint = None
+        numeric_id = int(key_id)
+    
+    row = key_repo.get_key_unified_by_id(numeric_id)
     if not row:
         return None
+    
+    # Если был указан протокол, проверяем что он совпадает
+    if protocol_hint:
+        returned_id = str(row[0])
+        returned_protocol = row[9] if len(row) > 9 else None
+        expected_suffix = f"_{protocol_hint}"
+        
+        if not returned_id.endswith(expected_suffix) or returned_protocol != protocol_hint:
+            # Если протокол не совпадает, ищем ключ напрямую в нужной таблице
+            from app.infra.sqlite_utils import open_connection
+            from app.settings import settings as app_settings
+            
+            with open_connection(app_settings.DATABASE_PATH) as conn:
+                c = conn.cursor()
+                if protocol_hint == 'outline':
+                    c.execute("""
+                        SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, k.expiry_at,
+                               IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol,
+                               COALESCE(k.traffic_limit_mb, 0), '' as api_url, '' as api_key,
+                               0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified
+                        FROM keys k
+                        LEFT JOIN servers s ON k.server_id = s.id
+                        LEFT JOIN tariffs t ON k.tariff_id = t.id
+                        WHERE k.id = ?
+                    """, (numeric_id,))
+                elif protocol_hint == 'v2ray':
+                    c.execute("""
+                        SELECT k.id || '_v2ray' as id, k.v2ray_uuid as key_id,
+                               COALESCE(k.client_config, '') as access_url,
+                               k.created_at, k.expiry_at,
+                               IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
+                               COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
+                               COALESCE(k.traffic_usage_bytes, 0), k.traffic_over_limit_at,
+                               COALESCE(k.traffic_over_limit_notified, 0)
+                        FROM v2ray_keys k
+                        LEFT JOIN servers s ON k.server_id = s.id
+                        LEFT JOIN tariffs t ON k.tariff_id = t.id
+                        WHERE k.id = ?
+                    """, (numeric_id,))
+                else:
+                    c = None
+                
+                if c:
+                    row = c.fetchone()
+                    if not row:
+                        return None
+    
     normalized_row = _append_default_traffic(row)
     return _build_key_view_model(normalized_row, now_ts)
 
@@ -751,14 +824,21 @@ async def keys_page(
 
 
 @router.get("/keys/edit/{key_id}")
-async def keys_edit_page(request: Request, key_id: int):
+async def keys_edit_page(request: Request, key_id: str):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/login", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+    # Парсим ID если он в формате "206_outline" или "206_v2ray"
+    if '_' in key_id:
+        parts = key_id.split('_')
+        numeric_id = int(parts[0])
+    else:
+        numeric_id = int(key_id)
 
     key_repo = KeyRepository(DB_PATH)
     now_ts = int(time.time())
     try:
-        key_view = _load_key_view_model(key_repo, key_id, now_ts)
+        key_view = _load_key_view_model(key_repo, numeric_id, now_ts)
     except Exception as error:
         logging.error(f"[ADMIN][KEYS] Failed to load key {key_id}: {error}", exc_info=True)
         key_view = None
@@ -806,7 +886,13 @@ async def get_key_traffic_api(request: Request, key_id: int):
 
 
 @router.post("/keys/edit/{key_id}")
-async def edit_key_route(request: Request, key_id: int):
+async def edit_key_route(request: Request, key_id: str):
+    # Парсим ID если он в формате "206_outline" или "206_v2ray"
+    if '_' in key_id:
+        parts = key_id.split('_')
+        numeric_id = int(parts[0])
+    else:
+        numeric_id = int(key_id)
     """Редактирование срока действия ключа"""
     if not request.session.get("admin_logged_in"):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -844,7 +930,7 @@ async def edit_key_route(request: Request, key_id: int):
  
         key_repo = KeyRepository(DB_PATH)
         try:
-            await _update_key_expiry_internal(request, key_id, new_expiry, key_repo, new_limit)
+            await _update_key_expiry_internal(request, numeric_id, new_expiry, key_repo, new_limit)
         except ValueError:
             if _is_json_request(request):
                 return JSONResponse({"error": "Key not found"}, status_code=404)
@@ -870,7 +956,7 @@ async def edit_key_route(request: Request, key_id: int):
 
 
 @router.get("/keys/delete/{key_id}")
-async def delete_key_route(request: Request, key_id: int):
+async def delete_key_route(request: Request, key_id: str):
     """Удаление ключа"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/login")
@@ -888,7 +974,7 @@ async def delete_key_route(request: Request, key_id: int):
 
 
 @router.delete("/api/keys/{key_id}")
-async def delete_key_api(request: Request, key_id: int):
+async def delete_key_api(request: Request, key_id: str):
     if not request.session.get("admin_logged_in"):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 

@@ -37,6 +37,45 @@ async def handle_my_keys_btn(message: types.Message):
     all_keys = []
     keys_to_update = []  # Список ключей, для которых нужно обновить конфигурацию в БД
     
+    # Получаем активную подписку V2Ray
+    subscription_info = None
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, subscription_token, expires_at, tariff_id
+            FROM subscriptions
+            WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id, now))
+        subscription = cursor.fetchone()
+        
+        if subscription:
+            subscription_id, token, expires_at, tariff_id = subscription
+            
+            # Получаем количество серверов в подписке
+            cursor.execute("""
+                SELECT COUNT(DISTINCT server_id)
+                FROM v2ray_keys
+                WHERE subscription_id = ? AND expiry_at > ?
+            """, (subscription_id, now))
+            server_count = cursor.fetchone()[0] or 0
+            
+            # Получаем информацию о тарифе
+            traffic_limit = "без ограничений"
+            if tariff_id:
+                cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff_id,))
+                tariff_row = cursor.fetchone()
+                if tariff_row and tariff_row[0] and tariff_row[0] > 0:
+                    traffic_limit = f"{tariff_row[0]} ГБ"
+            
+            subscription_info = {
+                'id': subscription_id,
+                'token': token,
+                'expires_at': expires_at,
+                'server_count': server_count,
+                'traffic_limit': traffic_limit
+            }
+    
     with get_db_cursor() as cursor:
         # Получаем Outline ключи с информацией о стране
         cursor.execute("""
@@ -47,13 +86,13 @@ async def handle_my_keys_btn(message: types.Message):
         """, (user_id, now))
         outline_keys = cursor.fetchall()
         
-        # Получаем V2Ray ключи с информацией о стране и сервере, включая сохраненную конфигурацию
+        # Получаем V2Ray ключи БЕЗ подписки (отдельные ключи)
         cursor.execute("""
             SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key, k.client_config,
                    k.traffic_limit_mb, k.traffic_usage_bytes, k.traffic_over_limit_at
             FROM v2ray_keys k
             JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ?
+            WHERE k.user_id = ? AND k.expiry_at > ? AND k.subscription_id IS NULL
         """, (user_id, now))
         v2ray_keys = cursor.fetchall()
     
@@ -168,12 +207,41 @@ async def handle_my_keys_btn(message: types.Message):
             for config, v2ray_uuid in keys_to_update:
                 cursor.execute("UPDATE v2ray_keys SET client_config = ? WHERE v2ray_uuid = ?", (config, v2ray_uuid))
 
-    if not all_keys:
-        main_menu = get_main_menu()
+    # Формируем сообщение
+    msg = ""
+    
+    # Если есть подписка, показываем её первой
+    if subscription_info:
+        from datetime import datetime
+        expiry_date = datetime.fromtimestamp(subscription_info['expires_at']).strftime("%d.%m.%Y")
+        remaining_time = subscription_info['expires_at'] - now
+        remaining_str = format_duration(remaining_time)
+        subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_info['token']}"
+        
+        msg += (
+            f"📋 *Ваша подписка V2Ray:*\n"
+            f"🔗 `{subscription_url}`\n"
+            f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n"
+            f"📊 Трафик: {subscription_info['traffic_limit']}\n\n"
+            f"📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n\n"
+            f"💡 *Как использовать:*\n"
+            f"1. Откройте приложение V2Ray\n"
+            f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
+            f"3. Вставьте ссылку выше\n"
+            f"4. Все серверы будут добавлены автоматически\n\n"
+        )
+        
+        if all_keys:
+            msg += "─────────────────────\n\n"
+    
+    if not all_keys and not subscription_info:
+        main_menu = get_main_menu(user_id)
         await message.answer("У вас нет активных ключей.", reply_markup=main_menu)
         return
-
-    msg = "*Ваши активные ключи:*\n\n"
+    
+    if all_keys:
+        msg += "*Отдельные ключи:*\n\n"
+    
     for key in all_keys:
         remaining_seconds = key['expiry'] - now
         time_str = format_duration(remaining_seconds)
@@ -208,7 +276,7 @@ async def handle_my_keys_btn(message: types.Message):
             f"{app_links}\n\n"
         )
     
-    main_menu = get_main_menu()
+    main_menu = get_main_menu(user_id)
     await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
 
 def register_keys_handler(dp: Dispatcher):

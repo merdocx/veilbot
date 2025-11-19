@@ -6,6 +6,7 @@ import asyncio
 import time
 import logging
 import sqlite3
+from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, Callable
 from aiogram import types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -1039,7 +1040,24 @@ async def wait_for_payment_with_protocol(
                     await message.answer("Платежная система временно недоступна. Обратитесь в поддержку.", reply_markup=main_menu)
                 return
             
-            success = await wait_for_payment_with_protocol_legacy(message, payment_id, protocol)
+            # Проверяем статус платежа в БД ПЕРЕД ожиданием
+            # Если платеж уже оплачен, сразу создаем подписку/ключ
+            payment_already_paid = False
+            with get_db_cursor() as check_cursor:
+                check_cursor.execute("SELECT status FROM payments WHERE payment_id = ?", (payment_id,))
+                status_row = check_cursor.fetchone()
+                if status_row:
+                    payment_status = (status_row[0] or "").lower()
+                    if payment_status == "paid":
+                        payment_already_paid = True
+                        logging.info(f"Payment {payment_id} already paid in DB, skipping wait and creating subscription/key immediately")
+            
+            if payment_already_paid:
+                # Платеж уже оплачен, сразу создаем подписку/ключ
+                success = True
+            else:
+                # Ожидаем оплату платежа
+                success = await wait_for_payment_with_protocol_legacy(message, payment_id, protocol)
             
             if success:
                 logging.debug(f"New payment module confirmed payment success: {payment_id}")
@@ -1117,16 +1135,86 @@ async def wait_for_payment_with_protocol(
                             await message.answer("Ошибка: не удалось получить данные тарифа. Обратитесь в поддержку.", reply_markup=main_menu)
                         return
                     
-                    # Логика продления: если for_renewal=True, функция create_new_key_flow_with_protocol
-                    # автоматически проверит наличие существующего ключа и продлит его
-                    # Если ключа нет, создаст новый (как при обычной покупке)
-                    logging.info(f"Creating/extending key for payment {payment_id}, user_id={user_id}, for_renewal={for_renewal}")
-                    await create_new_key_flow_with_protocol(cursor, None, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
+                    # Проверяем метаданные платежа для определения типа ключа
+                    cursor.execute("SELECT metadata FROM payments WHERE payment_id = ?", (payment_id,))
+                    metadata_row = cursor.fetchone()
+                    payment_metadata = {}
+                    if metadata_row and metadata_row[0]:
+                        import json
+                        try:
+                            payment_metadata = json.loads(metadata_row[0]) if isinstance(metadata_row[0], str) else metadata_row[0]
+                        except (json.JSONDecodeError, TypeError):
+                            payment_metadata = {}
                     
-                    # После успешной выдачи/продления ключа помечаем платеж как закрытый
-                    # Это предотвратит повторную выдачу ключа по этому платежу
-                    cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (payment_id,))
-                    logging.info(f"Payment {payment_id} marked as completed after key creation/renewal")
+                    key_type = payment_metadata.get('key_type') if payment_metadata else None
+                    is_subscription = key_type == 'subscription' and protocol == 'v2ray'
+                    
+                    if is_subscription:
+                        # Используем единый сервис для обработки подписки
+                        # Это предотвращает дублирование уведомлений и обеспечивает единообразную обработку
+                        from payments.services.subscription_purchase_service import SubscriptionPurchaseService
+                        
+                        # Проверяем, не обработан ли уже платеж через SubscriptionPurchaseService
+                        # (может быть обработан через webhook или фоновую задачу)
+                        cursor.execute("SELECT status FROM payments WHERE payment_id = ?", (payment_id,))
+                        status_row = cursor.fetchone()
+                        if status_row and (status_row[0] or "").lower() == "completed":
+                            logging.info(f"Payment {payment_id} already completed, skipping subscription processing in wait_for_payment_with_protocol")
+                            return
+                        
+                        # Используем SubscriptionPurchaseService для обработки подписки
+                        # Он сам проверит статус платежа и защитит от повторной обработки
+                        try:
+                            subscription_service = SubscriptionPurchaseService()
+                            success, error_msg = await subscription_service.process_subscription_purchase(payment_id)
+                            
+                            if success:
+                                logging.info(
+                                    f"Subscription purchase processed successfully via wait_for_payment_with_protocol "
+                                    f"for payment {payment_id}, user {user_id}"
+                                )
+                                # Платеж уже помечен как completed в SubscriptionPurchaseService
+                                # Уведомление уже отправлено, не отправляем повторно
+                            else:
+                                logging.error(
+                                    f"Failed to process subscription purchase via wait_for_payment_with_protocol "
+                                    f"for payment {payment_id}, user {user_id}: {error_msg}"
+                                )
+                                if message:
+                                    try:
+                                        await message.answer(
+                                            "❌ Произошла ошибка при создании подписки. Обратитесь в поддержку.",
+                                            reply_markup=main_menu
+                                        )
+                                    except Exception:
+                                        pass
+                                # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                        except Exception as exc:
+                            logging.error(
+                                f"Exception processing subscription purchase via wait_for_payment_with_protocol "
+                                f"for payment {payment_id}, user {user_id}: {exc}",
+                                exc_info=True
+                            )
+                            if message:
+                                try:
+                                    await message.answer(
+                                        "❌ Произошла ошибка при создании подписки. Обратитесь в поддержку.",
+                                        reply_markup=main_menu
+                                    )
+                                except Exception:
+                                    pass
+                            # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                    else:
+                        # Логика продления: если for_renewal=True, функция create_new_key_flow_with_protocol
+                        # автоматически проверит наличие существующего ключа и продлит его
+                        # Если ключа нет, создаст новый (как при обычной покупке)
+                        logging.info(f"Creating/extending key for payment {payment_id}, user_id={user_id}, for_renewal={for_renewal}")
+                        await create_new_key_flow_with_protocol(cursor, None, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
+                        
+                        # После успешной выдачи/продления ключа помечаем платеж как закрытый
+                        # Это предотвратит повторную выдачу ключа по этому платежу
+                        cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (payment_id,))
+                        logging.info(f"Payment {payment_id} marked as completed after key creation/renewal")
                     # --- Реферальный бонус ---
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
                     ref_row = cursor.fetchone()
@@ -1332,16 +1420,86 @@ async def wait_for_crypto_payment(
                             await message.answer("Ошибка: не удалось получить данные тарифа. Обратитесь в поддержку.", reply_markup=main_menu)
                         return
                     
-                    # Логика продления: если for_renewal=True, функция create_new_key_flow_with_protocol
-                    # автоматически проверит наличие существующего ключа и продлит его
-                    # Если ключа нет, создаст новый (как при обычной покупке)
-                    logging.info(f"Creating/extending key for crypto payment {invoice_id}, user_id={user_id}, for_renewal={for_renewal}")
-                    await create_new_key_flow_with_protocol(cursor, None, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
+                    # Проверяем метаданные платежа для определения типа ключа
+                    cursor.execute("SELECT metadata FROM payments WHERE payment_id = ?", (str(invoice_id),))
+                    metadata_row = cursor.fetchone()
+                    payment_metadata = {}
+                    if metadata_row and metadata_row[0]:
+                        import json
+                        try:
+                            payment_metadata = json.loads(metadata_row[0]) if isinstance(metadata_row[0], str) else metadata_row[0]
+                        except (json.JSONDecodeError, TypeError):
+                            payment_metadata = {}
                     
-                    # После успешной выдачи/продления ключа помечаем платеж как закрытый
-                    # Это предотвратит повторную выдачу ключа по этому платежу
-                    cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (str(invoice_id),))
-                    logging.info(f"Crypto payment {invoice_id} marked as completed after key creation/renewal")
+                    key_type = payment_metadata.get('key_type') if payment_metadata else None
+                    is_subscription = key_type == 'subscription' and protocol == 'v2ray'
+                    
+                    if is_subscription:
+                        # Используем единый сервис для обработки подписки
+                        # Это предотвращает дублирование уведомлений и обеспечивает единообразную обработку
+                        from payments.services.subscription_purchase_service import SubscriptionPurchaseService
+                        
+                        # Проверяем, не обработан ли уже платеж через SubscriptionPurchaseService
+                        # (может быть обработан через фоновую задачу)
+                        cursor.execute("SELECT status FROM payments WHERE payment_id = ?", (str(invoice_id),))
+                        status_row = cursor.fetchone()
+                        if status_row and (status_row[0] or "").lower() == "completed":
+                            logging.info(f"Crypto payment {invoice_id} already completed, skipping subscription processing in wait_for_crypto_payment")
+                            return
+                        
+                        # Используем SubscriptionPurchaseService для обработки подписки
+                        # Он сам проверит статус платежа и защитит от повторной обработки
+                        try:
+                            subscription_service = SubscriptionPurchaseService()
+                            success, error_msg = await subscription_service.process_subscription_purchase(str(invoice_id))
+                            
+                            if success:
+                                logging.info(
+                                    f"Subscription purchase processed successfully via wait_for_crypto_payment "
+                                    f"for crypto payment {invoice_id}, user {user_id}"
+                                )
+                                # Платеж уже помечен как completed в SubscriptionPurchaseService
+                                # Уведомление уже отправлено, не отправляем повторно
+                            else:
+                                logging.error(
+                                    f"Failed to process subscription purchase via wait_for_crypto_payment "
+                                    f"for crypto payment {invoice_id}, user {user_id}: {error_msg}"
+                                )
+                                if message:
+                                    try:
+                                        await message.answer(
+                                            "❌ Произошла ошибка при создании подписки. Обратитесь в поддержку.",
+                                            reply_markup=main_menu
+                                        )
+                                    except Exception:
+                                        pass
+                                # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                        except Exception as exc:
+                            logging.error(
+                                f"Exception processing subscription purchase via wait_for_crypto_payment "
+                                f"for crypto payment {invoice_id}, user {user_id}: {exc}",
+                                exc_info=True
+                            )
+                            if message:
+                                try:
+                                    await message.answer(
+                                        "❌ Произошла ошибка при создании подписки. Обратитесь в поддержку.",
+                                        reply_markup=main_menu
+                                    )
+                                except Exception:
+                                    pass
+                            # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                    else:
+                        # Логика продления: если for_renewal=True, функция create_new_key_flow_with_protocol
+                        # автоматически проверит наличие существующего ключа и продлит его
+                        # Если ключа нет, создаст новый (как при обычной покупке)
+                        logging.info(f"Creating/extending key for crypto payment {invoice_id}, user_id={user_id}, for_renewal={for_renewal}")
+                        await create_new_key_flow_with_protocol(cursor, None, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
+                        
+                        # После успешной выдачи/продления ключа помечаем платеж как закрытый
+                        # Это предотвратит повторную выдачу ключа по этому платежу
+                        cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (str(invoice_id),))
+                        logging.info(f"Crypto payment {invoice_id} marked as completed after key creation/renewal")
                     
                     # Реферальный бонус (та же логика что и для обычных платежей)
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))

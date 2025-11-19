@@ -24,7 +24,7 @@ async def handle_invite_friend(message: types.Message) -> None:
     user_id = message.from_user.id
     bot = get_bot_instance()
     if not bot:
-        await message.answer("Ошибка: бот не инициализирован", reply_markup=get_main_menu())
+        await message.answer("Ошибка: бот не инициализирован", reply_markup=get_main_menu(user_id))
         return
     
     try:
@@ -32,7 +32,7 @@ async def handle_invite_friend(message: types.Message) -> None:
         invite_link = f"https://t.me/{bot_username}?start={user_id}"
         await message.answer(
             f"Пригласите друга по этой ссылке:\n{invite_link}\n\nЕсли друг купит доступ, вы получите месяц бесплатно!",
-            reply_markup=get_main_menu(),
+            reply_markup=get_main_menu(user_id),
             disable_web_page_preview=True
         )
     except Exception as e:
@@ -83,8 +83,9 @@ async def handle_support(message: types.Message) -> None:
 
 async def handle_help_back(message: types.Message) -> None:
     """Обработчик возврата из помощи в главное меню"""
-    main_menu = get_main_menu()
-    help_menu_users.discard(message.from_user.id)
+    user_id = message.from_user.id
+    main_menu = get_main_menu(user_id)
+    help_menu_users.discard(user_id)
     await message.answer("Главное меню:", reply_markup=main_menu)
 
 
@@ -228,12 +229,28 @@ async def handle_cancel_broadcast(callback_query: types.CallbackQuery) -> None:
     await callback_query.answer()
 
 
-def register_common_handlers(dp: Dispatcher) -> None:
+async def back_to_main(message: types.Message, user_states: dict) -> None:
+    """
+    Обработчик кнопки "🔙 Назад" - возврат в главное меню
+    
+    Args:
+        message: Telegram сообщение
+        user_states: Словарь состояний пользователей
+    """
+    # Clear any existing state
+    user_id = message.from_user.id
+    if user_id in user_states:
+        del user_states[user_id]
+    await message.answer("Главное меню:", reply_markup=get_main_menu(user_id))
+
+
+def register_common_handlers(dp: Dispatcher, user_states: dict) -> None:
     """
     Регистрирует обработчики общих команд
     
     Args:
         dp: Экземпляр Dispatcher
+        user_states: Словарь состояний пользователей
     """
     # Регистрация обработчиков помощи и поддержки
     @dp.message_handler(lambda m: m.text == "Помощь")
@@ -249,6 +266,11 @@ def register_common_handlers(dp: Dispatcher) -> None:
     @dp.message_handler(lambda m: m.text == "🔙 Назад" and m.from_user.id in help_menu_users)
     async def help_back_handler(message: types.Message):
         await handle_help_back(message)
+    
+    # Регистрация общего обработчика кнопки "🔙 Назад" (возврат в главное меню)
+    @dp.message_handler(lambda m: m.text == "🔙 Назад")
+    async def back_handler(message: types.Message):
+        await back_to_main(message, user_states)
     
     # Регистрация обработчиков рассылки
     @dp.message_handler(commands=["broadcast"])

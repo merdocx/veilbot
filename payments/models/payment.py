@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
 
@@ -29,9 +29,9 @@ class Payment:
     
     def __post_init__(self):
         if self.created_at is None:
-            self.created_at = datetime.utcnow()
+            self.created_at = datetime.now(timezone.utc)
         if self.updated_at is None:
-            self.updated_at = datetime.utcnow()
+            self.updated_at = datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Преобразование в словарь"""
@@ -90,23 +90,23 @@ class Payment:
     def mark_as_paid(self):
         """Отметить как оплаченный"""
         self.status = PaymentStatus.PAID
-        self.paid_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.paid_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
     
     def mark_as_failed(self):
         """Отметить как неудачный"""
         self.status = PaymentStatus.FAILED
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
     
     def mark_as_cancelled(self):
         """Отметить как отмененный"""
         self.status = PaymentStatus.CANCELLED
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
     
     def mark_as_completed(self):
         """Отметить как закрытый (ключ выдан/продлен)"""
         self.status = PaymentStatus.COMPLETED
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
 
 
 class PaymentCreate(BaseModel):

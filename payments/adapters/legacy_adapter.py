@@ -290,7 +290,8 @@ def get_payment_service() -> PaymentService:
             api_key=app_settings.YOOKASSA_API_KEY or "default_api_key",
             return_url=app_settings.YOOKASSA_RETURN_URL or "https://t.me/default_bot"
         )
-        payment_repo = PaymentRepository()
+        # Используем путь к БД из настроек для обеспечения консистентности
+        payment_repo = PaymentRepository(db_path=app_settings.DATABASE_PATH)
         
         # Создаем CryptoBot сервис если токен есть
         cryptobot_service = None

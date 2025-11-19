@@ -1,5 +1,5 @@
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from ..models.payment import Payment, PaymentStatus
 
 
@@ -267,7 +267,7 @@ class PaymentFormatters:
         Returns:
             Отформатированное время
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         diff = now - timestamp
         
         if diff.days > 0:

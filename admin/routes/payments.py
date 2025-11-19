@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 import logging
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 _root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _root_dir)
@@ -422,7 +422,7 @@ async def payment_delete(request: Request, pid: str, csrf_token: str = Form(...)
         if payment_status in ('completed', 'paid'):
             with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
-                now = int(datetime.utcnow().timestamp())
+                now = int(datetime.now(timezone.utc).timestamp())
                 c.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now))
                 has_outline_key = c.fetchone() is not None
                 c.execute("SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now))
