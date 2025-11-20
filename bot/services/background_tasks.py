@@ -1520,9 +1520,10 @@ async def notify_expiring_subscriptions() -> None:
                     and (notified & 4) == 0
                 ):
                     time_str = format_duration(remaining_time)
+                    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                     message = (
                         f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
-                        f"🔗 https://veil-bot.ru/api/subscription/{token}\n\n"
+                        f"🔗 `{subscription_url}`\n\n"
                         f"Продлите доступ:"
                     )
                     new_notified = notified | 4
@@ -1532,25 +1533,28 @@ async def notify_expiring_subscriptions() -> None:
                     and (notified & 2) == 0
                 ):
                     time_str = format_duration(remaining_time)
+                    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                     message = (
                         f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
-                        f"🔗 https://veil-bot.ru/api/subscription/{token}\n\n"
+                        f"🔗 `{subscription_url}`\n\n"
                         f"Продлите доступ:"
                     )
                     new_notified = notified | 2
                 elif remaining_time > 0 and remaining_time <= ten_minutes and (notified & 8) == 0:
                     time_str = format_duration(remaining_time)
+                    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                     message = (
                         f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
-                        f"🔗 https://veil-bot.ru/api/subscription/{token}\n\n"
+                        f"🔗 `{subscription_url}`\n\n"
                         f"Продлите доступ:"
                     )
                     new_notified = notified | 8
                 elif remaining_time > 0 and remaining_time <= ten_percent_threshold and (notified & 1) == 0:
                     time_str = format_duration(remaining_time)
+                    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                     message = (
                         f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
-                        f"🔗 https://veil-bot.ru/api/subscription/{token}\n\n"
+                        f"🔗 `{subscription_url}`\n\n"
                         f"Продлите доступ:"
                     )
                     new_notified = notified | 1
