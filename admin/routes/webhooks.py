@@ -207,6 +207,8 @@ async def cryptobot_webhook(request: Request):
                 create_new_key_flow_with_protocol = bot_module.create_new_key_flow_with_protocol
                 select_available_server_by_protocol = bot_module.select_available_server_by_protocol
                 extend_existing_key = bot_module.extend_existing_key
+                # Импортируем функцию обработки реферальных бонусов
+                from bot.services.key_creation import process_referral_bonus
                 # Получаем bot через централизованный модуль
                 bot = get_bot_instance()
                 from utils import get_db_cursor
@@ -253,20 +255,11 @@ async def cryptobot_webhook(request: Request):
 
                         if ref_row and ref_row[0] and not ref_row[1] and has_paid_payment and tariff_price > 0:
                             referrer_id = ref_row[0]
-                            now = int(time.time())
-                            cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
-                            key = cursor.fetchone()
                             bonus_duration = 30 * 24 * 3600
-                            if key:
-                                extend_existing_key(cursor, key, bonus_duration)
-                                await safe_send_message(bot, referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
-                            else:
-                                cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
-                                bonus_tariff = cursor.fetchone()
-                                if bonus_tariff:
-                                    bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
-                                    await create_new_key_flow_with_protocol(cursor, None, referrer_id, bonus_tariff_dict, None, None, protocol or "outline")
-                                    await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                            # Обрабатываем реферальный бонус (с поддержкой подписок)
+                            await process_referral_bonus(
+                                cursor, referrer_id, bonus_duration, None, protocol or "outline", extend_existing_key
+                            )
                             cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
                 
                 # Обновляем лог как успешный

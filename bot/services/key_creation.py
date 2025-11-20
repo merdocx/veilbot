@@ -18,6 +18,7 @@ from bot.keyboards import get_main_menu, get_countries_by_protocol
 from bot.utils import format_key_message_unified, safe_send_message
 from bot.core import get_bot_instance
 from memory_optimizer import get_vpn_service, get_security_logger
+from app.repositories.subscription_repository import SubscriptionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -1019,6 +1020,146 @@ async def create_new_key_flow_with_protocol(
         return
 
 
+async def process_referral_bonus(
+    cursor: sqlite3.Cursor,
+    referrer_id: int,
+    bonus_duration: int,
+    message: Optional[types.Message],
+    protocol: str,
+    extend_existing_key: Optional[Callable] = None
+) -> bool:
+    """
+    Обработать реферальный бонус для реферера.
+    Приоритет: если есть активная подписка - продлеваем её, иначе продлеваем ключ.
+    
+    Args:
+        cursor: Курсор БД
+        referrer_id: ID реферера
+        bonus_duration: Длительность бонуса в секундах
+        message: Сообщение от пользователя (для создания нового ключа при необходимости)
+        protocol: Протокол (outline или v2ray)
+        extend_existing_key: Функция продления ключа
+        
+    Returns:
+        True если бонус был успешно начислен, False иначе
+    """
+    try:
+        now = int(time.time())
+        
+        # Сначала проверяем наличие активной подписки
+        subscription_repo = SubscriptionRepository()
+        subscription = subscription_repo.get_active_subscription(referrer_id)
+        
+        if subscription:
+            # Есть активная подписка - продлеваем её
+            subscription_id = subscription[0]
+            existing_expires_at = subscription[4]
+            new_expires_at = existing_expires_at + bonus_duration
+            
+            # Продлеваем подписку
+            subscription_repo.extend_subscription(subscription_id, new_expires_at)
+            
+            # Продлеваем все ключи подписки
+            cursor.execute(
+                """
+                UPDATE v2ray_keys 
+                SET expiry_at = ? 
+                WHERE subscription_id = ? AND expiry_at > ?
+                """,
+                (new_expires_at, subscription_id, now)
+            )
+            keys_extended = cursor.rowcount
+            
+            # Отправляем уведомление
+            bot = get_bot_instance()
+            await safe_send_message(
+                bot, 
+                referrer_id, 
+                "🎉 Ваша подписка продлена на месяц за приглашённого друга!"
+            )
+            
+            logger.info(
+                f"Extended subscription {subscription_id} for referrer {referrer_id}: "
+                f"{existing_expires_at} -> {new_expires_at} (+{bonus_duration}s), "
+                f"extended {keys_extended} keys"
+            )
+            return True
+        
+        # Активной подписки нет - используем текущую логику продления ключа
+        cursor.execute(
+            "SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", 
+            (referrer_id, now)
+        )
+        key = cursor.fetchone()
+        
+        if key and extend_existing_key:
+            try:
+                extend_existing_key(cursor, key, bonus_duration)
+                bot = get_bot_instance()
+                await safe_send_message(
+                    bot, 
+                    referrer_id, 
+                    "🎉 Ваш ключ продлён на месяц за приглашённого друга!"
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Error extending referrer key: {e}")
+                # Если не удалось продлить, выдаем новый ключ
+                cursor.execute(
+                    "SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", 
+                    (bonus_duration,)
+                )
+                bonus_tariff = cursor.fetchone()
+                if bonus_tariff:
+                    bonus_tariff_dict = {
+                        "id": bonus_tariff[0], 
+                        "name": bonus_tariff[1], 
+                        "price_rub": bonus_tariff[4], 
+                        "duration_sec": bonus_tariff[2]
+                    }
+                    await create_new_key_flow_with_protocol(
+                        cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol
+                    )
+                    bot = get_bot_instance()
+                    await safe_send_message(
+                        bot, 
+                        referrer_id, 
+                        "🎉 Вам выдан бесплатный месяц за приглашённого друга!"
+                    )
+                    return True
+        elif key:
+            logger.warning(f"extend_existing_key is None, cannot extend referrer key for user {referrer_id}")
+        else:
+            # Выдаём новый ключ на месяц
+            cursor.execute(
+                "SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", 
+                (bonus_duration,)
+            )
+            bonus_tariff = cursor.fetchone()
+            if bonus_tariff:
+                bonus_tariff_dict = {
+                    "id": bonus_tariff[0], 
+                    "name": bonus_tariff[1], 
+                    "price_rub": bonus_tariff[4], 
+                    "duration_sec": bonus_tariff[2]
+                }
+                await create_new_key_flow_with_protocol(
+                    cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol
+                )
+                bot = get_bot_instance()
+                await safe_send_message(
+                    bot, 
+                    referrer_id, 
+                    "🎉 Вам выдан бесплатный месяц за приглашённого друга!"
+                )
+                return True
+        
+        return False
+    except Exception as e:
+        logger.error(f"Error processing referral bonus for user {referrer_id}: {e}", exc_info=True)
+        return False
+
+
 async def wait_for_payment_with_protocol(
     message: Optional[types.Message], 
     payment_id: str, 
@@ -1354,33 +1495,10 @@ async def wait_for_payment_with_protocol(
 
                     if ref_row and ref_row[0] and not ref_row[1] and has_paid_payment and tariff_price > 0:
                         referrer_id = ref_row[0]
-                        # Проверяем, есть ли у пригласившего активный ключ
-                        now = int(time.time())
-                        cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
-                        key = cursor.fetchone()
-                        if key and extend_existing_key:
-                            try:
-                                extend_existing_key(cursor, key, bonus_duration)
-                                await safe_send_message(bot, referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
-                            except Exception as e:
-                                logging.error(f"Error extending referrer key: {e}")
-                                # Если не удалось продлить, выдаем новый ключ
-                                cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
-                                bonus_tariff = cursor.fetchone()
-                                if bonus_tariff:
-                                    bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
-                                    await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                                    await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
-                        elif key:
-                            logging.warning(f"extend_existing_key is None, cannot extend referrer key for user {referrer_id}")
-                        else:
-                            # Выдаём новый ключ на месяц
-                            cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
-                            bonus_tariff = cursor.fetchone()
-                            if bonus_tariff:
-                                bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
-                                await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                                await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                        # Обрабатываем реферальный бонус (с поддержкой подписок)
+                        await process_referral_bonus(
+                            cursor, referrer_id, bonus_duration, message, protocol, extend_existing_key
+                        )
                         cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
                 return
             else:
@@ -1628,31 +1746,10 @@ async def wait_for_crypto_payment(
                     bonus_duration = 30 * 24 * 3600  # 1 месяц
                     if ref_row and ref_row[0] and not ref_row[1]:
                         referrer_id = ref_row[0]
-                        now = int(time.time())
-                        cursor.execute("SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (referrer_id, now))
-                        key = cursor.fetchone()
-                        if key and extend_existing_key:
-                            try:
-                                extend_existing_key(cursor, key, bonus_duration)
-                                await safe_send_message(bot, referrer_id, "🎉 Ваш ключ продлён на месяц за приглашённого друга!")
-                            except Exception as e:
-                                logging.error(f"Error extending referrer key: {e}")
-                                # Если не удалось продлить, выдаем новый ключ
-                                cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
-                                bonus_tariff = cursor.fetchone()
-                                if bonus_tariff:
-                                    bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
-                                    await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                                    await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
-                        elif key:
-                            logging.warning(f"extend_existing_key is None, cannot extend referrer key for user {referrer_id}")
-                        else:
-                            cursor.execute("SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", (bonus_duration,))
-                            bonus_tariff = cursor.fetchone()
-                            if bonus_tariff:
-                                bonus_tariff_dict = {"id": bonus_tariff[0], "name": bonus_tariff[1], "price_rub": bonus_tariff[4], "duration_sec": bonus_tariff[2]}
-                                await create_new_key_flow_with_protocol(cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol)
-                                await safe_send_message(bot, referrer_id, "🎉 Вам выдан бесплатный месяц за приглашённого друга!")
+                        # Обрабатываем реферальный бонус (с поддержкой подписок)
+                        await process_referral_bonus(
+                            cursor, referrer_id, bonus_duration, message, protocol, extend_existing_key
+                        )
                         cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
                 
                 return
