@@ -30,3 +30,9 @@ tail -f \
     grep --line-buffered -i -E "($USER_ID|subscription|подписк|payment.*$USER_ID|webhook.*$USER_ID|yookassa.*$USER_ID|create.*subscription|process.*payment|Payment.*$USER_ID)" | \
     format_log
 
+
+
+
+
+
+

@@ -727,4 +727,46 @@ def register_subscription_handlers(dp: Dispatcher, user_states: Dict[int, Dict[s
     @dp.callback_query_handler(lambda c: c.data.startswith("refresh_subscription:"))
     async def refresh_subscription_handler(callback_query: types.CallbackQuery):
         await handle_refresh_subscription(callback_query)
+    
+    @dp.callback_query_handler(lambda c: c.data == "renew_subscription")
+    @rate_limit("renew_subscription")
+    async def renew_subscription_handler(callback_query: types.CallbackQuery):
+        """Обработчик кнопки 'Продлить подписку' - показывает выбор способа оплаты"""
+        user_id = callback_query.from_user.id
+        
+        # Проверяем наличие активной подписки
+        with get_db_cursor() as cursor:
+            now = int(time.time())
+            cursor.execute("""
+                SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified
+                FROM subscriptions
+                WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (user_id, now))
+            subscription = cursor.fetchone()
+        
+        if not subscription:
+            await callback_query.answer("У вас нет активной подписки для продления", show_alert=True)
+            return
+        
+        # Устанавливаем состояние для выбора способа оплаты подписки
+        _user_states[user_id] = {
+            "state": "waiting_payment_method_for_subscription",
+            "is_renewal": True  # Флаг, что это продление
+        }
+        
+        # Показываем выбор способа оплаты
+        msg = (
+            f"📋 *Продление подписки V2Ray*\n\n"
+            f"Подписка дает доступ ко всем серверам V2Ray\n\n"
+            f"🔄 Автоматическое обновление при добавлении новых серверов\n\n"
+            f"Выберите способ оплаты:"
+        )
+        await callback_query.message.answer(msg, reply_markup=get_payment_method_keyboard(), parse_mode="Markdown")
+        
+        try:
+            await callback_query.answer()
+        except Exception:
+            pass
 

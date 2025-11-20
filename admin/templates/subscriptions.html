@@ -47,11 +47,11 @@
                 <tr>
                     <th>ID</th>
                     <th>Пользователь</th>
-                    <th>Тариф</th>
                     <th>Ключи</th>
                     <th>Создана</th>
                     <th>Истекает</th>
                     <th class="text-left">Статус</th>
+                    <th>Трафик</th>
                     <th>Действия</th>
                 </tr>
             </thead>
@@ -67,9 +67,7 @@
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--user">
                         <div class="cell-primary">TG: {{ subscription.user_id }}</div>
-                    </td>
-                    <td class="subscriptions-table__cell subscriptions-table__cell--tariff">
-                        <div class="cell-primary">{{ subscription.tariff_name }}</div>
+                        <div class="cell-secondary text-muted">{{ subscription.tariff_name }}</div>
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--keys">
                         <div class="cell-primary">{{ subscription.keys_count }} ключей</div>
@@ -108,6 +106,19 @@
                         <span class="material-icons status-icon {{ subscription.status_class }}" data-field="status-icon" title="{{ subscription.status }}">
                             {% if subscription.status == "Активна" %}check_circle{% else %}cancel{% endif %}
                         </span>
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--traffic traffic-cell {% if subscription.traffic and subscription.traffic['over_limit'] %}traffic-cell--over-limit{% endif %}">
+                        <div class="cell-primary" data-field="traffic-display">{{ subscription.traffic['display'] if subscription.traffic else '—' }}</div>
+                        {% if subscription.traffic and subscription.traffic['limit_display'] != '—' %}
+                            <div class="cell-secondary" data-field="traffic-limit">Лимит: {{ subscription.traffic['limit_display'] }}</div>
+                        {% else %}
+                            <div class="cell-secondary text-muted" data-field="traffic-limit">Лимит не задан</div>
+                        {% endif %}
+                        {% if subscription.traffic and subscription.traffic['usage_percent'] is not none %}
+                            <div class="progress-bar progress-bar--compact" data-progress="{{ (subscription.traffic['usage_percent'] * 100)|round(0) }}">
+                                <div class="progress-bar__fill"></div>
+                            </div>
+                        {% endif %}
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--actions">
                         <div class="action-buttons">

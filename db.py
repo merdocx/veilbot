@@ -715,6 +715,69 @@ def migrate_add_subscription_id_to_v2ray_keys():
     finally:
         conn.close()
 
+def migrate_add_subscription_traffic_limits():
+    """Добавление полей для контроля трафика подписок"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # Проверяем существующие колонки
+        cursor.execute("PRAGMA table_info(subscriptions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        if 'traffic_usage_bytes' not in columns:
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN traffic_usage_bytes INTEGER DEFAULT 0")
+            conn.commit()
+            logging.info("Поле traffic_usage_bytes добавлено в subscriptions")
+        
+        if 'traffic_over_limit_at' not in columns:
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN traffic_over_limit_at INTEGER")
+            conn.commit()
+            logging.info("Поле traffic_over_limit_at добавлено в subscriptions")
+        
+        if 'traffic_over_limit_notified' not in columns:
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN traffic_over_limit_notified INTEGER DEFAULT 0")
+            conn.commit()
+            logging.info("Поле traffic_over_limit_notified добавлено в subscriptions")
+        
+        # Создать таблицу snapshots для отслеживания дельт
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS subscription_traffic_snapshots (
+                subscription_id INTEGER PRIMARY KEY,
+                total_bytes INTEGER DEFAULT 0,
+                updated_at INTEGER DEFAULT 0,
+                FOREIGN KEY (subscription_id) REFERENCES subscriptions(id)
+            )
+        """)
+        conn.commit()
+        logging.info("Таблица subscription_traffic_snapshots создана")
+        
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+            logging.info("Поля для трафика подписок уже существуют")
+        else:
+            logging.error(f"Ошибка миграции subscription_traffic_limits: {e}")
+            raise
+    finally:
+        conn.close()
+
+def migrate_add_purchase_notification_sent():
+    """Добавление поля purchase_notification_sent для отслеживания отправки уведомлений о покупке подписки"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE subscriptions ADD COLUMN purchase_notification_sent INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Поле purchase_notification_sent добавлено в subscriptions")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower() or "duplicate column name" in str(e).lower():
+            logging.info("Поле purchase_notification_sent уже существует в subscriptions")
+        else:
+            logging.error(f"Ошибка миграции purchase_notification_sent: {e}")
+            raise
+    finally:
+        conn.close()
+
+
 def migrate_add_subscription_indexes():
     """Создание индексов для таблицы subscriptions"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -844,6 +907,8 @@ def _run_all_migrations():
     migrate_add_subscriptions_table()
     migrate_add_subscription_id_to_v2ray_keys()
     migrate_add_subscription_indexes()
+    migrate_add_subscription_traffic_limits()
+    migrate_add_purchase_notification_sent()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

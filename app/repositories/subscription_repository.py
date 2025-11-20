@@ -105,14 +105,16 @@ class SubscriptionRepository:
             conn.commit()
 
     def get_expired_subscriptions(self, grace_threshold: int) -> List[Tuple]:
-        """Получить истекшие подписки (для grace period)"""
+        """Получить истекшие подписки (для grace period) - включая деактивированные"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            # Ищем все подписки, которые истекли более 24 часов назад
+            # Включаем деактивированные, так как они тоже должны быть удалены
             c.execute(
                 """
                 SELECT id, user_id, subscription_token
                 FROM subscriptions
-                WHERE expires_at <= ? AND is_active = 1
+                WHERE expires_at <= ? AND expires_at > 0
                 """,
                 (grace_threshold,),
             )
@@ -141,6 +143,33 @@ class SubscriptionRepository:
                 (notified, subscription_id),
             )
             conn.commit()
+
+    def mark_purchase_notification_sent(self, subscription_id: int) -> None:
+        """Пометить уведомление о покупке как отправленное"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                "UPDATE subscriptions SET purchase_notification_sent = 1 WHERE id = ?",
+                (subscription_id,),
+            )
+            conn.commit()
+
+    def get_subscriptions_without_purchase_notification(self, limit: int = 50, max_age_days: int = 7) -> List[Tuple]:
+        """Получить подписки без отправленного уведомления о покупке"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            now = int(time.time())
+            max_age_seconds = max_age_days * 86400
+            c.execute("""
+                SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id
+                FROM subscriptions
+                WHERE purchase_notification_sent = 0 
+                  AND is_active = 1
+                  AND created_at > ?
+                ORDER BY created_at ASC
+                LIMIT ?
+            """, (now - max_age_seconds, limit))
+            return c.fetchall()
 
     def get_subscription_keys(self, subscription_id: int, user_id: int, now: int) -> List[Tuple]:
         """Получить все активные ключи подписки"""
@@ -313,6 +342,15 @@ class SubscriptionRepository:
             )
             await conn.commit()
 
+    async def mark_purchase_notification_sent_async(self, subscription_id: int) -> None:
+        """Пометить уведомление о покупке как отправленное (асинхронная версия)"""
+        async with open_async_connection(self.db_path) as conn:
+            await conn.execute(
+                "UPDATE subscriptions SET purchase_notification_sent = 1 WHERE id = ?",
+                (subscription_id,),
+            )
+            await conn.commit()
+
     async def get_subscription_keys_async(self, subscription_id: int, user_id: int, now: int) -> List[Tuple]:
         """Получить все активные ключи подписки (асинхронная версия)"""
         async with open_async_connection(self.db_path) as conn:
@@ -396,14 +434,28 @@ class SubscriptionRepository:
             return c.fetchone()[0]
 
     def get_subscription_by_id(self, subscription_id: int) -> Optional[Tuple]:
-        """Получить подписку по ID"""
+        """Получить подписку по ID с информацией о тарифе и количестве ключей"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
-                SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified
-                FROM subscriptions
-                WHERE id = ?
+                SELECT 
+                    s.id,
+                    s.user_id,
+                    s.subscription_token,
+                    s.created_at,
+                    s.expires_at,
+                    s.tariff_id,
+                    s.is_active,
+                    s.last_updated_at,
+                    s.notified,
+                    t.name as tariff_name,
+                    COUNT(vk.id) as keys_count
+                FROM subscriptions s
+                LEFT JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN v2ray_keys vk ON vk.subscription_id = s.id
+                WHERE s.id = ?
+                GROUP BY s.id
                 """,
                 (subscription_id,),
             )
@@ -434,6 +486,69 @@ class SubscriptionRepository:
             )
             return c.fetchall()
 
+    def get_subscription_traffic_sum(self, subscription_id: int) -> int:
+        """Получить суммарный трафик всех ключей подписки"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT COALESCE(SUM(traffic_usage_bytes), 0)
+                FROM v2ray_keys
+                WHERE subscription_id = ?
+            """, (subscription_id,))
+            result = c.fetchone()
+            return int(result[0] or 0) if result else 0
+    
+    def get_subscription_traffic_limit(self, subscription_id: int) -> int:
+        """Получить лимит трафика подписки из тарифа (в байтах)"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT COALESCE(t.traffic_limit_mb, 0)
+                FROM subscriptions s
+                LEFT JOIN tariffs t ON s.tariff_id = t.id
+                WHERE s.id = ?
+            """, (subscription_id,))
+            result = c.fetchone()
+            if result and result[0]:
+                return int(result[0]) * 1024 * 1024  # Конвертация МБ в байты
+            return 0
+    
+    def update_subscription_traffic(self, subscription_id: int, usage_bytes: int) -> None:
+        """Обновить трафик подписки"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            now = int(time.time())
+            c.execute("""
+                UPDATE subscriptions
+                SET traffic_usage_bytes = ?,
+                    last_updated_at = ?
+                WHERE id = ?
+            """, (usage_bytes, now, subscription_id))
+            conn.commit()
+    
+    def get_subscriptions_with_traffic_limits(self, now: int) -> List[Tuple]:
+        """Получить активные подписки с лимитами трафика из тарифов"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT 
+                    s.id,
+                    s.user_id,
+                    s.traffic_usage_bytes,
+                    s.traffic_over_limit_at,
+                    s.traffic_over_limit_notified,
+                    s.expires_at,
+                    s.tariff_id,
+                    COALESCE(t.traffic_limit_mb, 0) AS traffic_limit_mb,
+                    t.name AS tariff_name
+                FROM subscriptions s
+                LEFT JOIN tariffs t ON s.tariff_id = t.id
+                WHERE s.is_active = 1
+                  AND s.expires_at > ?
+                  AND COALESCE(t.traffic_limit_mb, 0) > 0
+            """, (now,))
+            return c.fetchall()
+    
     def update_subscription_keys_expiry(self, subscription_id: int, new_expires_at: int) -> int:
         """Обновить срок действия всех ключей подписки"""
         with open_connection(self.db_path) as conn:

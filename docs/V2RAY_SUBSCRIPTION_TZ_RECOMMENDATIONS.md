@@ -298,3 +298,9 @@ def validate_subscription_token(token: str) -> bool:
 10. Фильтрация по странам
 11. Версионирование подписки
 
+
+
+
+
+
+

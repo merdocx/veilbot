@@ -200,6 +200,51 @@ class SubscriptionService:
         if expires_at <= now:
             logger.warning(f"Subscription {subscription_id} has expired")
             return None
+        
+        # Проверка лимита трафика подписки
+        if tariff_id:
+            # Получить лимит из тарифа
+            from utils import get_db_cursor
+            with get_db_cursor(commit=True) as cursor:
+                cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff_id,))
+                tariff_row = cursor.fetchone()
+                if tariff_row and tariff_row[0] and tariff_row[0] > 0:
+                    limit_mb = tariff_row[0]
+                    limit_bytes = limit_mb * 1024 * 1024
+                    
+                    # Агрегировать трафик всех ключей подписки
+                    cursor.execute("""
+                        SELECT COALESCE(SUM(traffic_usage_bytes), 0)
+                        FROM v2ray_keys
+                        WHERE subscription_id = ?
+                    """, (subscription_id,))
+                    total_usage = cursor.fetchone()[0] or 0
+                    
+                    # Обновить traffic_usage_bytes в подписке
+                    cursor.execute("""
+                        UPDATE subscriptions
+                        SET traffic_usage_bytes = ?,
+                            last_updated_at = ?
+                        WHERE id = ?
+                    """, (total_usage, now, subscription_id))
+                    
+                    # Проверить превышение лимита
+                    if total_usage > limit_bytes:
+                        # Проверить grace period
+                        cursor.execute("""
+                            SELECT traffic_over_limit_at
+                            FROM subscriptions
+                            WHERE id = ?
+                        """, (subscription_id,))
+                        over_limit_row = cursor.fetchone()
+                        if over_limit_row and over_limit_row[0]:
+                            grace_end = over_limit_row[0] + 86400  # 24 часа
+                            if now > grace_end:
+                                logger.warning(
+                                    f"Subscription {subscription_id} disabled due to traffic limit "
+                                    f"({total_usage} > {limit_bytes})"
+                                )
+                                return None
 
         # Получение ключей подписки
         keys = await self.repository.get_subscription_keys_async(subscription_id, user_id, now)

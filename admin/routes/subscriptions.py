@@ -9,7 +9,9 @@ import logging
 import sys
 import os
 import time
+import math
 from datetime import datetime
+from typing import Optional, Dict, Any
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from bot.services.subscription_service import SubscriptionService, validate_subscription_token
@@ -38,6 +40,22 @@ def get_token_for_rate_limit(request: Request):
     return get_remote_address(request)
 
 limiter = Limiter(key_func=get_token_for_rate_limit)
+
+
+def _format_bytes(num_bytes: Optional[float]) -> str:
+    """Format raw bytes into a human-readable string."""
+    if num_bytes is None:
+        return "—"
+    if num_bytes <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    idx = min(int(math.log(num_bytes, 1024)), len(units) - 1)
+    normalized = num_bytes / (1024 ** idx)
+    return f"{normalized:.2f} {units[idx]}"
+
+
+def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    return max(min_value, min(max_value, value))
 
 
 def _format_timestamp(ts: int | None) -> str:
@@ -93,102 +111,143 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
-    log_admin_action(request, "SUBSCRIPTIONS_PAGE_ACCESS")
-    
-    subscription_repo = SubscriptionRepository(DB_PATH)
-    total = subscription_repo.count_subscriptions()
-    
-    offset = (page - 1) * limit
-    rows = subscription_repo.list_subscriptions(limit=limit, offset=offset)
-    
-    now_ts = int(time.time())
-    
-    # Формируем модели для отображения
-    subscription_models = []
-    active_count = 0
-    expired_count = 0
-    
-    for row in rows:
-        (
-            sub_id, user_id, token, created_at, expires_at, tariff_id,
-            is_active, last_updated_at, notified, tariff_name, keys_count
-        ) = row
+    try:
+        log_admin_action(request, "SUBSCRIPTIONS_PAGE_ACCESS")
         
-        # Обработка None значений
-        created_at = created_at if created_at is not None else 0
-        expires_at = expires_at if expires_at is not None else 0
+        subscription_repo = SubscriptionRepository(DB_PATH)
+        total = subscription_repo.count_subscriptions()
         
-        expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
-        is_expired = expires_at > 0 and expires_at <= now_ts
+        offset = (page - 1) * limit
+        rows = subscription_repo.list_subscriptions(limit=limit, offset=offset)
         
-        if is_expired:
-            expired_count += 1
-        else:
-            active_count += 1
+        now_ts = int(time.time())
         
-        # Вычисляем прогресс для прогресс-бара
-        lifetime_total = max(expires_at - created_at, 0) if expires_at > 0 and created_at > 0 else 0
-        elapsed = max(now_ts - created_at, 0) if created_at > 0 else 0
-        lifetime_progress = 0.0
-        if lifetime_total > 0:
-            lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
-        elif expires_at > 0 and now_ts >= expires_at:
-            lifetime_progress = 1.0
+        # Формируем модели для отображения
+        subscription_models = []
+        active_count = 0
+        expired_count = 0
         
-        # Получаем список ключей подписки
-        keys_list = subscription_repo.get_subscription_keys_list(sub_id)
-        keys_info = []
-        for key_row in keys_list:
+        for row in rows:
             (
-                key_id, v2ray_uuid, email, key_created_at, key_expires_at,
-                server_name, country, traffic_limit_mb, traffic_usage_bytes
-            ) = key_row
-            keys_info.append({
-                "id": key_id,
-                "uuid": v2ray_uuid[:8] + "..." if v2ray_uuid else "—",
-                "email": email or "—",
-                "server": server_name or "—",
-                "country": country or "—",
-                "created_at": _format_timestamp(key_created_at),
-                "expires_at": _format_timestamp(key_expires_at),
+                sub_id, user_id, token, created_at, expires_at, tariff_id,
+                is_active, last_updated_at, notified, tariff_name, keys_count
+            ) = row
+            
+            # Обработка None значений
+            created_at = created_at if created_at is not None else 0
+            expires_at = expires_at if expires_at is not None else 0
+            
+            expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
+            is_expired = expires_at > 0 and expires_at <= now_ts
+            
+            if is_expired:
+                expired_count += 1
+            else:
+                active_count += 1
+            
+            # Вычисляем прогресс для прогресс-бара
+            lifetime_total = max(expires_at - created_at, 0) if expires_at > 0 and created_at > 0 else 0
+            elapsed = max(now_ts - created_at, 0) if created_at > 0 else 0
+            lifetime_progress = 0.0
+            if lifetime_total > 0:
+                lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
+            elif expires_at > 0 and now_ts >= expires_at:
+                lifetime_progress = 1.0
+            
+            # Получаем список ключей подписки
+            keys_list = subscription_repo.get_subscription_keys_list(sub_id)
+            keys_info = []
+            for key_row in keys_list:
+                (
+                    key_id, v2ray_uuid, email, key_created_at, key_expires_at,
+                    server_name, country, traffic_limit_mb, traffic_usage_bytes
+                ) = key_row
+                keys_info.append({
+                    "id": key_id,
+                    "uuid": v2ray_uuid[:8] + "..." if v2ray_uuid else "—",
+                    "email": email or "—",
+                    "server": server_name or "—",
+                    "country": country or "—",
+                    "created_at": _format_timestamp(key_created_at),
+                    "expires_at": _format_timestamp(key_expires_at),
+                })
+            
+            # Вычисляем трафик подписки
+            traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
+            traffic_limit_bytes = subscription_repo.get_subscription_traffic_limit(sub_id)
+            
+            traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
+            traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
+            
+            usage_percent = None
+            over_limit = False
+            if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
+                usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
+                over_limit = traffic_usage_bytes > traffic_limit_bytes
+            
+            traffic_info = {
+                "display": traffic_display,
+                "limit_display": traffic_limit_display,
+                "usage_percent": usage_percent,
+                "over_limit": over_limit,
+            }
+            
+            subscription_models.append({
+                "id": sub_id,
+                "user_id": user_id,
+                "token": (token[:16] + "..." if len(token) > 16 else token) if token else "—",
+                "token_full": token or "",
+                "created_at": _format_timestamp(created_at) if created_at > 0 else "—",
+                "created_at_ts": created_at,
+                "expires_at": _format_timestamp(expires_at) if expires_at > 0 else "—",
+                "expires_at_ts": expires_at,
+                "expires_at_iso": datetime.fromtimestamp(expires_at).strftime("%Y-%m-%dT%H:%M") if expires_at > 0 else "",
+                "expiry_remaining": expiry_info["label"],
+                "expiry_state": expiry_info["state"],
+                "lifetime_progress": lifetime_progress,
+                "tariff_id": tariff_id,
+                "tariff_name": tariff_name or "—",
+                "is_active": bool(is_active),
+                "status": "Активна" if (is_active and not is_expired) else "Истекла",
+                "status_class": "status-active" if (is_active and not is_expired) else "status-expired",
+                "keys_count": keys_count or 0,
+                "subscription_keys": keys_info,
+                "traffic": traffic_info,
             })
         
-        subscription_models.append({
-            "id": sub_id,
-            "user_id": user_id,
-            "token": (token[:16] + "..." if len(token) > 16 else token) if token else "—",
-            "token_full": token or "",
-            "created_at": _format_timestamp(created_at) if created_at > 0 else "—",
-            "created_at_ts": created_at,
-            "expires_at": _format_timestamp(expires_at) if expires_at > 0 else "—",
-            "expires_at_ts": expires_at,
-            "expires_at_iso": datetime.fromtimestamp(expires_at).strftime("%Y-%m-%dT%H:%M") if expires_at > 0 else "",
-            "expiry_remaining": expiry_info["label"],
-            "expiry_state": expiry_info["state"],
-            "lifetime_progress": lifetime_progress,
-            "tariff_id": tariff_id,
-            "tariff_name": tariff_name or "—",
-            "is_active": bool(is_active),
-            "status": "Активна" if (is_active and not is_expired) else "Истекла",
-            "status_class": "status-active" if (is_active and not is_expired) else "status-expired",
-            "keys_count": keys_count or 0,
-            "subscription_keys": keys_info,
+        pages = (total + limit - 1) // limit if total > 0 else 1
+        
+        return templates.TemplateResponse("subscriptions.html", {
+            "request": request,
+            "subscriptions": subscription_models,
+            "current_time": now_ts,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "active_count": active_count,
+            "expired_count": expired_count,
+            "pages": pages,
+            "csrf_token": get_csrf_token(request),
         })
-    
-    pages = (total + limit - 1) // limit if total > 0 else 1
-    
-    return templates.TemplateResponse("subscriptions.html", {
-        "request": request,
-        "subscriptions": subscription_models,
-        "current_time": now_ts,
-        "page": page,
-        "limit": limit,
-        "total": total,
-        "active_count": active_count,
-        "expired_count": expired_count,
-        "pages": pages,
-        "csrf_token": get_csrf_token(request),
-    })
+    except Exception as e:
+        logger.error(f"Error in subscriptions_page: {e}", exc_info=True)
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Traceback: {error_details}")
+        # Возвращаем простую страницу с ошибкой
+        from fastapi.responses import HTMLResponse
+        error_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Ошибка</title></head>
+        <body>
+            <h1>Ошибка при загрузке подписок</h1>
+            <p>{str(e)}</p>
+            <p><a href="/subscriptions">Попробовать снова</a></p>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=error_html, status_code=500)
 
 
 @router.post("/subscriptions/edit/{subscription_id}")

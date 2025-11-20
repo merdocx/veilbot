@@ -161,7 +161,16 @@ class SubscriptionPurchaseService:
                     f"💡 Подписка автоматически обновится в вашем приложении V2Ray"
                 )
                 
-                await self._send_notification(payment.user_id, msg)
+                notification_sent = await self._send_notification(payment.user_id, msg)
+                
+                # Обновляем флаг отправки уведомления в подписке
+                if notification_sent:
+                    await self.subscription_repo.mark_purchase_notification_sent_async(subscription_id)
+                else:
+                    logger.warning(
+                        f"Failed to send purchase notification for subscription {subscription_id}, "
+                        f"user {payment.user_id}. Will retry via background task."
+                    )
                 
                 # Помечаем платеж как completed и удаляем флаг обработки
                 payment.mark_as_completed()
@@ -348,7 +357,16 @@ class SubscriptionPurchaseService:
                 f"4. Все серверы будут добавлены автоматически"
             )
             
-            await self._send_notification(payment.user_id, msg)
+            notification_sent = await self._send_notification(payment.user_id, msg)
+            
+            # Обновляем флаг отправки уведомления в подписке
+            if notification_sent:
+                await self.subscription_repo.mark_purchase_notification_sent_async(subscription_id)
+            else:
+                logger.warning(
+                    f"Failed to send purchase notification for subscription {subscription_id}, "
+                    f"user {payment.user_id}. Will retry via background task."
+                )
             
             # Шаг 9: Помечаем платеж как completed и удаляем флаг обработки
             payment.mark_as_completed()
@@ -358,7 +376,7 @@ class SubscriptionPurchaseService:
             
             logger.info(
                 f"Subscription purchase completed successfully: payment={payment_id}, "
-                f"subscription={subscription_id}, keys={created_keys}"
+                f"subscription={subscription_id}, keys={created_keys}, notification_sent={notification_sent}"
             )
             
             return True, None
@@ -376,26 +394,41 @@ class SubscriptionPurchaseService:
                 logger.warning(f"Failed to cleanup processing flag for payment {payment_id}: {cleanup_error}")
             return False, error_msg
     
-    async def _send_notification(self, user_id: int, message: str) -> bool:
-        """Отправить уведомление пользователю"""
-        try:
-            bot = get_bot_instance()
-            if not bot:
-                logger.warning(f"Bot instance not available for user {user_id}")
-                return False
-            
-            await safe_send_message(
-                bot,
-                user_id,
-                message,
-                reply_markup=get_main_menu(user_id),
-                disable_web_page_preview=True,
-                parse_mode="Markdown"
-            )
-            logger.info(f"Notification sent to user {user_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to send notification to user {user_id}: {e}")
-            return False
+    async def _send_notification(self, user_id: int, message: str, max_retries: int = 3) -> bool:
+        """Отправить уведомление пользователю с retry механизмом"""
+        import asyncio
+        
+        for attempt in range(max_retries):
+            try:
+                bot = get_bot_instance()
+                if not bot:
+                    logger.warning(f"Bot instance not available for user {user_id}, attempt {attempt + 1}/{max_retries}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка: 1s, 2s, 4s
+                    continue
+                
+                result = await safe_send_message(
+                    bot,
+                    user_id,
+                    message,
+                    reply_markup=get_main_menu(user_id),
+                    disable_web_page_preview=True,
+                    parse_mode="Markdown"
+                )
+                
+                if result:
+                    logger.info(f"Notification sent to user {user_id} on attempt {attempt + 1}")
+                    return True
+                else:
+                    logger.warning(f"Failed to send notification to user {user_id}, attempt {attempt + 1}/{max_retries}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+                    
+            except Exception as e:
+                logger.error(f"Error sending notification to user {user_id}, attempt {attempt + 1}/{max_retries}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        
+        logger.error(f"Failed to send notification to user {user_id} after {max_retries} attempts")
+        return False
 

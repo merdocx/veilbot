@@ -19,6 +19,7 @@ from app.infra.foreign_keys import safe_foreign_keys_off
 from memory_optimizer import optimize_memory, log_memory_usage
 from config import ADMIN_ID
 from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.tariff_repository import TariffRepository
 from bot.services.subscription_service import invalidate_subscription_cache
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,18 @@ async def notify_expiring_keys() -> None:
                     logging.warning("Skipping Outline key %s - created_at is None", key_id_db)
                     continue
 
+                # Проверяем наличие активной подписки у пользователя
+                cursor.execute("""
+                    SELECT id FROM subscriptions
+                    WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+                    LIMIT 1
+                """, (user_id, now))
+                has_active_subscription = cursor.fetchone() is not None
+                
+                # Если у пользователя есть активная подписка, пропускаем уведомление о продлении ключа
+                if has_active_subscription:
+                    continue
+
                 original_duration = expiry - created_at
                 ten_percent_threshold = int(original_duration * 0.1)
                 message = None
@@ -267,6 +280,18 @@ async def notify_expiring_keys() -> None:
                 remaining_time = expiry - now
                 if created_at is None:
                     logging.warning("Skipping V2Ray key %s - created_at is None", key_id_db)
+                    continue
+
+                # Проверяем наличие активной подписки у пользователя
+                cursor.execute("""
+                    SELECT id FROM subscriptions
+                    WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+                    LIMIT 1
+                """, (user_id, now))
+                has_active_subscription = cursor.fetchone() is not None
+                
+                # Если у пользователя есть активная подписка, пропускаем уведомление о продлении ключа
+                if has_active_subscription:
                     continue
 
                 original_duration = expiry - created_at
@@ -443,6 +468,7 @@ async def monitor_v2ray_traffic_limits() -> None:
                     k.traffic_over_limit_at,
                     COALESCE(k.traffic_over_limit_notified, 0) AS traffic_over_limit_notified,
                     k.expiry_at,
+                    k.subscription_id,
                     IFNULL(s.api_url, '') AS api_url,
                     IFNULL(s.api_key, '') AS api_key,
                     IFNULL(t.name, '') AS tariff_name,
@@ -452,8 +478,14 @@ async def monitor_v2ray_traffic_limits() -> None:
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
                 WHERE k.expiry_at > ?
                   AND COALESCE(k.traffic_limit_mb, 0) > 0
+                  -- ИСКЛЮЧИТЬ ключи, которые принадлежат активным подпискам
+                  -- (для них лимит проверяется на уровне подписки)
+                  AND (k.subscription_id IS NULL OR k.subscription_id NOT IN (
+                      SELECT id FROM subscriptions 
+                      WHERE is_active = 1 AND expires_at > ?
+                  ))
                 """,
-                (now,),
+                (now, now),
             )
             rows = cursor.fetchall()
 
@@ -1192,12 +1224,25 @@ async def auto_delete_expired_subscriptions() -> None:
                                     except Exception:
                                         pass
                     
-                    # Удалить ключи из БД
-                    with safe_foreign_keys_off(cursor):
-                        deleted_keys_count = repo.delete_subscription_keys(subscription_id)
+                    # Удалить ключи из БД напрямую через cursor (как для обычных ключей)
+                    # Используем safe_foreign_keys_off для обхода проблем с foreign keys
+                    try:
+                        with safe_foreign_keys_off(cursor):
+                            cursor.execute("DELETE FROM v2ray_keys WHERE subscription_id = ?", (subscription_id,))
+                            deleted_keys_count = cursor.rowcount
+                    except Exception as exc:
+                        logging.warning("Error deleting subscription keys: %s", exc)
+                        deleted_keys_count = 0
                     
-                    # Деактивировать подписку
-                    repo.deactivate_subscription(subscription_id)
+                    # Удалить подписку из БД (аналогично удалению ключей)
+                    # Используем safe_foreign_keys_off для обхода проблем с foreign keys
+                    try:
+                        with safe_foreign_keys_off(cursor):
+                            cursor.execute("DELETE FROM subscriptions WHERE id = ?", (subscription_id,))
+                    except Exception as exc:
+                        logging.warning("Error deleting subscription from DB: %s", exc)
+                        # Если не удалось удалить, хотя бы деактивируем
+                        cursor.execute("UPDATE subscriptions SET is_active = 0 WHERE id = ?", (subscription_id,))
                     
                     # Инвалидировать кэш
                     invalidate_subscription_cache(token)
@@ -1225,6 +1270,205 @@ async def auto_delete_expired_subscriptions() -> None:
     await _run_periodic(
         "auto_delete_expired_subscriptions",
         interval_seconds=600,
+        job=job,
+        max_backoff=3600,
+    )
+
+
+async def monitor_subscription_traffic_limits() -> None:
+    """Контроль превышения трафиковых лимитов для подписок V2Ray."""
+    
+    TRAFFIC_NOTIFY_WARNING = 1
+    TRAFFIC_NOTIFY_DISABLED = 2
+    TRAFFIC_DISABLE_GRACE = 86400  # 24 часа
+    
+    async def _disable_subscription_keys(subscription_id: int) -> bool:
+        """Отключить все ключи подписки через V2Ray API"""
+        repo = SubscriptionRepository()
+        keys = repo.get_subscription_keys_for_deletion(subscription_id)
+        
+        success_count = 0
+        for v2ray_uuid, api_url, api_key in keys:
+            if v2ray_uuid and api_url and api_key:
+                protocol_client = None
+                try:
+                    from vpn_protocols import V2RayProtocol
+                    protocol_client = V2RayProtocol(api_url, api_key)
+                    result = await protocol_client.delete_user(v2ray_uuid)
+                    if result:
+                        success_count += 1
+                        logging.info(
+                            "[SUBSCRIPTION TRAFFIC] Successfully disabled V2Ray key %s for subscription %s",
+                            v2ray_uuid, subscription_id
+                        )
+                except Exception as exc:
+                    logging.warning(
+                        "[SUBSCRIPTION TRAFFIC] Failed to disable V2Ray key %s for subscription %s: %s",
+                        v2ray_uuid, subscription_id, exc
+                    )
+                finally:
+                    if protocol_client:
+                        try:
+                            await protocol_client.close()
+                        except Exception:
+                            pass
+        
+        return success_count > 0
+    
+    async def job() -> None:
+        now = int(time.time())
+        repo = SubscriptionRepository()
+        
+        with get_db_cursor() as cursor:
+            # Создать таблицу snapshots если не существует
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_traffic_snapshots (
+                    subscription_id INTEGER PRIMARY KEY,
+                    total_bytes INTEGER DEFAULT 0,
+                    updated_at INTEGER DEFAULT 0
+                )
+            """)
+            
+            # Получить активные подписки с лимитами из тарифов
+            subscriptions = repo.get_subscriptions_with_traffic_limits(now)
+            
+            if not subscriptions:
+                return
+            
+            # Загрузить snapshots для расчета дельт
+            subscription_ids = [sub[0] for sub in subscriptions]
+            snapshot_map: Dict[int, int] = {}
+            if subscription_ids:
+                placeholders = ",".join("?" for _ in subscription_ids)
+                cursor.execute(
+                    f"SELECT subscription_id, total_bytes FROM subscription_traffic_snapshots WHERE subscription_id IN ({placeholders})",
+                    subscription_ids,
+                )
+                snapshot_map = {
+                    int(row[0]): int(row[1] or 0)
+                    for row in cursor.fetchall()
+                }
+        
+        warn_notifications = []
+        disable_notifications = []
+        updates = []
+        snapshot_updates: list[tuple[int, int, int]] = []
+        
+        for sub in subscriptions:
+            subscription_id, user_id, stored_usage, over_limit_at, notified_flags, expires_at, tariff_id, limit_mb, tariff_name = sub
+            
+            # Агрегировать трафик всех ключей подписки
+            total_usage = repo.get_subscription_traffic_sum(subscription_id)
+            
+            # Обновить traffic_usage_bytes в подписке
+            repo.update_subscription_traffic(subscription_id, total_usage)
+            
+            # Получить лимит из тарифа
+            limit_bytes = int(limit_mb) * 1024 * 1024 if limit_mb else 0
+            
+            # Проверить превышение лимита
+            over_limit = limit_bytes > 0 and total_usage > limit_bytes
+            
+            new_over_limit_at = over_limit_at
+            new_notified_flags = notified_flags or 0
+            
+            if over_limit:
+                if not new_over_limit_at:
+                    new_over_limit_at = now
+                
+                # Отправить предупреждение
+                if not (new_notified_flags & TRAFFIC_NOTIFY_WARNING):
+                    limit_display = _format_bytes_short(limit_bytes)
+                    usage_display = _format_bytes_short(total_usage)
+                    deadline_ts = (new_over_limit_at or now) + TRAFFIC_DISABLE_GRACE
+                    remaining = max(0, deadline_ts - now)
+                    
+                    message = (
+                        "⚠️ Превышен лимит трафика для вашей подписки V2Ray.\n"
+                        f"Тариф: {tariff_name or 'V2Ray'}\n"
+                        f"Израсходовано: {usage_display} из {limit_display}.\n"
+                        f"Подписка будет отключена через {format_duration(remaining)}.\n"
+                        "Продлите доступ, чтобы сбросить лимит."
+                    )
+                    warn_notifications.append((user_id, message))
+                    new_notified_flags |= TRAFFIC_NOTIFY_WARNING
+                
+                # Отключить подписку после grace period
+                should_disable = False
+                disable_deadline = None
+                if new_over_limit_at:
+                    disable_deadline = new_over_limit_at + TRAFFIC_DISABLE_GRACE
+                    should_disable = (
+                        now >= disable_deadline
+                        and not (new_notified_flags & TRAFFIC_NOTIFY_DISABLED)
+                    )
+                
+                if should_disable:
+                    disable_success = await _disable_subscription_keys(subscription_id)
+                    if disable_success:
+                        # Деактивировать подписку
+                        repo.deactivate_subscription(subscription_id)
+                        
+                        limit_display = _format_bytes_short(limit_bytes)
+                        usage_display = _format_bytes_short(total_usage)
+                        message = (
+                            "❌ Ваша подписка V2Ray отключена из-за превышения лимита трафика.\n"
+                            f"Тариф: {tariff_name or 'V2Ray'}\n"
+                            f"Израсходовано: {usage_display} из {limit_display}.\n"
+                            "Продлите доступ, чтобы восстановить подписку."
+                        )
+                        disable_notifications.append((user_id, message))
+                        new_notified_flags |= TRAFFIC_NOTIFY_DISABLED
+            
+            # Сохранить обновления
+            updates.append((
+                new_over_limit_at,
+                new_notified_flags,
+                subscription_id
+            ))
+            
+            # Обновить snapshot
+            snapshot_updates.append((subscription_id, total_usage, now))
+        
+        # Обновить БД
+        if updates:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.executemany("""
+                    UPDATE subscriptions
+                    SET traffic_over_limit_at = ?,
+                        traffic_over_limit_notified = ?
+                    WHERE id = ?
+                """, updates)
+                
+                # Обновить snapshots
+                if snapshot_updates:
+                    cursor.executemany("""
+                        INSERT OR REPLACE INTO subscription_traffic_snapshots
+                        (subscription_id, total_bytes, updated_at)
+                        VALUES (?, ?, ?)
+                    """, snapshot_updates)
+        
+        # Отправить уведомления
+        bot = get_bot_instance()
+        if bot:
+            for user_id, message in warn_notifications + disable_notifications:
+                await safe_send_message(
+                    bot,
+                    user_id,
+                    message,
+                    reply_markup=get_main_menu(user_id),
+                    parse_mode="Markdown",
+                )
+        
+        if warn_notifications or disable_notifications:
+            logging.info(
+                "[SUBSCRIPTION TRAFFIC] Sent %s warning and %s disable notifications",
+                len(warn_notifications), len(disable_notifications)
+            )
+    
+    await _run_periodic(
+        "monitor_subscription_traffic_limits",
+        interval_seconds=600,  # 10 минут
         job=job,
         max_backoff=3600,
     )
@@ -1306,7 +1550,7 @@ async def notify_expiring_subscriptions() -> None:
                 if message:
                     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
                     keyboard = InlineKeyboardMarkup()
-                    keyboard.add(InlineKeyboardButton("🔁 Продлить", callback_data="buy"))
+                    keyboard.add(InlineKeyboardButton("🔁 Продлить подписку", callback_data="renew_subscription"))
                     notifications_to_send.append((user_id, message, keyboard))
                     updates.append((sub_id, new_notified))
         
@@ -1336,6 +1580,86 @@ async def notify_expiring_subscriptions() -> None:
         interval_seconds=60,
         job=job,
         max_backoff=600,
+    )
+
+
+async def retry_failed_subscription_notifications() -> None:
+    """Повторная отправка уведомлений о покупке подписки, которые не были отправлены"""
+    
+    async def job() -> None:
+        bot = get_bot_instance()
+        if not bot:
+            logger.warning("Bot instance not available for retry_subscription_notifications")
+            return
+        
+        subscription_repo = SubscriptionRepository()
+        tariff_repo = TariffRepository()
+        
+        # Получаем подписки без отправленного уведомления
+        subscriptions = subscription_repo.get_subscriptions_without_purchase_notification(limit=20, max_age_days=7)
+        
+        if not subscriptions:
+            return
+        
+        logger.info(f"Found {len(subscriptions)} subscriptions without purchase notification")
+        
+        for sub_row in subscriptions:
+            (
+                sub_id, user_id, token, created_at, expires_at, tariff_id
+            ) = sub_row
+            
+            try:
+                # Получаем тариф
+                tariff_row = tariff_repo.get_tariff(tariff_id)
+                if not tariff_row:
+                    logger.warning(f"Tariff {tariff_id} not found for subscription {sub_id}")
+                    continue
+                
+                tariff = {
+                    'id': tariff_row[0],
+                    'name': tariff_row[1],
+                    'duration_sec': tariff_row[2],
+                    'price_rub': tariff_row[3],
+                }
+                
+                # Формируем сообщение
+                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
+                msg = (
+                    f"✅ *Подписка V2Ray успешно создана!*\n\n"
+                    f"🔗 *Ссылка подписки:*\n"
+                    f"`{subscription_url}`\n\n"
+                    f"⏳ *Срок действия:* {format_duration(tariff['duration_sec'])}\n\n"
+                    f"💡 *Как использовать:*\n"
+                    f"1. Откройте приложение V2Ray\n"
+                    f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
+                    f"3. Вставьте ссылку выше\n"
+                    f"4. Все серверы будут добавлены автоматически"
+                )
+                
+                # Отправляем уведомление
+                result = await safe_send_message(
+                    bot,
+                    user_id,
+                    msg,
+                    reply_markup=get_main_menu(user_id),
+                    disable_web_page_preview=True,
+                    parse_mode="Markdown"
+                )
+                
+                if result:
+                    subscription_repo.mark_purchase_notification_sent(sub_id)
+                    logger.info(f"Successfully sent purchase notification for subscription {sub_id} to user {user_id}")
+                else:
+                    logger.warning(f"Failed to send purchase notification for subscription {sub_id} to user {user_id}")
+                    
+            except Exception as e:
+                logger.error(f"Error retrying notification for subscription {sub_id}: {e}", exc_info=True)
+    
+    await _run_periodic(
+        "retry_failed_subscription_notifications",
+        interval_seconds=300,  # Каждые 5 минут
+        job=job,
+        max_backoff=1800,
     )
 
 

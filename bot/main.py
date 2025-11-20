@@ -29,6 +29,7 @@ from bot.services.background_tasks import (
     check_key_availability,
     process_pending_paid_payments,
     monitor_v2ray_traffic_limits,
+    monitor_subscription_traffic_limits,
 )
 
 # Импортируем функции и переменные из bot.py
@@ -175,6 +176,7 @@ def start_background_tasks(loop):
         auto_delete_expired_subscriptions,
         notify_expiring_subscriptions,
         check_and_create_keys_for_new_servers,
+        retry_failed_subscription_notifications,
     )
     
     background_tasks = [
@@ -185,7 +187,9 @@ def start_background_tasks(loop):
         monitor_v2ray_traffic_limits(),
         auto_delete_expired_subscriptions(),
         notify_expiring_subscriptions(),
+        monitor_subscription_traffic_limits(),
         check_and_create_keys_for_new_servers(),
+        retry_failed_subscription_notifications(),
     ]
     
     for task in background_tasks:
