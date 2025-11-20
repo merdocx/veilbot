@@ -10,6 +10,7 @@ from config import PROTOCOLS
 from vpn_protocols import format_duration, ProtocolFactory, normalize_vless_host
 from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
+from app.repositories.subscription_repository import SubscriptionRepository
 
 def _format_bytes_short(num_bytes: Optional[float]) -> str:
     """Форматирование байт в читаемый вид."""
@@ -218,15 +219,28 @@ async def handle_my_keys_btn(message: types.Message):
         remaining_str = format_duration(remaining_time)
         subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_info['token']}"
         
+        # Получаем информацию о трафике
+        repo = SubscriptionRepository()
+        traffic_usage_bytes = repo.get_subscription_traffic_sum(subscription_info['id'])
+        traffic_limit_bytes = repo.get_subscription_traffic_limit(subscription_info['id'])
+        
+        # Форматируем информацию о трафике
+        if traffic_limit_bytes and traffic_limit_bytes > 0:
+            remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
+            remaining_traffic_formatted = _format_bytes_short(remaining_bytes)
+            traffic_info = f"📊 Осталось трафика: {remaining_traffic_formatted}"
+        else:
+            traffic_info = "📊 Осталось трафика: без ограничений"
+        
         msg += (
-            f"📋 *Ваша подписка V2Ray:*\n"
-            f"🔗 `{subscription_url}`\n"
-            f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n"
-            f"📊 Трафик: {subscription_info['traffic_limit']}\n\n"
+            f"📋 Ваша подписка:\n\n"
+            f"🔗 {subscription_url}\n\n"
+            f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n\n"
+            f"{traffic_info}\n\n"
             f"📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n\n"
-            f"💡 *Как использовать:*\n"
+            f"💡 Как использовать:\n"
             f"1. Откройте приложение V2Ray\n"
-            f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
+            f"2. Нажмите \"+\" → \"Добавить из буфера\" или \"Импорт подписки\"\n"
             f"3. Вставьте ссылку выше\n"
             f"4. Все серверы будут добавлены автоматически\n\n"
         )
