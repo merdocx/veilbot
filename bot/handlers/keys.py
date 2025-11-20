@@ -234,7 +234,7 @@ async def handle_my_keys_btn(message: types.Message):
         
         msg += (
             f"📋 Ваша подписка:\n\n"
-            f"🔗 {subscription_url}\n\n"
+            f"🔗 `{subscription_url}`\n\n"
             f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n\n"
             f"{traffic_info}\n\n"
             f"📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n\n"
