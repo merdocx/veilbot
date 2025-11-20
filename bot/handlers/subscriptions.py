@@ -54,7 +54,7 @@ async def format_subscription_info(subscription_data: tuple, server_count: int =
         traffic_info = "📊 Осталось трафика: без ограничений"
     
     msg = (
-        f"📋 Ваша подписка:\n\n"
+        f"📋 Ваша подписка (коснитесь, чтобы скопировать):\n\n"
         f"🔗 `{subscription_url}`\n\n"
         f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n\n"
         f"{traffic_info}\n\n"
