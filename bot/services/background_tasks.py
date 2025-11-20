@@ -1290,6 +1290,54 @@ async def monitor_subscription_traffic_limits() -> None:
     TRAFFIC_NOTIFY_DISABLED = 2
     TRAFFIC_DISABLE_GRACE = 86400  # 24 часа
     
+    async def _fetch_usage_for_subscription_keys(server_id: int, config: Dict[str, str], keys: list[Dict[str, Any]]) -> Dict[int, Optional[int]]:
+        """Получить трафик для ключей подписки с одного сервера из V2Ray API"""
+        if not keys:
+            return {}
+        try:
+            protocol = ProtocolFactory.create_protocol('v2ray', config)
+        except Exception as e:
+            logging.error(f"[SUBSCRIPTION TRAFFIC] Failed to initialise V2Ray protocol for server {server_id}: {e}")
+            return {}
+
+        results: Dict[int, Optional[int]] = {}
+        try:
+            history = await protocol.get_traffic_history()
+            traffic_map: Dict[str, int] = {}
+            if isinstance(history, dict):
+                data = history.get('data') or {}
+                items = data.get('keys') or []
+                logging.info(f"[SUBSCRIPTION TRAFFIC] Server {server_id}: received {len(items)} keys from traffic history")
+                for item in items:
+                    uuid_val = item.get('key_uuid') or item.get('uuid')
+                    total = item.get('total_traffic') or {}
+                    total_bytes = total.get('total_bytes')
+                    if uuid_val and isinstance(total_bytes, (int, float)):
+                        traffic_map[uuid_val] = int(total_bytes)
+            else:
+                logging.warning(f"[SUBSCRIPTION TRAFFIC] Server {server_id}: traffic history is not a dict: {type(history)}")
+            
+            found_count = 0
+            for key_row in keys:
+                uuid = key_row.get('v2ray_uuid')
+                key_pk = key_row.get('id')
+                if uuid is None or key_pk is None:
+                    continue
+                traffic = traffic_map.get(uuid)
+                results[key_pk] = traffic
+                if traffic is not None:
+                    found_count += 1
+            
+            logging.info(f"[SUBSCRIPTION TRAFFIC] Server {server_id}: found traffic for {found_count}/{len(keys)} keys")
+        except Exception as e:
+            logging.error(f"[SUBSCRIPTION TRAFFIC] Error fetching usage for server {server_id}: {e}", exc_info=True)
+        finally:
+            try:
+                await protocol.close()
+            except Exception as close_error:
+                logging.warning(f"[SUBSCRIPTION TRAFFIC] Error closing protocol client for server {server_id}: {close_error}")
+        return results
+    
     async def _disable_subscription_keys(subscription_id: int) -> bool:
         """Отключить все ключи подписки через V2Ray API"""
         repo = SubscriptionRepository()
@@ -1357,6 +1405,67 @@ async def monitor_subscription_traffic_limits() -> None:
                     for row in cursor.fetchall()
                 }
         
+        # Собрать все ключи подписок, сгруппированные по серверам
+        server_configs: Dict[int, Dict[str, str]] = {}
+        server_keys_map: Dict[int, list[Dict[str, Any]]] = defaultdict(list)
+        
+        for sub in subscriptions:
+            subscription_id = sub[0]
+            keys = repo.get_subscription_keys_with_server_info(subscription_id)
+            
+            for key_id, v2ray_uuid, server_id, api_url, api_key in keys:
+                if not api_url or not api_key:
+                    logging.warning(
+                        "[SUBSCRIPTION TRAFFIC] Missing API credentials for server %s, skipping key %s",
+                        server_id, v2ray_uuid
+                    )
+                    continue
+                
+                config = {"api_url": api_url, "api_key": api_key}
+                server_configs[server_id] = config
+                
+                key_data = {
+                    "id": key_id,
+                    "v2ray_uuid": v2ray_uuid,
+                    "subscription_id": subscription_id
+                }
+                server_keys_map[server_id].append(key_data)
+        
+        # Получить трафик из V2Ray API для всех ключей
+        usage_map: Dict[int, Optional[int]] = {}
+        if server_keys_map:
+            logging.info(f"[SUBSCRIPTION TRAFFIC] Fetching traffic for {len(server_keys_map)} servers")
+            tasks = [
+                _fetch_usage_for_subscription_keys(server_id, server_configs[server_id], keys)
+                for server_id, keys in server_keys_map.items()
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, dict):
+                    usage_map.update(result)
+                    logging.info(f"[SUBSCRIPTION TRAFFIC] Received traffic data for {len(result)} keys")
+                else:
+                    logging.error(f"[SUBSCRIPTION TRAFFIC] Error in usage fetch task: {result}", exc_info=True)
+        else:
+            logging.warning("[SUBSCRIPTION TRAFFIC] No servers with keys found")
+        
+        # Обновить traffic_usage_bytes в БД для всех ключей подписок
+        key_updates = []
+        for key_id, usage_bytes in usage_map.items():
+            if usage_bytes is not None:
+                key_updates.append((usage_bytes, key_id))
+        
+        logging.info(f"[SUBSCRIPTION TRAFFIC] Total keys to update: {len(key_updates)}")
+        if key_updates:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.executemany(
+                    "UPDATE v2ray_keys SET traffic_usage_bytes = ? WHERE id = ?",
+                    key_updates
+                )
+                logging.info(f"[SUBSCRIPTION TRAFFIC] Updated traffic for {len(key_updates)} keys")
+        else:
+            logging.warning("[SUBSCRIPTION TRAFFIC] No keys to update (usage_map is empty or all values are None)")
+        
         warn_notifications = []
         disable_notifications = []
         updates = []
@@ -1365,7 +1474,7 @@ async def monitor_subscription_traffic_limits() -> None:
         for sub in subscriptions:
             subscription_id, user_id, stored_usage, over_limit_at, notified_flags, expires_at, tariff_id, limit_mb, tariff_name = sub
             
-            # Агрегировать трафик всех ключей подписки
+            # Агрегировать трафик всех ключей подписки (теперь с актуальными данными из БД)
             total_usage = repo.get_subscription_traffic_sum(subscription_id)
             
             # Обновить traffic_usage_bytes в подписке

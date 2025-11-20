@@ -215,6 +215,23 @@ class SubscriptionRepository:
                 (subscription_id,),
             )
             return c.fetchall()
+    
+    def get_subscription_keys_with_server_info(self, subscription_id: int) -> List[Tuple]:
+        """Получить все ключи подписки с информацией о серверах для получения трафика из API
+        Returns: List of (key_id, v2ray_uuid, server_id, api_url, api_key) tuples"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT k.id, k.v2ray_uuid, k.server_id, s.api_url, s.api_key
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.subscription_id = ?
+                  AND k.expiry_at > ?
+                """,
+                (subscription_id, int(time.time())),
+            )
+            return c.fetchall()
 
     def delete_subscription_keys(self, subscription_id: int) -> int:
         """Удалить все ключи подписки из БД"""
