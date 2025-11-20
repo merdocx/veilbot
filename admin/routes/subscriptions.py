@@ -105,6 +105,24 @@ def _format_expiry_remaining(expires_at: int | None, now_ts: int) -> dict:
         return {"label": f"Истёк {label} назад", "state": "expired"}
 
 
+def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
+    """Вычислить статистику подписок для обновления UI"""
+    with open_connection(db_path) as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM subscriptions")
+        total = int(c.fetchone()[0])
+        
+        c.execute("SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? AND is_active = 1", (now_ts,))
+        active = int(c.fetchone()[0])
+        
+    expired = max(total - active, 0)
+    return {
+        "total": total,
+        "active": active,
+        "expired": expired,
+    }
+
+
 @router.get("/subscriptions")
 async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
     """Страница списка подписок"""
@@ -130,7 +148,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
         for row in rows:
             (
                 sub_id, user_id, token, created_at, expires_at, tariff_id,
-                is_active, last_updated_at, notified, tariff_name, keys_count
+                is_active, last_updated_at, notified, tariff_name, keys_count, traffic_limit_mb
             ) = row
             
             # Обработка None значений
@@ -188,6 +206,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             traffic_info = {
                 "display": traffic_display,
                 "limit_display": traffic_limit_display,
+                "limit_mb": traffic_limit_mb if (traffic_limit_mb is not None and traffic_limit_mb > 0) else None,
                 "usage_percent": usage_percent,
                 "over_limit": over_limit,
             }
@@ -213,6 +232,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 "keys_count": keys_count or 0,
                 "subscription_keys": keys_info,
                 "traffic": traffic_info,
+                "traffic_limit_mb": traffic_limit_mb if (traffic_limit_mb is not None and traffic_limit_mb > 0) else None,
             })
         
         pages = (total + limit - 1) // limit if total > 0 else 1
@@ -257,7 +277,23 @@ async def edit_subscription_route(request: Request, subscription_id: int):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     
     form = await request.form()
+    
+    # Логируем все поля формы для отладки
+    form_dict = dict(form)
+    logger.info(f"Edit subscription {subscription_id}: form fields: {list(form_dict.keys())}")
+    logger.info(f"Edit subscription {subscription_id}: all form values: {dict(form)}")
+    
     new_expiry_str = form.get("new_expiry")
+    traffic_limit_str = form.get("traffic_limit_mb")
+    
+    logger.info(f"Edit subscription {subscription_id}: new_expiry={new_expiry_str}, traffic_limit_mb={traffic_limit_str!r} (type: {type(traffic_limit_str)})")
+    
+    # Дополнительная проверка - может быть значение приходит под другим ключом
+    if traffic_limit_str is None:
+        # Проверяем все возможные варианты ключей
+        for key in form_dict.keys():
+            if 'traffic' in key.lower() or 'limit' in key.lower():
+                logger.warning(f"Found similar key: {key} = {form_dict[key]}")
     
     if not new_expiry_str:
         if _is_json_request(request):
@@ -268,6 +304,24 @@ async def edit_subscription_route(request: Request, subscription_id: int):
         # Парсим datetime-local format (YYYY-MM-DDTHH:mm) в timestamp
         dt = datetime.strptime(new_expiry_str, "%Y-%m-%dT%H:%M")
         new_expiry = int(dt.timestamp())
+        
+        # Парсим лимит трафика (логика как в keys.py)
+        new_limit: int | None = None
+        if traffic_limit_str is not None:
+            trimmed = traffic_limit_str.strip()
+            if trimmed == "":
+                new_limit = 0
+            else:
+                try:
+                    new_limit = int(trimmed)
+                except ValueError:
+                    if _is_json_request(request):
+                        return JSONResponse({"error": "traffic_limit_mb must be an integer"}, status_code=400)
+                    return RedirectResponse(url="/subscriptions", status_code=303)
+                if new_limit < 0:
+                    if _is_json_request(request):
+                        return JSONResponse({"error": "traffic_limit_mb must be >= 0"}, status_code=400)
+                    return RedirectResponse(url="/subscriptions", status_code=303)
         
         subscription_repo = SubscriptionRepository(DB_PATH)
         subscription = subscription_repo.get_subscription_by_id(subscription_id)
@@ -280,52 +334,122 @@ async def edit_subscription_route(request: Request, subscription_id: int):
         # Обновляем срок подписки
         subscription_repo.extend_subscription(subscription_id, new_expiry)
         
+        # Обновляем лимит трафика (только если значение было передано)
+        if new_limit is not None:
+            logger.info(f"About to update subscription {subscription_id} traffic_limit_mb: new_limit={new_limit}, type={type(new_limit)}")
+            subscription_repo.update_subscription_traffic_limit(subscription_id, new_limit)
+            logger.info(f"Updated subscription {subscription_id} traffic_limit_mb to {new_limit}")
+            
+            # Синхронно обновляем лимиты трафика всех ключей подписки
+            updated_keys_traffic = subscription_repo.update_subscription_keys_traffic_limit(subscription_id, new_limit)
+            logger.info(f"Updated traffic_limit_mb for {updated_keys_traffic} keys in subscription {subscription_id}")
+        
+        # Проверяем, что значение действительно сохранилось
+        check_sub = subscription_repo.get_subscription_by_id(subscription_id)
+        if check_sub:
+            check_limit = check_sub[-1] if len(check_sub) > 11 else None
+            logger.info(f"Verified subscription {subscription_id} traffic_limit_mb in DB: {check_limit}")
+        
         # Обновляем срок всех связанных ключей
         updated_keys = subscription_repo.update_subscription_keys_expiry(subscription_id, new_expiry)
         
+        log_action_msg = f"Subscription ID: {subscription_id}, new expiry: {new_expiry}, updated {updated_keys} keys"
+        if new_limit is not None:
+            log_action_msg += f", traffic_limit_mb: {new_limit}"
         log_admin_action(
             request,
             "EDIT_SUBSCRIPTION",
-            f"Subscription ID: {subscription_id}, new expiry: {new_expiry}, updated {updated_keys} keys"
+            log_action_msg
         )
         
         if _is_json_request(request):
-            # Возвращаем обновленные данные подписки для обновления UI
-            now_ts = int(time.time())
-            (
-                sub_id, user_id, token, created_at, expires_at, tariff_id,
-                is_active, last_updated_at, notified, tariff_name, keys_count
-            ) = subscription_repo.get_subscription_by_id(subscription_id)
-            
-            expiry_info = _format_expiry_remaining(new_expiry, now_ts)
-            is_expired = new_expiry <= now_ts
-            
-            # Вычисляем прогресс для прогресс-бара
-            lifetime_total = max(new_expiry - created_at, 0) if new_expiry and created_at else 0
-            elapsed = max(now_ts - created_at, 0) if created_at else 0
-            lifetime_progress = 0.0
-            if lifetime_total > 0:
-                lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
-            elif new_expiry and now_ts >= new_expiry:
-                lifetime_progress = 1.0
-            
-            subscription_data = {
-                "id": sub_id,
-                "expires_at": _format_timestamp(new_expiry),
-                "expires_at_ts": new_expiry,
-                "expires_at_iso": datetime.fromtimestamp(new_expiry).strftime("%Y-%m-%dT%H:%M") if new_expiry else "",
-                "expiry_remaining": expiry_info["label"],
-                "expiry_state": expiry_info["state"],
-                "lifetime_progress": lifetime_progress,
-                "status": "Активна" if (is_active and not is_expired) else "Истекла",
-                "status_class": "status-active" if (is_active and not is_expired) else "status-expired",
-            }
-            
-            return JSONResponse({
-                "message": f"Подписка обновлена. Обновлено ключей: {updated_keys}",
-                "subscription_id": subscription_id,
-                "subscription": subscription_data,
-            })
+            try:
+                # Возвращаем обновленные данные подписки для обновления UI
+                now_ts = int(time.time())
+                subscription_updated = subscription_repo.get_subscription_by_id(subscription_id)
+                
+                if not subscription_updated:
+                    logger.error(f"Subscription {subscription_id} not found after update")
+                    return JSONResponse({
+                        "message": f"Подписка обновлена. Обновлено ключей: {updated_keys}",
+                        "subscription_id": subscription_id,
+                        "error": "Subscription data not found",
+                    })
+                
+                (
+                    sub_id, user_id, token, created_at, expires_at, tariff_id,
+                    is_active, last_updated_at, notified, tariff_name, keys_count, traffic_limit_mb
+                ) = subscription_updated
+                
+                logger.info(f"Building response: traffic_limit_mb from DB = {traffic_limit_mb}")
+                
+                # Пересчитываем трафик подписки
+                traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
+                traffic_limit_bytes = subscription_repo.get_subscription_traffic_limit(sub_id)
+                
+                traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
+                traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
+                
+                usage_percent = None
+                over_limit = False
+                if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
+                    try:
+                        usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
+                        over_limit = traffic_usage_bytes > traffic_limit_bytes
+                    except (TypeError, ValueError) as e:
+                        logger.warning(f"Error calculating usage_percent: {e}")
+                        usage_percent = None
+                        over_limit = False
+                
+                traffic_info = {
+                    "display": traffic_display,
+                    "limit_display": traffic_limit_display,
+                    "limit_mb": traffic_limit_mb if (traffic_limit_mb is not None and traffic_limit_mb > 0) else None,
+                    "usage_percent": usage_percent,
+                    "over_limit": over_limit,
+                }
+                
+                expiry_info = _format_expiry_remaining(new_expiry, now_ts)
+                is_expired = new_expiry <= now_ts
+                
+                # Вычисляем прогресс для прогресс-бара
+                lifetime_total = max(new_expiry - created_at, 0) if new_expiry and created_at else 0
+                elapsed = max(now_ts - created_at, 0) if created_at else 0
+                lifetime_progress = 0.0
+                if lifetime_total > 0:
+                    lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
+                elif new_expiry and now_ts >= new_expiry:
+                    lifetime_progress = 1.0
+                
+                subscription_data = {
+                    "id": sub_id,
+                    "expires_at": _format_timestamp(new_expiry),
+                    "expires_at_ts": new_expiry,
+                    "expires_at_iso": datetime.fromtimestamp(new_expiry).strftime("%Y-%m-%dT%H:%M") if new_expiry else "",
+                    "expiry_remaining": expiry_info["label"],
+                    "expiry_state": expiry_info["state"],
+                    "lifetime_progress": lifetime_progress,
+                    "status": "Активна" if (is_active and not is_expired) else "Истекла",
+                    "status_class": "status-active" if (is_active and not is_expired) else "status-expired",
+                    "traffic": traffic_info,
+                    "traffic_limit_mb": traffic_limit_mb if (traffic_limit_mb is not None and traffic_limit_mb > 0) else None,
+                }
+                
+                logger.info(f"Returning subscription data: traffic_limit_mb = {subscription_data.get('traffic_limit_mb')}, traffic.limit_mb = {traffic_info.get('limit_mb')}")
+                
+                return JSONResponse({
+                    "message": f"Подписка обновлена. Обновлено ключей: {updated_keys}",
+                    "subscription_id": subscription_id,
+                    "subscription": subscription_data,
+                })
+            except Exception as e:
+                logger.error(f"Error building subscription response: {e}", exc_info=True)
+                # Возвращаем хотя бы базовый ответ
+                return JSONResponse({
+                    "message": f"Подписка обновлена. Обновлено ключей: {updated_keys}",
+                    "subscription_id": subscription_id,
+                    "error": f"Error building response: {str(e)}",
+                })
         
         return RedirectResponse(url="/subscriptions", status_code=303)
     
@@ -341,7 +465,7 @@ async def edit_subscription_route(request: Request, subscription_id: int):
         return RedirectResponse(url="/subscriptions", status_code=303)
 
 
-async def _delete_subscription_internal(request: Request, subscription_id: int):
+async def _delete_subscription_internal(request: Request, subscription_id: int) -> Dict[str, Any]:
     """Внутренняя функция для удаления подписки"""
     subscription_repo = SubscriptionRepository(DB_PATH)
     subscription = subscription_repo.get_subscription_by_id(subscription_id)
@@ -349,13 +473,22 @@ async def _delete_subscription_internal(request: Request, subscription_id: int):
     if not subscription:
         raise ValueError(f"Subscription {subscription_id} not found")
     
+    logging.info(f"Deleting subscription {subscription_id}")
+    
     # Получаем все ключи подписки для удаления
     subscription_keys = subscription_repo.get_subscription_keys_for_deletion(subscription_id)
     
     # Удаляем ключи через V2Ray API
     deleted_v2ray_count = 0
-    for v2ray_uuid, api_url, api_key in subscription_keys:
+    for key_data in subscription_keys:
+        if not isinstance(key_data, (tuple, list)) or len(key_data) < 3:
+            logging.warning(f"Invalid key data structure: {key_data} for subscription {subscription_id}")
+            continue
+        
+        v2ray_uuid, api_url, api_key = key_data[0], key_data[1], key_data[2]
+        
         if v2ray_uuid and api_url and api_key:
+            protocol_client = None
             try:
                 log_admin_action(
                     request,
@@ -377,7 +510,6 @@ async def _delete_subscription_internal(request: Request, subscription_id: int):
                         "V2RAY_DELETE_FAILED",
                         f"Failed to delete key {v2ray_uuid} for subscription {subscription_id}"
                     )
-                await protocol_client.close()
             except Exception as e:
                 logging.error(f"Error deleting V2Ray key {v2ray_uuid}: {e}", exc_info=True)
                 log_admin_action(
@@ -385,6 +517,12 @@ async def _delete_subscription_internal(request: Request, subscription_id: int):
                     "V2RAY_DELETE_ERROR",
                     f"Failed to delete key {v2ray_uuid} for subscription {subscription_id}: {str(e)}"
                 )
+            finally:
+                if protocol_client:
+                    try:
+                        await protocol_client.close()
+                    except Exception as close_error:
+                        logging.warning(f"Error closing protocol client: {close_error}")
     
     # Удаляем ключи из БД
     deleted_keys_count = subscription_repo.delete_subscription_keys(subscription_id)
@@ -393,9 +531,19 @@ async def _delete_subscription_internal(request: Request, subscription_id: int):
     subscription_repo.deactivate_subscription(subscription_id)
     
     # Инвалидируем кэш подписки
-    token = subscription[2]
-    from bot.services.subscription_service import invalidate_subscription_cache
-    invalidate_subscription_cache(token)
+    try:
+        # subscription[2] - это subscription_token согласно структуре get_subscription_by_id
+        # Структура: (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified, tariff_name, keys_count, traffic_limit_mb)
+        if len(subscription) > 2 and subscription[2]:
+            token = subscription[2]
+            from bot.services.subscription_service import invalidate_subscription_cache
+            invalidate_subscription_cache(token)
+            logging.info(f"Invalidated cache for subscription {subscription_id} with token {token[:8]}...")
+    except (IndexError, TypeError) as e:
+        logging.error(f"Error accessing subscription token for {subscription_id}: {e}, subscription: {subscription}", exc_info=True)
+    except Exception as e:
+        logging.error(f"Error invalidating subscription cache: {e}", exc_info=True)
+        # Не прерываем выполнение, если не удалось инвалидировать кэш
     
     log_admin_action(
         request,
@@ -403,6 +551,7 @@ async def _delete_subscription_internal(request: Request, subscription_id: int):
         f"Subscription ID: {subscription_id}, deleted {deleted_keys_count} keys from DB, {deleted_v2ray_count} from servers"
     )
     
+    logging.info(f"Successfully deleted subscription {subscription_id}")
     return {
         "subscription_id": subscription_id,
         "deleted_keys_count": deleted_keys_count,
@@ -418,8 +567,8 @@ async def delete_subscription_route(request: Request, subscription_id: int):
     
     try:
         await _delete_subscription_internal(request, subscription_id)
-    except ValueError:
-        logging.warning(f"Subscription {subscription_id} not found for deletion")
+    except ValueError as e:
+        logging.warning(f"Subscription {subscription_id} not found for deletion: {e}")
         log_admin_action(request, "SUBSCRIPTION_DELETE_NOT_FOUND", f"Subscription {subscription_id} not found")
     except Exception as e:
         logging.error(f"Error deleting subscription {subscription_id}: {e}", exc_info=True)
@@ -437,30 +586,7 @@ async def delete_subscription_api(request: Request, subscription_id: int):
     try:
         result = await _delete_subscription_internal(request, subscription_id)
         now_ts = int(time.time())
-        
-        # Вычисляем статистику для обновления UI
-        subscription_repo = SubscriptionRepository(DB_PATH)
-        total = subscription_repo.count_subscriptions()
-        active_count = 0
-        expired_count = 0
-        
-        # Простой подсчет активных/истекших (можно оптимизировать)
-        rows = subscription_repo.list_subscriptions(limit=1000, offset=0)
-        for row in rows:
-            expires_at = row[4]
-            is_active = row[6]
-            is_expired = expires_at and expires_at <= now_ts
-            if is_expired:
-                expired_count += 1
-            else:
-                active_count += 1
-        
-        stats = {
-            "total": total,
-            "active": active_count,
-            "expired": expired_count,
-        }
-        
+        stats = _compute_subscription_stats(DB_PATH, now_ts)
         return JSONResponse({
             "message": "Подписка удалена",
             "subscription_id": subscription_id,

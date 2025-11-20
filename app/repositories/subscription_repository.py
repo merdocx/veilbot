@@ -98,9 +98,10 @@ class SubscriptionRepository:
         """Продлить подписку"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            now = int(time.time())
             c.execute(
-                "UPDATE subscriptions SET expires_at = ? WHERE id = ?",
-                (new_expires_at, subscription_id),
+                "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0 WHERE id = ?",
+                (new_expires_at, now, subscription_id),
             )
             conn.commit()
 
@@ -155,20 +156,29 @@ class SubscriptionRepository:
             conn.commit()
 
     def get_subscriptions_without_purchase_notification(self, limit: int = 50, max_age_days: int = 7) -> List[Tuple]:
-        """Получить подписки без отправленного уведомления о покупке"""
+        """Получить подписки без отправленного уведомления о покупке
+        
+        Включает как новые подписки (по created_at), так и продленные (по last_updated_at)
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             now = int(time.time())
             max_age_seconds = max_age_days * 86400
             c.execute("""
-                SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id
+                SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id, last_updated_at
                 FROM subscriptions
                 WHERE purchase_notification_sent = 0 
                   AND is_active = 1
-                  AND created_at > ?
-                ORDER BY created_at ASC
+                  AND (
+                      -- Новые подписки (созданные недавно)
+                      created_at > ?
+                      OR
+                      -- Продленные подписки (обновленные недавно)
+                      (last_updated_at IS NOT NULL AND last_updated_at > ?)
+                  )
+                ORDER BY COALESCE(last_updated_at, created_at) ASC
                 LIMIT ?
-            """, (now - max_age_seconds, limit))
+            """, (now - max_age_seconds, now - max_age_seconds, limit))
             return c.fetchall()
 
     def get_subscription_keys(self, subscription_id: int, user_id: int, now: int) -> List[Tuple]:
@@ -208,13 +218,15 @@ class SubscriptionRepository:
 
     def delete_subscription_keys(self, subscription_id: int) -> int:
         """Удалить все ключи подписки из БД"""
+        from app.infra.foreign_keys import safe_foreign_keys_off
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute(
-                "DELETE FROM v2ray_keys WHERE subscription_id = ?",
-                (subscription_id,),
-            )
-            deleted_count = c.rowcount
+            with safe_foreign_keys_off(c):
+                c.execute(
+                    "DELETE FROM v2ray_keys WHERE subscription_id = ?",
+                    (subscription_id,),
+                )
+                deleted_count = c.rowcount
             conn.commit()
             return deleted_count
 
@@ -299,9 +311,10 @@ class SubscriptionRepository:
     async def extend_subscription_async(self, subscription_id: int, new_expires_at: int) -> None:
         """Продлить подписку (асинхронная версия)"""
         async with open_async_connection(self.db_path) as conn:
+            now = int(time.time())
             await conn.execute(
-                "UPDATE subscriptions SET expires_at = ? WHERE id = ?",
-                (new_expires_at, subscription_id),
+                "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0 WHERE id = ?",
+                (new_expires_at, now, subscription_id),
             )
             await conn.commit()
 
@@ -389,13 +402,19 @@ class SubscriptionRepository:
     async def delete_subscription_keys_async(self, subscription_id: int) -> int:
         """Удалить все ключи подписки из БД (асинхронная версия)"""
         async with open_async_connection(self.db_path) as conn:
-            cursor = await conn.execute(
-                "DELETE FROM v2ray_keys WHERE subscription_id = ?",
-                (subscription_id,),
-            )
-            deleted_count = cursor.rowcount
-            await conn.commit()
-            return deleted_count
+            # Отключаем foreign keys для асинхронного соединения
+            await conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                cursor = await conn.execute(
+                    "DELETE FROM v2ray_keys WHERE subscription_id = ?",
+                    (subscription_id,),
+                )
+                deleted_count = cursor.rowcount
+                await conn.commit()
+                return deleted_count
+            finally:
+                # Восстанавливаем foreign keys
+                await conn.execute("PRAGMA foreign_keys=ON")
 
     def list_subscriptions(self, limit: int = 50, offset: int = 0) -> List[Tuple]:
         """Получить список всех подписок с информацией о ключах"""
@@ -414,7 +433,8 @@ class SubscriptionRepository:
                     s.last_updated_at,
                     s.notified,
                     t.name as tariff_name,
-                    COUNT(vk.id) as keys_count
+                    COUNT(vk.id) as keys_count,
+                    s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
                 LEFT JOIN v2ray_keys vk ON vk.subscription_id = s.id
@@ -450,7 +470,8 @@ class SubscriptionRepository:
                     s.last_updated_at,
                     s.notified,
                     t.name as tariff_name,
-                    COUNT(vk.id) as keys_count
+                    COUNT(vk.id) as keys_count,
+                    s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
                 LEFT JOIN v2ray_keys vk ON vk.subscription_id = s.id
@@ -499,9 +520,21 @@ class SubscriptionRepository:
             return int(result[0] or 0) if result else 0
     
     def get_subscription_traffic_limit(self, subscription_id: int) -> int:
-        """Получить лимит трафика подписки из тарифа (в байтах)"""
+        """Получить лимит трафика подписки (в байтах)
+        Сначала проверяет индивидуальный лимит подписки, затем лимит из тарифа"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            # Сначала проверяем индивидуальный лимит подписки
+            c.execute("""
+                SELECT traffic_limit_mb
+                FROM subscriptions
+                WHERE id = ?
+            """, (subscription_id,))
+            result = c.fetchone()
+            if result and result[0] and result[0] > 0:
+                return int(result[0]) * 1024 * 1024  # Конвертация МБ в байты
+            
+            # Если индивидуального лимита нет, берем из тарифа
             c.execute("""
                 SELECT COALESCE(t.traffic_limit_mb, 0)
                 FROM subscriptions s
@@ -526,8 +559,36 @@ class SubscriptionRepository:
             """, (usage_bytes, now, subscription_id))
             conn.commit()
     
+    def update_subscription_traffic_limit(self, subscription_id: int, traffic_limit_mb: int | None) -> None:
+        """Обновить лимит трафика подписки (в МБ)
+        Если traffic_limit_mb = None, поле не обновляется
+        Если traffic_limit_mb = 0, лимит будет браться из тарифа"""
+        import logging
+        logger = logging.getLogger(__name__)
+        if traffic_limit_mb is None:
+            logger.info(f"Skipping traffic_limit_mb update for subscription {subscription_id} (None value)")
+            return
+        
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            now = int(time.time())
+            # Сохраняем значение как есть, даже если 0 (0 означает использовать лимит из тарифа)
+            logger.info(f"Updating subscription {subscription_id} traffic_limit_mb: input={traffic_limit_mb}, saving={traffic_limit_mb}")
+            c.execute("""
+                UPDATE subscriptions
+                SET traffic_limit_mb = ?,
+                    last_updated_at = ?
+                WHERE id = ?
+            """, (traffic_limit_mb, now, subscription_id))
+            conn.commit()
+            # Проверяем, что значение действительно обновилось
+            c.execute("SELECT traffic_limit_mb FROM subscriptions WHERE id = ?", (subscription_id,))
+            result = c.fetchone()
+            logger.info(f"Verified subscription {subscription_id} traffic_limit_mb in DB: {result[0] if result else 'None'}")
+    
     def get_subscriptions_with_traffic_limits(self, now: int) -> List[Tuple]:
-        """Получить активные подписки с лимитами трафика из тарифов"""
+        """Получить активные подписки с лимитами трафика
+        Проверяет сначала индивидуальный лимит подписки, затем лимит из тарифа"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
@@ -539,13 +600,13 @@ class SubscriptionRepository:
                     s.traffic_over_limit_notified,
                     s.expires_at,
                     s.tariff_id,
-                    COALESCE(t.traffic_limit_mb, 0) AS traffic_limit_mb,
+                    COALESCE(NULLIF(s.traffic_limit_mb, 0), t.traffic_limit_mb, 0) AS traffic_limit_mb,
                     t.name AS tariff_name
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
                 WHERE s.is_active = 1
                   AND s.expires_at > ?
-                  AND COALESCE(t.traffic_limit_mb, 0) > 0
+                  AND (COALESCE(NULLIF(s.traffic_limit_mb, 0), t.traffic_limit_mb, 0) > 0)
             """, (now,))
             return c.fetchall()
     
@@ -563,5 +624,25 @@ class SubscriptionRepository:
             )
             updated_count = c.rowcount
             conn.commit()
+            return updated_count
+    
+    def update_subscription_keys_traffic_limit(self, subscription_id: int, traffic_limit_mb: int) -> int:
+        """Обновить лимит трафика всех ключей подписки (в МБ)"""
+        import logging
+        logger = logging.getLogger(__name__)
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            logger.info(f"Updating traffic_limit_mb for all keys in subscription {subscription_id}: {traffic_limit_mb} MB")
+            c.execute(
+                """
+                UPDATE v2ray_keys 
+                SET traffic_limit_mb = ?
+                WHERE subscription_id = ?
+                """,
+                (traffic_limit_mb, subscription_id),
+            )
+            updated_count = c.rowcount
+            conn.commit()
+            logger.info(f"Updated traffic_limit_mb for {updated_count} keys in subscription {subscription_id}")
             return updated_count
 

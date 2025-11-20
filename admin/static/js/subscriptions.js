@@ -18,6 +18,7 @@
         modal: null,
         editForm: null,
         expiryInput: null,
+        trafficLimitInput: null,
         currentSubscriptionId: null,
     };
 
@@ -39,18 +40,30 @@
 
     const openModal = (trigger) => {
         if (!state.modal || !state.editForm || !state.expiryInput) {
+            console.warn('[VeilBot][subscriptions] Modal or form elements not found');
             return;
         }
         const subscriptionId = trigger.dataset.subscriptionId;
         if (!subscriptionId) {
+            console.warn('[VeilBot][subscriptions] No subscription ID found');
             return;
         }
         const expiryValue = trigger.dataset.expiry || '';
+        const limitValue = trigger.dataset.trafficLimit ?? '';
+        
+        console.log(`[VeilBot][subscriptions] Opening modal for subscription ${subscriptionId}`);
+        console.log(`[VeilBot][subscriptions] Expiry value: ${expiryValue}, Limit value: ${limitValue}`);
 
         state.currentSubscriptionId = subscriptionId;
         state.editForm.dataset.subscriptionId = subscriptionId;
         state.editForm.action = `/subscriptions/edit/${subscriptionId}`;
         state.expiryInput.value = expiryValue;
+        if (state.trafficLimitInput) {
+            state.trafficLimitInput.value = limitValue !== undefined && limitValue !== '' ? limitValue : '';
+            console.log(`[VeilBot][subscriptions] Set trafficLimitInput value to: ${state.trafficLimitInput.value}`);
+        } else {
+            console.warn('[VeilBot][subscriptions] trafficLimitInput not found');
+        }
 
         state.modal.classList.add('vb-modal--open');
         state.modal.setAttribute('aria-hidden', 'false');
@@ -83,9 +96,17 @@
     };
 
     const applySubscriptionUpdate = (subscription) => {
-        if (!subscription) return;
+        console.log('[VeilBot][subscriptions] applySubscriptionUpdate called with:', subscription);
+        if (!subscription) {
+            console.warn('[VeilBot][subscriptions] No subscription data provided');
+            return;
+        }
         const row = document.querySelector(`.subscriptions-table__row[data-subscription-id="${subscription.id}"]`);
-        if (!row) return;
+        if (!row) {
+            console.warn(`[VeilBot][subscriptions] Row not found for subscription ${subscription.id}`);
+            return;
+        }
+        console.log('[VeilBot][subscriptions] Found row, updating...');
 
         row.dataset.status = subscription.status || '';
         row.dataset.expiryTs = subscription.expires_at_ts || '';
@@ -118,6 +139,47 @@
         const editButton = row.querySelector('[data-action="edit-subscription"]');
         if (editButton) {
             editButton.dataset.expiry = subscription.expires_at_iso || '';
+            // Обновляем значение лимита трафика в data-атрибуте (используем traffic.limit_mb как в keys.js)
+            const limitMb = subscription.traffic && subscription.traffic.limit_mb != null
+                ? String(subscription.traffic.limit_mb)
+                : '';
+            console.log(`[VeilBot][subscriptions] Updating edit button traffic_limit_mb from traffic.limit_mb: ${limitMb}`);
+            editButton.dataset.trafficLimit = limitMb;
+            console.log(`[VeilBot][subscriptions] Edit button trafficLimit attribute: ${editButton.dataset.trafficLimit}`);
+        }
+
+        // Обновляем информацию о трафике
+        if (subscription.traffic) {
+            const trafficDisplay = row.querySelector('[data-field="traffic-display"]');
+            if (trafficDisplay && subscription.traffic.display) {
+                trafficDisplay.textContent = subscription.traffic.display;
+            }
+
+            const trafficLimit = row.querySelector('[data-field="traffic-limit"]');
+            if (trafficLimit) {
+                if (subscription.traffic.limit_display && subscription.traffic.limit_display !== '—') {
+                    trafficLimit.textContent = `Лимит: ${subscription.traffic.limit_display}`;
+                    trafficLimit.classList.remove('text-muted');
+                } else {
+                    trafficLimit.textContent = 'Лимит не задан';
+                    trafficLimit.classList.add('text-muted');
+                }
+            }
+
+            const trafficCell = row.querySelector('.subscriptions-table__cell--traffic');
+            if (trafficCell) {
+                if (subscription.traffic.over_limit) {
+                    trafficCell.classList.add('traffic-cell--over-limit');
+                } else {
+                    trafficCell.classList.remove('traffic-cell--over-limit');
+                }
+            }
+
+            const trafficProgressBar = row.querySelector('.subscriptions-table__cell--traffic .progress-bar');
+            if (trafficProgressBar && subscription.traffic.usage_percent !== undefined && subscription.traffic.usage_percent !== null) {
+                const percent = Math.round((subscription.traffic.usage_percent || 0) * 100);
+                trafficProgressBar.dataset.progress = Number.isFinite(percent) ? percent : 0;
+            }
         }
 
         updateProgressBars(row);
@@ -140,6 +202,10 @@
         form.classList.add('is-loading');
 
         const formData = new FormData(form);
+        
+        // Обрабатываем traffic_limit_mb: если поле есть в форме, оно уже в FormData
+        // Если поле пустое, оно будет отправлено как пустая строка (будет обработано как 0 на сервере)
+        // Если поле не найдено, оно не будет в FormData (будет None на сервере, лимит не обновится)
 
         try {
             const response = await fetch(form.action, {
@@ -152,12 +218,20 @@
             });
 
             const data = await response.json();
+            console.log('[VeilBot][subscriptions] Response status:', response.status);
+            console.log('[VeilBot][subscriptions] Response data:', JSON.stringify(data, null, 2));
+            
             if (!response.ok) {
+                console.error('[VeilBot][subscriptions] Error response:', data);
                 throw new Error(data.error || 'Не удалось обновить подписку');
             }
 
             if (data.subscription) {
+                console.log('[VeilBot][subscriptions] Updating subscription with data:', data.subscription);
+                console.log('[VeilBot][subscriptions] traffic_limit_mb in response:', data.subscription.traffic_limit_mb);
                 applySubscriptionUpdate(data.subscription);
+            } else {
+                console.warn('[VeilBot][subscriptions] No subscription data in response');
             }
             if (data.stats) {
                 updateStats(data.stats);
@@ -166,6 +240,7 @@
             notify(data.message || 'Параметры подписки обновлены', 'success');
             closeModal();
         } catch (error) {
+            console.error('[VeilBot][subscriptions] Error:', error);
             handleError(error, 'Обновление подписки');
         } finally {
             resetFormLoadingState(form);
@@ -257,6 +332,7 @@
         state.modal = document.getElementById('edit-subscription-modal');
         state.editForm = document.getElementById('editSubscriptionForm');
         state.expiryInput = document.getElementById('new_expiry');
+        state.trafficLimitInput = document.getElementById('traffic_limit_mb');
 
         if (state.modal) {
             state.modal.setAttribute('aria-hidden', 'true');
