@@ -18,6 +18,7 @@ from bot.services.subscription_service import SubscriptionService, validate_subs
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.settings import settings
 from app.infra.sqlite_utils import open_connection
+from app.infra.foreign_keys import safe_foreign_keys_off
 from vpn_protocols import V2RayProtocol
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token
@@ -527,10 +528,7 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
     # Удаляем ключи из БД
     deleted_keys_count = subscription_repo.delete_subscription_keys(subscription_id)
     
-    # Деактивируем подписку
-    subscription_repo.deactivate_subscription(subscription_id)
-    
-    # Инвалидируем кэш подписки
+    # Инвалидируем кэш подписки перед удалением
     try:
         # subscription[2] - это subscription_token согласно структуре get_subscription_by_id
         # Структура: (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified, tariff_name, keys_count, traffic_limit_mb)
@@ -545,13 +543,20 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
         logging.error(f"Error invalidating subscription cache: {e}", exc_info=True)
         # Не прерываем выполнение, если не удалось инвалидировать кэш
     
+    # Физически удаляем подписку из БД
+    with open_connection(DB_PATH) as conn:
+        c = conn.cursor()
+        with safe_foreign_keys_off(c):
+            c.execute("DELETE FROM subscriptions WHERE id = ?", (subscription_id,))
+        conn.commit()
+    
     log_admin_action(
         request,
         "DELETE_SUBSCRIPTION",
-        f"Subscription ID: {subscription_id}, deleted {deleted_keys_count} keys from DB, {deleted_v2ray_count} from servers"
+        f"Subscription ID: {subscription_id}, deleted {deleted_keys_count} keys from DB, {deleted_v2ray_count} from servers, subscription removed from DB"
     )
     
-    logging.info(f"Successfully deleted subscription {subscription_id}")
+    logging.info(f"Successfully deleted subscription {subscription_id} from database")
     return {
         "subscription_id": subscription_id,
         "deleted_keys_count": deleted_keys_count,

@@ -417,7 +417,7 @@ class SubscriptionRepository:
                 await conn.execute("PRAGMA foreign_keys=ON")
 
     def list_subscriptions(self, limit: int = 50, offset: int = 0) -> List[Tuple]:
-        """Получить список всех подписок с информацией о ключах"""
+        """Получить список всех активных подписок с информацией о ключах"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
@@ -438,6 +438,7 @@ class SubscriptionRepository:
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
                 LEFT JOIN v2ray_keys vk ON vk.subscription_id = s.id
+                WHERE s.is_active = 1
                 GROUP BY s.id
                 ORDER BY s.created_at DESC
                 LIMIT ? OFFSET ?
@@ -447,10 +448,10 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def count_subscriptions(self) -> int:
-        """Получить общее количество подписок"""
+        """Получить общее количество активных подписок"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM subscriptions")
+            c.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = 1")
             return c.fetchone()[0]
 
     def get_subscription_by_id(self, subscription_id: int) -> Optional[Tuple]:
