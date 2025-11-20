@@ -115,9 +115,12 @@ class SubscriptionPurchaseService:
             )
             
             # Шаг 5: Определяем, это покупка или продление
+            # ВАЖНО: Если у пользователя есть активный бесплатный ключ (включая grace period),
+            # то любая оплата - это продление, а не покупка
             # Проверяем наличие активной подписки с учетом grace_period
-            # ВАЖНО: Если подписка была создана недавно (в течение последних 30 минут) и 
-            # уведомление о покупке еще не отправлено, это покупка (возможно retry), а не продление
+            # ВАЖНО: Если подписка существует и это новый платеж (не retry), это продление
+            # Если подписка была создана недавно и уведомление о покупке не отправлено,
+            # проверяем, не является ли это retry того же платежа
             from ..utils.renewal_detector import DEFAULT_GRACE_PERIOD
             
             now = int(time.time())
@@ -128,15 +131,51 @@ class SubscriptionPurchaseService:
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     """
-                    SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified, purchase_notification_sent
-                    FROM subscriptions
-                    WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-                    ORDER BY created_at DESC
+                    SELECT s.id, s.user_id, s.subscription_token, s.created_at, s.expires_at, s.tariff_id, s.is_active, s.last_updated_at, s.notified, s.purchase_notification_sent,
+                           t.price_rub
+                    FROM subscriptions s
+                    LEFT JOIN tariffs t ON s.tariff_id = t.id
+                    WHERE s.user_id = ? AND s.is_active = 1 AND s.expires_at > ?
+                    ORDER BY s.created_at DESC
                     LIMIT 1
                     """,
                     (payment.user_id, grace_threshold)
                 ) as cursor:
                     existing_subscription_row = await cursor.fetchone()
+            
+            # Проверяем наличие активной бесплатной подписки (включая grace period)
+            # Бесплатная подписка определяется по price_rub = 0 или tariff_id = FREE_V2RAY_TARIFF_ID
+            from app.settings import settings as app_settings
+            FREE_V2RAY_TARIFF_ID = app_settings.FREE_V2RAY_TARIFF_ID
+            
+            has_active_free_subscription = False
+            if existing_subscription_row:
+                subscription_tariff_id = existing_subscription_row[5] if len(existing_subscription_row) > 5 else None
+                subscription_price_rub = existing_subscription_row[10] if len(existing_subscription_row) > 10 else None
+                # Проверяем, является ли подписка бесплатной
+                has_active_free_subscription = (
+                    subscription_tariff_id == FREE_V2RAY_TARIFF_ID or
+                    (subscription_price_rub is not None and subscription_price_rub == 0)
+                )
+            
+            # Если есть активная бесплатная подписка, любая оплата - это продление
+            if has_active_free_subscription:
+                if existing_subscription_row:
+                    # Есть активная бесплатная подписка - продлеваем её
+                    logger.info(
+                        f"[SUBSCRIPTION] User {payment.user_id} has active free subscription "
+                        f"(tariff_id={subscription_tariff_id}, price_rub={subscription_price_rub}, grace_threshold={grace_threshold}). "
+                        f"This is a RENEWAL."
+                    )
+                    # Преобразуем в tuple для совместимости с _extend_subscription (без price_rub)
+                    existing_subscription = existing_subscription_row[:10]
+                    return await self._extend_subscription(payment, tariff, existing_subscription, now, is_purchase=False)
+                else:
+                    # Это не должно произойти, но на всякий случай
+                    logger.warning(
+                        f"[SUBSCRIPTION] User {payment.user_id} has active free subscription but row is None. "
+                        f"This should not happen."
+                    )
             
             if existing_subscription_row:
                 subscription_id = existing_subscription_row[0]
@@ -146,17 +185,43 @@ class SubscriptionPurchaseService:
                 purchase_notification_sent = existing_subscription_row[9] if len(existing_subscription_row) > 9 else 0
                 
                 # Проверяем, была ли подписка создана недавно и уведомление о покупке не отправлено
-                # Если да, то это покупка (возможно retry обработки того же платежа), а не продление
                 subscription_age = now - created_at if created_at else 0
                 is_recent_subscription = subscription_age < RECENT_SUBSCRIPTION_THRESHOLD
                 purchase_notification_not_sent = not purchase_notification_sent
                 
+                # Проверяем, не является ли это retry того же платежа
+                # Если подписка была создана недавно и уведомление не отправлено, 
+                # но это может быть retry обработки того же платежа
+                # Проверяем, есть ли уже другие платежи для этой подписки, которые были обработаны
+                is_likely_retry = False
                 if is_recent_subscription and purchase_notification_not_sent:
-                    # Подписка создана недавно и уведомление о покупке не отправлено - это покупка
+                    # Проверяем, есть ли другие completed платежи для этого пользователя с тем же тарифом
+                    # созданные примерно в то же время (в пределах 1 часа)
+                    async with open_async_connection(self.db_path) as conn:
+                        async with conn.execute(
+                            """
+                            SELECT COUNT(*) FROM payments
+                            WHERE user_id = ? 
+                            AND tariff_id = ?
+                            AND status = 'completed'
+                            AND protocol = 'v2ray'
+                            AND metadata LIKE '%subscription%'
+                            AND created_at > ?
+                            AND payment_id != ?
+                            """,
+                            (payment.user_id, payment.tariff_id, created_at - 3600, payment.payment_id)
+                        ) as check_cursor:
+                            other_completed_count = (await check_cursor.fetchone())[0]
+                            # Если есть другие completed платежи, это скорее всего продление, а не retry
+                            # Если других completed платежей нет, это может быть retry
+                            is_likely_retry = other_completed_count == 0
+                
+                if is_recent_subscription and purchase_notification_not_sent and is_likely_retry:
+                    # Подписка создана недавно, уведомление не отправлено, и это похоже на retry того же платежа
                     logger.info(
                         f"[SUBSCRIPTION] User {payment.user_id} has recent subscription {subscription_id} "
                         f"(created {subscription_age}s ago, purchase_notification_sent={purchase_notification_sent}). "
-                        f"This is a PURCHASE (likely retry of same payment)."
+                        f"This is likely a PURCHASE (retry of same payment)."
                     )
                     
                     # Используем существующую подписку, но отправляем уведомление о покупке
@@ -165,7 +230,8 @@ class SubscriptionPurchaseService:
                         payment, tariff, existing_subscription, now
                     )
                 
-                # Есть активная подписка, которая не была создана недавно или уведомление уже отправлено - это ПРОДЛЕНИЕ
+                # Есть активная подписка - это ПРОДЛЕНИЕ
+                # (независимо от того, когда была создана подписка, если это новый платеж)
                 logger.info(
                     f"[SUBSCRIPTION] User {payment.user_id} has active subscription {subscription_id} "
                     f"(expires_at={existing_expires_at}, created_at={created_at}, age={subscription_age}s, "
@@ -187,6 +253,252 @@ class SubscriptionPurchaseService:
                 
                 # СОЗДАНИЕ: Создаем новую подписку
                 return await self._create_subscription(payment, tariff, now)
+    
+    async def _create_subscription_as_renewal(
+        self, 
+        payment: Payment, 
+        tariff: Dict[str, Any], 
+        now: int
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Создать подписку как продление бесплатного ключа
+        
+        Используется когда у пользователя есть активный бесплатный ключ,
+        но нет подписки. Создаем подписку и отправляем уведомление о продлении.
+        """
+        try:
+            # Сначала проверяем, не была ли подписка уже создана другим процессом
+            from ..utils.renewal_detector import DEFAULT_GRACE_PERIOD
+            grace_threshold = now - DEFAULT_GRACE_PERIOD
+            
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified, purchase_notification_sent
+                    FROM subscriptions
+                    WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (payment.user_id, grace_threshold)
+                ) as cursor:
+                    existing_subscription_row = await cursor.fetchone()
+            
+            if existing_subscription_row:
+                # Подписка уже существует - продлеваем её
+                subscription_id = existing_subscription_row[0]
+                logger.info(
+                    f"[SUBSCRIPTION] Subscription {subscription_id} already exists for user {payment.user_id}. "
+                    f"Extending as renewal."
+                )
+                existing_subscription = existing_subscription_row
+                return await self._extend_subscription(payment, tariff, existing_subscription, now, is_purchase=False)
+            
+            # Создаем новую подписку
+            expires_at = now + tariff['duration_sec']
+            
+            # Генерируем уникальный токен
+            subscription_token = None
+            for _ in range(10):
+                token = str(uuid.uuid4())
+                if not await self.subscription_repo.get_subscription_by_token_async(token):
+                    subscription_token = token
+                    break
+            
+            if not subscription_token:
+                error_msg = "Failed to generate unique subscription token after 10 attempts"
+                logger.error(f"[SUBSCRIPTION] {error_msg}")
+                return False, error_msg
+            
+            # Создаем подписку в БД
+            subscription_id = await self.subscription_repo.create_subscription_async(
+                user_id=payment.user_id,
+                subscription_token=subscription_token,
+                expires_at=expires_at,
+                tariff_id=tariff['id'],
+            )
+            
+            logger.info(
+                f"[SUBSCRIPTION] Created subscription {subscription_id} for user {payment.user_id} as renewal of free key, "
+                f"expires_at={expires_at}"
+            )
+            
+            # Создаем ключи на всех активных V2Ray серверах
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT id, name, api_url, api_key, domain, v2ray_path
+                    FROM servers
+                    WHERE protocol = 'v2ray' AND active = 1
+                    ORDER BY id
+                    """
+                ) as cursor:
+                    servers = await cursor.fetchall()
+            
+            created_keys = 0
+            failed_servers = []
+            
+            for server_id, server_name, api_url, api_key, domain, v2ray_path in servers:
+                v2ray_uuid = None
+                protocol_client = None
+                try:
+                    key_email = f"{payment.user_id}_subscription_{subscription_id}@veilbot.com"
+                    server_config = {
+                        'api_url': api_url,
+                        'api_key': api_key,
+                        'domain': domain,
+                    }
+                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                    user_data = await protocol_client.create_user(key_email, name=server_name)
+                    
+                    if not user_data or not user_data.get('uuid'):
+                        raise Exception("Failed to create user on V2Ray server")
+                    
+                    v2ray_uuid = user_data['uuid']
+                    client_config = await protocol_client.get_user_config(
+                        v2ray_uuid,
+                        {
+                            'domain': domain,
+                            'port': 443,
+                            'email': key_email,
+                        },
+                    )
+                    
+                    if 'vless://' in client_config:
+                        lines = client_config.split('\n')
+                        for line in lines:
+                            if line.strip().startswith('vless://'):
+                                client_config = line.strip()
+                                break
+                    
+                    async with open_async_connection(self.db_path) as conn:
+                        await conn.execute("PRAGMA foreign_keys = OFF")
+                        try:
+                            cursor = await conn.execute(
+                                """
+                                INSERT INTO v2ray_keys 
+                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    server_id,
+                                    payment.user_id,
+                                    v2ray_uuid,
+                                    key_email,
+                                    now,
+                                    expires_at,
+                                    tariff['id'],
+                                    client_config,
+                                    subscription_id,
+                                ),
+                            )
+                            await conn.commit()
+                            
+                            async with conn.execute(
+                                "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
+                                (server_id, payment.user_id, subscription_id, v2ray_uuid)
+                            ) as check_cursor:
+                                if not await check_cursor.fetchone():
+                                    raise Exception(f"Key was not saved to database for server {server_id}")
+                            
+                        finally:
+                            await conn.execute("PRAGMA foreign_keys = ON")
+                    
+                    created_keys += 1
+                    logger.info(
+                        f"[SUBSCRIPTION] Created key for subscription {subscription_id} on server {server_id} ({server_name})"
+                    )
+                    
+                except Exception as e:
+                    logger.error(
+                        f"[SUBSCRIPTION] Failed to create key for subscription {subscription_id} "
+                        f"on server {server_id} ({server_name}): {e}",
+                        exc_info=True,
+                    )
+                    if v2ray_uuid and protocol_client:
+                        try:
+                            await protocol_client.delete_user(v2ray_uuid)
+                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned key on server {server_id}")
+                        except Exception as cleanup_error:
+                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned key: {cleanup_error}")
+                    failed_servers.append(server_id)
+            
+            if created_keys == 0:
+                error_msg = f"Failed to create any keys for subscription {subscription_id}"
+                logger.error(f"[SUBSCRIPTION] {error_msg}")
+                await self.subscription_repo.deactivate_subscription_async(subscription_id)
+                return False, error_msg
+            
+            logger.info(
+                f"[SUBSCRIPTION] Created subscription {subscription_id} for user {payment.user_id}: "
+                f"{created_keys} keys created, {len(failed_servers)} failed"
+            )
+            
+            # Отправляем уведомление о продлении (не о покупке)
+            subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
+            msg = (
+                f"✅ *Подписка V2Ray успешно продлена!*\n\n"
+                f"🔗 *Ссылка подписки:*\n"
+                f"`{subscription_url}`\n\n"
+                f"⏳ *Добавлено времени:* {format_duration(tariff['duration_sec'])}\n"
+                f"📅 *Новый срок действия:* до <code>{datetime.fromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S')}</code>\n\n"
+                f"💡 Подписка автоматически обновится в вашем приложении V2Ray"
+            )
+            
+            logger.info(
+                f"[SUBSCRIPTION] Sending RENEWAL notification to user {payment.user_id} for subscription {subscription_id}"
+            )
+            notification_sent = await self._send_notification_simple(payment.user_id, msg)
+            
+            if not notification_sent:
+                logger.warning(
+                    f"[SUBSCRIPTION] Failed to send renewal notification for subscription {subscription_id}, "
+                    f"user {payment.user_id}. Will retry."
+                )
+                return False, f"Failed to send renewal notification to user {payment.user_id}"
+            
+            # Обновляем статус платежа
+            try:
+                update_success = await self.payment_repo.try_update_status(
+                    payment.payment_id,
+                    PaymentStatus.COMPLETED,
+                    PaymentStatus.PAID
+                )
+                
+                if not update_success:
+                    updated_payment = await self.payment_repo.get_by_payment_id(payment.payment_id)
+                    if updated_payment and updated_payment.status == PaymentStatus.COMPLETED:
+                        logger.info(
+                            f"[SUBSCRIPTION] Payment {payment.payment_id} already completed by another process"
+                        )
+                    else:
+                        payment.mark_as_completed()
+                        await self.payment_repo.update(payment)
+                        logger.info(f"[SUBSCRIPTION] Payment {payment.payment_id} marked as completed via update()")
+                else:
+                    logger.info(f"[SUBSCRIPTION] Payment {payment.payment_id} marked as completed atomically")
+                    
+            except Exception as update_error:
+                logger.error(
+                    f"[SUBSCRIPTION] Failed to update payment {payment.payment_id} status to completed: {update_error}",
+                    exc_info=True
+                )
+            
+            logger.info(
+                f"[SUBSCRIPTION] Subscription {subscription_id} created as renewal successfully for payment {payment.payment_id}, "
+                f"notification_sent={notification_sent}"
+            )
+            return True, None
+            
+        except Exception as e:
+            error_msg = f"Error creating subscription as renewal: {e}"
+            logger.error(f"[SUBSCRIPTION] {error_msg}", exc_info=True)
+            try:
+                if 'subscription_id' in locals():
+                    await self.subscription_repo.deactivate_subscription_async(subscription_id)
+            except:
+                pass
+            return False, error_msg
             
         except Exception as e:
             error_msg = f"Error processing subscription purchase for payment {payment_id}: {e}"
@@ -422,30 +734,40 @@ class SubscriptionPurchaseService:
                 f"user {payment.user_id}, payment {payment.payment_id}"
             )
             
-            # Шаг 1: Проверяем, не было ли уже отправлено уведомление
+            # Шаг 1: Атомарно проверяем и помечаем уведомление как отправляемое
+            # Это предотвращает дублирование уведомлений при параллельной обработке
             async with open_async_connection(self.db_path) as conn:
+                # Атомарно проверяем и обновляем флаг purchase_notification_sent
                 async with conn.execute(
-                    "SELECT purchase_notification_sent FROM subscriptions WHERE id = ?",
+                    """
+                    UPDATE subscriptions 
+                    SET purchase_notification_sent = 1 
+                    WHERE id = ? AND purchase_notification_sent = 0
+                    """,
                     (subscription_id,)
-                ) as check_cursor:
-                    notif_row = await check_cursor.fetchone()
-                    if notif_row and notif_row[0]:
-                        logger.info(f"[SUBSCRIPTION] Purchase notification already sent for subscription {subscription_id}, skipping")
-                        # Уведомление уже отправлено, помечаем платеж как completed
-                        try:
-                            update_success = await self.payment_repo.try_update_status(
-                                payment.payment_id,
-                                PaymentStatus.COMPLETED,
-                                PaymentStatus.PAID
-                            )
-                            if not update_success:
-                                payment.mark_as_completed()
-                                await self.payment_repo.update(payment)
-                        except Exception as e:
-                            logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
-                        return True, None
+                ) as update_cursor:
+                    await conn.commit()
+                    notification_already_sent = update_cursor.rowcount == 0
+                
+                if notification_already_sent:
+                    # Уведомление уже отправлено другим процессом
+                    logger.info(f"[SUBSCRIPTION] Purchase notification already sent for subscription {subscription_id} by another process, skipping")
+                    # Помечаем платеж как completed
+                    try:
+                        update_success = await self.payment_repo.try_update_status(
+                            payment.payment_id,
+                            PaymentStatus.COMPLETED,
+                            PaymentStatus.PAID
+                        )
+                        if not update_success:
+                            payment.mark_as_completed()
+                            await self.payment_repo.update(payment)
+                    except Exception as e:
+                        logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
+                    return True, None
             
             # Шаг 2: Отправляем уведомление о покупке
+            # Флаг purchase_notification_sent уже установлен атомарно выше
             subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
             msg = (
                 f"✅ *Подписка V2Ray успешно создана!*\n\n"
@@ -476,14 +798,9 @@ class SubscriptionPurchaseService:
                 # НЕ помечаем как completed, чтобы повторить попытку
                 return False, f"Failed to send purchase notification to user {payment.user_id}"
             
-            # Шаг 4: Уведомление успешно отправлено - помечаем подписку и платеж
-            try:
-                await self.subscription_repo.mark_purchase_notification_sent_async(subscription_id)
-            except Exception as mark_error:
-                logger.warning(
-                    f"[SUBSCRIPTION] Failed to mark purchase notification sent for subscription {subscription_id}: {mark_error}. "
-                    f"Continuing with payment status update."
-                )
+            # Шаг 4: Уведомление успешно отправлено - помечаем платеж
+            # ВАЖНО: Флаг purchase_notification_sent уже установлен атомарно в Шаге 1
+            # Здесь только обновляем статус платежа
             
             # Обновляем статус платежа - используем атомарное обновление для надежности
             try:
@@ -763,30 +1080,40 @@ class SubscriptionPurchaseService:
                 f"{created_keys} keys created, {len(failed_servers)} failed"
             )
             
-            # Шаг 4: Проверяем, не было ли уже отправлено уведомление
+            # Шаг 4: Атомарно проверяем и помечаем уведомление как отправляемое
+            # Это предотвращает дублирование уведомлений при параллельной обработке
             async with open_async_connection(self.db_path) as conn:
+                # Атомарно проверяем и обновляем флаг purchase_notification_sent
                 async with conn.execute(
-                    "SELECT purchase_notification_sent FROM subscriptions WHERE id = ?",
+                    """
+                    UPDATE subscriptions 
+                    SET purchase_notification_sent = 1 
+                    WHERE id = ? AND purchase_notification_sent = 0
+                    """,
                     (subscription_id,)
-                ) as check_cursor:
-                    notif_row = await check_cursor.fetchone()
-                    if notif_row and notif_row[0]:
-                        logger.info(f"[SUBSCRIPTION] Purchase notification already sent for subscription {subscription_id}, skipping")
-                        # Уведомление уже отправлено, помечаем платеж как completed
-                        try:
-                            update_success = await self.payment_repo.try_update_status(
-                                payment.payment_id,
-                                PaymentStatus.COMPLETED,
-                                PaymentStatus.PAID
-                            )
-                            if not update_success:
-                                payment.mark_as_completed()
-                                await self.payment_repo.update(payment)
-                        except Exception as e:
-                            logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
-                        return True, None
+                ) as update_cursor:
+                    await conn.commit()
+                    notification_already_sent = update_cursor.rowcount == 0
+                
+                if notification_already_sent:
+                    # Уведомление уже отправлено другим процессом
+                    logger.info(f"[SUBSCRIPTION] Purchase notification already sent for subscription {subscription_id} by another process, skipping")
+                    # Помечаем платеж как completed
+                    try:
+                        update_success = await self.payment_repo.try_update_status(
+                            payment.payment_id,
+                            PaymentStatus.COMPLETED,
+                            PaymentStatus.PAID
+                        )
+                        if not update_success:
+                            payment.mark_as_completed()
+                            await self.payment_repo.update(payment)
+                    except Exception as e:
+                        logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
+                    return True, None
             
             # Шаг 5: МОМЕНТАЛЬНО отправляем уведомление о покупке (как в ключах)
+            # Флаг purchase_notification_sent уже установлен атомарно выше
             subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
             msg = (
                 f"✅ *Подписка V2Ray успешно создана!*\n\n"
@@ -818,14 +1145,8 @@ class SubscriptionPurchaseService:
                 return False, f"Failed to send notification to user {payment.user_id}"
             
             # Шаг 7: Уведомление успешно отправлено - помечаем платеж как completed
-            # ВАЖНО: Обновляем статус даже если mark_purchase_notification_sent_async выбросит исключение
-            try:
-                await self.subscription_repo.mark_purchase_notification_sent_async(subscription_id)
-            except Exception as mark_error:
-                logger.warning(
-                    f"[SUBSCRIPTION] Failed to mark purchase notification sent for subscription {subscription_id}: {mark_error}. "
-                    f"Continuing with payment status update."
-                )
+            # ВАЖНО: Флаг purchase_notification_sent уже установлен атомарно в Шаге 4
+            # Здесь только обновляем статус платежа
             
             # Обновляем статус платежа - используем атомарное обновление для надежности
             try:
