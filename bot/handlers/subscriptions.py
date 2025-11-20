@@ -10,6 +10,7 @@ from utils import get_db_cursor
 from bot.keyboards import get_main_menu, get_cancel_keyboard, get_payment_method_keyboard
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService
+from app.repositories.subscription_repository import SubscriptionRepository
 from vpn_protocols import format_duration
 from validators import input_validator, ValidationError, is_valid_email
 
@@ -70,8 +71,67 @@ async def format_subscription_info(subscription_data: tuple, server_count: int =
     return msg
 
 
+def format_bytes(bytes_value: int | None) -> str:
+    """Форматировать байты в читаемый формат"""
+    if bytes_value is None or bytes_value == 0:
+        return "0 Б"
+    
+    value = float(bytes_value)
+    for unit in ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']:
+        if value < 1024.0:
+            if unit == 'Б':
+                return f"{int(value)} {unit}"
+            else:
+                return f"{value:.2f} {unit}"
+        value /= 1024.0
+    return f"{value:.2f} ПБ"
+
+
+async def format_subscription_short_info(subscription_data: tuple) -> str:
+    """
+    Форматировать краткую информацию о подписке (срок действия, остаток трафика)
+    
+    Args:
+        subscription_data: Кортеж с данными подписки (id, user_id, token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified)
+    """
+    subscription_id, user_id, token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified = subscription_data
+    
+    now = int(time.time())
+    remaining_time = expires_at - now
+    
+    # Форматируем дату истечения
+    from datetime import datetime
+    expiry_date = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y")
+    remaining_str = format_duration(remaining_time)
+    
+    # Получаем информацию о трафике
+    repo = SubscriptionRepository()
+    traffic_usage_bytes = repo.get_subscription_traffic_sum(subscription_id)
+    traffic_limit_bytes = repo.get_subscription_traffic_limit(subscription_id)
+    
+    # Форматируем информацию о трафике
+    if traffic_limit_bytes and traffic_limit_bytes > 0:
+        traffic_usage_formatted = format_bytes(traffic_usage_bytes)
+        traffic_limit_formatted = format_bytes(traffic_limit_bytes)
+        remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
+        remaining_traffic_formatted = format_bytes(remaining_bytes)
+        
+        traffic_info = f"{traffic_usage_formatted} / {traffic_limit_formatted}\n📊 Остаток: {remaining_traffic_formatted}"
+    else:
+        traffic_info = "без ограничений"
+    
+    msg = (
+        f"📋 *Ваша подписка*\n\n"
+        f"⏳ *Срок действия:*\n"
+        f"{remaining_str} (до {expiry_date})\n\n"
+        f"📊 *Трафик:* {traffic_info}"
+    )
+    
+    return msg
+
+
 async def handle_get_access(message: types.Message):
-    """Обработчик кнопки '📋 Получить доступ'"""
+    """Обработчик кнопки 'Получить доступ'"""
     user_id = message.from_user.id
     
     # Кнопка доступна только для определенного пользователя
@@ -95,28 +155,15 @@ async def handle_get_access(message: types.Message):
             subscription = cursor.fetchone()
         
         if subscription:
-            # Показать информацию о существующей подписке
-            subscription_id = subscription[0]
-            
-            # Получить количество серверов в подписке
-            with get_db_cursor() as cursor:
-                cursor.execute("""
-                    SELECT COUNT(DISTINCT server_id)
-                    FROM v2ray_keys
-                    WHERE subscription_id = ? AND expiry_at > ?
-                """, (subscription_id, int(time.time())))
-                server_count = cursor.fetchone()[0] or 0
-            
-            msg = await format_subscription_info(subscription, server_count)
+            # Показать краткую информацию о подписке и кнопку продления
+            msg = await format_subscription_short_info(subscription)
             
             keyboard = InlineKeyboardMarkup()
-            keyboard.add(InlineKeyboardButton("🔄 Обновить подписку", callback_data=f"refresh_subscription:{subscription[2]}"))
-            keyboard.add(InlineKeyboardButton("📋 Скопировать ссылку", callback_data=f"copy_subscription:{subscription[2]}"))
+            keyboard.add(InlineKeyboardButton("🔄 Продлить подписку", callback_data="renew_subscription"))
             
             await message.answer(
                 msg,
                 reply_markup=keyboard,
-                disable_web_page_preview=True,
                 parse_mode="Markdown"
             )
         else:
@@ -130,15 +177,15 @@ async def handle_get_access(message: types.Message):
             
             if v2ray_server_count == 0:
                 await message.answer(
-                    "❌ К сожалению, сейчас нет доступных серверов V2Ray для создания подписки.\n"
+                    "❌ К сожалению, сейчас нет доступных серверов для создания подписки.\n"
                     "Пожалуйста, попробуйте позже.",
                     reply_markup=get_main_menu(user_id)
                 )
                 return
             
             msg = (
-                f"📋 *Получить подписку V2Ray*\n\n"
-                f"Подписка дает доступ ко всем серверам V2Ray:\n"
+                f"📋 *Получить подписку*\n\n"
+                f"Подписка дает доступ ко всем серверам:\n"
             )
             
             # Получаем список стран
@@ -687,7 +734,7 @@ def register_subscription_handlers(dp: Dispatcher, user_states: Dict[int, Dict[s
     global _user_states
     _user_states = user_states
     
-    @dp.message_handler(lambda m: m.text == "📋 Получить доступ")
+    @dp.message_handler(lambda m: m.text == "Получить доступ")
     @rate_limit("subscription")
     async def get_access_handler(message: types.Message):
         await handle_get_access(message)

@@ -33,7 +33,7 @@ def get_main_menu(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
         try:
             user_id_int = int(user_id) if not isinstance(user_id, int) else user_id
             if user_id_int == 6358556135:
-                menu.add(KeyboardButton("📋 Получить доступ"))
+                menu.add(KeyboardButton("Получить доступ"))
         except (ValueError, TypeError):
             pass
     
