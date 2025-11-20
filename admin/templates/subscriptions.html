@@ -122,7 +122,7 @@
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--actions">
                         <div class="action-buttons">
-                            <button class="btn btn-icon" data-action="edit-subscription" data-subscription-id="{{ subscription.id }}" data-expiry="{{ subscription.expires_at_iso }}" title="Редактировать">
+                            <button class="btn btn-icon" data-action="edit-subscription" data-subscription-id="{{ subscription.id }}" data-expiry="{{ subscription.expires_at_iso }}" data-traffic-limit="{{ subscription.traffic_limit_mb if subscription.traffic_limit_mb else '' }}" title="Редактировать">
                                 <span class="material-icons icon-small">edit</span>
                             </button>
                             <a href="/subscriptions/delete/{{ subscription.id }}" class="btn btn-icon btn-danger" data-action="delete-subscription" data-subscription-id="{{ subscription.id }}" title="Удалить">
@@ -166,13 +166,18 @@
 </div>
 {% endif %}
 
-{% call modal("edit-subscription-modal", "Редактировать срок подписки") %}
+{% call modal("edit-subscription-modal", "Редактировать подписку") %}
     <form id="editSubscriptionForm" method="post" class="form" data-form="edit-subscription">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <div class="form-field">
             <label for="new_expiry" class="form-label">Новая дата истечения</label>
             <input type="datetime-local" id="new_expiry" name="new_expiry" required class="form-input">
             <div class="form-hint">При изменении срока подписки будут обновлены все связанные ключи.</div>
+        </div>
+        <div class="form-field">
+            <label for="traffic_limit_mb" class="form-label">Лимит трафика (МБ)</label>
+            <input type="number" id="traffic_limit_mb" name="traffic_limit_mb" min="0" step="1" class="form-input" placeholder="Например, 3072">
+            <div class="form-hint">0 или пусто — использовать лимит из тарифа.</div>
         </div>
         <div class="form-actions">
             <button type="button" class="btn" data-modal-close>Отмена</button>
@@ -184,6 +189,6 @@
 
 {% block extra_scripts %}
     {{ super() }}
-    <script src="/static/js/subscriptions.js?v=20251111c"></script>
+    <script src="/static/js/subscriptions.js?v=20251111d"></script>
 {% endblock %}
 

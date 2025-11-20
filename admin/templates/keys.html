@@ -78,13 +78,17 @@
                         </button>
                     </td>
                     <td class="keys-table__cell keys-table__cell--email">
-                        {% if key.email %}
-                            <div class="cell-primary" title="{{ key.email }}">{{ key.email }}</div>
+                        {% if key.telegram_id %}
+                            <div class="cell-primary" title="{{ key.telegram_id }}">{{ key.telegram_id }}</div>
                         {% else %}
                             <div class="cell-primary text-muted">—</div>
                         {% endif %}
+                        {% if key.email %}
+                            <div class="cell-secondary text-muted" title="{{ key.email }}">{{ key.email }}</div>
+                        {% else %}
+                            <div class="cell-secondary text-muted">—</div>
+                        {% endif %}
                         <div class="cell-secondary text-muted">{{ key.tariff or '—' }}</div>
-                        <div class="cell-secondary text-muted">TG: {{ key.telegram_id or '—' }}</div>
                     </td>
                     <td class="keys-table__cell keys-table__cell--server">
                         <div class="cell-primary">{{ key.server or '—' }}</div>

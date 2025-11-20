@@ -739,6 +739,11 @@ def migrate_add_subscription_traffic_limits():
             conn.commit()
             logging.info("Поле traffic_over_limit_notified добавлено в subscriptions")
         
+        if 'traffic_limit_mb' not in columns:
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN traffic_limit_mb INTEGER DEFAULT 0")
+            conn.commit()
+            logging.info("Поле traffic_limit_mb добавлено в subscriptions")
+        
         # Создать таблицу snapshots для отслеживания дельт
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS subscription_traffic_snapshots (

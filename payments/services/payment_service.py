@@ -466,35 +466,15 @@ class PaymentService:
                                 )
                                 continue
                             
-                            # Определяем, это продление или новая покупка
-                            # Проверяем наличие активного ключа у пользователя
-                            now_ts = int(datetime.now(timezone.utc).timestamp())
-                            GRACE_PERIOD = 86400  # 24 часа
-                            grace_threshold = now_ts - GRACE_PERIOD
-                            
-                            # Проверяем наличие ключа (для определения, это продление или покупка)
-                            cursor.execute(
-                                "SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1",
-                                (payment.user_id, grace_threshold),
-                            )
-                            has_outline_key = cursor.fetchone() is not None
-                            cursor.execute(
-                                "SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1",
-                                (payment.user_id, grace_threshold),
-                            )
-                            has_v2ray_key = cursor.fetchone() is not None
-                            
-                            # Если есть активный ключ - это продление
-                            for_renewal = has_outline_key or has_v2ray_key
-                            
-                            logger.info(
-                                f"Processing payment {payment.payment_id} for user {payment.user_id}: for_renewal={for_renewal}"
-                            )
-                            
                             # Проверяем, нужно ли создавать подписку вместо отдельного ключа
                             key_type = payment.metadata.get('key_type') if payment.metadata else None
                             
                             if key_type == 'subscription' and payment.protocol == 'v2ray':
+                                # Для подписок НЕ определяем for_renewal на основе ключей,
+                                # так как это может привести к неправильному определению продления
+                                # (ключи могут быть созданы этим же платежом)
+                                # Логика продления/создания определяется в process_subscription_purchase
+                                
                                 # Используем новый сервис для обработки подписки
                                 from ..services.subscription_purchase_service import SubscriptionPurchaseService
                                 
@@ -514,6 +494,21 @@ class PaymentService:
                                 
                                 continue  # Пропускаем создание обычного ключа для подписок
                             else:
+                                # Для обычных ключей определяем, это продление или покупка
+                                # ИСПРАВЛЕНО: Используем унифицированную функцию для определения продления
+                                from ..utils.renewal_detector import is_renewal_payment, DEFAULT_GRACE_PERIOD
+                                
+                                for_renewal = is_renewal_payment(
+                                    cursor,
+                                    payment.user_id,
+                                    payment.protocol or 'outline',
+                                    DEFAULT_GRACE_PERIOD
+                                )
+                                
+                                logger.info(
+                                    f"Processing payment {payment.payment_id} for user {payment.user_id}: for_renewal={for_renewal}"
+                                )
+                                
                                 # Вызываем create_new_key_flow_with_protocol, которая обработает и продление, и создание нового ключа
                                 await create_new_key_flow_with_protocol(
                                     cursor=cursor,

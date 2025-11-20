@@ -312,11 +312,26 @@ async def create_new_key_flow_with_protocol(
                         msg_text = f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}"
                     
                     # Отправляем сообщение пользователю
+                    notification_sent = False
                     if message:
-                        await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        try:
+                            await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                            notification_sent = True
+                        except Exception as e:
+                            logging.error(f"Failed to send Outline renewal notification via message.answer to user {user_id}: {e}")
+                            # Пробуем через safe_send_message как fallback
+                            result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                            notification_sent = result is not None
                     else:
                         # Если message=None (например, из webhook), отправляем напрямую через bot
-                        await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        notification_sent = result is not None
+                    
+                    if notification_sent:
+                        logging.info(f"Outline renewal notification sent successfully to user {user_id}")
+                    else:
+                        logging.warning(f"Failed to send Outline renewal notification to user {user_id}")
+                    
                     return
                 else:
                     # Если не удалось продлить, создаем новый ключ
@@ -463,11 +478,26 @@ async def create_new_key_flow_with_protocol(
                         msg_text = f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}"
                     
                     # Отправляем сообщение пользователю
+                    notification_sent = False
                     if message:
-                        await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        try:
+                            await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                            notification_sent = True
+                        except Exception as e:
+                            logging.error(f"Failed to send V2Ray renewal notification via message.answer to user {user_id}: {e}")
+                            # Пробуем через safe_send_message как fallback
+                            result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                            notification_sent = result is not None
                     else:
                         # Если message=None (например, из webhook), отправляем напрямую через bot
-                        await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                        notification_sent = result is not None
+                    
+                    if notification_sent:
+                        logging.info(f"V2Ray renewal notification sent successfully to user {user_id}")
+                    else:
+                        logging.warning(f"Failed to send V2Ray renewal notification to user {user_id}")
+                    
                     return
                 else:
                     # Если не удалось продлить, создаем новый ключ
@@ -871,23 +901,46 @@ async def create_new_key_flow_with_protocol(
         # Получаем актуальное главное меню (на случай, если оно изменилось)
         current_main_menu = get_main_menu()
         
+        key_message = format_key_message_unified(config, protocol, tariff)
+        notification_sent = False
+        
         if message:
-            await message.answer(
-                format_key_message_unified(config, protocol, tariff),
-                reply_markup=current_main_menu,
-                disable_web_page_preview=True,
-                parse_mode="Markdown"
-            )
+            try:
+                await message.answer(
+                    key_message,
+                    reply_markup=current_main_menu,
+                    disable_web_page_preview=True,
+                    parse_mode="Markdown"
+                )
+                notification_sent = True
+            except Exception as e:
+                logging.error(f"Failed to send key creation notification via message.answer to user {user_id}: {e}")
+                # Пробуем через safe_send_message как fallback
+                result = await safe_send_message(
+                    bot,
+                    user_id,
+                    key_message,
+                    reply_markup=current_main_menu,
+                    disable_web_page_preview=True,
+                    parse_mode="Markdown"
+                )
+                notification_sent = result is not None
         else:
             # Если message=None (например, из webhook), отправляем напрямую через bot
-            await safe_send_message(
+            result = await safe_send_message(
                 bot,
                 user_id,
-                format_key_message_unified(config, protocol, tariff),
+                key_message,
                 reply_markup=current_main_menu,
                 disable_web_page_preview=True,
                 parse_mode="Markdown"
             )
+            notification_sent = result is not None
+        
+        if notification_sent:
+            logging.info(f"Key creation notification sent successfully to user {user_id} for {protocol} key")
+        else:
+            logging.warning(f"Failed to send key creation notification to user {user_id} for {protocol} key")
         
         # Уведомление админу
         admin_msg = (
@@ -1176,9 +1229,76 @@ async def wait_for_payment_with_protocol(
                                 # Платеж уже помечен как completed в SubscriptionPurchaseService
                                 # Уведомление уже отправлено, не отправляем повторно
                             else:
+                                # КРИТИЧНО: Проверяем, действительно ли подписка не создана перед отправкой ошибки
+                                # Если подписка уже создана, но уведомление не отправлено - это не критическая ошибка,
+                                # фоновая задача повторит отправку уведомления
+                                subscription_exists = False
+                                with get_db_cursor() as check_cursor:
+                                    check_cursor.execute(
+                                        """
+                                        SELECT id FROM subscriptions 
+                                        WHERE user_id = ? AND is_active = 1 
+                                        ORDER BY created_at DESC LIMIT 1
+                                        """,
+                                        (user_id,)
+                                    )
+                                    if check_cursor.fetchone():
+                                        subscription_exists = True
+                                
+                                if subscription_exists:
+                                    logging.warning(
+                                        f"Subscription purchase failed via wait_for_payment_with_protocol "
+                                        f"for payment {payment_id}, user {user_id}: {error_msg}, "
+                                        f"but subscription exists. Will retry notification via background task."
+                                    )
+                                    # Подписка создана, но уведомление не отправлено - фоновая задача повторит
+                                    # НЕ отправляем сообщение об ошибке пользователю
+                                else:
+                                    logging.error(
+                                        f"Failed to process subscription purchase via wait_for_payment_with_protocol "
+                                        f"for payment {payment_id}, user {user_id}: {error_msg}"
+                                    )
+                                    if message:
+                                        try:
+                                            await message.answer(
+                                                "❌ Произошла ошибка при создании подписки. Обратитесь в поддержку.",
+                                                reply_markup=main_menu
+                                            )
+                                        except Exception:
+                                            pass
+                                # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                        except Exception as exc:
+                            # КРИТИЧНО: Проверяем, действительно ли подписка не создана перед отправкой ошибки
+                            subscription_exists = False
+                            try:
+                                with get_db_cursor() as check_cursor:
+                                    check_cursor.execute(
+                                        """
+                                        SELECT id FROM subscriptions 
+                                        WHERE user_id = ? AND is_active = 1 
+                                        ORDER BY created_at DESC LIMIT 1
+                                        """,
+                                        (user_id,)
+                                    )
+                                    if check_cursor.fetchone():
+                                        subscription_exists = True
+                            except Exception:
+                                pass
+                            
+                            if subscription_exists:
+                                logging.warning(
+                                    f"Exception processing subscription purchase via wait_for_payment_with_protocol "
+                                    f"for payment {payment_id}, user {user_id}: {exc}, "
+                                    f"but subscription exists. Will retry notification via background task.",
+                                    exc_info=True
+                                )
+                                # Подписка создана, но произошла ошибка - фоновая задача повторит
+                                # НЕ отправляем сообщение об ошибке пользователю
+                            else:
                                 logging.error(
-                                    f"Failed to process subscription purchase via wait_for_payment_with_protocol "
-                                    f"for payment {payment_id}, user {user_id}: {error_msg}"
+                                    f"Exception processing subscription purchase via wait_for_payment_with_protocol "
+                                    f"for payment {payment_id}, user {user_id}: {exc}",
+                                    exc_info=True
                                 )
                                 if message:
                                     try:
@@ -1188,21 +1308,6 @@ async def wait_for_payment_with_protocol(
                                         )
                                     except Exception:
                                         pass
-                                # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
-                        except Exception as exc:
-                            logging.error(
-                                f"Exception processing subscription purchase via wait_for_payment_with_protocol "
-                                f"for payment {payment_id}, user {user_id}: {exc}",
-                                exc_info=True
-                            )
-                            if message:
-                                try:
-                                    await message.answer(
-                                        "❌ Произошла ошибка при создании подписки. Обратитесь в поддержку.",
-                                        reply_markup=main_menu
-                                    )
-                                except Exception:
-                                    pass
                             # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
                     else:
                         # Логика продления: если for_renewal=True, функция create_new_key_flow_with_protocol
@@ -1212,9 +1317,25 @@ async def wait_for_payment_with_protocol(
                         await create_new_key_flow_with_protocol(cursor, None, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
                         
                         # После успешной выдачи/продления ключа помечаем платеж как закрытый
-                        # Это предотвратит повторную выдачу ключа по этому платежу
-                        cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (payment_id,))
-                        logging.info(f"Payment {payment_id} marked as completed after key creation/renewal")
+                        # ИСПРАВЛЕНО: Используем payment_repo для атомарного обновления статуса
+                        try:
+                            from payments.repositories.payment_repository import PaymentRepository
+                            from payments.models.payment import PaymentStatus
+                            payment_repo = PaymentRepository()
+                            payment = await payment_repo.get_by_payment_id(payment_id)
+                            if payment:
+                                payment.mark_as_completed()
+                                await payment_repo.update(payment)
+                                logging.info(f"Payment {payment_id} marked as completed after key creation/renewal")
+                            else:
+                                # Fallback на старый способ, если payment_repo недоступен
+                                cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (payment_id,))
+                                logging.info(f"Payment {payment_id} marked as completed (fallback method)")
+                        except Exception as e:
+                            logging.error(f"Error marking payment {payment_id} as completed: {e}")
+                            # Fallback на старый способ при ошибке
+                            cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (payment_id,))
+                            logging.info(f"Payment {payment_id} marked as completed (fallback after error)")
                     # --- Реферальный бонус ---
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
                     ref_row = cursor.fetchone()

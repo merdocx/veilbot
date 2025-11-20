@@ -7,6 +7,7 @@ import time
 import logging
 from collections import defaultdict
 from typing import Optional, Callable, Awaitable, Dict, Any
+from datetime import datetime
 
 from utils import get_db_cursor
 from outline import delete_key
@@ -333,6 +334,7 @@ async def notify_expiring_keys() -> None:
                     notifications_to_send.append((user_id, message, keyboard))
                     v2ray_updates.append((new_notified, key_id_db))
 
+        # Отправляем уведомления (safe_send_message теперь имеет встроенный retry механизм)
         for user_id, message, keyboard in notifications_to_send:
             result = await safe_send_message(
                 bot,
@@ -345,8 +347,11 @@ async def notify_expiring_keys() -> None:
             if result:
                 logging.info("Sent expiry notification to user %s", user_id)
             else:
-                logging.warning("Failed to deliver expiry notification to user %s", user_id)
+                logging.warning("Failed to deliver expiry notification to user %s after retries", user_id)
 
+        # Обновляем флаги уведомлений в БД
+        # safe_send_message теперь имеет встроенный retry механизм (до 3 попыток),
+        # поэтому большинство временных ошибок будут обработаны автоматически
         if outline_updates:
             with get_db_cursor(commit=True) as cursor:
                 cursor.executemany("UPDATE keys SET notified = ? WHERE id = ?", outline_updates)
@@ -887,15 +892,18 @@ async def process_pending_paid_payments() -> None:
                         
                         if success:
                             logging.info(
-                                f"[AUTO-ISSUE] Subscription purchase processed successfully for payment {payment_uuid}, user {user_id}"
+                                f"[AUTO-ISSUE] Subscription purchase processed successfully for payment {payment_uuid}, "
+                                f"user {user_id}, notification sent"
                             )
-                            cursor.execute("UPDATE payments SET status = 'completed' WHERE id = ?", (payment_db_id,))
+                            # Платеж уже помечен как completed в process_subscription_purchase после успешной отправки уведомления
+                            # Не нужно обновлять статус здесь
                         else:
                             logging.error(
                                 f"[AUTO-ISSUE] Failed to process subscription purchase for payment {payment_uuid}, "
-                                f"user {user_id}: {error_msg}"
+                                f"user {user_id}: {error_msg}. Will retry."
                             )
                             # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                            # Это особенно важно, если уведомление не было отправлено
                     except Exception as exc:
                         logging.error(
                             f"[AUTO-ISSUE] Error processing subscription purchase for payment {payment_uuid}, "
@@ -1584,76 +1592,100 @@ async def notify_expiring_subscriptions() -> None:
 
 
 async def retry_failed_subscription_notifications() -> None:
-    """Повторная отправка уведомлений о покупке подписки, которые не были отправлены"""
+    """
+    Повторная отправка уведомлений о покупке подписки через process_subscription_purchase
+    
+    ИСПРАВЛЕНО: Теперь использует process_subscription_purchase вместо прямой отправки уведомлений.
+    Это предотвращает дублирование уведомлений и обеспечивает единую логику обработки.
+    """
     
     async def job() -> None:
-        bot = get_bot_instance()
-        if not bot:
-            logger.warning("Bot instance not available for retry_subscription_notifications")
-            return
-        
-        subscription_repo = SubscriptionRepository()
-        tariff_repo = TariffRepository()
-        
-        # Получаем подписки без отправленного уведомления
-        subscriptions = subscription_repo.get_subscriptions_without_purchase_notification(limit=20, max_age_days=7)
-        
-        if not subscriptions:
-            return
-        
-        logger.info(f"Found {len(subscriptions)} subscriptions without purchase notification")
-        
-        for sub_row in subscriptions:
-            (
-                sub_id, user_id, token, created_at, expires_at, tariff_id
-            ) = sub_row
+        try:
+            from payments.services.subscription_purchase_service import SubscriptionPurchaseService
+            from payments.repositories.payment_repository import PaymentRepository
+            from app.settings import settings as app_settings
             
-            try:
-                # Получаем тариф
-                tariff_row = tariff_repo.get_tariff(tariff_id)
-                if not tariff_row:
-                    logger.warning(f"Tariff {tariff_id} not found for subscription {sub_id}")
-                    continue
-                
-                tariff = {
-                    'id': tariff_row[0],
-                    'name': tariff_row[1],
-                    'duration_sec': tariff_row[2],
-                    'price_rub': tariff_row[3],
-                }
-                
-                # Формируем сообщение
-                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
-                msg = (
-                    f"✅ *Подписка V2Ray успешно создана!*\n\n"
-                    f"🔗 *Ссылка подписки:*\n"
-                    f"`{subscription_url}`\n\n"
-                    f"⏳ *Срок действия:* {format_duration(tariff['duration_sec'])}\n\n"
-                    f"💡 *Как использовать:*\n"
-                    f"1. Откройте приложение V2Ray\n"
-                    f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
-                    f"3. Вставьте ссылку выше\n"
-                    f"4. Все серверы будут добавлены автоматически"
-                )
-                
-                # Отправляем уведомление
-                result = await safe_send_message(
-                    bot,
-                    user_id,
-                    msg,
-                    reply_markup=get_main_menu(user_id),
-                    disable_web_page_preview=True,
-                    parse_mode="Markdown"
-                )
-                
-                if result:
-                    subscription_repo.mark_purchase_notification_sent(sub_id)
-                    logger.info(f"Successfully sent purchase notification for subscription {sub_id} to user {user_id}")
-                else:
-                    logger.warning(f"Failed to send purchase notification for subscription {sub_id} to user {user_id}")
+            payment_repo = PaymentRepository(app_settings.DATABASE_PATH)
+            subscription_service = SubscriptionPurchaseService()
+            
+            # Получаем оплаченные платежи за подписки со статусом paid (не completed)
+            # Это означает, что подписка была создана/продлена, но уведомление не было отправлено
+            paid_payments = await payment_repo.get_paid_payments_without_keys()
+            
+            subscription_payments = []
+            for payment in paid_payments:
+                # Проверяем, что это платеж за подписку
+                if (payment.metadata and 
+                    payment.metadata.get('key_type') == 'subscription' and 
+                    payment.protocol == 'v2ray' and
+                    payment.status.value == 'paid'):  # Только paid, не completed
+                    subscription_payments.append(payment)
+            
+            if not subscription_payments:
+                return
+            
+            logger.info(f"[RETRY] Found {len(subscription_payments)} subscription payments without notification")
+            
+            # Обрабатываем каждый платеж через process_subscription_purchase
+            # Это гарантирует правильную логику и предотвращает дублирование
+            for payment in subscription_payments:
+                try:
+                    # Проверяем, не обрабатывается ли уже этот платеж
+                    if payment.metadata and payment.metadata.get('_processing_subscription'):
+                        logger.debug(f"[RETRY] Payment {payment.payment_id} is already being processed, skipping")
+                        continue
                     
-            except Exception as e:
-                logger.error(f"Error retrying notification for subscription {sub_id}: {e}", exc_info=True)
+                    # Проверяем возраст платежа - обрабатываем только старые (более 10 минут)
+                    now = int(time.time())
+                    if payment.paid_at:
+                        payment_age = now - int(payment.paid_at.timestamp())
+                        MIN_AGE_FOR_RETRY = 600  # 10 минут
+                        if payment_age < MIN_AGE_FOR_RETRY:
+                            logger.debug(
+                                f"[RETRY] Skipping payment {payment.payment_id} - paid {payment_age}s ago "
+                                f"(less than {MIN_AGE_FOR_RETRY}s, should be processed via normal flow)"
+                            )
+                            continue
+                    
+                    # КРИТИЧНО: Проверяем статус платежа ПЕРЕД обработкой (защита от race condition)
+                    # Статус мог измениться на completed между получением списка и этой проверкой
+                    fresh_payment = await payment_repo.get_by_payment_id(payment.payment_id)
+                    if not fresh_payment:
+                        logger.warning(f"[RETRY] Payment {payment.payment_id} not found, skipping")
+                        continue
+                    
+                    if fresh_payment.status.value != 'paid':
+                        logger.info(
+                            f"[RETRY] Payment {payment.payment_id} status is {fresh_payment.status.value} (not paid), skipping. "
+                            f"Payment was likely processed by another process."
+                        )
+                        continue
+                    
+                    logger.info(f"[RETRY] Retrying subscription purchase for payment {payment.payment_id}, user {payment.user_id}")
+                    
+                    # Используем process_subscription_purchase для обработки
+                    # Он сам проверит статус, создаст/продлит подписку и отправит уведомление
+                    success, error_msg = await subscription_service.process_subscription_purchase(payment.payment_id)
+                    
+                    if success:
+                        logger.info(f"[RETRY] Successfully processed subscription purchase for payment {payment.payment_id}")
+                    else:
+                        logger.warning(
+                            f"[RETRY] Failed to process subscription purchase for payment {payment.payment_id}: {error_msg}"
+                        )
+                    
+                    # Небольшая задержка между обработкой
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(
+                        f"[RETRY] Error retrying subscription purchase for payment {payment.payment_id}: {e}",
+                        exc_info=True
+                    )
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"[RETRY] Error in retry_failed_subscription_notifications: {e}", exc_info=True)
     
     await _run_periodic(
         "retry_failed_subscription_notifications",

@@ -1,6 +1,7 @@
 import sqlite3
 import logging
 import os
+import time
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timezone
 
@@ -127,6 +128,23 @@ class PaymentRepository:
                     except Exception:
                         return {}
             
+            # Безопасное преобразование статуса в enum
+            def safe_status(value):
+                if value is None:
+                    return PaymentStatus.PENDING
+                if isinstance(value, PaymentStatus):
+                    return value
+                try:
+                    # Пробуем преобразовать строку в enum
+                    status_str = str(value).lower()
+                    for status in PaymentStatus:
+                        if status.value.lower() == status_str:
+                            return status
+                    # Если не нашли, возвращаем PENDING
+                    return PaymentStatus.PENDING
+                except Exception:
+                    return PaymentStatus.PENDING
+            
             # Вариант 1: "перепутанные поля" (очень старый формат)
             # В старых платежах: user_id содержит payment_id, tariff_id содержит user_id, payment_id содержит tariff_id
             if len(row) >= 4:
@@ -141,7 +159,7 @@ class PaymentRepository:
                         amount=row[4] if len(row) > 4 else 0,
                         currency=row[5] if len(row) > 5 and row[5] else 'RUB',
                         email=row[6] if len(row) > 6 else None,
-                        status=row[7] if len(row) > 7 and row[7] else 'pending',
+                        status=safe_status(row[7] if len(row) > 7 and row[7] else 'pending'),
                         country=row[8] if len(row) > 8 else None,
                         protocol=row[9] if len(row) > 9 and row[9] else 'outline',
                         provider=row[10] if len(row) > 10 and row[10] else 'yookassa',
@@ -169,7 +187,7 @@ class PaymentRepository:
                         user_id=int(row[1]) if row[1] is not None else 0,
                         tariff_id=int(row[2]) if row[2] is not None else 0,
                         payment_id=row[3],
-                        status=row[4] if row[4] else 'pending',
+                        status=safe_status(row[4] if row[4] else 'pending'),
                         email=row[5],
                         protocol=row[7] if len(row) > 7 and row[7] else 'outline',
                         amount=row[8] if len(row) > 8 and row[8] is not None else 0,
@@ -193,7 +211,7 @@ class PaymentRepository:
                 amount=row[4],
                 currency=row[5] if row[5] else 'RUB',
                 email=row[6],
-                status=row[7] if row[7] else 'pending',
+                status=safe_status(row[7] if row[7] else 'pending'),
                 country=row[8],
                 protocol=row[9] if row[9] else 'outline',
                 provider=row[10] if row[10] else 'yookassa',
@@ -404,6 +422,174 @@ class PaymentRepository:
                 
         except Exception as e:
             logger.error(f"Error updating payment status: {e}")
+            return False
+    
+    async def try_update_status(self, payment_id: str, new_status: PaymentStatus, expected_status: PaymentStatus) -> bool:
+        """
+        Атомарное обновление статуса платежа только если текущий статус соответствует ожидаемому
+        
+        Используется для предотвращения параллельной обработки одного платежа.
+        Если статус уже изменился, обновление не произойдет.
+        
+        Args:
+            payment_id: ID платежа
+            new_status: Новый статус
+            expected_status: Ожидаемый текущий статус (обновление произойдет только если текущий статус = expected_status)
+            
+        Returns:
+            True если статус успешно обновлен, False если текущий статус не соответствует ожидаемому
+        """
+        try:
+            async with open_async_connection(self.db_path) as conn:
+                cursor = await conn.execute(
+                    "UPDATE payments SET status = ?, updated_at = ? WHERE payment_id = ? AND status = ?",
+                    (new_status.value, int(datetime.now(timezone.utc).timestamp()), payment_id, expected_status.value)
+                )
+                await conn.commit()
+                
+                success = cursor.rowcount > 0
+                if success:
+                    logger.info(f"Payment status atomically updated: {payment_id} {expected_status.value} -> {new_status.value}")
+                else:
+                    logger.debug(f"Payment status update skipped: {payment_id} (current status != {expected_status.value})")
+                return success
+                
+        except Exception as e:
+            logger.error(f"Error atomically updating payment status: {e}")
+            return False
+    
+    async def try_acquire_processing_lock(self, payment_id: str, lock_key: str = '_processing_subscription') -> bool:
+        """
+        Атомарная попытка установить флаг обработки платежа
+        
+        Args:
+            payment_id: ID платежа
+            lock_key: Ключ флага в metadata (по умолчанию '_processing_subscription')
+            
+        Returns:
+            True если флаг успешно установлен (блокировка получена), False если уже обрабатывается
+        """
+        try:
+            import json
+            async with open_async_connection(self.db_path) as conn:
+                # Получаем текущий metadata
+                async with conn.execute(
+                    "SELECT metadata, status FROM payments WHERE payment_id = ?",
+                    (payment_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if not row:
+                        logger.warning(f"Payment {payment_id} not found for lock acquisition")
+                        return False
+                    
+                    metadata_str = row[0]
+                    status = row[1]
+                    
+                    # Если платеж уже completed, не устанавливаем блокировку
+                    if status == 'completed':
+                        logger.debug(f"Payment {payment_id} already completed, skipping lock")
+                        return False
+                    
+                    # Парсим metadata
+                    try:
+                        if isinstance(metadata_str, str):
+                            metadata = json.loads(metadata_str)
+                        elif isinstance(metadata_str, dict):
+                            metadata = metadata_str
+                        else:
+                            metadata = {}
+                    except (json.JSONDecodeError, TypeError):
+                        metadata = {}
+                    
+                    # Проверяем, не установлен ли уже флаг
+                    if metadata.get(lock_key):
+                        # Проверяем, не истекла ли блокировка (если установлена более 10 минут назад, считаем её устаревшей)
+                        lock_started_at = metadata.get(f'{lock_key}_started_at', 0)
+                        if lock_started_at > 0:
+                            lock_age = int(time.time()) - lock_started_at
+                            if lock_age > 600:  # 10 минут
+                                logger.warning(
+                                    f"Payment {payment_id} has stale lock {lock_key} (age: {lock_age}s), "
+                                    f"clearing it and acquiring new lock"
+                                )
+                                # Удаляем устаревшую блокировку
+                                metadata.pop(lock_key, None)
+                                metadata.pop(f'{lock_key}_started_at', None)
+                            else:
+                                logger.debug(f"Payment {payment_id} already has lock {lock_key} (age: {lock_age}s)")
+                                return False
+                        else:
+                            logger.debug(f"Payment {payment_id} already has lock {lock_key} (no timestamp)")
+                            return False
+                    
+                    # Устанавливаем флаг атомарно
+                    metadata[lock_key] = True
+                    metadata[f'{lock_key}_started_at'] = int(time.time())
+                    
+                    # Обновляем платеж с новым metadata
+                    cursor = await conn.execute(
+                        "UPDATE payments SET metadata = ?, updated_at = ? WHERE payment_id = ? AND status != 'completed'",
+                        (json.dumps(metadata, ensure_ascii=False), int(time.time()), payment_id)
+                    )
+                    await conn.commit()
+                    
+                    success = cursor.rowcount > 0
+                    if success:
+                        logger.info(f"Processing lock acquired for payment {payment_id}")
+                    else:
+                        logger.debug(f"Failed to acquire lock for payment {payment_id} (may be completed)")
+                    return success
+                    
+        except Exception as e:
+            logger.error(f"Error acquiring processing lock for payment {payment_id}: {e}")
+            return False
+    
+    async def release_processing_lock(self, payment_id: str, lock_key: str = '_processing_subscription') -> bool:
+        """
+        Освободить флаг обработки платежа
+        
+        Args:
+            payment_id: ID платежа
+            lock_key: Ключ флага в metadata
+            
+        Returns:
+            True если флаг успешно удален
+        """
+        try:
+            import json
+            async with open_async_connection(self.db_path) as conn:
+                # Получаем текущий metadata
+                async with conn.execute(
+                    "SELECT metadata FROM payments WHERE payment_id = ?",
+                    (payment_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if not row:
+                        return False
+                    
+                    metadata_str = row[0]
+                    try:
+                        metadata = json.loads(metadata_str) if metadata_str else {}
+                    except (json.JSONDecodeError, TypeError):
+                        metadata = {}
+                    
+                    # Удаляем флаг
+                    if lock_key in metadata:
+                        metadata.pop(lock_key)
+                    if f'{lock_key}_started_at' in metadata:
+                        metadata.pop(f'{lock_key}_started_at')
+                    
+                    # Обновляем платеж
+                    cursor = await conn.execute(
+                        "UPDATE payments SET metadata = ?, updated_at = ? WHERE payment_id = ?",
+                        (json.dumps(metadata, ensure_ascii=False), int(time.time()), payment_id)
+                    )
+                    await conn.commit()
+                    
+                    return cursor.rowcount > 0
+                    
+        except Exception as e:
+            logger.error(f"Error releasing processing lock for payment {payment_id}: {e}")
             return False
     
     async def delete(self, payment_id: int) -> bool:

@@ -115,25 +115,28 @@ log_payment_attempt(
 #### **Проверка логов**
 ```bash
 # Логи безопасности
-tail -f veilbot_security.log
+tail -f /var/log/veilbot/veilbot_security.log
 
 # Логи бота
-./manage_bot.sh logs
+./manage_services.sh logs
+# или
+sudo journalctl -u veilbot.service -f
 
 # Логи админки
-journalctl -u veilbot-admin.service -f
+./manage_services.sh admin-logs
+# или
+sudo journalctl -u veilbot-admin.service -f
 ```
 
 #### **Проверка состояния**
 ```bash
 # Статус сервисов
-./manage_bot.sh status
+./manage_services.sh status
+# или
+sudo systemctl status veilbot.service veilbot-admin.service
 
 # Проверка процессов
-./check_bot_processes.sh
-
-# Мониторинг памяти
-python3 test_memory_performance.py
+ps aux | grep -E "(bot\.py|admin\.main)"
 ```
 
 ## 🚨 Процесс реагирования на инциденты
