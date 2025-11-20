@@ -33,18 +33,6 @@ async def format_subscription_info(subscription_data: tuple, server_count: int =
     now = int(time.time())
     remaining_time = expires_at - now
     
-    # Получаем информацию о тарифе
-    tariff_name = "V2Ray"
-    traffic_limit = "без ограничений"
-    if tariff_id:
-        with get_db_cursor() as cursor:
-            cursor.execute("SELECT name, traffic_limit_mb FROM tariffs WHERE id = ?", (tariff_id,))
-            tariff_row = cursor.fetchone()
-            if tariff_row:
-                tariff_name = tariff_row[0]
-                if tariff_row[1] and tariff_row[1] > 0:
-                    traffic_limit = f"{tariff_row[1]} ГБ"
-    
     # Форматируем дату истечения
     from datetime import datetime
     expiry_date = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y")
@@ -52,20 +40,30 @@ async def format_subscription_info(subscription_data: tuple, server_count: int =
     
     subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
     
+    # Получаем информацию о трафике
+    repo = SubscriptionRepository()
+    traffic_usage_bytes = repo.get_subscription_traffic_sum(subscription_id)
+    traffic_limit_bytes = repo.get_subscription_traffic_limit(subscription_id)
+    
+    # Форматируем информацию о трафике
+    if traffic_limit_bytes and traffic_limit_bytes > 0:
+        remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
+        remaining_traffic_formatted = format_bytes(remaining_bytes)
+        traffic_info = f"📊 Осталось трафика: {remaining_traffic_formatted}"
+    else:
+        traffic_info = "📊 Осталось трафика: без ограничений"
+    
     msg = (
-        f"📋 *Подписка V2Ray*\n\n"
-        f"🔗 *Ссылка подписки:*\n"
-        f"`{subscription_url}`\n\n"
-        f"⏳ *Срок действия:*\n"
-        f"{remaining_str} (до {expiry_date})\n\n"
-        f"🌐 *Серверов в подписке:* {server_count}\n\n"
-        f"📊 *Трафик:* {traffic_limit}\n\n"
-        f"💡 *Как использовать:*\n"
+        f"📋 Ваша подписка:\n\n"
+        f"🔗 {subscription_url}\n\n"
+        f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n\n"
+        f"{traffic_info}\n\n"
+        f"📱 App Store | Google Play\n\n"
+        f"💡 Как использовать:\n"
         f"1. Откройте приложение V2Ray\n"
-        f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
+        f"2. Нажмите \"+\" → \"Добавить из буфера\" или \"Импорт подписки\"\n"
         f"3. Вставьте ссылку выше\n"
-        f"4. Все серверы будут добавлены автоматически\n\n"
-        f"🔄 Подписка обновляется автоматически при добавлении новых серверов"
+        f"4. Все серверы будут добавлены автоматически"
     )
     
     return msg
