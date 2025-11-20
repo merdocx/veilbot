@@ -111,20 +111,16 @@ async def format_subscription_short_info(subscription_data: tuple) -> str:
     
     # Форматируем информацию о трафике
     if traffic_limit_bytes and traffic_limit_bytes > 0:
-        traffic_usage_formatted = format_bytes(traffic_usage_bytes)
-        traffic_limit_formatted = format_bytes(traffic_limit_bytes)
         remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
         remaining_traffic_formatted = format_bytes(remaining_bytes)
-        
-        traffic_info = f"{traffic_usage_formatted} / {traffic_limit_formatted}\n📊 Остаток: {remaining_traffic_formatted}"
+        traffic_info = f"📊 Осталось трафика: {remaining_traffic_formatted}"
     else:
-        traffic_info = "без ограничений"
+        traffic_info = "📊 Осталось трафика: без ограничений"
     
     msg = (
-        f"📋 *Ваша подписка*\n\n"
-        f"⏳ *Срок действия:*\n"
-        f"{remaining_str} (до {expiry_date})\n\n"
-        f"📊 *Трафик:* {traffic_info}"
+        f"📋 У Вас уже есть подписка\n\n"
+        f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n\n"
+        f"{traffic_info}"
     )
     
     return msg
