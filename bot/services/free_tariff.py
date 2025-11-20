@@ -354,10 +354,10 @@ async def handle_free_tariff_with_protocol(
         )
 
 
-async def issue_free_v2ray_key_on_start(message: types.Message) -> Dict[str, Any]:
+async def issue_free_v2ray_subscription_on_start(message: types.Message) -> Dict[str, Any]:
     """
-    Автоматическая выдача бесплатного V2Ray ключа при первом /start.
-    Возвращает статус операции и данные ключа (если успешно).
+    Автоматическая выдача бесплатной V2Ray подписки при первом /start.
+    Возвращает статус операции и данные подписки (если успешно).
     """
     user_id = message.from_user.id
     telegram_user = message.from_user
@@ -393,81 +393,84 @@ async def issue_free_v2ray_key_on_start(message: types.Message) -> Dict[str, Any
             "price_rub": row[4] or 0,
         }
 
-        server = select_available_server_by_protocol(
-            cursor,
-            country=FREE_V2RAY_COUNTRY,
-            protocol="v2ray",
-            for_renewal=False,
+        # Проверяем наличие активных V2Ray серверов
+        cursor.execute(
+            "SELECT COUNT(*) FROM servers WHERE protocol = 'v2ray' AND active = 1"
         )
-        actual_country = FREE_V2RAY_COUNTRY
-        if not server:
-            logging.info(
-                "No V2Ray servers found for free issuance with country '%s', falling back to any country",
-                FREE_V2RAY_COUNTRY,
-            )
-            server = select_available_server_by_protocol(
-                cursor,
-                country=None,
-                protocol="v2ray",
-                for_renewal=False,
-            )
-            if not server:
-                logging.warning("No V2Ray servers available for free issuance at all")
-                return {"status": "no_server"}
-            cursor.execute("SELECT country FROM servers WHERE id = ?", (server[0],))
-            row_country = cursor.fetchone()
-            actual_country = row_country[0] if row_country and row_country[0] else None
-        else:
-            cursor.execute("SELECT country FROM servers WHERE id = ?", (server[0],))
-            row_country = cursor.fetchone()
-            actual_country = row_country[0] if row_country and row_country[0] else FREE_V2RAY_COUNTRY
+        server_count = cursor.fetchone()[0]
+        if server_count == 0:
+            logging.warning("No active V2Ray servers available for free subscription issuance")
+            return {"status": "no_server"}
 
+        # Создаем подписку через SubscriptionService
+        subscription_data = None
         try:
-            key_data = await _create_v2ray_key_for_start(
-                cursor,
-                server=server,
+            from bot.services.subscription_service import SubscriptionService
+            service = SubscriptionService()
+            subscription_data = await service.create_subscription(
                 user_id=user_id,
-                tariff=tariff,
-                telegram_user=telegram_user,
+                tariff_id=tariff["id"],
+                duration_sec=tariff["duration_sec"],
             )
+            
+            if not subscription_data:
+                logging.error("Failed to create free subscription for user %s", user_id)
+                return {"status": "error"}
+            
+            # Записываем использование бесплатного тарифа
+            # Используем FREE_V2RAY_COUNTRY для записи, хотя ключи создаются на всех серверах
+            record_free_key_usage(
+                cursor,
+                user_id=user_id,
+                protocol="v2ray",
+                country=FREE_V2RAY_COUNTRY,
+            )
+            
         except Exception as exc:  # noqa: BLE001
-            logging.exception("Failed to create free V2Ray key for user %s: %s", user_id, exc)
+            logging.exception("Failed to create free V2Ray subscription for user %s: %s", user_id, exc)
             return {"status": "error"}
 
-        record_free_key_usage(
-            cursor,
-            user_id=user_id,
-            protocol="v2ray",
-            country=actual_country,
-        )
-
     # Уведомление администратора (вне транзакции)
-    try:
-        bot = get_bot_instance()
-        admin_message = (
-            "🎁 *Выдан бесплатный V2Ray ключ*\n"
-            f"Пользователь: `{user_id}`\n"
-            f"Страна: *{FREE_V2RAY_COUNTRY}*\n"
-            f"Тариф: *{tariff['name']}*"
-        )
-        await safe_send_message(
-            bot,
-            ADMIN_ID,
-            admin_message,
-            disable_web_page_preview=True,
-            parse_mode="Markdown",
-            mark_blocked=False,
-        )
-    except Exception as notify_exc:  # noqa: BLE001
-        logging.warning("Failed to notify admin about free key issuance: %s", notify_exc)
+    if subscription_data:
+        try:
+            bot = get_bot_instance()
+            created_keys = subscription_data.get("created_keys", 0)
+            failed_servers = subscription_data.get("failed_servers", [])
+            admin_message = (
+                "🎁 *Выдана бесплатная V2Ray подписка*\n"
+                f"Пользователь: `{user_id}`\n"
+                f"Тариф: *{tariff['name']}*\n"
+                f"Создано ключей: *{created_keys}*"
+            )
+            if failed_servers:
+                admin_message += f"\nНе удалось создать на серверах: {failed_servers}"
+            await safe_send_message(
+                bot,
+                ADMIN_ID,
+                admin_message,
+                disable_web_page_preview=True,
+                parse_mode="Markdown",
+                mark_blocked=False,
+            )
+        except Exception as notify_exc:  # noqa: BLE001
+            logging.warning("Failed to notify admin about free subscription issuance: %s", notify_exc)
+
+    if not subscription_data:
+        return {"status": "error"}
 
     return {
         "status": "issued",
-        "config": key_data["config"],
+        "subscription_token": subscription_data["token"],
+        "subscription_id": subscription_data["id"],
         "tariff": tariff,
-        "server": key_data["server"],
-        "expires_at": key_data["expires_at"],
+        "expires_at": subscription_data["expires_at"],
+        "created_keys": subscription_data.get("created_keys", 0),
+        "failed_servers": subscription_data.get("failed_servers", []),
     }
+
+
+# Алиас для обратной совместимости
+issue_free_v2ray_key_on_start = issue_free_v2ray_subscription_on_start
 
 
 async def _create_v2ray_key_for_start(

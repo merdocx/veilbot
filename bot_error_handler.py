@@ -141,7 +141,7 @@ class BotErrorHandler:
         """Возвращает главное меню"""
         from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
         menu = ReplyKeyboardMarkup(resize_keyboard=True)
-        menu.add(KeyboardButton("Купить доступ"))
+        menu.add(KeyboardButton("Получить доступ"))
         menu.add(KeyboardButton("Мои ключи"))
         menu.add(KeyboardButton("Получить месяц бесплатно"))
         menu.add(KeyboardButton("Помощь"))

@@ -128,14 +128,6 @@ async def handle_get_access(message: types.Message):
     """Обработчик кнопки 'Получить доступ'"""
     user_id = message.from_user.id
     
-    # Кнопка доступна только для определенного пользователя
-    if user_id != 6358556135:
-        await message.answer(
-            "❌ У вас нет доступа к этой функции.",
-            reply_markup=get_main_menu(user_id)
-        )
-        return
-    
     try:
         # Проверить наличие активной подписки
         with get_db_cursor() as cursor:

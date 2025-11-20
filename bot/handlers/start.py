@@ -10,6 +10,7 @@ from bot.keyboards import get_main_menu
 from app.infra.foreign_keys import safe_foreign_keys_off
 from bot.services.free_tariff import issue_free_v2ray_key_on_start
 from bot.utils import format_key_message_unified
+from vpn_protocols import format_duration
 
 async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, Any]]) -> None:
     """
@@ -59,11 +60,11 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
     placeholder_message = None
     try:
         placeholder_message = await message.answer(
-            "🔄 Готовим ваш бесплатный V2Ray ключ... Это займет несколько секунд."
+            "🔄 Готовим вашу бесплатную V2Ray подписку... Это займет несколько секунд."
         )
         result = await issue_free_v2ray_key_on_start(message)
     except Exception as exc:  # noqa: BLE001
-        logging.exception("Failed to auto-issue free V2Ray key for %s: %s", user_id, exc)
+        logging.exception("Failed to auto-issue free V2Ray subscription for %s: %s", user_id, exc)
         result = {"status": "error"}
     finally:
         if placeholder_message:
@@ -74,19 +75,51 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
 
     status = result.get("status")
     if status == "issued":
-        await message.answer(
-            format_key_message_unified(result["config"], "v2ray", result["tariff"]),
-            reply_markup=main_menu,
-            disable_web_page_preview=True,
-            parse_mode="Markdown",
-        )
+        # Формируем сообщение в формате покупки подписки
+        subscription_token = result.get("subscription_token")
+        tariff = result.get("tariff", {})
+        
+        if subscription_token:
+            subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
+            msg = (
+                f"✅ *Подписка V2Ray успешно создана!*\n\n"
+                f"🔗 *Ссылка подписки:*\n"
+                f"`{subscription_url}`\n\n"
+                f"⏳ *Срок действия:* {format_duration(tariff.get('duration_sec', 0))}\n\n"
+                f"💡 *Как использовать:*\n"
+                f"1. Откройте приложение V2Ray\n"
+                f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
+                f"3. Вставьте ссылку выше\n"
+                f"4. Все серверы будут добавлены автоматически"
+            )
+            await message.answer(
+                msg,
+                reply_markup=main_menu,
+                disable_web_page_preview=True,
+                parse_mode="Markdown",
+            )
+        else:
+            # Fallback на старый формат, если нет токена (для обратной совместимости)
+            config = result.get("config")
+            if config:
+                await message.answer(
+                    format_key_message_unified(config, "v2ray", tariff),
+                    reply_markup=main_menu,
+                    disable_web_page_preview=True,
+                    parse_mode="Markdown",
+                )
+            else:
+                await message.answer(
+                    "✅ Бесплатная подписка создана, но не удалось получить ссылку. Попробуйте позже.",
+                    reply_markup=main_menu,
+                )
     else:
         if status == "no_server":
             logging.info("No free V2Ray servers available for user %s", user_id)
         elif status == "error":
-            logging.info("Free V2Ray issuance failed for user %s", user_id)
+            logging.info("Free V2Ray subscription issuance failed for user %s", user_id)
         await message.answer(
-            "Нажмите «Купить доступ» для получения доступа",
+            "Нажмите «Получить доступ» для получения доступа",
             reply_markup=main_menu,
         )
 

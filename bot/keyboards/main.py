@@ -26,17 +26,7 @@ def get_main_menu(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
         user_id: ID пользователя для проверки наличия активной подписки
     """
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
-    menu.add(KeyboardButton("Купить доступ"))
-    
-    # Кнопка "Получить доступ" видна только для определенного пользователя
-    if user_id is not None:
-        try:
-            user_id_int = int(user_id) if not isinstance(user_id, int) else user_id
-            if user_id_int == 6358556135:
-                menu.add(KeyboardButton("Получить доступ"))
-        except (ValueError, TypeError):
-            pass
-    
+    menu.add(KeyboardButton("Получить доступ"))
     menu.add(KeyboardButton("Мои ключи"))
     menu.add(KeyboardButton("Получить месяц бесплатно"))
     menu.add(KeyboardButton("Помощь"))

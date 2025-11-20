@@ -1212,7 +1212,7 @@ async def wait_for_payment_with_protocol(
             from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
             main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
             main_menu.add(KeyboardButton("🔑 Мои ключи"))
-            main_menu.add(KeyboardButton("💳 Купить доступ"))
+            main_menu.add(KeyboardButton("Получить доступ"))
     
     from memory_optimizer import get_payment_service
     bot = get_bot_instance()
@@ -1562,7 +1562,7 @@ async def wait_for_crypto_payment(
             from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
             main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
             main_menu.add(KeyboardButton("🔑 Мои ключи"))
-            main_menu.add(KeyboardButton("💳 Купить доступ"))
+            main_menu.add(KeyboardButton("Получить доступ"))
     
     from memory_optimizer import get_payment_service
     bot = get_bot_instance()
