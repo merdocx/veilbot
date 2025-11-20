@@ -253,6 +253,11 @@ class SubscriptionPurchaseService:
                 
                 # СОЗДАНИЕ: Создаем новую подписку
                 return await self._create_subscription(payment, tariff, now)
+            
+        except Exception as e:
+            error_msg = f"Error processing subscription purchase for payment {payment_id}: {e}"
+            logger.error(f"[SUBSCRIPTION] {error_msg}", exc_info=True)
+            return False, error_msg
     
     async def _create_subscription_as_renewal(
         self, 
@@ -498,11 +503,6 @@ class SubscriptionPurchaseService:
                     await self.subscription_repo.deactivate_subscription_async(subscription_id)
             except:
                 pass
-            return False, error_msg
-            
-        except Exception as e:
-            error_msg = f"Error processing subscription purchase for payment {payment_id}: {e}"
-            logger.error(f"[SUBSCRIPTION] {error_msg}", exc_info=True)
             return False, error_msg
     
     async def _extend_subscription(
