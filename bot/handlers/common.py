@@ -244,6 +244,125 @@ async def back_to_main(message: types.Message, user_states: dict) -> None:
     await message.answer("Главное меню:", reply_markup=get_main_menu(user_id))
 
 
+async def handle_migrate_to_subscription(message: types.Message) -> None:
+    """Обработчик кнопки 'Перейти на подписку'"""
+    user_id = message.from_user.id
+    bot = get_bot_instance()
+    help_keyboard = get_help_keyboard()
+    
+    if not bot:
+        await message.answer(
+            "Ошибка: бот не инициализирован",
+            reply_markup=help_keyboard
+        )
+        return
+    
+    try:
+        from app.repositories.subscription_repository import SubscriptionRepository
+        from bot.services.subscription_migration import migrate_user_to_subscription
+        from vpn_protocols import format_duration
+        import time
+        
+        # Проверка наличия активной подписки
+        repo = SubscriptionRepository()
+        active_subscription = repo.get_active_subscription(user_id)
+        
+        if active_subscription:
+            await message.answer(
+                "У вас уже есть активная подписка.",
+                reply_markup=help_keyboard
+            )
+            return
+        
+        # Проверка наличия ключей
+        now = int(time.time())
+        has_keys = False
+        
+        with get_db_cursor() as cursor:
+            # Проверяем Outline ключи
+            cursor.execute("""
+                SELECT COUNT(*) FROM keys 
+                WHERE user_id = ? AND expiry_at > ?
+            """, (user_id, now))
+            outline_count = cursor.fetchone()[0]
+            
+            # Проверяем V2Ray отдельные ключи
+            cursor.execute("""
+                SELECT COUNT(*) FROM v2ray_keys 
+                WHERE user_id = ? AND expiry_at > ? AND subscription_id IS NULL
+            """, (user_id, now))
+            v2ray_count = cursor.fetchone()[0]
+            
+            has_keys = outline_count > 0 or v2ray_count > 0
+        
+        if not has_keys:
+            await message.answer(
+                'У вас отсутствует доступ, нажмите "получить доступ".',
+                reply_markup=help_keyboard
+            )
+            return
+        
+        # Отправляем сообщение о начале процесса
+        await message.answer(
+            "⏳ Создание подписки...\n\n"
+            "Пожалуйста, подождите.",
+            reply_markup=help_keyboard
+        )
+        
+        # Выполняем миграцию
+        result = await migrate_user_to_subscription(user_id)
+        
+        if not result['success']:
+            error_msg = "❌ Не удалось создать подписку."
+            if result['errors']:
+                error_msg += f"\n\nОшибки:\n" + "\n".join(result['errors'])
+            await message.answer(error_msg, reply_markup=help_keyboard)
+            return
+        
+        # Форматируем срок действия
+        expires_at = result['expires_at']
+        if expires_at:
+            from datetime import datetime
+            expiry_date = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y %H:%M")
+            now_ts = int(time.time())
+            remaining_sec = expires_at - now_ts
+            duration_text = format_duration(remaining_sec)
+        else:
+            duration_text = "не определен"
+            expiry_date = "не определен"
+        
+        # Формируем сообщение об успехе
+        subscription_url = f"https://veil-bot.ru/api/subscription/{result['subscription_token']}"
+        
+        success_msg = (
+            f"✅ *Подписка V2Ray успешно создана!*\n\n"
+            f"🔗 *Ссылка подписки:*\n"
+            f"`{subscription_url}`\n\n"
+            f"⏳ *Срок действия:* {duration_text}\n"
+            f"📅 *До:* {expiry_date}\n\n"
+            f"💡 *Как использовать:*\n"
+            f"1. Откройте приложение V2Ray\n"
+            f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
+            f"3. Вставьте ссылку выше\n"
+            f"4. Все серверы будут добавлены автоматически"
+        )
+        
+        # Добавляем предупреждения о частичных ошибках
+        if result['errors']:
+            success_msg += "\n\n⚠️ *Предупреждения:*\n" + "\n".join(result['errors'])
+        
+        await message.answer(
+            success_msg,
+            reply_markup=help_keyboard,
+            disable_web_page_preview=True,
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in handle_migrate_to_subscription: {e}", exc_info=True)
+        await BotErrorHandler.handle_error(message, e, "handle_migrate_to_subscription", bot, ADMIN_ID)
+
+
 def register_common_handlers(dp: Dispatcher, user_states: dict) -> None:
     """
     Регистрирует обработчики общих команд
@@ -289,4 +408,9 @@ def register_common_handlers(dp: Dispatcher, user_states: dict) -> None:
     @dp.message_handler(lambda m: m.text == "Получить месяц бесплатно")
     async def invite_friend_handler(message: types.Message):
         await handle_invite_friend(message)
+    
+    # Регистрация обработчика кнопки "Перейти на подписку"
+    @dp.message_handler(lambda m: m.text == "Перейти на подписку")
+    async def migrate_to_subscription_handler(message: types.Message):
+        await handle_migrate_to_subscription(message)
 
