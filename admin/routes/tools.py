@@ -10,7 +10,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.templates import templates
-from ..services.compare_keys_service import compare_servers, ComparisonResult
+from ..services.compare_keys_service import compare_servers
+from ..services.broadcast_service import send_broadcast, ComparisonResult
 
 router = APIRouter()
 
