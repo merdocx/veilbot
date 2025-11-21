@@ -71,7 +71,7 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             email TEXT,
             tariff_id INTEGER,
             protocol TEXT,
-            FOREIGN KEY (server_id) REFERENCES servers(id),
+            FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(user_id),
             FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
         )
@@ -88,7 +88,7 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             created_at INTEGER,
             email TEXT,
             tariff_id INTEGER,
-            FOREIGN KEY (server_id) REFERENCES servers(id),
+            FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(user_id),
             FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
         )

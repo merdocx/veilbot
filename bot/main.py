@@ -177,6 +177,7 @@ def start_background_tasks(loop):
         notify_expiring_subscriptions,
         check_and_create_keys_for_new_servers,
         retry_failed_subscription_notifications,
+        sync_subscription_keys_with_active_servers,
     )
     
     background_tasks = [
@@ -190,6 +191,7 @@ def start_background_tasks(loop):
         monitor_subscription_traffic_limits(),
         check_and_create_keys_for_new_servers(),
         retry_failed_subscription_notifications(),
+        sync_subscription_keys_with_active_servers(),
     ]
     
     for task in background_tasks:

@@ -610,6 +610,22 @@ def _is_json_request(request: Request) -> bool:
     return "application/json" in accept or request.headers.get("content-type", "").startswith("application/json")
 
 
+def _safe_header_value(value: str | None) -> str | None:
+    """Возвращает значение заголовка, совместимое с ISO-8859-1.
+    
+    Если строка содержит не-ASCII символы, они будут отброшены. 
+    Если после фильтрации строка пустая, возвращаем None.
+    """
+    if not value:
+        return None
+    try:
+        value.encode("latin-1")
+        return value
+    except UnicodeEncodeError:
+        safe_value = value.encode("ascii", "ignore").decode("ascii").strip()
+        return safe_value or None
+
+
 @router.get("/api/subscription/{token}", response_class=PlainTextResponse)
 @limiter.limit("60/minute")
 async def get_subscription(request: Request, token: str):
@@ -635,7 +651,8 @@ async def get_subscription(request: Request, token: str):
 
         # Генерация подписки
         service = SubscriptionService()
-        content = await service.generate_subscription_content(token)
+        package = await service.generate_subscription_package(token)
+        content = package["content"] if package else None
         
         # Логируем для отладки
         if content:
@@ -658,14 +675,37 @@ async def get_subscription(request: Request, token: str):
             logger.warning(f"Subscription not found or expired for token {token[:8]}...")
             raise HTTPException(status_code=404, detail="Subscription not found or expired")
 
+        metadata = (package or {}).get("metadata", {}) if package else {}
+        userinfo_header = None
+        title_header = None
+        if metadata:
+            usage_bytes = metadata.get("traffic_usage_bytes") or 0
+            limit_bytes = metadata.get("traffic_limit_bytes") or 0
+            expires_ts = metadata.get("expires_at") or 0
+            # Формат заголовка Subscription-Userinfo согласно спецификации v2ray
+            # Стандартный формат: upload=<bytes>; download=<bytes>; total=<bytes>; expire=<timestamp>
+            userinfo_header = f"upload=0; download={usage_bytes}; total={limit_bytes}; expire={expires_ts}"
+            # Устанавливаем Profile-Title с названием "Vee VPN", чтобы избежать использования названия сервера
+            subscription_title = metadata.get("subscription_title") or "Vee VPN"
+            # URL-кодируем название для безопасного использования в заголовке
+            from urllib.parse import quote
+            title_header = quote(subscription_title, safe='')
+
+        response_headers = {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+        if userinfo_header:
+            response_headers["Subscription-Userinfo"] = userinfo_header
+        if title_header:
+            # Устанавливаем Profile-Title, чтобы приложение использовало его вместо названия сервера
+            response_headers["Profile-Title"] = title_header
+
         return PlainTextResponse(
             content=content,
-            headers={
-                "Content-Type": "text/plain; charset=utf-8",
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            },
+            headers=response_headers,
         )
 
     except HTTPException:

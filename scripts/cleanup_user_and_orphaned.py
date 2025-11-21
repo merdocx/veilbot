@@ -5,6 +5,7 @@
 2. Удаления всех подписок и ключей с серверов, отсутствующих в базе данных
 3. Перезапуска сервиса
 """
+import argparse
 import asyncio
 import sys
 import logging
@@ -535,8 +536,17 @@ def restart_service() -> bool:
 
 
 async def main():
-    user_id = 6358556135
-    
+    parser = argparse.ArgumentParser(
+        description="Очистка данных пользователя и orphaned ключей"
+    )
+    parser.add_argument(
+        "user_id",
+        type=int,
+        help="Идентификатор пользователя, чьи данные нужно очистить",
+    )
+    args = parser.parse_args()
+    user_id = args.user_id
+
     print(f"\n{'='*80}")
     print(f"ОЧИСТКА ДАННЫХ ПОЛЬЗОВАТЕЛЯ И ORPHANED КЛЮЧЕЙ")
     print(f"{'='*80}\n")
@@ -618,6 +628,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
 
 
 

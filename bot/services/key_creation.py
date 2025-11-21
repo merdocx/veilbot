@@ -421,12 +421,13 @@ async def create_new_key_flow_with_protocol(
                                     except Exception as reset_error:
                                         logging.error(f"Error resetting V2Ray usage for {v2ray_uuid}: {reset_error}")
                             else:
-                                # Fallback к хардкодной конфигурации если нет данных сервера
-                                config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                                # Не используем fallback с хардкодом short id - серверы генерируют уникальные short id
+                                logging.error(f"No server data found for key {v2ray_uuid}, cannot generate config without real short ID from server")
+                                raise Exception(f"Cannot generate V2Ray config for key {v2ray_uuid}: server data not found. Server generates unique short IDs that must be retrieved from API.")
                         except Exception as e:
                             logging.error(f"Error getting V2Ray config for {v2ray_uuid} during extension: {e}")
-                            # Fallback к хардкодной конфигурации при ошибке
-                            config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                            # Не используем fallback с хардкодом short id - выбрасываем исключение
+                            raise Exception(f"Failed to get V2Ray config for key {v2ray_uuid}: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
                         finally:
                             if protocol_client:
                                 try:
@@ -448,11 +449,17 @@ async def create_new_key_flow_with_protocol(
                             except Exception as reset_db_error:
                                 logging.error(f"Failed to reset traffic counters in DB for key {existing_key[0]}: {reset_db_error}")
                     else:
-                        # Fallback к старой конфигурации
+                        # Не используем fallback с хардкодом short id - используем сохраненную конфигурацию из БД
                         v2ray_uuid = existing_key[2]
                         domain = existing_key[3]
                         path = existing_key[4] or '/v2ray'
-                        config = f"vless://{v2ray_uuid}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
+                        # Используем сохраненную конфигурацию из БД, если она есть
+                        if len(existing_key) > 7 and existing_key[7]:  # client_config
+                            config = existing_key[7]
+                            logging.info(f"Using saved client_config from DB for key {v2ray_uuid[:8]}...")
+                        else:
+                            logging.error(f"No saved client_config found for key {v2ray_uuid[:8]}... and cannot use fallback with hardcoded short ID")
+                            raise Exception(f"Cannot extend key {v2ray_uuid[:8]}...: no saved config and server generates unique short IDs")
                         if for_renewal:
                             try:
                                 cursor.execute(

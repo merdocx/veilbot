@@ -761,10 +761,9 @@ async def switch_protocol_and_extend(
                                 break
                     access_url = config
                 except Exception as e:
-                    logging.warning(f"Failed to get user config, using fallback: {e}")
-                    # Fallback к хардкодированному формату
-                    config = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
-                    access_url = config
+                    # Не используем fallback с хардкодом short id - серверы генерируют уникальные short id
+                    logging.error(f"Failed to get user config for UUID {user_data['uuid'][:8]}...: {e}")
+                    raise Exception(f"Failed to get V2Ray config for user {user_data['uuid'][:8]}...: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
             
             # Добавляем новый ключ с конфигурацией
             usage_bytes_new = old_key_data.get('traffic_usage_bytes', 0)
@@ -1068,10 +1067,9 @@ async def change_country_and_extend(
                                     break
                         access_url = config
                     except Exception as e:
-                        logging.warning(f"Failed to get user config, using fallback: {e}")
-                        # Fallback к хардкодированному формату
-                        config = f"vless://{user_data['uuid']}@{domain}:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{old_email or 'VeilBot-V2Ray'}"
-                        access_url = config
+                        # Не используем fallback с хардкодом short id - серверы генерируют уникальные short id
+                        logging.error(f"Failed to get user config for UUID {user_data['uuid'][:8]}...: {e}")
+                        raise Exception(f"Failed to get V2Ray config for user {user_data['uuid'][:8]}...: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
                 
                 # Добавляем новый ключ с конфигурацией
                 if reset_usage:

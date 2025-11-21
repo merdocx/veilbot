@@ -40,8 +40,11 @@ def init_db():
         traffic_limit_mb INTEGER,
         notified INTEGER DEFAULT 0,
         key_id TEXT,
+        created_at INTEGER,
         email TEXT,
-        tariff_id INTEGER
+        tariff_id INTEGER,
+        protocol TEXT DEFAULT 'outline',
+        FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
     )""")
 
     c.execute("""
@@ -62,7 +65,7 @@ def init_db():
         traffic_over_limit_at INTEGER,
         traffic_over_limit_notified INTEGER DEFAULT 0,
         subscription_id INTEGER,
-        FOREIGN KEY (server_id) REFERENCES servers(id),
+        FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id),
         FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
     )""")
@@ -669,6 +672,90 @@ def migrate_add_available_for_purchase_to_servers():
     finally:
         conn.close()
 
+
+def migrate_add_server_cascade_to_keys():
+    """Обеспечить каскадное удаление outline-ключей при удалении сервера."""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_key_list(keys)")
+        fk_list = cursor.fetchall()
+        needs_rebuild = True
+        for fk in fk_list:
+            table, from_col, to_col, on_delete = fk[2], fk[3], fk[4], fk[6]
+            if table == 'servers' and from_col == 'server_id':
+                needs_rebuild = (on_delete or '').upper() != 'CASCADE'
+                break
+        else:
+            needs_rebuild = True
+
+        if not needs_rebuild:
+            logging.info("Таблица keys уже поддерживает каскадное удаление по server_id")
+            return
+
+        logging.info("Пересоздаем таблицу keys для добавления каскадного foreign key...")
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        cursor.execute(
+            """
+            CREATE TABLE keys_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id INTEGER,
+                user_id INTEGER,
+                access_url TEXT,
+                expiry_at INTEGER,
+                traffic_limit_mb INTEGER,
+                notified INTEGER DEFAULT 0,
+                key_id TEXT,
+                created_at INTEGER,
+                email TEXT,
+                tariff_id INTEGER,
+                protocol TEXT DEFAULT 'outline',
+                FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO keys_new (
+                id, server_id, user_id, access_url, expiry_at, traffic_limit_mb,
+                notified, key_id, created_at, email, tariff_id, protocol
+            )
+            SELECT
+                id, server_id, user_id, access_url, expiry_at, traffic_limit_mb,
+                notified, key_id, created_at, email, tariff_id, protocol
+            FROM keys
+            """
+        )
+        cursor.execute("DROP TABLE keys")
+        cursor.execute("ALTER TABLE keys_new RENAME TO keys")
+
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_keys_expiry_at ON keys(expiry_at)",
+            "CREATE INDEX IF NOT EXISTS idx_keys_server_id ON keys(server_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_keys_user_keyid ON keys(user_id, key_id)",
+            "CREATE INDEX IF NOT EXISTS idx_keys_created_at ON keys(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_keys_email_created ON keys(email, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_keys_tariff_id ON keys(tariff_id)",
+            "CREATE INDEX IF NOT EXISTS idx_keys_email ON keys(email) WHERE email IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_keys_user_expiry ON keys(user_id, expiry_at)",
+            "CREATE INDEX IF NOT EXISTS idx_keys_server_expiry ON keys(server_id, expiry_at)",
+        ]
+        for stmt in index_statements:
+            cursor.execute(stmt)
+
+        conn.commit()
+        logging.info("Таблица keys успешно обновлена для поддержки каскадного удаления")
+    except Exception as e:
+        logging.error("Ошибка при добавлении каскадного удаления для keys: %s", e, exc_info=True)
+        conn.rollback()
+    finally:
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            pass
+        conn.close()
+
 def migrate_add_subscriptions_table():
     """Создание таблицы subscriptions для подписок V2Ray"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -801,33 +888,36 @@ def migrate_add_subscription_indexes():
         conn.close()
 
 def migrate_fix_v2ray_keys_foreign_keys():
-    """Исправление foreign key constraints в таблице v2ray_keys - замена users(id) на users(user_id)"""
+    """Исправление foreign keys в v2ray_keys: каскад по server_id и связь с users(user_id)."""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
-        # Проверяем, есть ли неправильный foreign key
         cursor.execute("PRAGMA foreign_key_list(v2ray_keys)")
         fk_list = cursor.fetchall()
-        
-        # Проверяем, есть ли foreign key на users(id) вместо users(user_id)
-        has_wrong_fk = False
-        for fk in fk_list:
-            # fk[2] - таблица, fk[3] - колонка в таблице, fk[4] - колонка в текущей таблице
-            if fk[2] == 'users' and fk[3] == 'id' and fk[4] == 'user_id':
-                has_wrong_fk = True
-                break
-        
-        if not has_wrong_fk:
-            logging.info("Foreign key constraints в v2ray_keys уже правильные или отсутствуют")
+
+        def _find_fk(table_name: str, column: str):
+            for fk in fk_list:
+                if fk[2] == table_name and fk[3] == column:
+                    return fk
+            return None
+
+        server_fk = _find_fk('servers', 'server_id')
+        user_fk = _find_fk('users', 'user_id')
+
+        needs_rebuild = False
+        if server_fk is None or (server_fk[6] or '').upper() != 'CASCADE':
+            needs_rebuild = True
+        if user_fk is None or user_fk[4] != 'user_id':
+            needs_rebuild = True
+
+        if not needs_rebuild:
+            logging.info("Foreign key constraints в v2ray_keys уже корректны")
             return
-        
-        logging.info("Обнаружен неправильный foreign key constraint. Пересоздаем таблицу v2ray_keys...")
-        
-        # Отключаем foreign keys для безопасного пересоздания таблицы
+
+        logging.info("Пересоздаем таблицу v2ray_keys для корректных foreign keys...")
         cursor.execute("PRAGMA foreign_keys=OFF")
-        
-        # Создаем временную таблицу с правильной структурой
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE v2ray_keys_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 server_id INTEGER,
@@ -840,48 +930,147 @@ def migrate_fix_v2ray_keys_foreign_keys():
                 tariff_id INTEGER,
                 client_config TEXT DEFAULT NULL,
                 notified INTEGER DEFAULT 0,
-                FOREIGN KEY (server_id) REFERENCES servers(id),
+                traffic_limit_mb INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0,
+                traffic_over_limit_at INTEGER,
+                traffic_over_limit_notified INTEGER DEFAULT 0,
+                subscription_id INTEGER,
+                FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(user_id),
                 FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
             )
-        """)
-        
-        # Копируем данные
-        cursor.execute("""
-            INSERT INTO v2ray_keys_new 
-            SELECT * FROM v2ray_keys
-        """)
-        
-        # Удаляем старую таблицу
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO v2ray_keys_new (
+                id, server_id, user_id, v2ray_uuid, email, level,
+                created_at, expiry_at, tariff_id, client_config, notified,
+                traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at,
+                traffic_over_limit_notified, subscription_id
+            )
+            SELECT
+                id, server_id, user_id, v2ray_uuid, email, level,
+                created_at, expiry_at, tariff_id, client_config, notified,
+                traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at,
+                traffic_over_limit_notified, subscription_id
+            FROM v2ray_keys
+            """
+        )
         cursor.execute("DROP TABLE v2ray_keys")
-        
-        # Переименовываем новую таблицу
         cursor.execute("ALTER TABLE v2ray_keys_new RENAME TO v2ray_keys")
-        
-        # Восстанавливаем индексы
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_tariff_id ON v2ray_keys(tariff_id)")
-        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2ray_user_uuid ON v2ray_keys(user_id, v2ray_uuid)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_created_at ON v2ray_keys(created_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email ON v2ray_keys(email) WHERE email IS NOT NULL")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email_created ON v2ray_keys(email, created_at)")
-        
-        # Включаем foreign keys обратно
-        cursor.execute("PRAGMA foreign_keys=ON")
-        
+
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_v2ray_user_uuid ON v2ray_keys(user_id, v2ray_uuid)",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_created_at ON v2ray_keys(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email ON v2ray_keys(email) WHERE email IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email_created ON v2ray_keys(email, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_tariff_id ON v2ray_keys(tariff_id)",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_expiry ON v2ray_keys(user_id, expiry_at)",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_expiry ON v2ray_keys(server_id, expiry_at)",
+            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_subscription_id ON v2ray_keys(subscription_id)",
+        ]
+        for stmt in index_statements:
+            cursor.execute(stmt)
+
         conn.commit()
-        logging.info("Таблица v2ray_keys успешно пересоздана с правильными foreign key constraints")
+        logging.info("Таблица v2ray_keys успешно обновлена с корректными foreign keys")
     except Exception as e:
-        logging.error(f"Ошибка при исправлении foreign key constraints в v2ray_keys: {e}", exc_info=True)
+        logging.error("Ошибка при исправлении foreign keys в v2ray_keys: %s", e, exc_info=True)
         conn.rollback()
-        # Включаем foreign keys обратно в случае ошибки
+    finally:
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
-        except:
+        except Exception:
             pass
+        conn.close()
+
+def migrate_fix_traffic_stats_foreign_keys():
+    """Исправление foreign keys в traffic_stats: каскад по server_id и правильная ссылка на users(user_id)."""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # Check if traffic_stats exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='traffic_stats'")
+        if not cursor.fetchone():
+            logging.info("Таблица traffic_stats не существует, пропускаем миграцию")
+            return
+
+        cursor.execute("PRAGMA foreign_key_list(traffic_stats)")
+        fk_list = cursor.fetchall()
+
+        def _find_fk(table_name: str, column: str):
+            for fk in fk_list:
+                if fk[2] == table_name and fk[3] == column:
+                    return fk
+            return None
+
+        server_fk = _find_fk('servers', 'server_id')
+        user_fk = _find_fk('users', 'user_id')
+
+        needs_rebuild = False
+        # Check if server_id FK needs CASCADE
+        if server_fk is None or (server_fk[6] or '').upper() != 'CASCADE':
+            needs_rebuild = True
+        # Check if user_id FK references correct column (user_id, not id)
+        if user_fk is None or user_fk[4] != 'user_id':
+            needs_rebuild = True
+
+        if not needs_rebuild:
+            logging.info("Foreign key constraints в traffic_stats уже корректны")
+            return
+
+        logging.info("Пересоздаем таблицу traffic_stats для корректных foreign keys...")
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        
+        # Get all data to preserve
+        cursor.execute("SELECT * FROM traffic_stats")
+        data = cursor.fetchall()
+        column_count = len([c[0] for c in cursor.description]) if cursor.description else 0
+        
+        cursor.execute(
+            """
+            CREATE TABLE traffic_stats_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                server_id INTEGER,
+                protocol TEXT NOT NULL,
+                key_id TEXT,
+                upload_bytes BIGINT DEFAULT 0,
+                download_bytes BIGINT DEFAULT 0,
+                connections INTEGER DEFAULT 0,
+                last_seen INTEGER,
+                updated_at INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+            )
+            """
+        )
+        
+        # Restore data if any
+        if data and column_count > 0:
+            placeholders = ",".join(["?"] * column_count)
+            cursor.executemany(
+                f"INSERT INTO traffic_stats_new VALUES ({placeholders})",
+                data
+            )
+        
+        cursor.execute("DROP TABLE traffic_stats")
+        cursor.execute("ALTER TABLE traffic_stats_new RENAME TO traffic_stats")
+
+        conn.commit()
+        logging.info("Таблица traffic_stats успешно обновлена с корректными foreign keys")
+    except Exception as e:
+        logging.error("Ошибка при исправлении foreign keys в traffic_stats: %s", e, exc_info=True)
+        conn.rollback()
     finally:
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            pass
         conn.close()
 
 def _run_all_migrations():
@@ -908,7 +1097,9 @@ def _run_all_migrations():
     migrate_add_notified_to_v2ray_keys()
     migrate_add_traffic_monitoring_to_v2ray_keys()
     migrate_add_available_for_purchase_to_servers()
+    migrate_add_server_cascade_to_keys()
     migrate_fix_v2ray_keys_foreign_keys()
+    migrate_fix_traffic_stats_foreign_keys()
     migrate_add_subscriptions_table()
     migrate_add_subscription_id_to_v2ray_keys()
     migrate_add_subscription_indexes()

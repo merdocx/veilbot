@@ -484,34 +484,27 @@ class V2RayProtocol(VPNProtocol):
                                 logger.debug(f"Successfully retrieved client_config from key.client_config (non-VLESS format) on attempt {attempt + 1}")
                                 return client_config
                             
-                            # Если client_config не найден вообще, пробуем снова или используем fallback
+                            # Если client_config не найден вообще, пробуем снова или выбрасываем исключение
                             if attempt < max_retries - 1:
                                 logger.debug(f"API did not return client_config, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
                                 await asyncio.sleep(retry_delay)
                                 continue
                             else:
-                                # Если все попытки исчерпаны и client_config не получен, используем fallback
-                                domain = server_config.get('domain', 'veil-bird.ru')
-                                port = server_config.get('port', 443)
-                                email = server_config.get('email', 'VeilBot-V2Ray')
-                                
-                                logger.warning(f"API did not return client_config after {max_retries} attempts, using fallback")
-                                # Используем новый формат VLESS с Reality
-                                return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
+                                # Если все попытки исчерпаны и client_config не получен, выбрасываем исключение
+                                # Не используем fallback с хардкодом short id, так как каждый сервер генерирует уникальные short id
+                                logger.error(f"API did not return client_config after {max_retries} attempts for user {user_id}")
+                                raise Exception(f"Failed to get client_config from V2Ray API after {max_retries} attempts. Server may be generating unique short IDs that must be retrieved from API.")
                         
-                        # Если статус не 200, пробуем снова или используем fallback
+                        # Если статус не 200, пробуем снова или выбрасываем исключение
                         if attempt < max_retries - 1:
                             logger.debug(f"API returned status {response.status}, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
                             await asyncio.sleep(retry_delay)
                             continue
                         else:
-                            # Если все попытки исчерпаны, используем fallback
-                            domain = server_config.get('domain', 'veil-bird.ru')
-                            port = server_config.get('port', 443)
-                            email = server_config.get('email', 'VeilBot-V2Ray')
-                            
-                            logger.warning(f"API returned status {response.status} after {max_retries} attempts, using fallback")
-                            return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
+                            # Если все попытки исчерпаны, выбрасываем исключение
+                            # Не используем fallback с хардкодом short id
+                            logger.error(f"API returned status {response.status} after {max_retries} attempts for user {user_id}")
+                            raise Exception(f"V2Ray API returned status {response.status} after {max_retries} attempts. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
                     
             except Exception as e:
                 logger.error(f"Error getting V2Ray user config (attempt {attempt + 1}/{max_retries}): {e}")
@@ -519,20 +512,12 @@ class V2RayProtocol(VPNProtocol):
                     await asyncio.sleep(retry_delay)
                     continue
                 else:
-                    # Fallback к базовой конфигурации после всех попыток
-                    logger.error(f"Failed to get client_config after {max_retries} attempts, using fallback")
-                    domain = server_config.get('domain', 'veil-bird.ru')
-                    port = server_config.get('port', 443)
-                    email = server_config.get('email', 'VeilBot-V2Ray')
-                    
-                    return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
+                    # Выбрасываем исключение вместо использования fallback с хардкодом short id
+                    logger.error(f"Failed to get client_config after {max_retries} attempts for user {user_id}")
+                    raise Exception(f"Failed to get client_config from V2Ray API after {max_retries} attempts: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
         
-        # Fallback (на случай, если цикл не вернул значение)
-        domain = server_config.get('domain', 'veil-bird.ru')
-        port = server_config.get('port', 443)
-        email = server_config.get('email', 'VeilBot-V2Ray')
-        
-        return f"vless://{user_id}@{domain}:{port}?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f&spx=/&type=tcp&flow=#{email}"
+        # Если цикл не вернул значение, выбрасываем исключение
+        raise Exception(f"Failed to get client_config from V2Ray API for user {user_id}. No valid response received after {max_retries} attempts.")
     
     async def get_traffic_stats(self) -> List[Dict]:
         """Получить статистику трафика V2Ray через новый API с простым мониторингом"""

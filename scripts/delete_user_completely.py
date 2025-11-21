@@ -8,6 +8,7 @@
 - Реферальные связи
 - Информация о нажатиях start (запись в users)
 """
+import argparse
 import sqlite3
 import sys
 import os
@@ -80,8 +81,17 @@ def delete_user_completely(user_id: int):
 
 def main():
     """Основная функция"""
-    user_id = 6358556135
-    
+    parser = argparse.ArgumentParser(
+        description="Полностью удалить все данные пользователя по его ID"
+    )
+    parser.add_argument(
+        "user_id",
+        type=int,
+        help="Идентификатор пользователя, данные которого нужно удалить",
+    )
+    args = parser.parse_args()
+    user_id = args.user_id
+
     print("=" * 60)
     print("🧹 Полное удаление всех данных пользователя")
     print("=" * 60)
@@ -112,4 +122,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 

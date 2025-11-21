@@ -2,6 +2,7 @@
 """
 Скрипт для отправки уведомления о продлении подписки пользователю
 """
+import argparse
 import sys
 import os
 import asyncio
@@ -124,8 +125,17 @@ async def send_renewal_notification(user_id: int):
 
 
 async def main():
-    user_id = 6358556135
-    
+    parser = argparse.ArgumentParser(
+        description="Отправить уведомление о создании/продлении подписки пользователю"
+    )
+    parser.add_argument(
+        "user_id",
+        type=int,
+        help="Идентификатор пользователя, которому нужно отправить уведомление",
+    )
+    args = parser.parse_args()
+    user_id = args.user_id
+
     logger.info(f"Проверка и отправка уведомления для пользователя {user_id}")
     
     success = await send_renewal_notification(user_id)

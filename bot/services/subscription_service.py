@@ -5,14 +5,32 @@ import uuid
 import base64
 import time
 import logging
+from datetime import datetime
 from typing import Optional, Dict, Any, List
+
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.infra.cache import SimpleCache
-from vpn_protocols import V2RayProtocol, ProtocolFactory, normalize_vless_host, add_server_name_to_vless, remove_fragment_from_vless
+from vpn_protocols import (
+    V2RayProtocol,
+    ProtocolFactory,
+    normalize_vless_host,
+    add_server_name_to_vless,
+    remove_fragment_from_vless,
+)
 from utils import get_db_cursor
 from app.infra.foreign_keys import safe_foreign_keys_off
+from config import SUPPORT_USERNAME
+
+try:
+    from app.settings import settings as _app_settings
+
+    SUBSCRIPTION_DISPLAY_NAME = getattr(_app_settings, "SUBSCRIPTION_DISPLAY_NAME", "Vee VPN")
+except Exception:  # pragma: no cover - fallback for startup issues/tests
+    SUBSCRIPTION_DISPLAY_NAME = "Vee VPN"
 
 logger = logging.getLogger(__name__)
+
+BYTES_IN_GB = 1024 ** 3
 
 # Кэш для подписок (TTL 5 минут)
 _subscription_cache = SimpleCache()
@@ -147,11 +165,43 @@ def update_subscription_configs_remove_fragments() -> None:
         logger.error(f"Error updating subscription configs: {e}", exc_info=True)
 
 
+def _format_traffic_label(usage_bytes: int, limit_bytes: Optional[int]) -> str:
+    """Форматирует метку трафика для комментария в подписке"""
+    usage_gb = usage_bytes / BYTES_IN_GB
+    if limit_bytes and limit_bytes > 0:
+        limit_gb = limit_bytes / BYTES_IN_GB
+        # Используем 2 знака после запятой для большей точности
+        # Если меньше 0.01 GB, показываем в MB
+        if usage_gb < 0.01:
+            usage_mb = usage_bytes / (1024 * 1024)
+            return f"{usage_mb:.2f} MB / {limit_gb:.1f} GB"
+        return f"{usage_gb:.2f}/{limit_gb:.1f} GB"
+    if usage_gb < 0.01:
+        usage_mb = usage_bytes / (1024 * 1024)
+        return f"{usage_mb:.2f} MB / unlimited"
+    return f"{usage_gb:.2f}/unlimited GB"
+
+
+def _normalize_support_username() -> Optional[str]:
+    if not SUPPORT_USERNAME:
+        return None
+    username = SUPPORT_USERNAME.strip()
+    if not username:
+        return None
+    return f"@{username.lstrip('@')}"
+
+
 class SubscriptionService:
     def __init__(self, db_path: Optional[str] = None):
         self.repository = SubscriptionRepository(db_path)
 
     async def generate_subscription_content(self, token: str) -> Optional[str]:
+        package = await self.generate_subscription_package(token)
+        if not package:
+            return None
+        return package["content"]
+
+    async def generate_subscription_package(self, token: str) -> Optional[Dict[str, Any]]:
         """
         Сгенерировать содержимое подписки (base64-кодированный список VLESS URL)
         
@@ -161,7 +211,6 @@ class SubscriptionService:
         Returns:
             Base64-кодированная строка с VLESS URL или None при ошибке
         """
-        # Проверка кэша
         cache_key = f"subscription:{token}"
         cached = _subscription_cache.get(cache_key)
         if cached:
@@ -202,49 +251,62 @@ class SubscriptionService:
             return None
         
         # Проверка лимита трафика подписки
-        if tariff_id:
-            # Получить лимит из тарифа
-            from utils import get_db_cursor
-            with get_db_cursor(commit=True) as cursor:
-                cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff_id,))
-                tariff_row = cursor.fetchone()
-                if tariff_row and tariff_row[0] and tariff_row[0] > 0:
-                    limit_mb = tariff_row[0]
-                    limit_bytes = limit_mb * 1024 * 1024
-                    
-                    # Агрегировать трафик всех ключей подписки
-                    cursor.execute("""
-                        SELECT COALESCE(SUM(traffic_usage_bytes), 0)
-                        FROM v2ray_keys
-                        WHERE subscription_id = ?
-                    """, (subscription_id,))
-                    total_usage = cursor.fetchone()[0] or 0
-                    
-                    # Обновить traffic_usage_bytes в подписке
-                    cursor.execute("""
-                        UPDATE subscriptions
-                        SET traffic_usage_bytes = ?,
-                            last_updated_at = ?
-                        WHERE id = ?
-                    """, (total_usage, now, subscription_id))
-                    
-                    # Проверить превышение лимита
-                    if total_usage > limit_bytes:
-                        # Проверить grace period
-                        cursor.execute("""
-                            SELECT traffic_over_limit_at
-                            FROM subscriptions
-                            WHERE id = ?
-                        """, (subscription_id,))
-                        over_limit_row = cursor.fetchone()
-                        if over_limit_row and over_limit_row[0]:
-                            grace_end = over_limit_row[0] + 86400  # 24 часа
-                            if now > grace_end:
-                                logger.warning(
-                                    f"Subscription {subscription_id} disabled due to traffic limit "
-                                    f"({total_usage} > {limit_bytes})"
-                                )
-                                return None
+        tariff_name: Optional[str] = None
+        traffic_limit_bytes: Optional[int] = None
+        traffic_usage_bytes: int = 0
+        subscription_limit_mb: Optional[int] = None
+        tariff_limit_mb: Optional[int] = None
+
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute(
+                """
+                SELECT 
+                    s.traffic_limit_mb,
+                    COALESCE(s.traffic_usage_bytes, 0),
+                    t.name,
+                    COALESCE(t.traffic_limit_mb, 0)
+                FROM subscriptions s
+                LEFT JOIN tariffs t ON s.tariff_id = t.id
+                WHERE s.id = ?
+                """,
+                (subscription_id,),
+            )
+            limits_row = cursor.fetchone()
+            if limits_row:
+                subscription_limit_mb = limits_row[0]
+                traffic_usage_bytes = int(limits_row[1] or 0)
+                tariff_name = limits_row[2]
+                tariff_limit_mb = limits_row[3]
+
+            effective_limit_mb = None
+            if subscription_limit_mb and subscription_limit_mb > 0:
+                effective_limit_mb = subscription_limit_mb
+            elif tariff_limit_mb and tariff_limit_mb > 0:
+                effective_limit_mb = tariff_limit_mb
+
+            if effective_limit_mb:
+                traffic_limit_bytes = int(effective_limit_mb) * 1024 * 1024
+
+            if traffic_limit_bytes and traffic_usage_bytes > traffic_limit_bytes:
+                cursor.execute(
+                    """
+                    SELECT traffic_over_limit_at
+                    FROM subscriptions
+                    WHERE id = ?
+                    """,
+                    (subscription_id,),
+                )
+                over_limit_row = cursor.fetchone()
+                if over_limit_row and over_limit_row[0]:
+                    grace_end = over_limit_row[0] + 86400  # 24 часа
+                    if now > grace_end:
+                        logger.warning(
+                            "Subscription %s disabled due to traffic limit (%s > %s)",
+                            subscription_id,
+                            traffic_usage_bytes,
+                            traffic_limit_bytes,
+                        )
+                        return None
 
         # Получение ключей подписки
         keys = await self.repository.get_subscription_keys_async(subscription_id, user_id, now)
@@ -255,6 +317,7 @@ class SubscriptionService:
         # Сбор VLESS URL
         vless_urls = []
         keys_to_update = []
+        first_server_name: Optional[str] = None
 
         for (
             v2ray_uuid,
@@ -334,6 +397,8 @@ class SubscriptionService:
             # Добавляем название сервера из админки в фрагмент VLESS URL
             # Это делается для всех конфигураций (и сохраненных, и полученных из API)
             if config and config.startswith('vless://'):
+                if not first_server_name and server_name:
+                    first_server_name = server_name
                 if not server_name:
                     logger.warning(
                         f"Server name is empty for server_id (uuid={v2ray_uuid[:8]}...), "
@@ -364,12 +429,41 @@ class SubscriptionService:
             logger.warning(f"No valid VLESS URLs found for subscription {subscription_id}")
             return None
 
-        # Объединение и кодирование
-        subscription_content = '\n'.join(vless_urls)
+        expiry_dt = datetime.fromtimestamp(expires_at)
+        expiry_label = expiry_dt.strftime("%d.%m.%Y %H:%M")
+        tariff_display = tariff_name or "Subscription"
+        traffic_label = _format_traffic_label(traffic_usage_bytes, traffic_limit_bytes)
+        support_contact = _normalize_support_username()
+        subscription_title = SUBSCRIPTION_DISPLAY_NAME
+
+        # Убираем комментарий "# Plan: ..." из содержимого подписки, чтобы избежать дублирования названия
+        # Приложение v2raytun может использовать название из заголовка Profile-Title или из первого сервера
+        header_lines = [
+            f"# Active until: {expiry_label}",
+            f"# Traffic: {traffic_label}",
+        ]
+        if support_contact:
+            header_lines.append(f"# Support: {support_contact}")
+
+        # Заголовок подписки содержит все метаданные; названия серверов оставляем как в админке.
+
+        subscription_content = '\n'.join(header_lines + vless_urls)
         encoded_content = base64.b64encode(subscription_content.encode('utf-8')).decode('utf-8')
 
         # Кэширование
-        _subscription_cache.set(cache_key, encoded_content, ttl=CACHE_TTL)
+        package = {
+            "content": encoded_content,
+            "metadata": {
+                "tariff_name": tariff_name,
+                "expires_at": expires_at,
+                "traffic_usage_bytes": traffic_usage_bytes,
+                "traffic_limit_bytes": traffic_limit_bytes,
+                "subscription_title": subscription_title,
+                "traffic_label": traffic_label,
+                "support_contact": support_contact,
+            },
+        }
+        _subscription_cache.set(cache_key, package, ttl=CACHE_TTL)
 
         # Обновление last_updated_at
         await self.repository.update_subscription_last_updated_async(subscription_id)
@@ -379,7 +473,7 @@ class SubscriptionService:
             f"with {len(vless_urls)} servers"
         )
 
-        return encoded_content
+        return package
 
     async def create_subscription(
         self,
@@ -429,15 +523,113 @@ class SubscriptionService:
                     f"to {new_expires_at}"
                 )
             
+            # Если ключей нет, создаем их на всех активных серверах
+            created_keys = 0
+            failed_servers = []
+            if keys_extended == 0:
+                logger.info(
+                    f"No keys found for subscription {existing_id}, creating keys on all active servers"
+                )
+                with get_db_cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, name, api_url, api_key, domain, v2ray_path
+                        FROM servers
+                        WHERE protocol = 'v2ray' AND active = 1
+                        ORDER BY id
+                        """,
+                    )
+                    servers = cursor.fetchall()
+
+                for server_id, server_name, api_url, api_key, domain, v2ray_path in servers:
+                    try:
+                        # Генерация email для ключа
+                        key_email = f"{user_id}_subscription_{existing_id}@veilbot.com"
+
+                        # Создание ключа через V2Ray API с названием сервера
+                        server_config = {
+                            'api_url': api_url,
+                            'api_key': api_key,
+                            'domain': domain,
+                        }
+                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                        # Передаем название сервера вместо email для name в V2Ray API
+                        user_data = await protocol_client.create_user(key_email, name=server_name)
+
+                        if not user_data or not user_data.get('uuid'):
+                            raise Exception("Failed to create user on V2Ray server")
+
+                        v2ray_uuid = user_data['uuid']
+
+                        # Получение client_config
+                        client_config = await protocol_client.get_user_config(
+                            v2ray_uuid,
+                            {
+                                'domain': domain,
+                                'port': 443,
+                                'email': key_email,
+                            },
+                        )
+
+                        # Извлекаем VLESS URL из конфигурации
+                        if 'vless://' in client_config:
+                            lines = client_config.split('\n')
+                            for line in lines:
+                                if line.strip().startswith('vless://'):
+                                    client_config = line.strip()
+                                    break
+
+                        # Сохранение ключа в БД
+                        with get_db_cursor(commit=True) as cursor:
+                            cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                            try:
+                                cursor.execute(
+                                    """
+                                    INSERT INTO v2ray_keys 
+                                    (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        server_id,
+                                        user_id,
+                                        v2ray_uuid,
+                                        key_email,
+                                        now,
+                                        new_expires_at,
+                                        tariff_id,
+                                        client_config,
+                                        existing_id,
+                                    ),
+                                )
+                            finally:
+                                cursor.connection.execute("PRAGMA foreign_keys = ON")
+
+                        created_keys += 1
+                        logger.info(
+                            f"Created key for subscription {existing_id} on server {server_id}"
+                        )
+                        await protocol_client.close()
+
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to create key for subscription {existing_id} "
+                            f"on server {server_id}: {e}",
+                            exc_info=True,
+                        )
+                        failed_servers.append(server_id)
+            
             logger.info(
                 f"Extended existing subscription {existing_id} for user {user_id}: "
-                f"{existing_expires_at} -> {new_expires_at} (+{duration_sec} sec)"
+                f"{existing_expires_at} -> {new_expires_at} (+{duration_sec} sec), "
+                f"extended {keys_extended} keys, created {created_keys} new keys"
             )
             return {
                 'id': existing_id,
                 'token': existing[2],
                 'expires_at': new_expires_at,
                 'extended': True,
+                'created_keys': created_keys,
+                'failed_servers': failed_servers,
             }
 
         # Генерация уникального токена

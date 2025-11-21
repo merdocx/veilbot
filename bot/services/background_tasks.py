@@ -2126,3 +2126,230 @@ async def check_and_create_keys_for_new_servers() -> None:
         job=job,
         max_backoff=3600,
     )
+
+
+async def sync_subscription_keys_with_active_servers() -> None:
+    """
+    Синхронизация ключей подписок с активными серверами.
+    Удаляет ключи на неактивных серверах и создает недостающие на активных.
+    Запускается каждые 30 минут.
+    """
+    async def job() -> None:
+        try:
+            now = int(time.time())
+            subscription_repo = SubscriptionRepository()
+            
+            # Получаем все активные подписки
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, user_id, subscription_token, expires_at, tariff_id
+                    FROM subscriptions
+                    WHERE is_active = 1 AND expires_at > ?
+                """, (now,))
+                active_subscriptions = cursor.fetchall()
+            
+            if not active_subscriptions:
+                logger.debug("No active subscriptions found for sync")
+                return
+            
+            # Получаем все активные V2Ray серверы
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, name, api_url, api_key, domain, v2ray_path
+                    FROM servers
+                    WHERE protocol = 'v2ray' AND active = 1
+                    ORDER BY id
+                """)
+                active_servers = cursor.fetchall()
+            
+            if not active_servers:
+                logger.debug("No active V2Ray servers found for sync")
+                return
+            
+            active_server_ids = {server[0] for server in active_servers}
+            active_servers_dict = {server[0]: server for server in active_servers}
+            
+            total_created = 0
+            total_deleted = 0
+            total_failed_create = 0
+            total_failed_delete = 0
+            
+            logger.info(
+                f"Starting sync: {len(active_subscriptions)} subscriptions, "
+                f"{len(active_servers)} active servers"
+            )
+            
+            for subscription_id, user_id, token, expires_at, tariff_id in active_subscriptions:
+                try:
+                    # Получаем существующие ключи подписки
+                    with get_db_cursor() as cursor:
+                        cursor.execute("""
+                            SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key
+                            FROM v2ray_keys k
+                            JOIN servers s ON k.server_id = s.id
+                            WHERE k.subscription_id = ?
+                        """, (subscription_id,))
+                        existing_keys = cursor.fetchall()
+                    
+                    existing_server_ids = {key[1] for key in existing_keys}
+                    
+                    # Определяем серверы, где нужно создать ключи
+                    servers_to_create = active_server_ids - existing_server_ids
+                    
+                    # Определяем ключи на неактивных серверах, которые нужно удалить
+                    keys_to_delete = [
+                        key for key in existing_keys
+                        if key[1] not in active_server_ids
+                    ]
+                    
+                    # Создаем недостающие ключи
+                    for server_id in servers_to_create:
+                        if server_id not in active_servers_dict:
+                            continue
+                        
+                        server_id_db, name, api_url, api_key, domain, v2ray_path = active_servers_dict[server_id]
+                        
+                        try:
+                            key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
+                            server_config = {
+                                'api_url': api_url,
+                                'api_key': api_key,
+                                'domain': domain,
+                            }
+                            
+                            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                            user_data = await protocol_client.create_user(key_email, name=name)
+                            
+                            if not user_data or not user_data.get('uuid'):
+                                raise Exception("Failed to create user on V2Ray server")
+                            
+                            v2ray_uuid = user_data['uuid']
+                            
+                            # Получаем client_config
+                            client_config = await protocol_client.get_user_config(
+                                v2ray_uuid,
+                                {
+                                    'domain': domain or 'veil-bot.ru',
+                                    'port': 443,
+                                    'email': key_email,
+                                }
+                            )
+                            
+                            # Извлекаем VLESS URL из конфигурации
+                            if 'vless://' in client_config:
+                                lines = client_config.split('\n')
+                                for line in lines:
+                                    if line.strip().startswith('vless://'):
+                                        client_config = line.strip()
+                                        break
+                            
+                            # Сохраняем ключ в БД
+                            with get_db_cursor(commit=True) as cursor:
+                                cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                                try:
+                                    cursor.execute("""
+                                        INSERT INTO v2ray_keys 
+                                        (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, (
+                                        server_id,
+                                        user_id,
+                                        v2ray_uuid,
+                                        key_email,
+                                        now,
+                                        expires_at,
+                                        tariff_id,
+                                        client_config,
+                                        subscription_id,
+                                    ))
+                                finally:
+                                    cursor.connection.execute("PRAGMA foreign_keys = ON")
+                            
+                            invalidate_subscription_cache(token)
+                            total_created += 1
+                            logger.info(
+                                f"Sync: Created key for subscription {subscription_id} "
+                                f"on server {server_id}"
+                            )
+                            await protocol_client.close()
+                            
+                        except Exception as e:
+                            total_failed_create += 1
+                            logger.error(
+                                f"Sync: Failed to create key for subscription {subscription_id} "
+                                f"on server {server_id}: {e}",
+                                exc_info=True
+                            )
+                            continue
+                    
+                    # Удаляем ключи на неактивных серверах
+                    for key_id, server_id, v2ray_uuid, api_url, api_key in keys_to_delete:
+                        try:
+                            # Удаляем через V2Ray API
+                            if api_url and api_key and v2ray_uuid:
+                                server_config = {
+                                    'api_url': api_url,
+                                    'api_key': api_key,
+                                    'domain': '',
+                                }
+                                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                                try:
+                                    await protocol_client.delete_user(v2ray_uuid)
+                                    logger.debug(
+                                        f"Sync: Deleted key {v2ray_uuid[:8]}... "
+                                        f"from server {server_id} via API"
+                                    )
+                                except Exception as api_error:
+                                    logger.warning(
+                                        f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
+                                        f"from server {server_id} via API: {api_error}"
+                                    )
+                                finally:
+                                    await protocol_client.close()
+                            
+                            # Удаляем из БД
+                            with get_db_cursor(commit=True) as cursor:
+                                with safe_foreign_keys_off(cursor):
+                                    cursor.execute(
+                                        "DELETE FROM v2ray_keys WHERE id = ?",
+                                        (key_id,)
+                                    )
+                            
+                            invalidate_subscription_cache(token)
+                            total_deleted += 1
+                            logger.info(
+                                f"Sync: Deleted key {key_id} for subscription {subscription_id} "
+                                f"from inactive server {server_id}"
+                            )
+                            
+                        except Exception as e:
+                            total_failed_delete += 1
+                            logger.error(
+                                f"Sync: Failed to delete key {key_id} for subscription {subscription_id} "
+                                f"from server {server_id}: {e}",
+                                exc_info=True
+                            )
+                            continue
+                
+                except Exception as e:
+                    logger.error(
+                        f"Sync: Error processing subscription {subscription_id}: {e}",
+                        exc_info=True
+                    )
+                    continue
+            
+            if total_created > 0 or total_deleted > 0 or total_failed_create > 0 or total_failed_delete > 0:
+                logger.info(
+                    f"Sync completed: {total_created} created, {total_deleted} deleted, "
+                    f"{total_failed_create} failed to create, {total_failed_delete} failed to delete"
+                )
+        
+        except Exception as e:
+            logger.error(f"Error in sync_subscription_keys_with_active_servers: {e}", exc_info=True)
+    
+    await _run_periodic(
+        "sync_subscription_keys_with_active_servers",
+        interval_seconds=1800,  # 30 минут
+        job=job,
+        max_backoff=3600,
+    )
