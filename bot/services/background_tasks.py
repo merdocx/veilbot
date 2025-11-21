@@ -387,345 +387,6 @@ def _format_bytes_short(num_bytes: Optional[float]) -> str:
     return f"{value:.2f} {units[idx]}"
 
 
-async def monitor_v2ray_traffic_limits() -> None:
-    """Контроль превышения трафиковых лимитов для V2Ray ключей."""
-
-    async def _fetch_usage_for_server(server_id: int, config: Dict[str, str], keys: list[Dict[str, Any]]) -> Dict[int, Optional[int]]:
-        if not keys:
-            return {}
-        try:
-            protocol = ProtocolFactory.create_protocol('v2ray', config)
-        except Exception as e:
-            logger.error(f"[TRAFFIC LIMIT] Failed to initialise V2Ray protocol for server {server_id}: {e}")
-            return {}
-
-        results: Dict[int, Optional[int]] = {}
-        try:
-            history = await protocol.get_traffic_history()
-            traffic_map: Dict[str, int] = {}
-            if isinstance(history, dict):
-                data = history.get('data') or {}
-                items = data.get('keys') or []
-                for item in items:
-                    uuid_val = item.get('key_uuid') or item.get('uuid')
-                    total = item.get('total_traffic') or {}
-                    total_bytes = total.get('total_bytes')
-                    if uuid_val and isinstance(total_bytes, (int, float)):
-                        traffic_map[uuid_val] = int(total_bytes)
-            for key_row in keys:
-                uuid = key_row.get('v2ray_uuid')
-                key_pk = key_row.get('id')
-                if uuid is None or key_pk is None:
-                    continue
-                results[key_pk] = traffic_map.get(uuid)
-        except Exception as e:
-            logger.error(f"[TRAFFIC LIMIT] Error fetching usage for server {server_id}: {e}")
-        finally:
-            try:
-                await protocol.close()
-            except Exception as close_error:
-                logger.warning(f"[TRAFFIC LIMIT] Error closing protocol client for server {server_id}: {close_error}")
-        return results
-
-    async def _disable_v2ray_key(server_id: int, config: Dict[str, str], key_uuid: str) -> bool:
-        try:
-            protocol = ProtocolFactory.create_protocol('v2ray', config)
-        except Exception as e:
-            logger.error(f"[TRAFFIC LIMIT] Failed to init protocol for disable on server {server_id}: {e}")
-            return False
-
-        try:
-            result = await protocol.delete_user(key_uuid)
-            if not result:
-                logger.warning(f"[TRAFFIC LIMIT] Failed to delete V2Ray user {key_uuid} on server {server_id}")
-            return result
-        except Exception as e:
-            logger.error(f"[TRAFFIC LIMIT] Error disabling V2Ray key {key_uuid}: {e}")
-            return False
-        finally:
-            try:
-                await protocol.close()
-            except Exception as close_error:
-                logger.warning(f"[TRAFFIC LIMIT] Error closing protocol during disable: {close_error}")
-
-    async def job() -> None:
-        now = int(time.time())
-
-        with get_db_cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS v2ray_usage_snapshots (
-                    key_id INTEGER PRIMARY KEY,
-                    server_bytes INTEGER DEFAULT 0,
-                    updated_at INTEGER DEFAULT 0
-                )
-                """
-            )
-            cursor.execute(
-                """
-                SELECT 
-                    k.id,
-                    k.user_id,
-                    k.v2ray_uuid,
-                    k.server_id,
-                    COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb,
-                    COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes,
-                    k.traffic_over_limit_at,
-                    COALESCE(k.traffic_over_limit_notified, 0) AS traffic_over_limit_notified,
-                    k.expiry_at,
-                    k.subscription_id,
-                    IFNULL(s.api_url, '') AS api_url,
-                    IFNULL(s.api_key, '') AS api_key,
-                    IFNULL(t.name, '') AS tariff_name,
-                    IFNULL(k.email, '') AS email
-                FROM v2ray_keys k
-                JOIN servers s ON k.server_id = s.id
-                LEFT JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.expiry_at > ?
-                  AND COALESCE(k.traffic_limit_mb, 0) > 0
-                  -- ИСКЛЮЧИТЬ ключи, которые принадлежат активным подпискам
-                  -- (для них лимит проверяется на уровне подписки)
-                  AND (k.subscription_id IS NULL OR k.subscription_id NOT IN (
-                      SELECT id FROM subscriptions 
-                      WHERE is_active = 1 AND expires_at > ?
-                  ))
-                """,
-                (now, now),
-            )
-            rows = cursor.fetchall()
-
-            rows_data = [dict(row) for row in rows]
-            if rows_data:
-                key_ids = [row["id"] for row in rows_data]
-            else:
-                key_ids = []
-
-            snapshot_map: Dict[int, int] = {}
-            if key_ids:
-                placeholders = ",".join("?" for _ in key_ids)
-                cursor.execute(
-                    f"SELECT key_id, server_bytes FROM v2ray_usage_snapshots WHERE key_id IN ({placeholders})",
-                    key_ids,
-                )
-                snapshot_map = {
-                    int(row[0]): int(row[1] or 0)
-                    for row in cursor.fetchall()
-                }
-            else:
-                snapshot_map = {}
-
-        if not rows_data:
-            return
-
-        server_configs: Dict[int, Dict[str, str]] = {}
-        server_keys_map: Dict[int, list[Dict[str, Any]]] = defaultdict(list)
-
-        for row in rows_data:
-            api_url = row["api_url"]
-            api_key = row["api_key"]
-            if not api_url or not api_key:
-                logger.warning(
-                    "[TRAFFIC LIMIT] Missing API credentials for server %s, skipping key %s",
-                    row["server_id"],
-                    row["v2ray_uuid"],
-                )
-                continue
-            config = {"api_url": api_url, "api_key": api_key}
-            server_configs[row["server_id"]] = config
-            server_keys_map[row["server_id"]].append(row)
-
-        usage_map: Dict[int, Optional[int]] = {}
-        if server_keys_map:
-            tasks = [
-                _fetch_usage_for_server(server_id, server_configs[server_id], keys)
-                for server_id, keys in server_keys_map.items()
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, dict):
-                    usage_map.update(result)
-                else:
-                    logger.error(f"[TRAFFIC LIMIT] Error in usage fetch task: {result}")
-
-        warn_notifications = []
-        disable_notifications = []
-        updates = []
-        snapshot_updates: list[tuple[int, int, int]] = []
-
-        for row in rows_data:
-            key_id = row["id"]
-            limit_mb = row["traffic_limit_mb"] or 0
-            try:
-                limit_mb_value = float(limit_mb)
-            except (TypeError, ValueError):
-                limit_mb_value = 0.0
-            limit_bytes = max(0, int(limit_mb_value * 1024 * 1024))
-
-            stored_total = int(row["traffic_usage_bytes"] or 0)
-            usage_bytes = stored_total
-            server_usage = usage_map.get(key_id)
-            server_usage_int: Optional[int] = None
-            if server_usage is not None:
-                server_usage_int = max(int(server_usage), 0)
-                last_server = snapshot_map.get(key_id)
-                if last_server is None:
-                    if stored_total > server_usage_int:
-                        delta = server_usage_int
-                    elif stored_total == server_usage_int:
-                        delta = 0
-                    else:
-                        delta = server_usage_int - stored_total
-                else:
-                    delta = server_usage_int - last_server
-                    if delta < 0:
-                        if stored_total > server_usage_int:
-                            delta = server_usage_int
-                        elif stored_total == server_usage_int:
-                            delta = 0
-                        else:
-                            delta = server_usage_int - stored_total
-                if delta < 0:
-                    delta = 0
-                usage_bytes = stored_total + delta
-                snapshot_updates.append((key_id, server_usage_int, now))
-                snapshot_map[key_id] = server_usage_int
-
-            over_limit_at = row.get("traffic_over_limit_at")
-            notified_flags = row.get("traffic_over_limit_notified") or 0
-            expiry_at = row.get("expiry_at") or 0
-
-            over_limit = limit_bytes > 0 and usage_bytes > limit_bytes
-            new_over_limit_at = over_limit_at
-            new_notified_flags = notified_flags
-            new_expiry = expiry_at
-            key_uuid = row["v2ray_uuid"]
-            server_id = row["server_id"]
-            server_config = server_configs.get(server_id)
-            tariff_name = row.get("tariff_name") or "V2Ray"
-            user_id = row.get("user_id")
-
-            if over_limit:
-                if not new_over_limit_at:
-                    new_over_limit_at = now
-
-                if not (new_notified_flags & TRAFFIC_NOTIFY_WARNING):
-                    limit_display = _format_bytes_short(limit_bytes)
-                    usage_display = _format_bytes_short(usage_bytes)
-                    deadline_ts = (new_over_limit_at or now) + TRAFFIC_DISABLE_GRACE
-                    remaining = max(0, deadline_ts - now)
-                    message = (
-                        "⚠️ Превышен лимит трафика для вашего V2Ray ключа.\n"
-                        f"Тариф: {tariff_name}\n"
-                        f"Израсходовано: {usage_display} из {limit_display}.\n"
-                        f"Ключ будет отключён через {format_duration(remaining)}.\n"
-                        "Продлите доступ, чтобы сбросить лимит."
-                    )
-                    if user_id:
-                        warn_notifications.append((user_id, message))
-                    else:
-                        logger.warning("[TRAFFIC LIMIT] Cannot notify user for key %s - user_id missing", key_uuid)
-                    new_notified_flags |= TRAFFIC_NOTIFY_WARNING
-
-                should_disable = False
-                disable_deadline = None
-                if new_over_limit_at:
-                    disable_deadline = new_over_limit_at + TRAFFIC_DISABLE_GRACE
-                    should_disable = (
-                        now >= disable_deadline
-                        and not (new_notified_flags & TRAFFIC_NOTIFY_DISABLED)
-                        and server_config is not None
-                    )
-
-                if should_disable:
-                    disable_success = await _disable_v2ray_key(server_id, server_config, key_uuid)
-                    if disable_success:
-                        new_expiry = now
-                        new_over_limit_at = None
-                        new_notified_flags |= TRAFFIC_NOTIFY_DISABLED
-
-                        limit_display = _format_bytes_short(limit_bytes)
-                        usage_display = _format_bytes_short(usage_bytes)
-                        message = (
-                            "❌ Ваш V2Ray ключ был отключён из-за превышения лимита трафика более чем на 24 часа.\n"
-                            f"Всего израсходовано: {usage_display} из {limit_display}.\n"
-                            "Продлите доступ, чтобы восстановить ключ и сбросить лимит."
-                        )
-                        if user_id:
-                            disable_notifications.append((user_id, message))
-                        else:
-                            logger.warning("[TRAFFIC LIMIT] Disabled key %s without user_id", key_uuid)
-                    else:
-                        logger.warning(
-                            "[TRAFFIC LIMIT] Failed to disable key %s on server %s; will retry later",
-                            key_uuid,
-                            server_id,
-                        )
-            else:
-                new_over_limit_at = None
-                new_notified_flags = 0
-
-            updates.append(
-                (
-                    usage_bytes,
-                    new_over_limit_at,
-                    new_notified_flags,
-                    new_expiry,
-                    key_id,
-                )
-            )
-
-        if updates:
-            with get_db_cursor(commit=True) as cursor:
-                cursor.executemany(
-                    """
-                    UPDATE v2ray_keys
-                    SET traffic_usage_bytes = ?,
-                        traffic_over_limit_at = ?,
-                        traffic_over_limit_notified = ?,
-                        expiry_at = ?
-                    WHERE id = ?
-                    """,
-                    updates,
-                )
-                if snapshot_updates:
-                    cursor.executemany(
-                        """
-                        INSERT INTO v2ray_usage_snapshots (key_id, server_bytes, updated_at)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(key_id) DO UPDATE
-                        SET server_bytes = excluded.server_bytes,
-                            updated_at = excluded.updated_at
-                        """,
-                        snapshot_updates,
-                    )
-
-        if warn_notifications or disable_notifications:
-            bot = get_bot_instance()
-            if bot:
-                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-                keyboard = InlineKeyboardMarkup()
-                keyboard.add(InlineKeyboardButton("🔁 Продлить", callback_data="buy"))
-
-                for user_id, message in warn_notifications + disable_notifications:
-                    result = await safe_send_message(
-                        bot,
-                        user_id,
-                        message,
-                        reply_markup=keyboard,
-                        disable_web_page_preview=True,
-                    )
-                    if result:
-                        logger.info("[TRAFFIC LIMIT] Sent notification to user %s", user_id)
-                    else:
-                        logger.warning("[TRAFFIC LIMIT] Failed to deliver notification to user %s", user_id)
-
-    await _run_periodic(
-        "monitor_v2ray_traffic_limits",
-        interval_seconds=300,
-        job=job,
-        max_backoff=1800,
-    )
 
 
 async def check_key_availability() -> None:
@@ -1086,9 +747,9 @@ async def process_pending_paid_payments() -> None:
                                 """
                                 INSERT INTO v2ray_keys (
                                     server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config,
-                                    traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified
+                                    traffic_limit_mb, traffic_usage_bytes
                                 )
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                                 """,
                                 (
                                     server_dict["id"],
@@ -1284,59 +945,49 @@ async def auto_delete_expired_subscriptions() -> None:
 
 
 async def monitor_subscription_traffic_limits() -> None:
-    """Контроль превышения трафиковых лимитов для подписок V2Ray."""
+    """Контроль превышения трафиковых лимитов для подписок V2Ray.
+    
+    Каждые 10 минут:
+    1. Запрашивает трафик для всех активных ключей через GET /api/keys/{key_id}/traffic
+    2. Перезаписывает traffic_usage_bytes абсолютным значением total_bytes
+    3. Рассчитывает трафик подписок как сумму трафика всех ключей подписки
+    4. Проверяет превышение лимитов только для подписок
+    """
     
     TRAFFIC_NOTIFY_WARNING = 1
     TRAFFIC_NOTIFY_DISABLED = 2
     TRAFFIC_DISABLE_GRACE = 86400  # 24 часа
     
-    async def _fetch_usage_for_subscription_keys(server_id: int, config: Dict[str, str], keys: list[Dict[str, Any]]) -> Dict[int, Optional[int]]:
-        """Получить трафик для ключей подписки с одного сервера из V2Ray API"""
-        if not keys:
-            return {}
+    async def _fetch_traffic_for_key(key_id: int, v2ray_uuid: str, server_id: int, api_url: str, api_key: str) -> Optional[int]:
+        """Получить трафик для одного ключа через GET /api/keys/{key_id}/traffic"""
         try:
+            config = {"api_url": api_url, "api_key": api_key}
             protocol = ProtocolFactory.create_protocol('v2ray', config)
-        except Exception as e:
-            logging.error(f"[SUBSCRIPTION TRAFFIC] Failed to initialise V2Ray protocol for server {server_id}: {e}")
-            return {}
-
-        results: Dict[int, Optional[int]] = {}
-        try:
-            history = await protocol.get_traffic_history()
-            traffic_map: Dict[str, int] = {}
-            if isinstance(history, dict):
-                data = history.get('data') or {}
-                items = data.get('keys') or []
-                logging.info(f"[SUBSCRIPTION TRAFFIC] Server {server_id}: received {len(items)} keys from traffic history")
-                for item in items:
-                    uuid_val = item.get('key_uuid') or item.get('uuid')
-                    total = item.get('total_traffic') or {}
-                    total_bytes = total.get('total_bytes')
-                    if uuid_val and isinstance(total_bytes, (int, float)):
-                        traffic_map[uuid_val] = int(total_bytes)
-            else:
-                logging.warning(f"[SUBSCRIPTION TRAFFIC] Server {server_id}: traffic history is not a dict: {type(history)}")
             
-            found_count = 0
-            for key_row in keys:
-                uuid = key_row.get('v2ray_uuid')
-                key_pk = key_row.get('id')
-                if uuid is None or key_pk is None:
-                    continue
-                traffic = traffic_map.get(uuid)
-                results[key_pk] = traffic
-                if traffic is not None:
-                    found_count += 1
-            
-            logging.info(f"[SUBSCRIPTION TRAFFIC] Server {server_id}: found traffic for {found_count}/{len(keys)} keys")
-        except Exception as e:
-            logging.error(f"[SUBSCRIPTION TRAFFIC] Error fetching usage for server {server_id}: {e}", exc_info=True)
-        finally:
             try:
+                # Получаем информацию о ключе для получения API key_id
+                key_info = await protocol.get_key_info(v2ray_uuid)
+                api_key_id = key_info.get('id') or key_info.get('uuid')
+                
+                if not api_key_id:
+                    logging.warning(f"[TRAFFIC] Cannot resolve API key_id for UUID {v2ray_uuid}")
+                    return None
+                
+                # Получаем трафик через новый эндпоинт GET /api/keys/{key_id}/traffic
+                stats = await protocol.get_key_traffic_stats(str(api_key_id))
+                if not stats:
+                    return None
+                
+                total_bytes = stats.get('total_bytes')
+                if isinstance(total_bytes, (int, float)) and total_bytes >= 0:
+                    return int(total_bytes)
+                
+                return None
+            finally:
                 await protocol.close()
-            except Exception as close_error:
-                logging.warning(f"[SUBSCRIPTION TRAFFIC] Error closing protocol client for server {server_id}: {close_error}")
-        return results
+        except Exception as e:
+            logging.error(f"[TRAFFIC] Error fetching traffic for key {key_id} (UUID: {v2ray_uuid}): {e}", exc_info=True)
+            return None
     
     async def _disable_subscription_keys(subscription_id: int) -> bool:
         """Отключить все ключи подписки через V2Ray API"""
@@ -1375,113 +1026,100 @@ async def monitor_subscription_traffic_limits() -> None:
         now = int(time.time())
         repo = SubscriptionRepository()
         
+        # Получить все активные (не истекшие) ключи V2Ray
         with get_db_cursor() as cursor:
-            # Создать таблицу snapshots если не существует
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS subscription_traffic_snapshots (
-                    subscription_id INTEGER PRIMARY KEY,
-                    total_bytes INTEGER DEFAULT 0,
-                    updated_at INTEGER DEFAULT 0
+                SELECT 
+                    k.id,
+                    k.v2ray_uuid,
+                    k.server_id,
+                    k.subscription_id,
+                    IFNULL(s.api_url, '') AS api_url,
+                    IFNULL(s.api_key, '') AS api_key
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.expiry_at > ?
+                  AND s.protocol = 'v2ray'
+                  AND s.api_url IS NOT NULL
+                  AND s.api_key IS NOT NULL
+            """, (now,))
+            active_keys = cursor.fetchall()
+        
+        if not active_keys:
+            logging.debug("[TRAFFIC] No active V2Ray keys found")
+            return
+        
+        logging.info(f"[TRAFFIC] Found {len(active_keys)} active V2Ray keys to update")
+        
+        # Запросить трафик для каждого ключа индивидуально через GET /api/keys/{key_id}/traffic
+        # Создаем список задач с привязкой к key_id
+        tasks_with_keys: list[tuple[int, asyncio.Task]] = []
+        
+        for key_row in active_keys:
+            key_id, v2ray_uuid, server_id, subscription_id, api_url, api_key = key_row
+            if not api_url or not api_key:
+                logging.warning(
+                    "[TRAFFIC] Missing API credentials for server %s, skipping key %s",
+                    server_id, v2ray_uuid
                 )
-            """)
+                continue
             
-            # Получить активные подписки с лимитами из тарифов
-            subscriptions = repo.get_subscriptions_with_traffic_limits(now)
-            
-            if not subscriptions:
-                return
-            
-            # Загрузить snapshots для расчета дельт
-            subscription_ids = [sub[0] for sub in subscriptions]
-            snapshot_map: Dict[int, int] = {}
-            if subscription_ids:
-                placeholders = ",".join("?" for _ in subscription_ids)
-                cursor.execute(
-                    f"SELECT subscription_id, total_bytes FROM subscription_traffic_snapshots WHERE subscription_id IN ({placeholders})",
-                    subscription_ids,
-                )
-                snapshot_map = {
-                    int(row[0]): int(row[1] or 0)
-                    for row in cursor.fetchall()
-                }
+            task = _fetch_traffic_for_key(key_id, v2ray_uuid, server_id, api_url, api_key)
+            tasks_with_keys.append((key_id, task))
         
-        # Собрать все ключи подписок, сгруппированные по серверам
-        server_configs: Dict[int, Dict[str, str]] = {}
-        server_keys_map: Dict[int, list[Dict[str, Any]]] = defaultdict(list)
-        
-        for sub in subscriptions:
-            subscription_id = sub[0]
-            keys = repo.get_subscription_keys_with_server_info(subscription_id)
-            
-            for key_id, v2ray_uuid, server_id, api_url, api_key in keys:
-                if not api_url or not api_key:
-                    logging.warning(
-                        "[SUBSCRIPTION TRAFFIC] Missing API credentials for server %s, skipping key %s",
-                        server_id, v2ray_uuid
-                    )
-                    continue
-                
-                config = {"api_url": api_url, "api_key": api_key}
-                server_configs[server_id] = config
-                
-                key_data = {
-                    "id": key_id,
-                    "v2ray_uuid": v2ray_uuid,
-                    "subscription_id": subscription_id
-                }
-                server_keys_map[server_id].append(key_data)
-        
-        # Получить трафик из V2Ray API для всех ключей
+        # Выполняем все запросы параллельно
         usage_map: Dict[int, Optional[int]] = {}
-        if server_keys_map:
-            logging.info(f"[SUBSCRIPTION TRAFFIC] Fetching traffic for {len(server_keys_map)} servers")
-            tasks = [
-                _fetch_usage_for_subscription_keys(server_id, server_configs[server_id], keys)
-                for server_id, keys in server_keys_map.items()
-            ]
+        if tasks_with_keys:
+            logging.info(f"[TRAFFIC] Fetching traffic for {len(tasks_with_keys)} keys in parallel")
+            tasks = [task for _, task in tasks_with_keys]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, dict):
-                    usage_map.update(result)
-                    logging.info(f"[SUBSCRIPTION TRAFFIC] Received traffic data for {len(result)} keys")
-                else:
-                    logging.error(f"[SUBSCRIPTION TRAFFIC] Error in usage fetch task: {result}", exc_info=True)
-        else:
-            logging.warning("[SUBSCRIPTION TRAFFIC] No servers with keys found")
+            
+            for i, result in enumerate(results):
+                key_id = tasks_with_keys[i][0]
+                if isinstance(result, Exception):
+                    logging.error(f"[TRAFFIC] Error fetching traffic for key {key_id}: {result}", exc_info=True)
+                    continue
+                if result is not None:
+                    usage_map[key_id] = result
         
-        # Обновить traffic_usage_bytes в БД для всех ключей подписок
+        # Обновить traffic_usage_bytes в БД для всех ключей (перезаписать абсолютным значением)
         key_updates = []
         for key_id, usage_bytes in usage_map.items():
             if usage_bytes is not None:
                 key_updates.append((usage_bytes, key_id))
         
-        logging.info(f"[SUBSCRIPTION TRAFFIC] Total keys to update: {len(key_updates)}")
+        logging.info(f"[TRAFFIC] Updating traffic for {len(key_updates)} keys")
         if key_updates:
             with get_db_cursor(commit=True) as cursor:
                 cursor.executemany(
                     "UPDATE v2ray_keys SET traffic_usage_bytes = ? WHERE id = ?",
                     key_updates
                 )
-                logging.info(f"[SUBSCRIPTION TRAFFIC] Updated traffic for {len(key_updates)} keys")
-        else:
-            logging.warning("[SUBSCRIPTION TRAFFIC] No keys to update (usage_map is empty or all values are None)")
+                logging.info(f"[TRAFFIC] Updated traffic_usage_bytes for {len(key_updates)} keys")
         
+        # Получить активные подписки с лимитами
+        subscriptions = repo.get_subscriptions_with_traffic_limits(now)
+        
+        if not subscriptions:
+            logging.debug("[TRAFFIC] No active subscriptions with traffic limits found")
+            return
+        
+        # Проверить превышение лимитов только для подписок
         warn_notifications = []
         disable_notifications = []
         updates = []
-        snapshot_updates: list[tuple[int, int, int]] = []
         
         for sub in subscriptions:
             subscription_id, user_id, stored_usage, over_limit_at, notified_flags, expires_at, tariff_id, limit_mb, tariff_name = sub
             
-            # Агрегировать трафик всех ключей подписки (теперь с актуальными данными из БД)
+            # Агрегировать трафик всех ключей подписки
             total_usage = repo.get_subscription_traffic_sum(subscription_id)
             
             # Обновить traffic_usage_bytes в подписке
             repo.update_subscription_traffic(subscription_id, total_usage)
             
-            # Получить лимит из тарифа
-            limit_bytes = int(limit_mb) * 1024 * 1024 if limit_mb else 0
+            # Получить лимит из тарифа или индивидуального лимита подписки
+            limit_bytes = repo.get_subscription_traffic_limit(subscription_id)
             
             # Проверить превышение лимита
             over_limit = limit_bytes > 0 and total_usage > limit_bytes
@@ -1512,7 +1150,6 @@ async def monitor_subscription_traffic_limits() -> None:
                 
                 # Отключить подписку после grace period
                 should_disable = False
-                disable_deadline = None
                 if new_over_limit_at:
                     disable_deadline = new_over_limit_at + TRAFFIC_DISABLE_GRACE
                     should_disable = (
@@ -1536,6 +1173,10 @@ async def monitor_subscription_traffic_limits() -> None:
                         )
                         disable_notifications.append((user_id, message))
                         new_notified_flags |= TRAFFIC_NOTIFY_DISABLED
+            else:
+                # Если лимит не превышен, сбрасываем флаги
+                new_over_limit_at = None
+                new_notified_flags = 0
             
             # Сохранить обновления
             updates.append((
@@ -1543,9 +1184,6 @@ async def monitor_subscription_traffic_limits() -> None:
                 new_notified_flags,
                 subscription_id
             ))
-            
-            # Обновить snapshot
-            snapshot_updates.append((subscription_id, total_usage, now))
         
         # Обновить БД
         if updates:
@@ -1556,14 +1194,6 @@ async def monitor_subscription_traffic_limits() -> None:
                         traffic_over_limit_notified = ?
                     WHERE id = ?
                 """, updates)
-                
-                # Обновить snapshots
-                if snapshot_updates:
-                    cursor.executemany("""
-                        INSERT OR REPLACE INTO subscription_traffic_snapshots
-                        (subscription_id, total_bytes, updated_at)
-                        VALUES (?, ?, ?)
-                    """, snapshot_updates)
         
         # Отправить уведомления
         bot = get_bot_instance()
@@ -1579,7 +1209,7 @@ async def monitor_subscription_traffic_limits() -> None:
         
         if warn_notifications or disable_notifications:
             logging.info(
-                "[SUBSCRIPTION TRAFFIC] Sent %s warning and %s disable notifications",
+                "[TRAFFIC] Sent %s warning and %s disable notifications",
                 len(warn_notifications), len(disable_notifications)
             )
     

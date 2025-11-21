@@ -1112,9 +1112,7 @@ async def change_country_and_extend(
                             cursor.execute(
                                 """
                                 UPDATE v2ray_keys
-                                SET traffic_usage_bytes = 0,
-                                    traffic_over_limit_at = NULL,
-                                    traffic_over_limit_notified = 0
+                                SET traffic_usage_bytes = 0
                                 WHERE id = ?
                                 """,
                                 (new_key_id,),

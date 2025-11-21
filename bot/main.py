@@ -28,7 +28,6 @@ from bot.services.background_tasks import (
     notify_expiring_keys,
     check_key_availability,
     process_pending_paid_payments,
-    monitor_v2ray_traffic_limits,
     monitor_subscription_traffic_limits,
 )
 
@@ -185,7 +184,6 @@ def start_background_tasks(loop):
         auto_delete_expired_keys(),
         notify_expiring_keys(),
         check_key_availability(),
-        monitor_v2ray_traffic_limits(),
         auto_delete_expired_subscriptions(),
         notify_expiring_subscriptions(),
         monitor_subscription_traffic_limits(),

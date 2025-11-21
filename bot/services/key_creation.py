@@ -439,9 +439,7 @@ async def create_new_key_flow_with_protocol(
                                 cursor.execute(
                                     """
                                     UPDATE v2ray_keys
-                                    SET traffic_usage_bytes = 0,
-                                        traffic_over_limit_at = NULL,
-                                        traffic_over_limit_notified = 0
+                                    SET traffic_usage_bytes = 0
                                     WHERE id = ?
                                     """,
                                     (existing_key[0],),
@@ -465,9 +463,7 @@ async def create_new_key_flow_with_protocol(
                                 cursor.execute(
                                     """
                                     UPDATE v2ray_keys
-                                    SET traffic_usage_bytes = 0,
-                                        traffic_over_limit_at = NULL,
-                                        traffic_over_limit_notified = 0
+                                    SET traffic_usage_bytes = 0
                                     WHERE id = ?
                                     """,
                                     (existing_key[0],),

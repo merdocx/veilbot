@@ -62,8 +62,6 @@ def init_db():
         notified INTEGER DEFAULT 0,
         traffic_limit_mb INTEGER DEFAULT 0,
         traffic_usage_bytes INTEGER DEFAULT 0,
-        traffic_over_limit_at INTEGER,
-        traffic_over_limit_notified INTEGER DEFAULT 0,
         subscription_id INTEGER,
         FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id),
@@ -852,6 +850,114 @@ def migrate_add_subscription_traffic_limits():
     finally:
         conn.close()
 
+def migrate_remove_traffic_limit_fields_from_v2ray_keys():
+    """Удалить поля traffic_over_limit_at и traffic_over_limit_notified из v2ray_keys"""
+    import logging
+    logging.info("Миграция: удаление полей traffic_over_limit_at и traffic_over_limit_notified из v2ray_keys")
+    
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    cursor = conn.cursor()
+    
+    try:
+        # Проверяем, существуют ли поля
+        cursor.execute("PRAGMA table_info(v2ray_keys)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        has_over_limit_at = 'traffic_over_limit_at' in columns
+        has_over_limit_notified = 'traffic_over_limit_notified' in columns
+        
+        if not has_over_limit_at and not has_over_limit_notified:
+            logging.info("Поля traffic_over_limit_at и traffic_over_limit_notified уже отсутствуют в v2ray_keys")
+            conn.close()
+            return
+        
+        # SQLite не поддерживает DROP COLUMN до версии 3.35.0
+        # Пересоздаем таблицу без этих полей
+        logging.info("Пересоздание таблицы v2ray_keys без полей traffic_over_limit_at и traffic_over_limit_notified")
+        
+        # Создаем временную таблицу с новой структурой
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS v2ray_keys_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id INTEGER,
+                user_id INTEGER,
+                v2ray_uuid TEXT UNIQUE,
+                email TEXT,
+                level INTEGER DEFAULT 0,
+                created_at INTEGER,
+                expiry_at INTEGER,
+                tariff_id INTEGER,
+                client_config TEXT DEFAULT NULL,
+                notified INTEGER DEFAULT 0,
+                traffic_limit_mb INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0,
+                subscription_id INTEGER,
+                FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
+            )
+        """)
+        
+        # Копируем данные (исключаем удаляемые поля)
+        cursor.execute("""
+            INSERT INTO v2ray_keys_new (
+                id, server_id, user_id, v2ray_uuid, email, level, created_at, expiry_at,
+                tariff_id, client_config, notified, traffic_limit_mb, traffic_usage_bytes, subscription_id
+            )
+            SELECT 
+                id, server_id, user_id, v2ray_uuid, email, level, created_at, expiry_at,
+                tariff_id, client_config, notified, traffic_limit_mb, traffic_usage_bytes, subscription_id
+            FROM v2ray_keys
+        """)
+        
+        # Удаляем старую таблицу
+        cursor.execute("DROP TABLE v2ray_keys")
+        
+        # Переименовываем новую таблицу
+        cursor.execute("ALTER TABLE v2ray_keys_new RENAME TO v2ray_keys")
+        
+        # Восстанавливаем индексы
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_subscription_id ON v2ray_keys(subscription_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
+        
+        conn.commit()
+        logging.info("Поля traffic_over_limit_at и traffic_over_limit_notified успешно удалены из v2ray_keys")
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Ошибка миграции удаления полей из v2ray_keys: {e}")
+        raise
+    finally:
+        conn.close()
+
+
+def migrate_remove_traffic_snapshot_tables():
+    """Удалить таблицы snapshots для трафика"""
+    import logging
+    logging.info("Миграция: удаление таблиц snapshots для трафика")
+    
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    cursor = conn.cursor()
+    
+    try:
+        # Удаляем таблицу v2ray_usage_snapshots
+        cursor.execute("DROP TABLE IF EXISTS v2ray_usage_snapshots")
+        logging.info("Таблица v2ray_usage_snapshots удалена")
+        
+        # Удаляем таблицу subscription_traffic_snapshots
+        cursor.execute("DROP TABLE IF EXISTS subscription_traffic_snapshots")
+        logging.info("Таблица subscription_traffic_snapshots удалена")
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Ошибка миграции удаления таблиц snapshots: {e}")
+        raise
+    finally:
+        conn.close()
+
+
 def migrate_add_purchase_notification_sent():
     """Добавление поля purchase_notification_sent для отслеживания отправки уведомлений о покупке подписки"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1105,6 +1211,8 @@ def _run_all_migrations():
     migrate_add_subscription_indexes()
     migrate_add_subscription_traffic_limits()
     migrate_add_purchase_notification_sent()
+    migrate_remove_traffic_limit_fields_from_v2ray_keys()
+    migrate_remove_traffic_snapshot_tables()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

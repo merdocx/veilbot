@@ -520,23 +520,30 @@ class V2RayProtocol(VPNProtocol):
         raise Exception(f"Failed to get client_config from V2Ray API for user {user_id}. No valid response received after {max_retries} attempts.")
     
     async def get_traffic_stats(self) -> List[Dict]:
-        """Получить статистику трафика V2Ray через новый API с простым мониторингом"""
+        """Получить статистику трафика V2Ray через новый API"""
         try:
             session = self._session
-            # Используем новый эндпоинт для простого мониторинга
             async with session.get(
-                    f"{self.api_url}/traffic/simple",
+                    f"{self.api_url}/traffic",
                     headers=self.headers
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
                         
-                        # Новая структура ответа с простым мониторингом
-                        data = result.get('data', {})
-                        ports = data.get('ports', {})
-                        total_connections = data.get('total_connections', 0)
-                        total_bytes = data.get('total_bytes', 0)
-                        timestamp = data.get('timestamp')
+                        # Новая структура ответа согласно документации
+                        # Может быть формат с data.ports или прямая структура
+                        if 'data' in result:
+                            data = result.get('data', {})
+                            ports = data.get('ports', {})
+                            total_connections = data.get('total_connections', 0)
+                            total_bytes = data.get('total_bytes', 0)
+                            timestamp = data.get('timestamp')
+                        else:
+                            # Прямой формат ответа
+                            ports = result.get('ports', {})
+                            total_connections = result.get('total_connections', 0)
+                            total_bytes = result.get('total_bytes', 0)
+                            timestamp = result.get('timestamp')
                         
                         # Преобразуем в формат, совместимый с существующим кодом
                         stats_list = []
@@ -558,7 +565,7 @@ class V2RayProtocol(VPNProtocol):
                                 'connection_ratio': 0.0,  # Не предоставляется в новом API
                                 'connections_count': port_data.get('connections', 0),
                                 'timestamp': port_data.get('timestamp'),
-                                'source': result.get('source', 'simple_monitor'),
+                                'source': result.get('source', 'traffic_monitor'),
                                 'method': 'connection_based_estimation',
                                 # Дополнительные поля из новой структуры
                                 'traffic_rate': port_data.get('traffic_rate', 0),
@@ -571,160 +578,84 @@ class V2RayProtocol(VPNProtocol):
                         
                         return stats_list
                     else:
-                        # Fallback к устаревшему эндпоинту для совместимости
-                        logger.warning(f"New traffic API failed ({response.status}), trying legacy endpoint")
-                        return await self._get_legacy_traffic_stats()
-        except Exception as e:
-            logger.error(f"Error getting V2Ray traffic stats: {e}")
-            # Fallback к устаревшему эндпоинту
-            return await self._get_legacy_traffic_stats()
-    
-    async def _get_legacy_traffic_stats(self) -> List[Dict]:
-        """Получить статистику трафика через устаревший API (fallback)"""
-        try:
-            session = self._session
-            async with session.get(
-                    f"{self.api_url}/traffic/exact",
-                    headers=self.headers
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        
-                        # Устаревшая структура ответа
-                        total_keys = result.get('total_keys', 0)
-                        active_keys = result.get('active_keys', 0)
-                        total_traffic = result.get('total_traffic', '0 B')
-                        
-                        traffic_stats = result.get('traffic_stats', {})
-                        keys_stats = traffic_stats.get('keys_stats', [])
-                        
-                        # Преобразуем в формат, совместимый с существующим кодом
-                        stats_list = []
-                        for key_stat in keys_stats:
-                            stats_list.append({
-                                'uuid': key_stat.get('uuid'),
-                                'uplink_bytes': key_stat.get('uplink_bytes', 0),
-                                'downlink_bytes': key_stat.get('downlink_bytes', 0),
-                                'total_bytes': key_stat.get('total_bytes', 0),
-                                'uplink_formatted': key_stat.get('uplink_formatted', '0 B'),
-                                'downlink_formatted': key_stat.get('downlink_formatted', '0 B'),
-                                'total_formatted': key_stat.get('total_formatted', '0 B'),
-                                'uplink_mb': key_stat.get('uplink_mb', 0),
-                                'downlink_mb': key_stat.get('downlink_mb', 0),
-                                'total_mb': key_stat.get('total_mb', 0),
-                                'connections': key_stat.get('connections', 0),
-                                'connection_ratio': key_stat.get('connection_ratio', 0.0),
-                                'connections_count': key_stat.get('connections_count', 0),
-                                'timestamp': key_stat.get('timestamp'),
-                                'source': key_stat.get('source', 'alternative_monitor'),
-                                'method': key_stat.get('method', 'network_distribution'),
-                                # Дополнительные поля из устаревшей структуры
-                                'total_keys': total_keys,
-                                'active_keys': active_keys,
-                                'total_traffic': total_traffic
-                            })
-                        
-                        return stats_list
-                    else:
-                        logger.error(f"Failed to get V2Ray stats (legacy): {response.status}")
+                        logger.error(f"Failed to get traffic stats: {response.status}")
+                        response_text = await response.text()
+                        logger.error(f"Response: {response_text}")
                         return []
         except Exception as e:
-            logger.error(f"Error getting V2Ray legacy traffic stats: {e}")
+            logger.error(f"Error getting V2Ray traffic stats: {e}")
             return []
     
     async def get_key_traffic_stats(self, key_id: str) -> Dict:
-        """Получить статистику трафика конкретного ключа через новый API с простым мониторингом"""
+        """Получить статистику трафика конкретного ключа через новый API"""
         try:
             session = self._session
-            # Используем новый эндпоинт для простого мониторинга
             async with session.get(
-                    f"{self.api_url}/keys/{key_id}/traffic/simple",
+                    f"{self.api_url}/keys/{key_id}/traffic",
                     headers=self.headers
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
                         
-                        # Новая структура ответа с простым мониторингом
-                        key_info = result.get('key', {})
-                        traffic = result.get('traffic', {})
+                        # Новая структура ответа согласно документации
+                        # Может быть два формата: с полями key/traffic или прямая структура
+                        if 'key' in result and 'traffic' in result:
+                            # Формат с разделением на key и traffic
+                            key_info = result.get('key', {})
+                            traffic = result.get('traffic', {})
+                        else:
+                            # Прямой формат ответа
+                            key_info = {
+                                'id': result.get('key_id'),
+                                'uuid': result.get('key_uuid'),
+                                'name': result.get('key_name', 'Unknown')
+                            }
+                            traffic = {
+                                'total_bytes': result.get('total_bytes', 0),
+                                'port': result.get('port'),
+                                'connections': result.get('connections', 0),
+                                'timestamp': result.get('timestamp')
+                            }
                         
                         return {
-                            'uuid': key_info.get('uuid'),
-                            'port': traffic.get('port'),
-                            'key_name': key_info.get('name'),
-                            'uplink_bytes': traffic.get('rx_bytes', 0),
-                            'downlink_bytes': traffic.get('tx_bytes', 0),
-                            'total_bytes': traffic.get('total_bytes', 0),
-                            'uplink_formatted': traffic.get('rx_formatted', '0 B'),
-                            'downlink_formatted': traffic.get('tx_formatted', '0 B'),
-                            'total_formatted': traffic.get('total_formatted', '0 B'),
-                            'uplink_mb': traffic.get('rx_bytes', 0) / (1024 * 1024),
-                            'downlink_mb': traffic.get('tx_bytes', 0) / (1024 * 1024),
-                            'total_mb': traffic.get('total_bytes', 0) / (1024 * 1024),
-                            'connections': traffic.get('connections', 0),
+                            'uuid': key_info.get('uuid') or result.get('key_uuid'),
+                            'port': traffic.get('port') or result.get('port'),
+                            'key_name': key_info.get('name') or result.get('key_name', 'Unknown'),
+                            'uplink_bytes': traffic.get('rx_bytes', 0) or result.get('rx_bytes', 0),
+                            'downlink_bytes': traffic.get('tx_bytes', 0) or result.get('tx_bytes', 0),
+                            'total_bytes': traffic.get('total_bytes', 0) or result.get('total_bytes', 0),
+                            'uplink_formatted': traffic.get('rx_formatted', '0 B') or result.get('rx_formatted', '0 B'),
+                            'downlink_formatted': traffic.get('tx_formatted', '0 B') or result.get('tx_formatted', '0 B'),
+                            'total_formatted': traffic.get('total_formatted', '0 B') or result.get('total_formatted', '0 B'),
+                            'uplink_mb': (traffic.get('rx_bytes', 0) or result.get('rx_bytes', 0)) / (1024 * 1024),
+                            'downlink_mb': (traffic.get('tx_bytes', 0) or result.get('tx_bytes', 0)) / (1024 * 1024),
+                            'total_mb': (traffic.get('total_bytes', 0) or result.get('total_bytes', 0)) / (1024 * 1024),
+                            'connections': traffic.get('connections', 0) or result.get('connections', 0),
                             'connection_ratio': 0.0,  # Не предоставляется в новом API
-                            'connections_count': traffic.get('connections', 0),
-                            'timestamp': traffic.get('timestamp'),
-                            'source': result.get('source', 'simple_monitor'),
-                            'method': 'connection_based_estimation',
+                            'connections_count': traffic.get('connections', 0) or result.get('connections', 0),
+                            'timestamp': traffic.get('timestamp') or result.get('timestamp'),
+                            'source': result.get('source', 'traffic_monitor'),
+                            'method': result.get('method', 'connection_based_estimation'),
                             # Дополнительные поля из новой структуры
-                            'traffic_rate': traffic.get('traffic_rate', 0),
-                            'interface_traffic': traffic.get('interface_traffic', {}),
-                            'connection_details': traffic.get('connection_details', [])
+                            'traffic_rate': traffic.get('traffic_rate', 0) or result.get('traffic_rate', 0),
+                            'interface_traffic': traffic.get('interface_traffic', {}) or result.get('interface_traffic', {}),
+                            'connection_details': traffic.get('connection_details', []) or result.get('connection_details', [])
                         }
                     else:
-                        # Fallback к устаревшему эндпоинту для совместимости
-                        logger.warning(f"New key traffic API failed ({response.status}), trying legacy endpoint")
-                        return await self._get_legacy_key_traffic_stats(key_id)
-        except Exception as e:
-            logger.error(f"Error getting V2Ray key traffic stats: {e}")
-            # Fallback к устаревшему эндпоинту
-            return await self._get_legacy_key_traffic_stats(key_id)
-    
-    async def _get_legacy_key_traffic_stats(self, key_id: str) -> Dict:
-        """Получить статистику трафика конкретного ключа через устаревший API (fallback)"""
-        try:
-            session = self._session
-            async with session.get(
-                    f"{self.api_url}/keys/{key_id}/traffic/exact",
-                    headers=self.headers
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        traffic_bytes = result.get('traffic_bytes', {})
-                        
-                        return {
-                            'uuid': traffic_bytes.get('uuid'),
-                            'uplink_bytes': traffic_bytes.get('uplink_bytes', 0),
-                            'downlink_bytes': traffic_bytes.get('downlink_bytes', 0),
-                            'total_bytes': traffic_bytes.get('total_bytes', 0),
-                            'uplink_formatted': traffic_bytes.get('uplink_formatted', '0 B'),
-                            'downlink_formatted': traffic_bytes.get('downlink_formatted', '0 B'),
-                            'total_formatted': traffic_bytes.get('total_formatted', '0 B'),
-                            'uplink_mb': traffic_bytes.get('uplink_mb', 0),
-                            'downlink_mb': traffic_bytes.get('downlink_mb', 0),
-                            'total_mb': traffic_bytes.get('total_mb', 0),
-                            'connections': traffic_bytes.get('connections', 0),
-                            'connection_ratio': traffic_bytes.get('connection_ratio', 0.0),
-                            'connections_count': traffic_bytes.get('connections_count', 0),
-                            'timestamp': traffic_bytes.get('timestamp'),
-                            'source': traffic_bytes.get('source', 'alternative_monitor'),
-                            'method': traffic_bytes.get('method', 'network_distribution')
-                        }
-                    else:
-                        logger.error(f"Failed to get V2Ray key stats (legacy): {response.status}")
+                        logger.error(f"Failed to get key traffic stats: {response.status}")
+                        response_text = await response.text()
+                        logger.error(f"Response: {response_text}")
                         return {}
         except Exception as e:
-            logger.error(f"Error getting V2Ray legacy key traffic stats: {e}")
+            logger.error(f"Error getting V2Ray key traffic stats: {e}")
             return {}
     
     async def reset_key_traffic(self, key_id: str) -> bool:
-        """Сбросить статистику трафика ключа через новый API с простым мониторингом"""
+        """Сбросить статистику трафика ключа через новый API"""
         try:
             session = self._session
-            # Используем новый эндпоинт для сброса статистики
             async with session.post(
-                    f"{self.api_url}/keys/{key_id}/traffic/simple/reset",
+                    f"{self.api_url}/keys/{key_id}/traffic/reset",
                     headers=self.headers
                 ) as response:
                     if response.status == 200:
@@ -736,37 +667,14 @@ class V2RayProtocol(VPNProtocol):
                             return True
                         else:
                             logger.warning(f"Unexpected reset response: {message}")
+                            return False
                     else:
-                        # Fallback к устаревшему эндпоинту для совместимости
-                        logger.warning(f"New reset API failed ({response.status}), trying legacy endpoint")
-                        return await self._reset_legacy_key_traffic(key_id)
-                    return False
+                        logger.error(f"Failed to reset traffic stats: {response.status}")
+                        response_text = await response.text()
+                        logger.error(f"Response: {response_text}")
+                        return False
         except Exception as e:
             logger.error(f"Error resetting V2Ray key traffic: {e}")
-            # Fallback к устаревшему эндпоинту
-            return await self._reset_legacy_key_traffic(key_id)
-    
-    async def _reset_legacy_key_traffic(self, key_id: str) -> bool:
-        """Сбросить статистику трафика ключа через устаревший API (fallback)"""
-        try:
-            session = self._session
-            async with session.post(
-                    f"{self.api_url}/keys/{key_id}/traffic/reset",
-                    headers=self.headers
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        message = result.get('message', '')
-                        if 'reset successfully' in message.lower():
-                            logger.info(f"Successfully reset traffic stats for key {key_id} (legacy)")
-                            return True
-                        else:
-                            logger.warning(f"Unexpected reset response (legacy): {message}")
-                    else:
-                        logger.error(f"Failed to reset traffic stats (legacy): {response.status}")
-                    return False
-        except Exception as e:
-            logger.error(f"Error resetting V2Ray key traffic (legacy): {e}")
             return False
     
     async def get_traffic_status(self) -> Dict:
@@ -1158,60 +1066,47 @@ class V2RayProtocol(VPNProtocol):
             logger.error(f"Error getting V2Ray key traffic history: {e}")
             return {}
 
-    async def get_key_usage_bytes(self, key_uuid: str) -> Optional[int]:
+    async def get_key_usage_bytes(self, key_id: str) -> Optional[int]:
         """
-        Получить суммарное потребление трафика для ключа V2Ray.
+        Получить суммарное потребление трафика для ключа V2Ray через новый API.
         
         Args:
-            key_uuid: UUID ключа (как хранится в таблице v2ray_keys)
+            key_id: ID или UUID ключа (как возвращается из API)
         
         Returns:
             Количество байт, израсходованных ключом, или None, если данные недоступны.
         """
         try:
-            key_info = await self.get_key_info(key_uuid)
-            api_key_id = key_info.get('id') or key_info.get('uuid')
-            if not api_key_id:
-                logger.warning(f"[V2RAY TRAFFIC] Cannot resolve api_key_id for UUID {key_uuid}")
+            # Используем новый эндпоинт GET /api/keys/{key_id}/traffic
+            stats = await self.get_key_traffic_stats(key_id)
+            if not stats:
                 return None
-
-            history = await self.get_key_traffic_history(str(api_key_id))
-            if not history:
-                return None
-
-            data = history.get('data') or {}
-            total_traffic = data.get('total_traffic') or {}
-            total_bytes = total_traffic.get('total_bytes')
-
-            if isinstance(total_bytes, (int, float)):
+            
+            total_bytes = stats.get('total_bytes')
+            if isinstance(total_bytes, (int, float)) and total_bytes >= 0:
                 return int(total_bytes)
-
-            logger.debug(f"[V2RAY TRAFFIC] total_bytes not found for UUID {key_uuid}: {total_bytes}")
+            
+            logger.debug(f"[V2RAY TRAFFIC] total_bytes not found or invalid for key {key_id}: {total_bytes}")
             return None
         except Exception as e:
-            logger.error(f"[V2RAY TRAFFIC] Error getting usage for key {key_uuid}: {e}")
+            logger.error(f"[V2RAY TRAFFIC] Error getting usage for key {key_id}: {e}")
             return None
 
-    async def reset_key_usage(self, key_uuid: str) -> bool:
+    async def reset_key_usage(self, key_id: str) -> bool:
         """
-        Сбросить счётчик трафика для ключа V2Ray.
+        Сбросить счётчик трафика для ключа V2Ray через новый API.
         
         Args:
-            key_uuid: UUID ключа
+            key_id: ID или UUID ключа (как возвращается из API)
         
         Returns:
             True, если сброс выполнен успешно.
         """
         try:
-            key_info = await self.get_key_info(key_uuid)
-            api_key_id = key_info.get('id') or key_info.get('uuid')
-            if not api_key_id:
-                logger.warning(f"[V2RAY TRAFFIC] Cannot resolve api_key_id for UUID {key_uuid} to reset usage")
-                return False
-
-            return await self.reset_key_traffic_history(str(api_key_id))
+            # Используем новый эндпоинт POST /api/keys/{key_id}/traffic/reset
+            return await self.reset_key_traffic(key_id)
         except Exception as e:
-            logger.error(f"[V2RAY TRAFFIC] Error resetting usage for key {key_uuid}: {e}")
+            logger.error(f"[V2RAY TRAFFIC] Error resetting usage for key {key_id}: {e}")
             return False
 
     async def get_daily_traffic_stats(self, date: str) -> Dict:

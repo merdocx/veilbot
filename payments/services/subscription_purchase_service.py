@@ -18,6 +18,7 @@ from vpn_protocols import ProtocolFactory, format_duration
 from bot.core import get_bot_instance
 from bot.utils import safe_send_message
 from bot.keyboards import get_main_menu
+from bot.services.subscription_traffic_reset import reset_subscription_traffic
 
 logger = logging.getLogger(__name__)
 
@@ -563,6 +564,16 @@ class SubscriptionPurchaseService:
                     await conn.commit()
                 
                 logger.info(f"[SUBSCRIPTION] Extended {keys_extended} keys for subscription {subscription_id}")
+                
+                # Шаг 2.5: Сбрасываем трафик всех ключей подписки при продлении
+                try:
+                    reset_success = await reset_subscription_traffic(subscription_id)
+                    if reset_success:
+                        logger.info(f"[SUBSCRIPTION] Successfully reset traffic for subscription {subscription_id}")
+                    else:
+                        logger.warning(f"[SUBSCRIPTION] Failed to reset traffic for subscription {subscription_id}")
+                except Exception as e:
+                    logger.error(f"[SUBSCRIPTION] Error resetting traffic for subscription {subscription_id}: {e}", exc_info=True)
             
             # Шаг 3: Проверяем, не было ли уже отправлено уведомление
             # ВАЖНО: purchase_notification_sent проверяем ТОЛЬКО для покупки (is_purchase=True)
@@ -1079,6 +1090,16 @@ class SubscriptionPurchaseService:
                 f"[SUBSCRIPTION] Created subscription {subscription_id} for user {payment.user_id}: "
                 f"{created_keys} keys created, {len(failed_servers)} failed"
             )
+            
+            # Шаг 3.5: Сбрасываем трафик всех ключей подписки при создании
+            try:
+                reset_success = await reset_subscription_traffic(subscription_id)
+                if reset_success:
+                    logger.info(f"[SUBSCRIPTION] Successfully reset traffic for new subscription {subscription_id}")
+                else:
+                    logger.warning(f"[SUBSCRIPTION] Failed to reset traffic for new subscription {subscription_id}")
+            except Exception as e:
+                logger.error(f"[SUBSCRIPTION] Error resetting traffic for new subscription {subscription_id}: {e}", exc_info=True)
             
             # Шаг 4: Атомарно проверяем и помечаем уведомление как отправляемое
             # Это предотвращает дублирование уведомлений при параллельной обработке
