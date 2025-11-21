@@ -1,22 +1,14 @@
-#!/usr/bin/env python3
-"""Compare keys stored in the database with keys present on VPN servers."""
-
+"""
+Сервис для сравнения ключей между БД и VPN серверами
+"""
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-from app.infra.sqlite_utils import get_db_cursor  # noqa: E402
-from vpn_protocols import OutlineProtocol, V2RayProtocol  # noqa: E402
+from app.infra.sqlite_utils import get_db_cursor
+from vpn_protocols import OutlineProtocol, V2RayProtocol
 
 
 @dataclass
@@ -43,6 +35,7 @@ class ComparisonResult:
 
 
 def load_servers() -> List[ServerInfo]:
+    """Загрузить список активных серверов из БД"""
     with get_db_cursor() as cursor:
         cursor.execute(
             """
@@ -72,6 +65,7 @@ def load_servers() -> List[ServerInfo]:
 
 
 def load_db_keys(server: ServerInfo) -> List[Dict[str, Any]]:
+    """Загрузить ключи из БД для указанного сервера"""
     with get_db_cursor() as cursor:
         if server.protocol == "outline":
             cursor.execute(
@@ -100,7 +94,7 @@ def load_db_keys(server: ServerInfo) -> List[Dict[str, Any]]:
 
 
 def serialize_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert SQLite row (dict) to JSON serializable values."""
+    """Преобразовать SQLite row (dict) в JSON serializable значения"""
     serialized = {}
     for key, value in row.items():
         if isinstance(value, (bytes, bytearray)):
@@ -111,6 +105,7 @@ def serialize_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def compare_outline(server: ServerInfo, db_keys: List[Dict[str, Any]]) -> ComparisonResult:
+    """Сравнить Outline ключи между БД и сервером"""
     result = ComparisonResult(server=server, db_count=len(db_keys), remote_count=0)
 
     client = OutlineProtocol(server.api_url, server.cert_sha256 or "")
@@ -173,6 +168,7 @@ async def compare_outline(server: ServerInfo, db_keys: List[Dict[str, Any]]) -> 
 
 
 def extract_v2ray_uuid(remote_entry: Dict[str, Any]) -> Optional[str]:
+    """Извлечь UUID из V2Ray ключа"""
     uuid = remote_entry.get("uuid")
     if not uuid:
         key_info = remote_entry.get("key") or {}
@@ -185,6 +181,7 @@ def extract_v2ray_uuid(remote_entry: Dict[str, Any]) -> Optional[str]:
 
 
 async def compare_v2ray(server: ServerInfo, db_keys: List[Dict[str, Any]]) -> ComparisonResult:
+    """Сравнить V2Ray ключи между БД и сервером"""
     result = ComparisonResult(server=server, db_count=len(db_keys), remote_count=0)
 
     client = V2RayProtocol(server.api_url, server.api_key or "")
@@ -250,6 +247,7 @@ async def compare_v2ray(server: ServerInfo, db_keys: List[Dict[str, Any]]) -> Co
 
 
 async def compare_servers() -> List[ComparisonResult]:
+    """Сравнить ключи для всех активных серверов"""
     servers = load_servers()
     results: List[ComparisonResult] = []
 
@@ -265,54 +263,4 @@ async def compare_servers() -> List[ComparisonResult]:
             results.append(result)
 
     return results
-
-
-def print_report(results: List[ComparisonResult]) -> None:
-    for res in results:
-        header = f"Server {res.server.name} (ID {res.server.id}, protocol {res.server.protocol}"
-        if res.server.country:
-            header += f", country {res.server.country}"
-        header += ")"
-        print(header)
-        print(f"  DB keys: {res.db_count}")
-        print(f"  Server keys: {res.remote_count}")
-
-        if res.errors:
-            for err in res.errors:
-                print(f"  ERROR: {err}")
-            print()
-            continue
-
-        if res.missing_on_server:
-            print(f"  Missing on server ({len(res.missing_on_server)}):")
-            for item in res.missing_on_server:
-                print("    - DB entry:", json.dumps(item, ensure_ascii=False))
-
-        if res.missing_in_db:
-            print(f"  Missing in DB ({len(res.missing_in_db)}):")
-            for item in res.missing_in_db:
-                print("    - Remote key:", json.dumps(item, ensure_ascii=False))
-
-        if res.db_without_remote_id:
-            print(f"  DB entries without remote id ({len(res.db_without_remote_id)}):")
-            for item in res.db_without_remote_id:
-                print("    -", json.dumps(item, ensure_ascii=False))
-
-        if (
-            not res.missing_on_server
-            and not res.missing_in_db
-            and not res.db_without_remote_id
-        ):
-            print("  ✔ Everything matches")
-
-        print()
-
-
-async def main() -> None:
-    results = await compare_servers()
-    print_report(results)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
 

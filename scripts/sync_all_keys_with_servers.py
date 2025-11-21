@@ -14,7 +14,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.settings import settings
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import ProtocolFactory, normalize_vless_host, remove_fragment_from_vless
 from bot.services.subscription_service import invalidate_subscription_cache
 

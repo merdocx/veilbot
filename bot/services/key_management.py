@@ -9,7 +9,7 @@ import sqlite3
 from typing import Optional, Dict, Any, Tuple
 from aiogram import types
 
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from outline import create_key, delete_key
 from vpn_protocols import format_duration, ProtocolFactory, normalize_vless_host
 from bot.utils import format_key_message_unified, safe_send_message

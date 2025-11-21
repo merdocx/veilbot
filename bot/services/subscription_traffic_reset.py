@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 from app.repositories.subscription_repository import SubscriptionRepository
 from vpn_protocols import ProtocolFactory
-from db import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, executor
 from config import TELEGRAM_BOT_TOKEN, validate_configuration
 from db import init_db_with_migrations
 from app.logging_config import setup_logging, _SecretMaskingFilter
-from bot.core import set_bot_instance
+from bot.core import set_bot_instance, set_dp_instance
 from bot_error_handler import setup_error_handler
 
 # Импортируем handlers
@@ -98,21 +98,20 @@ def setup_bot():
     
     # Регистрируем bot instance для использования в других модулях
     set_bot_instance(bot)
+    set_dp_instance(dp)
     
-    # Инициализируем user_states (если еще не инициализирован)
+    # Получаем user_states из централизованного модуля
+    from bot.core.state import get_user_states
+    user_states = get_user_states()
+    
+    # Для обратной совместимости с bot.py устанавливаем в bot_module
     if not hasattr(bot_module, 'user_states'):
-        bot_module.user_states = {}
+        bot_module.user_states = user_states
     
-    # Инициализируем main_menu и другие клавиатуры (если еще не инициализированы)
-    from bot.keyboards import get_main_menu, get_help_keyboard, get_cancel_keyboard
-    if not hasattr(bot_module, 'main_menu'):
-        bot_module.main_menu = get_main_menu()
-    if not hasattr(bot_module, 'help_keyboard'):
-        bot_module.help_keyboard = get_help_keyboard()
-    if not hasattr(bot_module, 'cancel_keyboard'):
-        bot_module.cancel_keyboard = get_cancel_keyboard()
+    # Глобальные переменные main_menu, help_keyboard, cancel_keyboard удалены
+    # Теперь используются функции get_main_menu(), get_help_keyboard(), get_cancel_keyboard()
     
-    return bot, dp, bot_module.user_states
+    return bot, dp, user_states
 
 
 def register_all_handlers(dp: Dispatcher, bot_instance, user_states: dict):
@@ -137,12 +136,13 @@ def register_all_handlers(dp: Dispatcher, bot_instance, user_states: dict):
     bot_module.bot = bot_instance
     
     # Регистрация purchase handlers
+    from bot.keyboards import get_main_menu, get_cancel_keyboard
     register_purchase_handlers(
         dp=dp,
         user_states=user_states,
         bot=bot_instance,
-        main_menu=bot_module.main_menu,
-        cancel_keyboard=bot_module.cancel_keyboard,
+        main_menu=get_main_menu,
+        cancel_keyboard=get_cancel_keyboard,
         is_valid_email=bot_module.is_valid_email,
         create_payment_with_email_and_protocol=bot_module.create_payment_with_email_and_protocol,
         create_new_key_flow_with_protocol=bot_module.create_new_key_flow_with_protocol,

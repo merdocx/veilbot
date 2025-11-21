@@ -12,7 +12,7 @@ from aiogram import types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 from config import PROTOCOLS, ADMIN_ID
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import format_duration, ProtocolFactory
 from bot.keyboards import get_main_menu, get_countries_by_protocol
 from bot.utils import format_key_message_unified, safe_send_message

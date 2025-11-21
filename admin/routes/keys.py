@@ -533,8 +533,8 @@ def _load_key_view_model(key_repo: KeyRepository, key_id: int | str, now_ts: int
                                k.created_at, k.expiry_at,
                                IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
                                COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
-                               COALESCE(k.traffic_usage_bytes, 0), k.traffic_over_limit_at,
-                               COALESCE(k.traffic_over_limit_notified, 0)
+                               COALESCE(k.traffic_usage_bytes, 0), NULL AS traffic_over_limit_at,
+                               0 AS traffic_over_limit_notified
                         FROM v2ray_keys k
                         LEFT JOIN servers s ON k.server_id = s.id
                         LEFT JOIN tariffs t ON k.tariff_id = t.id

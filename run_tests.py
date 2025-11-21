@@ -61,7 +61,7 @@ def run_import_tests():
         from db import init_db
         from validators import input_validator, db_validator, business_validator
         from vpn_protocols import ProtocolFactory
-        from utils import get_db_cursor
+        from app.infra.sqlite_utils import get_db_cursor
         print("✅ All basic imports successful")
         return True
     except Exception as e:
@@ -73,7 +73,7 @@ def run_syntax_tests():
     print("🔍 Checking for syntax errors...")
     python_files = [
         'bot.py', 'config.py', 'db.py', 
-        'validators.py', 'vpn_protocols.py', 'utils.py',
+        'validators.py', 'vpn_protocols.py',
         'test_bot.py', 'run_tests.py'
     ]
     

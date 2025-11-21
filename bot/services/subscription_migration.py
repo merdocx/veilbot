@@ -4,7 +4,7 @@
 import time
 import logging
 from typing import Optional, Dict, Any, Tuple
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from app.repositories.subscription_repository import SubscriptionRepository
 from bot.services.subscription_service import SubscriptionService
 from vpn_protocols import V2RayProtocol
@@ -257,6 +257,7 @@ async def migrate_user_to_subscription(user_id: int) -> Dict[str, Any]:
     
     result['success'] = True
     return result
+
 
 
 

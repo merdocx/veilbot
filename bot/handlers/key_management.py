@@ -8,7 +8,7 @@ from typing import Dict, Any, Callable, List, Optional
 from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from config import PROTOCOLS, ADMIN_ID
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from outline import create_key, delete_key
 from vpn_protocols import ProtocolFactory
 from bot.keyboards import get_main_menu, get_country_menu, get_countries_by_protocol, get_help_keyboard

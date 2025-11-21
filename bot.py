@@ -11,7 +11,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration, ADMIN_ID
 from db import init_db
 from outline import create_key, delete_key
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import format_duration, ProtocolFactory, get_protocol_instructions
 from bot.keyboards import (
     get_main_menu, get_help_keyboard, get_cancel_keyboard,
@@ -76,18 +76,21 @@ SECURITY_HEADERS = {
 
 # Инициализация bot и dp перенесена в bot/main.py
 # Эти переменные будут созданы при запуске через bot/main.py
-bot = None
-dp = None
+# Для обратной совместимости импортируем из bot.core.state
+from bot.core.state import get_user_states, get_bot_instance, get_dp_instance
+
+# Глобальные переменные для обратной совместимости с декораторами
+bot = None  # Будет установлен в bot/main.py через set_bot_instance()
+dp = None   # Будет установлен в bot/main.py через set_dp_instance()
 
 # Simple state management for email collection
-user_states: Dict[int, Dict[str, Any]] = {}  # user_id -> {"state": ..., ...}
+# Используем централизованное хранилище из bot.core.state
+user_states: Dict[int, Dict[str, Any]] = get_user_states()  # user_id -> {"state": ..., ...}
 
 # Notification state for key availability перенесена в bot/services/background_tasks.py
 
-# Главное меню (создаем глобальную переменную для обратной совместимости)
-main_menu = get_main_menu()
-help_keyboard = get_help_keyboard()
-cancel_keyboard = get_cancel_keyboard()
+# Главное меню теперь получается через функции get_main_menu(), get_help_keyboard(), get_cancel_keyboard()
+# Глобальные переменные удалены для улучшения поддерживаемости
 
 # Функция is_valid_email перенесена в validators.py
 # Импортируется оттуда (см. импорты выше)
@@ -189,9 +192,9 @@ async def create_new_key_flow(
         extend_existing_key(cursor, existing_key, tariff['duration_sec'], email, tariff['id'])
         was_expired = existing_key[1] <= now
         if was_expired:
-            await message.answer(f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message(existing_key[2])}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            await message.answer(f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message(existing_key[2])}", reply_markup=get_main_menu(user_id), disable_web_page_preview=True, parse_mode="Markdown")
         else:
-            await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message(existing_key[2])}", reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+            await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message(existing_key[2])}", reply_markup=get_main_menu(user_id), disable_web_page_preview=True, parse_mode="Markdown")
         # Уведомление админу
         admin_msg = (
             f"🔑 *Продление ключа*\n"
@@ -213,11 +216,11 @@ async def create_new_key_flow(
     # Если нет активного ключа — создаём новый
     server = select_available_server(cursor, country)
     if not server:
-        await message.answer("Нет доступных серверов.", reply_markup=main_menu)
+        await message.answer("Нет доступных серверов.", reply_markup=get_main_menu(user_id))
         return
     key = await asyncio.get_event_loop().run_in_executor(None, create_key, server['api_url'], server['cert_sha256'])
     if not key:
-        await message.answer("Ошибка при создании ключа.", reply_markup=main_menu)
+        await message.answer("Ошибка при создании ключа.", reply_markup=get_main_menu(user_id))
         return
     expiry = now + tariff['duration_sec']
     cursor.execute(
@@ -230,7 +233,7 @@ async def create_new_key_flow(
     if tariff['price_rub'] == 0:
         record_free_key_usage(cursor, user_id, "outline", country)
     
-    await message.answer(format_key_message(key["accessUrl"]), reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+    await message.answer(format_key_message(key["accessUrl"]), reply_markup=get_main_menu(user_id), disable_web_page_preview=True, parse_mode="Markdown")
     # Admin notification as before
     admin_msg = (
         f"🔑 *Покупка ключа*\n"
@@ -293,7 +296,7 @@ async def create_payment_with_email_and_protocol(
         if not tariff.get('price_crypto_usd'):
             await message.answer(
                 "❌ Крипто-оплата недоступна для этого тарифа. Пожалуйста, выберите другой способ оплаты.",
-                reply_markup=main_menu
+                reply_markup=get_main_menu(user_id)
             )
             return
         
@@ -302,7 +305,7 @@ async def create_payment_with_email_and_protocol(
             if not payment_service or not payment_service.cryptobot_service:
                 await message.answer(
                     "❌ Сервис крипто-платежей временно недоступен. Пожалуйста, используйте другой способ оплаты.",
-                    reply_markup=main_menu
+                    reply_markup=get_main_menu(user_id)
                 )
                 return
             
@@ -322,7 +325,7 @@ async def create_payment_with_email_and_protocol(
             if not invoice_id or not payment_url:
                 await message.answer(
                     "❌ Ошибка при создании платежа. Попробуйте еще раз или выберите другой способ оплаты.",
-                    reply_markup=main_menu
+                    reply_markup=get_main_menu(user_id)
                 )
                 return
             
@@ -356,7 +359,7 @@ async def create_payment_with_email_and_protocol(
             logging.error(f"Error creating crypto payment: {e}")
             await message.answer(
                 "❌ Ошибка при создании криптоплатежа. Попробуйте еще раз или выберите другой способ оплаты.",
-                reply_markup=main_menu
+                reply_markup=get_main_menu(user_id)
             )
             return
     
@@ -433,7 +436,7 @@ async def create_payment_with_email_and_protocol(
                 with get_db_cursor() as cursor:
                     server = select_available_server_by_protocol(cursor, country, protocol, for_renewal=for_renewal)
                     if not server:
-                        await message.answer(f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
+                        await message.answer(f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=get_main_menu(user_id))
                         return
                 
                 # Создаем inline клавиатуру для оплаты
@@ -475,7 +478,7 @@ async def create_payment_with_email_and_protocol(
                 except Exception as log_e:
                     logging.error(f"Error logging payment failure: {log_e}")
                 
-                await message.answer("Ошибка при создании платежа.", reply_markup=main_menu)
+                await message.answer("Ошибка при создании платежа.", reply_markup=get_main_menu(user_id))
                 return
                 
         except Exception as e:
@@ -497,12 +500,12 @@ async def create_payment_with_email_and_protocol(
             except Exception as log_e:
                 logging.error(f"Error logging payment module error: {log_e}")
             
-            await message.answer("Ошибка при создании платежа.", reply_markup=main_menu)
+            await message.answer("Ошибка при создании платежа.", reply_markup=get_main_menu(user_id))
             return
     else:
         # Если новый модуль недоступен
         logging.warning("Новый платежный модуль недоступен")
-        await message.answer("Платежная система временно недоступна.", reply_markup=main_menu)
+        await message.answer("Платежная система временно недоступна.", reply_markup=get_main_menu(user_id))
         return
 
 def select_available_server(

@@ -75,8 +75,8 @@ class KeyRepository:
                        k.created_at, k.expiry_at,
                        IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
                        COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
-                       COALESCE(k.traffic_usage_bytes, 0), k.traffic_over_limit_at,
-                       COALESCE(k.traffic_over_limit_notified, 0)
+                       COALESCE(k.traffic_usage_bytes, 0), NULL AS traffic_over_limit_at,
+                       0 AS traffic_over_limit_notified
                 FROM v2ray_keys k
                 LEFT JOIN servers s ON k.server_id = s.id
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
@@ -211,13 +211,15 @@ class KeyRepository:
     ) -> int:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            # ИСПРАВЛЕНИЕ: Колонки traffic_over_limit_at и traffic_over_limit_notified удалены из таблицы v2ray_keys
+            # Используем только существующие колонки
             c.execute(
                 """
                 INSERT INTO v2ray_keys (
                     server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config,
-                    traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified
+                    traffic_limit_mb, traffic_usage_bytes
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     server_id,
@@ -230,8 +232,6 @@ class KeyRepository:
                     client_config,
                     traffic_limit_mb,
                     traffic_usage_bytes,
-                    traffic_over_limit_at,
-                    traffic_over_limit_notified,
                 ),
             )
             conn.commit()
@@ -312,8 +312,10 @@ class KeyRepository:
             keyset_params = []
             if cursor and sort_by == "created_at":
                 from app.infra.pagination import KeysetPagination
+                # ИСПРАВЛЕНИЕ: Не используем алиас "k" для keyset, т.к. это может вызвать проблемы с колонками
+                # Используем пустой алиас, т.к. WHERE будет применяться к подзапросу после UNION
                 keyset_where, keyset_params = KeysetPagination.build_keyset_where_clause(
-                    sort_by, sort_order, cursor, "k"
+                    sort_by, sort_order, cursor, ""
                 )
 
             def add_outline():
@@ -333,9 +335,8 @@ class KeyRepository:
                     where.append("k.tariff_id = ?"); params.append(tariff_id)
                 if server_id is not None:
                     where.append("k.server_id = ?"); params.append(server_id)
-                if keyset_where:
-                    where.append(keyset_where)
-                    params.extend(keyset_params)
+                # ИСПРАВЛЕНИЕ: Не применяем keyset_where здесь, т.к. он использует алиас "k" который может вызвать проблемы
+                # keyset_where будет применен к обернутому запросу после UNION
                 if where:
                     sql += " WHERE " + " AND ".join(where)
                 parts.append(sql)
@@ -346,8 +347,8 @@ class KeyRepository:
                     "COALESCE(k.client_config, '') as access_url, "
                     "k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol, "
                     "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "
-                    "COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes, k.traffic_over_limit_at, "
-                    "COALESCE(k.traffic_over_limit_notified, 0) AS traffic_over_limit_notified "
+                    "COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes, NULL AS traffic_over_limit_at, "
+                    "0 AS traffic_over_limit_notified "
                     "FROM v2ray_keys k LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
                 )
                 where = []
@@ -359,9 +360,8 @@ class KeyRepository:
                     where.append("k.tariff_id = ?"); params.append(tariff_id)
                 if server_id is not None:
                     where.append("k.server_id = ?"); params.append(server_id)
-                if keyset_where:
-                    where.append(keyset_where)
-                    params.extend(keyset_params)
+                # ИСПРАВЛЕНИЕ: Не применяем keyset_where здесь, т.к. он использует алиас "k" который может вызвать проблемы
+                # keyset_where будет применен к обернутому запросу после UNION
                 if where:
                     sql += " WHERE " + " AND ".join(where)
                 parts.append(sql)
@@ -377,10 +377,18 @@ class KeyRepository:
             # Создаем алиасы для столбцов, чтобы ORDER BY работал корректно
             wrapped_union = f"SELECT * FROM ( {union_sql} ) AS combined_keys"
             
+            # ИСПРАВЛЕНИЕ: Применяем keyset WHERE к обернутому запросу, а не к отдельным частям UNION
+            # После UNION ALL столбцы имеют имена из первого SELECT, используем эти имена
+            if keyset_where and cursor:
+                # Заменяем имена столбцов на имена из результата UNION (без алиаса "k.")
+                keyset_where_fixed = keyset_where.replace("k.created_at", "created_at").replace("k.id", "id").replace(".created_at", ".created_at").replace(".id", ".id")
+                wrapped_union = f"SELECT * FROM ( {union_sql} ) AS combined_keys WHERE {keyset_where_fixed}"
+            
             # Use keyset pagination for better performance
             if cursor and sort_by == "created_at":
                 from app.infra.pagination import KeysetPagination
-                order_clause = KeysetPagination.build_keyset_order_clause(sort_by, sort_order)
+                # Используем имена столбцов из результата UNION (без алиаса)
+                order_clause = KeysetPagination.build_keyset_order_clause(sort_by, sort_order, "")
                 final_sql = f"SELECT * FROM ( {wrapped_union} ) ORDER BY {order_clause} LIMIT ?"
                 params.extend([limit + 1])  # Fetch one extra to check if there are more
             else:

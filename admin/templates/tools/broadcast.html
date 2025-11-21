@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% block title %}Рассылка сообщений - VeilBot Admin{% endblock %}
+
+{% block page_title %}Рассылка сообщений{% endblock %}
+
+{% block content %}
+<div class="page-content">
+    <div class="page-header">
+        <p class="page-description">
+            Отправка сообщений всем пользователям бота. 
+            Сообщение будет отправлено всем активным пользователям (не заблокированным).
+        </p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">
+        <span class="material-icons">error</span>
+        <div>
+            <strong>Ошибка:</strong> {{ error }}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if success %}
+    <div class="alert alert-success">
+        <span class="material-icons">check_circle</span>
+        <div>
+            <strong>Успешно:</strong> {{ success }}
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">Новая рассылка</h2>
+            <p class="card-subtitle">Введите текст сообщения для рассылки</p>
+        </div>
+
+        <div class="card-body">
+            <form method="POST" action="/tools/broadcast" class="broadcast-form">
+                <div class="form-group">
+                    <label for="message_text" class="form-label">
+                        Текст сообщения
+                        <span class="required">*</span>
+                    </label>
+                    <textarea 
+                        id="message_text" 
+                        name="message_text" 
+                        class="form-control" 
+                        rows="10" 
+                        required
+                        placeholder="Введите текст сообщения для рассылки..."
+                    >{{ message_text or '' }}</textarea>
+                    <div class="form-hint">
+                        Поддерживается Markdown форматирование
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">
+                        <span class="material-icons">send</span>
+                        Отправить рассылку
+                    </button>
+                    <button type="reset" class="btn btn-secondary" onclick="document.getElementById('message_text').value = ''">
+                        <span class="material-icons">clear</span>
+                        Очистить
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="card warning-card">
+        <div class="card-header">
+            <h3 class="card-title">
+                <span class="material-icons">warning</span>
+                Важные замечания
+            </h3>
+        </div>
+        <div class="card-body">
+            <ul class="warning-list">
+                <li>Сообщение будет отправлено <strong>всем активным пользователям</strong> бота</li>
+                <li>Рассылка выполняется <strong>асинхронно</strong>, отчет будет отправлен администратору в Telegram</li>
+                <li>Не рекомендуется отправлять слишком частые рассылки</li>
+                <li>Проверьте текст сообщения перед отправкой</li>
+                <li>Поддерживается Markdown форматирование (жирный, курсив, ссылки и т.д.)</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<style>
+.broadcast-form {
+    max-width: 800px;
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.required {
+    color: var(--error-color);
+}
+
+.form-control {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 1rem;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 200px;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
+}
+
+.form-hint {
+    margin-top: 0.5rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.form-actions {
+    display: flex;
+    gap: 1rem;
+    margin-top: 2rem;
+}
+
+.warning-card {
+    margin-top: 2rem;
+    border-left: 4px solid var(--warning-color);
+}
+
+.warning-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.warning-list li {
+    padding: 0.75rem 0;
+    padding-left: 2rem;
+    position: relative;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.warning-list li:last-child {
+    border-bottom: none;
+}
+
+.warning-list li::before {
+    content: "⚠️";
+    position: absolute;
+    left: 0;
+}
+</style>
+{% endblock %}
+

@@ -3,67 +3,24 @@
 
 Этот модуль позволяет получать bot instance из любого места в проекте
 без создания циклических зависимостей.
+
+Для обратной совместимости реэкспортирует функции из bot.core.state
 """
-import logging
-from typing import Optional
-from aiogram import Bot
+from bot.core.state import (
+    set_bot_instance,
+    get_bot_instance,
+    set_dp_instance,
+    get_dp_instance,
+    get_user_states,
+    clear_user_state,
+    set_user_state,
+    get_user_state,
+)
 
-logger = logging.getLogger(__name__)
-
-# Глобальная переменная для хранения bot instance
-_bot_instance: Optional[Bot] = None
-
-
-def set_bot_instance(bot: Bot) -> None:
-    """
-    Устанавливает bot instance для использования в других модулях
-    
-    Args:
-        bot: Экземпляр aiogram Bot
-    """
-    global _bot_instance
-    _bot_instance = bot
-    logger.info("Bot instance registered in bot.core")
-
-
-def get_bot_instance() -> Optional[Bot]:
-    """
-    Получает bot instance
-    
-    Returns:
-        Экземпляр aiogram Bot или None, если еще не установлен
-    
-    Raises:
-        RuntimeError: Если bot instance не установлен и попытка получить его
-    """
-    if _bot_instance is None:
-        logger.warning("Bot instance not yet registered. Attempting lazy import...")
-        # Попытка ленивой загрузки из sys.modules (fallback)
-        try:
-            import sys
-            if 'bot' in sys.modules:
-                bot_module = sys.modules['bot']
-                if hasattr(bot_module, 'bot'):
-                    logger.info("Bot instance found via sys.modules fallback")
-                    return bot_module.bot
-        except Exception as e:
-            logger.error(f"Failed to get bot instance via fallback: {e}")
-        
-        raise RuntimeError(
-            "Bot instance not registered. Call set_bot_instance() first. "
-            "Usually this is done in bot.py during initialization."
-        )
-    
-    return _bot_instance
-
-
+# Для обратной совместимости
 def is_bot_registered() -> bool:
-    """
-    Проверяет, зарегистрирован ли bot instance
-    
-    Returns:
-        True если bot instance установлен, False иначе
-    """
-    return _bot_instance is not None
+    """Проверяет, зарегистрирован ли bot instance"""
+    from bot.core.state import get_bot_instance
+    return get_bot_instance() is not None
 
 

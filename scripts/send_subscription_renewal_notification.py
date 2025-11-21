@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.tariff_repository import TariffRepository
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from bot.core import get_bot_instance
 from bot.utils import safe_send_message
 from bot.keyboards import get_main_menu

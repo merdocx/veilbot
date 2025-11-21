@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any
 from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from bot.keyboards import get_main_menu, get_cancel_keyboard, get_payment_method_keyboard
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService

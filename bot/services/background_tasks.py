@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import Optional, Callable, Awaitable, Dict, Any
 from datetime import datetime
 
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from outline import delete_key
 from vpn_protocols import format_duration, ProtocolFactory
 from bot.utils import format_key_message, format_key_message_unified, safe_send_message

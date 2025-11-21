@@ -6,7 +6,7 @@ from aiogram import Bot
 from aiogram.types import Message
 from aiogram.utils.exceptions import BotBlocked, ChatNotFound, RetryAfter, TelegramAPIError
 
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 
 LOGGER = logging.getLogger("bot.messaging")
 

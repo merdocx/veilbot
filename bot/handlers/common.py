@@ -7,7 +7,7 @@ from typing import Dict, Optional, Set
 from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import ADMIN_ID, SUPPORT_USERNAME
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from bot.core import get_bot_instance
 from bot.keyboards import get_main_menu, get_help_keyboard
 from bot_error_handler import BotErrorHandler

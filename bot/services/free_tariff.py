@@ -16,7 +16,7 @@ from bot.keyboards import get_main_menu
 from bot.services.key_creation import create_new_key_flow_with_protocol, select_available_server_by_protocol
 from bot.utils import safe_send_message
 from bot.core import get_bot_instance
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import ProtocolFactory, normalize_vless_host
 from app.infra.foreign_keys import safe_foreign_keys_off
 from memory_optimizer import get_security_logger

@@ -18,7 +18,7 @@ sys.path.insert(0, str(root_dir))
 
 from app.repositories.subscription_repository import SubscriptionRepository
 from bot.services.subscription_service import invalidate_subscription_cache
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from app.infra.foreign_keys import safe_foreign_keys_off
 from vpn_protocols import V2RayProtocol
 from outline import delete_key as outline_delete_key

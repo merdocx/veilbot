@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Optional
 
 import aiosqlite
@@ -69,5 +69,35 @@ async def open_async_connection(db_path: Optional[str]) -> aiosqlite.Connection:
         yield conn
     finally:
         await conn.close()
+
+
+@contextmanager
+def get_db_cursor(commit: bool = False, db_path: Optional[str] = None):
+    """
+    Context manager для получения курсора БД (совместимость с utils.py).
+    
+    Это упрощенная версия без connection pool для постепенной миграции.
+    Для новых файлов рекомендуется использовать open_connection() напрямую.
+    
+    Args:
+        commit: Автоматически коммитить изменения при выходе
+        db_path: Путь к БД (по умолчанию из DATABASE_PATH или vpn.db)
+    
+    Yields:
+        sqlite3.Cursor: Курсор для работы с БД
+    """
+    conn = open_connection(db_path)
+    conn.row_factory = sqlite3.Row  # Для совместимости с utils.py
+    cursor = conn.cursor()
+    try:
+        yield cursor
+        if commit:
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
 
 

@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any, Callable, Optional
 from aiogram import Dispatcher, types, Bot
 from config import PROTOCOLS, ADMIN_ID, FREE_V2RAY_TARIFF_ID
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from validators import input_validator, ValidationError
 from bot.keyboards import (
     get_main_menu, get_cancel_keyboard, get_protocol_selection_menu,
@@ -26,8 +26,8 @@ def register_purchase_handlers(
     dp: Dispatcher,
     user_states: Dict[int, Dict[str, Any]],
     bot: Bot,
-    main_menu: Any,
-    cancel_keyboard: Any,
+    main_menu: Callable[[Optional[int]], Any],
+    cancel_keyboard: Callable[[], Any],
     is_valid_email: Callable[[str], bool],
     create_payment_with_email_and_protocol: Callable,
     create_new_key_flow_with_protocol: Callable,
@@ -71,7 +71,7 @@ def register_purchase_handlers(
             await message.answer(
                 "❌ К сожалению, сейчас нет доступных серверов для покупки. "
                 "Пожалуйста, попробуйте позже.",
-                reply_markup=main_menu
+                reply_markup=main_menu(user_id)
             )
             return
         
@@ -90,7 +90,7 @@ def register_purchase_handlers(
             if not countries:
                 await message.answer(
                     f"К сожалению, для протокола {PROTOCOLS[protocol]['name']} пока нет доступных серверов.",
-                    reply_markup=main_menu
+                    reply_markup=main_menu(user_id)
                 )
                 return
             
@@ -208,7 +208,7 @@ def register_purchase_handlers(
 
             if auto_country:
                 user_states.pop(user_id, None)
-                await message.answer("Главное меню:", reply_markup=main_menu)
+                await message.answer("Главное меню:", reply_markup=main_menu(user_id))
                 return
 
             countries = get_countries_by_protocol(protocol) if protocol else get_countries()
@@ -221,7 +221,7 @@ def register_purchase_handlers(
                 user_states[user_id] = {"state": "protocol_selected", "protocol": protocol, "auto_protocol": False}
             else:
                 user_states.pop(user_id, None)
-                await message.answer("Главное меню:", reply_markup=main_menu)
+                await message.answer("Главное меню:", reply_markup=main_menu(user_id))
             return
         
         if text == "💳 Карта РФ / СБП":
@@ -329,7 +329,7 @@ def register_purchase_handlers(
                 f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
                 f"💰 Сумма: *{tariff.get('price_rub', 0)}₽*\n\n"
                 "📧 Пожалуйста, введите ваш email адрес для получения чека:",
-                reply_markup=cancel_keyboard,
+                reply_markup=cancel_keyboard(),
                 parse_mode="Markdown"
             )
             return
@@ -355,7 +355,7 @@ def register_purchase_handlers(
                 f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
                 f"💰 Сумма: *${tariff.get('price_crypto_usd', 0):.2f} USDT*\n\n"
                 "📧 Пожалуйста, введите ваш email адрес для получения чека:",
-                reply_markup=cancel_keyboard,
+                reply_markup=cancel_keyboard(),
                 parse_mode="Markdown"
             )
             return
@@ -464,7 +464,7 @@ def register_purchase_handlers(
                 user_id = message.from_user.id
                 state = user_states.pop(user_id, {})
                 if state.get("auto_protocol"):
-                    await message.answer("Главное меню:", reply_markup=main_menu)
+                    await message.answer("Главное меню:", reply_markup=main_menu(user_id))
                 else:
                     await message.answer("Выберите протокол:", reply_markup=get_protocol_selection_menu())
                 return
@@ -546,7 +546,7 @@ def register_purchase_handlers(
         # Parse tariff name and price from the label
         parts = label.split("—")
         if len(parts) != 2:
-            await message.answer("Неверный формат тарифа.", reply_markup=main_menu)
+            await message.answer("Неверный формат тарифа.", reply_markup=main_menu(user_id))
             return
         tariff_name = parts[0].strip()
         price_part = parts[1].strip()
@@ -567,7 +567,7 @@ def register_purchase_handlers(
                     # Для поиска тарифа используем price_crypto, но нужно найти по имени и крипто-цене
                     price = None
                 except ValueError:
-                    await message.answer("Неверный формат цены.", reply_markup=main_menu)
+                    await message.answer("Неверный формат цены.", reply_markup=main_menu(user_id))
                     return
             else:
                 # Для карты/СБП парсим рублевую цену
@@ -575,7 +575,7 @@ def register_purchase_handlers(
                     price = int(price_part.replace("₽", "").strip())
                     price_crypto = None
                 except ValueError:
-                    await message.answer("Неверный формат цены.", reply_markup=main_menu)
+                    await message.answer("Неверный формат цены.", reply_markup=main_menu(user_id))
                     return
         
         with get_db_cursor(commit=True) as cursor:
@@ -611,12 +611,12 @@ def register_purchase_handlers(
                         "traffic_limit_mb": row[5] if len(row) > 5 else 0,
                     }
                 else:
-                    await message.answer("Не удалось найти тариф с указанной ценой.", reply_markup=main_menu)
+                    await message.answer("Не удалось найти тариф с указанной ценой.", reply_markup=main_menu(user_id))
                     return
             else:
                 tariff = get_tariff_by_name_and_price(cursor, tariff_name, price or 0)
             if not tariff:
-                await message.answer("Не удалось найти тариф.", reply_markup=main_menu)
+                await message.answer("Не удалось найти тариф.", reply_markup=main_menu(user_id))
                 return
             if tariff['price_rub'] == 0 and not user_states.get(user_id, {}).get("paid_only"):
                 await handle_free_tariff_with_protocol(cursor, message, user_id, tariff, country, protocol)
@@ -677,7 +677,7 @@ def register_purchase_handlers(
                     await message.answer(
                         f"💳 Создание платежа для тарифа: *{tariff.get('name', 'Неизвестно')}*\n\n"
                         f"⏳ Пожалуйста, подождите...",
-                        reply_markup=main_menu,
+                        reply_markup=main_menu(user_id),
                         parse_mode="Markdown"
                     )
                     
@@ -702,7 +702,7 @@ def register_purchase_handlers(
                             f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
                             f"💰 Сумма: *${tariff.get('price_crypto_usd', 0):.2f} USDT*\n\n"
                             "📧 Пожалуйста, введите ваш email адрес для получения чека:",
-                            reply_markup=cancel_keyboard,
+                            reply_markup=cancel_keyboard(),
                             parse_mode="Markdown"
                         )
                     else:
@@ -711,11 +711,12 @@ def register_purchase_handlers(
                             f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
                             f"💰 Сумма: *{tariff.get('price_rub', 0)}₽*\n\n"
                             "📧 Пожалуйста, введите ваш email адрес для получения чека:",
-                            reply_markup=cancel_keyboard,
+                            reply_markup=cancel_keyboard(),
                             parse_mode="Markdown"
                         )
 
     @dp.message_handler(lambda m: m.text == "🔙 Назад" and user_states.get(m.from_user.id) is None)
     async def back_to_main_from_protocol(message: types.Message):
-        await message.answer("Главное меню:", reply_markup=main_menu)
+        user_id = message.from_user.id
+        await message.answer("Главное меню:", reply_markup=main_menu(user_id))
 

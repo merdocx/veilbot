@@ -413,7 +413,7 @@ class PaymentService:
                     # Используем ту же логику, что и при покупке/продлении через wait_for_payment_with_protocol
                     # Это обеспечивает правильную обработку продления (если ключ существует, он будет продлен)
                     try:
-                        from utils import get_db_cursor
+                        from app.infra.sqlite_utils import get_db_cursor
                         from bot.services.key_creation import create_new_key_flow_with_protocol
                         
                         # Получаем тариф

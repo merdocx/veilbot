@@ -106,6 +106,17 @@ def safe_truncate_filter(value, length=20):
     return str_value[:length] + "..."
 
 
+def tojson_filter(value, indent=2):
+    """Преобразовать значение в JSON строку (совместимость с Jinja2)"""
+    import json
+    if value is None:
+        return "null"
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=indent)
+    except (TypeError, ValueError):
+        return json.dumps(str(value), ensure_ascii=False, indent=indent)
+
+
 # Добавляем кастомные фильтры
 templates.env.filters['timestamp'] = timestamp_filter
 templates.env.filters['my_datetime_local'] = my_datetime_local_filter
@@ -113,6 +124,7 @@ templates.env.filters['rub'] = rub_filter
 templates.env.filters['status_text'] = status_text_filter
 templates.env.filters['pretty_json'] = pretty_json_filter
 templates.env.filters['safe_truncate'] = safe_truncate_filter
+templates.env.filters['tojson'] = tojson_filter
 
 
 def get_templates() -> Jinja2Templates:

@@ -27,7 +27,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-app = FastAPI(title="VeilBot Admin", version="2.2.14")
+app = FastAPI(title="VeilBot Admin", version="2.3.0")
 
 # Logging setup
 setup_logging("INFO")
@@ -193,6 +193,7 @@ from admin.routes import (
     webhooks_router,
     cleanup_router,
     subscriptions_router,
+    tools_router,
 )
 
 # Подключаем все модульные роутеры
@@ -206,6 +207,7 @@ app.include_router(payments_router)
 app.include_router(webhooks_router)
 app.include_router(cleanup_router)
 app.include_router(subscriptions_router)
+app.include_router(tools_router)
 
 # Глобальная обработка ошибок
 from admin.middleware.error_handler import (

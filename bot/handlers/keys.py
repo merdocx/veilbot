@@ -5,7 +5,7 @@ import time
 import logging
 from typing import Optional
 from aiogram import Dispatcher, types
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from config import PROTOCOLS
 from vpn_protocols import format_duration, ProtocolFactory, normalize_vless_host
 from bot.keyboards import get_main_menu
@@ -90,7 +90,7 @@ async def handle_my_keys_btn(message: types.Message):
         # Получаем V2Ray ключи БЕЗ подписки (отдельные ключи)
         cursor.execute("""
             SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key, k.client_config,
-                   k.traffic_limit_mb, k.traffic_usage_bytes, k.traffic_over_limit_at
+                   k.traffic_limit_mb, k.traffic_usage_bytes
             FROM v2ray_keys k
             JOIN servers s ON k.server_id = s.id
             WHERE k.user_id = ? AND k.expiry_at > ? AND k.subscription_id IS NULL
@@ -122,7 +122,6 @@ async def handle_my_keys_btn(message: types.Message):
         saved_config,
         limit_mb,
         usage_bytes,
-        over_limit_at,
     ) in v2ray_keys:
         config = None
         normalized_saved = None
@@ -199,7 +198,7 @@ async def handle_my_keys_btn(message: types.Message):
             'country': country,
             'traffic_limit_mb': limit_mb or 0,
             'traffic_usage_bytes': usage_bytes if usage_bytes is not None else 0,
-            'traffic_over_limit_at': over_limit_at,
+            'traffic_over_limit_at': None,  # Колонка удалена из таблицы v2ray_keys
         })
     
     # Обновляем конфигурации в БД, если нужно

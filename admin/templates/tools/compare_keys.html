@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+
+{% block title %}Сравнение ключей - VeilBot Admin{% endblock %}
+
+{% block page_title %}Сравнение ключей{% endblock %}
+
+{% block content %}
+<div class="page-content">
+    <div class="page-header">
+        <p class="page-description">
+            Сравнение ключей между базой данных и VPN серверами. 
+            Показывает расхождения и проблемы синхронизации.
+        </p>
+    </div>
+
+    {% if results %}
+    <div class="stats-summary">
+        <div class="stat-card">
+            <div class="stat-value">{{ total_servers }}</div>
+            <div class="stat-label">Всего серверов</div>
+        </div>
+        <div class="stat-card success">
+            <div class="stat-value">{{ synced_servers }}</div>
+            <div class="stat-label">Синхронизировано</div>
+        </div>
+        <div class="stat-card warning">
+            <div class="stat-value">{{ total_servers - synced_servers }}</div>
+            <div class="stat-label">С расхождениями</div>
+        </div>
+    </div>
+
+    {% for result in results %}
+    <div class="card server-comparison">
+        <div class="card-header">
+            <h3>
+                <span class="material-icons">dns</span>
+                {{ result.name }} (ID: {{ result.id }})
+            </h3>
+            <div class="server-meta">
+                <span class="badge protocol-{{ result.protocol }}">{{ result.protocol|upper }}</span>
+                {% if result.country %}
+                <span class="badge">{{ result.country }}</span>
+                {% endif %}
+                {% if result.is_synced %}
+                <span class="badge success">
+                    <span class="material-icons">check_circle</span>
+                    Синхронизировано
+                </span>
+                {% else %}
+                <span class="badge warning">
+                    <span class="material-icons">warning</span>
+                    Есть расхождения
+                </span>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card-body">
+            <div class="comparison-stats">
+                <div class="stat-item">
+                    <span class="stat-label">Ключей в БД:</span>
+                    <span class="stat-value">{{ result.db_count }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Ключей на сервере:</span>
+                    <span class="stat-value">{{ result.remote_count }}</span>
+                </div>
+            </div>
+
+            {% if result.has_errors %}
+            <div class="alert alert-error">
+                <span class="material-icons">error</span>
+                <div>
+                    <strong>Ошибки при проверке:</strong>
+                    <ul>
+                        {% for error in result.errors %}
+                        <li>{{ error }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if result.missing_on_server_count > 0 %}
+            <div class="comparison-section">
+                <h4 class="section-title error">
+                    <span class="material-icons">remove_circle</span>
+                    Отсутствуют на сервере ({{ result.missing_on_server_count }})
+                </h4>
+                <div class="comparison-list">
+                    {% for item in result.missing_on_server %}
+                    <div class="comparison-item">
+                        <div class="item-details">
+                            <strong>ID в БД:</strong> {{ item.db_entry.id }}<br>
+                            {% if item.db_entry.email %}
+                            <strong>Email:</strong> {{ item.db_entry.email }}<br>
+                            {% endif %}
+                            {% if item.matching_hint.key_id %}
+                            <strong>Key ID:</strong> {{ item.matching_hint.key_id }}<br>
+                            {% endif %}
+                            {% if item.db_entry.expiry_at %}
+                            <strong>Истекает:</strong> {{ item.db_entry.expiry_at|timestamp|my_datetime_local }}<br>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if result.has_more_missing_on_server %}
+                    <div class="info-note">
+                        <span class="material-icons">info</span>
+                        Показаны первые 50 записей. Всего: {{ result.missing_on_server_count }}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if result.missing_in_db_count > 0 %}
+            <div class="comparison-section">
+                <h4 class="section-title warning">
+                    <span class="material-icons">add_circle</span>
+                    Отсутствуют в БД ({{ result.missing_in_db_count }})
+                </h4>
+                <div class="comparison-list">
+                    {% for item in result.missing_in_db %}
+                    <div class="comparison-item">
+                        <div class="item-details">
+                            {% if item.matching_hint.uuid %}
+                            <strong>UUID:</strong> {{ item.matching_hint.uuid }}<br>
+                            {% endif %}
+                            {% if item.matching_hint.key_id %}
+                            <strong>Key ID:</strong> {{ item.matching_hint.key_id }}<br>
+                            {% endif %}
+                            {% if item.matching_hint.name %}
+                            <strong>Имя:</strong> {{ item.matching_hint.name }}<br>
+                            {% endif %}
+                            <pre class="json-preview">{{ item.remote_key|tojson(indent=2) }}</pre>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if result.has_more_missing_in_db %}
+                    <div class="info-note">
+                        <span class="material-icons">info</span>
+                        Показаны первые 50 записей. Всего: {{ result.missing_in_db_count }}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if result.db_without_remote_id_count > 0 %}
+            <div class="comparison-section">
+                <h4 class="section-title info">
+                    <span class="material-icons">help</span>
+                    Без remote ID в БД ({{ result.db_without_remote_id_count }})
+                </h4>
+                <div class="comparison-list">
+                    {% for item in result.db_without_remote_id %}
+                    <div class="comparison-item">
+                        <div class="item-details">
+                            <strong>ID в БД:</strong> {{ item.id }}<br>
+                            {% if item.email %}
+                            <strong>Email:</strong> {{ item.email }}<br>
+                            {% endif %}
+                            {% if item.expiry_at %}
+                            <strong>Истекает:</strong> {{ item.expiry_at|timestamp|my_datetime_local }}<br>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if result.has_more_db_without_remote_id %}
+                    <div class="info-note">
+                        <span class="material-icons">info</span>
+                        Показаны первые 50 записей. Всего: {{ result.db_without_remote_id_count }}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+
+    {% else %}
+    <div class="alert alert-info">
+        <span class="material-icons">info</span>
+        <div>
+            <strong>Нет активных серверов</strong>
+            <p>Нет активных серверов для сравнения.</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<style>
+.comparison-stats {
+    display: flex;
+    gap: 2rem;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: var(--surface-color);
+    border-radius: 8px;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.stat-label {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.stat-value {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.server-comparison {
+    margin-bottom: 2rem;
+}
+
+.server-meta {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.badge.success {
+    background: var(--success-color);
+    color: white;
+}
+
+.badge.warning {
+    background: var(--warning-color);
+    color: white;
+}
+
+.badge.protocol-outline {
+    background: #2196F3;
+    color: white;
+}
+
+.badge.protocol-v2ray {
+    background: #9C27B0;
+    color: white;
+}
+
+.comparison-section {
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.section-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    font-size: 1.125rem;
+    font-weight: 600;
+}
+
+.section-title.error {
+    color: var(--error-color);
+}
+
+.section-title.warning {
+    color: var(--warning-color);
+}
+
+.section-title.info {
+    color: var(--info-color);
+}
+
+.comparison-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.comparison-item {
+    padding: 1rem;
+    background: var(--surface-color);
+    border-radius: 8px;
+    border-left: 3px solid var(--border-color);
+}
+
+.item-details {
+    font-size: 0.875rem;
+    line-height: 1.6;
+}
+
+.json-preview {
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: var(--background-color);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    overflow-x: auto;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.info-note {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: var(--info-color-light);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    color: var(--info-color);
+}
+</style>
+{% endblock %}
+

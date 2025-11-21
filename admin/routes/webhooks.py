@@ -211,7 +211,7 @@ async def cryptobot_webhook(request: Request):
                 from bot.services.key_creation import process_referral_bonus
                 # Получаем bot через централизованный модуль
                 bot = get_bot_instance()
-                from utils import get_db_cursor
+                from app.infra.sqlite_utils import get_db_cursor
                 from bot.utils.formatters import format_key_message_unified
                 from app.repositories.server_repository import ServerRepository
                 from app.repositories.key_repository import KeyRepository

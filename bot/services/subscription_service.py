@@ -17,7 +17,7 @@ from vpn_protocols import (
     add_server_name_to_vless,
     remove_fragment_from_vless,
 )
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from app.infra.foreign_keys import safe_foreign_keys_off
 from config import SUPPORT_USERNAME
 
@@ -64,7 +64,7 @@ def invalidate_subscriptions_cache_for_server(server_id: int) -> None:
         server_id: ID сервера
     """
     try:
-        from utils import get_db_cursor
+        from app.infra.sqlite_utils import get_db_cursor
         
         with get_db_cursor() as cursor:
             # Получаем все уникальные токены подписок, содержащих ключи с этого сервера
@@ -94,7 +94,7 @@ def invalidate_all_active_subscriptions_cache() -> None:
     Используется при глобальных изменениях
     """
     try:
-        from utils import get_db_cursor
+        from app.infra.sqlite_utils import get_db_cursor
         
         with get_db_cursor() as cursor:
             now = int(time.time())
@@ -123,7 +123,7 @@ def update_subscription_configs_remove_fragments() -> None:
     Это нужно для применения изменений к существующим подпискам.
     """
     try:
-        from utils import get_db_cursor
+        from app.infra.sqlite_utils import get_db_cursor
         
         with get_db_cursor() as cursor:
             # Получаем все конфигурации подписок с фрагментами

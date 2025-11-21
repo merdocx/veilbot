@@ -5,7 +5,7 @@ import time
 import logging
 from typing import Dict, Any
 from aiogram import Dispatcher, types
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from bot.keyboards import get_main_menu
 from app.infra.foreign_keys import safe_foreign_keys_off
 from bot.services.free_tariff import issue_free_v2ray_key_on_start

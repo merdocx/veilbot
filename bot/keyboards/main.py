@@ -4,7 +4,7 @@
 import time
 from typing import Optional
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from config import PROTOCOLS, FREE_V2RAY_TARIFF_ID
 from app.infra.cache import SimpleCache
 

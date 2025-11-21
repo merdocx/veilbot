@@ -12,7 +12,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import OutlineProtocol, V2RayProtocol
 from outline import delete_key as delete_outline_key
 import logging
@@ -376,6 +376,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
