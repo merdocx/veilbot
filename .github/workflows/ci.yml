@@ -82,7 +82,7 @@ jobs:
           from db import init_db
           from validators import input_validator, db_validator, business_validator
           from vpn_protocols import ProtocolFactory
-          from utils import get_db_cursor
+          from app.infra.sqlite_utils import get_db_cursor
           print('✅ All basic imports successful')
           "
       
@@ -203,7 +203,6 @@ jobs:
           python -m py_compile db.py
           python -m py_compile validators.py
           python -m py_compile vpn_protocols.py
-          python -m py_compile utils.py
           
           # Check bot/services modules
           echo "🔍 Checking bot/services modules..."
