@@ -286,6 +286,79 @@
         }
     };
 
+    const handleSyncKeys = async () => {
+        const confirmed = window.confirm('Запустить синхронизацию ключей с серверами? Это может занять некоторое время.');
+        if (!confirmed) {
+            return;
+        }
+
+        const syncButton = document.getElementById('sync-keys-btn');
+        if (syncButton) {
+            syncButton.disabled = true;
+            const originalText = syncButton.innerHTML;
+            syncButton.innerHTML = '<span class="material-icons icon-small">hourglass_empty</span> Синхронизация...';
+            
+            try {
+                const response = await fetch('/subscriptions/sync-keys', {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                });
+
+                let data;
+                try {
+                    data = await response.json();
+                } catch (jsonError) {
+                    const text = await response.text();
+                    console.error('[VeilBot][subscriptions] Failed to parse JSON response:', text);
+                    throw new Error(`Ошибка сервера (${response.status}): ${text.substring(0, 200)}`);
+                }
+
+                if (!response.ok || !data.success) {
+                    const errorMessage = data.error || data.message || 'Ошибка синхронизации';
+                    console.error('[VeilBot][subscriptions] Sync error:', errorMessage);
+                    throw new Error(errorMessage);
+                }
+
+                const stats = data.stats || {};
+                const totalKeys = stats.total_keys || 0;
+                const updated = stats.updated || 0;
+                const unchanged = stats.unchanged || 0;
+                const failed = stats.failed || 0;
+                const serversProcessed = stats.servers_processed || 0;
+                
+                // Формируем детальное сообщение об успешной синхронизации
+                let message = '✅ Синхронизация ключей завершена успешно! ';
+                message += `Обработано ключей: ${totalKeys}, обновлено: ${updated}, без изменений: ${unchanged}`;
+                if (failed > 0) {
+                    message += `, ошибок: ${failed}`;
+                }
+                message += `. Серверов: ${serversProcessed}`;
+                
+                // Показываем уведомление с увеличенным временем отображения
+                notify(message, 'success', 5000);
+                
+                // Восстанавливаем кнопку с индикацией успеха
+                syncButton.innerHTML = '<span class="material-icons icon-small">check_circle</span> Синхронизировано';
+                syncButton.classList.add('btn-success');
+                
+                // Обновляем страницу через 3 секунды, чтобы пользователь успел увидеть уведомление
+                setTimeout(() => {
+                    window.location.reload();
+                }, 3000);
+            } catch (error) {
+                console.error('[VeilBot][subscriptions] Sync keys error:', error);
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                notify(`Ошибка синхронизации: ${errorMessage}`, 'error', 5000);
+                syncButton.innerHTML = originalText;
+                syncButton.disabled = false;
+                syncButton.classList.remove('btn-success');
+            }
+        }
+    };
+
     const handleTableClick = (event) => {
         const trigger = event.target.closest('[data-action]');
         if (!trigger) {
@@ -346,6 +419,11 @@
         const table = document.getElementById('subscriptions-table');
         if (table) {
             table.addEventListener('click', handleTableClick);
+        }
+
+        const syncButton = document.getElementById('sync-keys-btn');
+        if (syncButton) {
+            syncButton.addEventListener('click', handleSyncKeys);
         }
 
         if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {

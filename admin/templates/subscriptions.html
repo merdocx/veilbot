@@ -38,6 +38,12 @@
                 Сбросить
             </button>
         </div>
+        <div class="filter-bar__group">
+            <button type="button" class="btn btn-primary" id="sync-keys-btn" data-action="sync-keys" title="Синхронизировать ключи с серверами">
+                <span class="material-icons icon-small">sync</span>
+                Синхронизировать ключи
+            </button>
+        </div>
     </div>
 
     <!-- Table -->
@@ -189,6 +195,6 @@
 
 {% block extra_scripts %}
     {{ super() }}
-    <script src="/static/js/subscriptions.js?v=20251111d"></script>
+    <script src="/static/js/subscriptions.js?v={{ current_time }}"></script>
 {% endblock %}
 

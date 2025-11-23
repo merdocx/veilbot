@@ -40,13 +40,16 @@ def extract_sid_sni(config: str) -> Tuple[str, str]:
         return None, None
 
 
-async def sync_all_keys_with_servers(dry_run: bool = False, server_id: int = None) -> None:
+async def sync_all_keys_with_servers(dry_run: bool = False, server_id: int = None) -> dict:
     """
     Синхронизировать все ключи V2Ray с серверами
     
     Args:
         dry_run: Если True, только показывает что будет обновлено, не изменяет БД
         server_id: Если указан, синхронизирует только ключи с этого сервера
+    
+    Returns:
+        dict: Словарь со статистикой синхронизации
     """
     # Получаем все активные ключи V2Ray
     with get_db_cursor() as cursor:
@@ -263,6 +266,15 @@ async def sync_all_keys_with_servers(dry_run: bool = False, server_id: int = Non
     if dry_run:
         logger.info(f"\n⚠️  Это был DRY RUN - изменения не были применены")
         logger.info(f"Запустите скрипт без --dry-run для применения изменений")
+    
+    return {
+        "total_keys": len(keys),
+        "updated": total_updated,
+        "unchanged": total_unchanged,
+        "failed": total_failed,
+        "servers_processed": len(keys_by_server),
+        "dry_run": dry_run,
+    }
 
 
 async def main():
@@ -284,7 +296,9 @@ async def main():
     args = parser.parse_args()
     
     try:
-        await sync_all_keys_with_servers(dry_run=args.dry_run, server_id=args.server_id)
+        result = await sync_all_keys_with_servers(dry_run=args.dry_run, server_id=args.server_id)
+        if result:
+            logger.info(f"\nРезультат синхронизации: {result}")
     except KeyboardInterrupt:
         logger.info("\n\nПрервано пользователем")
         sys.exit(1)

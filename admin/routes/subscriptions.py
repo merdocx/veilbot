@@ -23,6 +23,7 @@ from vpn_protocols import V2RayProtocol
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token
 from ..dependencies.templates import templates
+from scripts.sync_all_keys_with_servers import sync_all_keys_with_servers
 
 logger = logging.getLogger(__name__)
 
@@ -684,6 +685,10 @@ async def get_subscription(request: Request, token: str):
             expires_ts = metadata.get("expires_at") or 0
             # Формат заголовка Subscription-Userinfo согласно спецификации v2ray
             # Стандартный формат: upload=<bytes>; download=<bytes>; total=<bytes>; expire=<timestamp>
+            # Примечание: В приложении v2raytun отображение использованного трафика не работает (показывает 0),
+            # хотя лимит трафика (total) отображается правильно. Это похоже на проблему/ограничение самого v2raytun.
+            # В других приложениях (например, v2rayNG) все работает корректно.
+            # Формат корректен по спецификации v2ray и оставлен как стандартный.
             userinfo_header = f"upload=0; download={usage_bytes}; total={limit_bytes}; expire={expires_ts}"
             # Устанавливаем Profile-Title с названием "Vee VPN", чтобы избежать использования названия сервера
             subscription_title = metadata.get("subscription_title") or "Vee VPN"
@@ -713,3 +718,55 @@ async def get_subscription(request: Request, token: str):
     except Exception as e:
         logger.error(f"Error generating subscription for token {token[:8]}...: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/subscriptions/sync-keys")
+async def sync_keys_with_servers(request: Request):
+    """Синхронизация всех ключей V2Ray с серверами"""
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    try:
+        log_admin_action(request, "SYNC_KEYS_START", "Starting key synchronization with servers")
+        
+        # Запускаем синхронизацию
+        result = await sync_all_keys_with_servers(dry_run=False, server_id=None)
+        
+        log_admin_action(
+            request,
+            "SYNC_KEYS_COMPLETE",
+            f"Key synchronization completed: updated={result.get('updated', 0)}, "
+            f"unchanged={result.get('unchanged', 0)}, failed={result.get('failed', 0)}"
+        )
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Синхронизация ключей завершена",
+            "stats": {
+                "total_keys": result.get("total_keys", 0),
+                "updated": result.get("updated", 0),
+                "unchanged": result.get("unchanged", 0),
+                "failed": result.get("failed", 0),
+                "servers_processed": result.get("servers_processed", 0),
+            }
+        })
+    except ImportError as e:
+        error_msg = f"Ошибка импорта модуля синхронизации: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        log_admin_action(request, "SYNC_KEYS_ERROR", error_msg)
+        return JSONResponse({
+            "success": False,
+            "error": error_msg
+        }, status_code=500)
+    except Exception as e:
+        error_msg = f"Ошибка синхронизации ключей: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        import traceback
+        traceback_str = traceback.format_exc()
+        logger.error(f"Traceback: {traceback_str}")
+        log_admin_action(request, "SYNC_KEYS_ERROR", error_msg)
+        return JSONResponse({
+            "success": False,
+            "error": error_msg,
+            "details": str(e) if len(str(e)) < 200 else str(e)[:200] + "..."
+        }, status_code=500)
