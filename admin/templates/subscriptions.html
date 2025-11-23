@@ -73,6 +73,9 @@
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--user">
                         <div class="cell-primary">TG: {{ subscription.user_id }}</div>
+                        {% if subscription.user_email and subscription.user_email != "—" %}
+                        <div class="cell-secondary text-muted">{{ subscription.user_email }}</div>
+                        {% endif %}
                         <div class="cell-secondary text-muted">{{ subscription.tariff_name }}</div>
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--keys">

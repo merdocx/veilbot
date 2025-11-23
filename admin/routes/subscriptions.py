@@ -16,6 +16,7 @@ from typing import Optional, Dict, Any
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from bot.services.subscription_service import SubscriptionService, validate_subscription_token
 from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.user_repository import UserRepository
 from app.settings import settings
 from app.infra.sqlite_utils import open_connection
 from app.infra.foreign_keys import safe_foreign_keys_off
@@ -135,6 +136,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
         log_admin_action(request, "SUBSCRIPTIONS_PAGE_ACCESS")
         
         subscription_repo = SubscriptionRepository(DB_PATH)
+        user_repo = UserRepository(DB_PATH)
         total = subscription_repo.count_subscriptions()
         
         offset = (page - 1) * limit
@@ -156,6 +158,12 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             # Обработка None значений
             created_at = created_at if created_at is not None else 0
             expires_at = expires_at if expires_at is not None else 0
+            
+            # Получаем email пользователя
+            user_email = ""
+            with open_connection(DB_PATH) as conn:
+                cursor = conn.cursor()
+                user_email = UserRepository._resolve_user_email(cursor, user_id)
             
             expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
             is_expired = expires_at > 0 and expires_at <= now_ts
@@ -216,6 +224,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             subscription_models.append({
                 "id": sub_id,
                 "user_id": user_id,
+                "user_email": user_email or "—",
                 "token": (token[:16] + "..." if len(token) > 16 else token) if token else "—",
                 "token_full": token or "",
                 "created_at": _format_timestamp(created_at) if created_at > 0 else "—",
