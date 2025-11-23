@@ -42,7 +42,10 @@ class TestCommonHandlers:
         await handle_help(mock_message)
         
         mock_message.answer.assert_called_once()
-        assert "VPN не работает" in mock_message.answer.call_args[0][0]
+        help_text = mock_message.answer.call_args[0][0]
+        assert "В данном меню вы можете" in help_text
+        assert "Перейти на подписку" in help_text
+        assert "Связаться с поддержкой" in help_text
     
     @pytest.mark.asyncio
     async def test_handle_support_with_username(self, mock_message):
