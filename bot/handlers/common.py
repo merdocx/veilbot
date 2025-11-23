@@ -43,12 +43,9 @@ async def handle_help(message: types.Message) -> None:
     """Обработчик команды 'Помощь'"""
     help_keyboard = get_help_keyboard()
     help_text = (
-        "В данном меню можно самостоятельно сменить страну VPN или решить проблему неработающего VPN.\n\n"
-        "Если VPN не работает:\n"
-        "- проверьте, что интернет доступен без VPN;\n"
-        "- возможно был заблокирован сервер, поможет перевыпуск ключа;\n"
-        "- сломалось приложение, поможет его смена (актуально для outline).\n\n"
-        "Оплаченный срок действия ключа сохранится!\n\n"
+        "В данном меню вы можете:\n\n"
+        "• Перейти на подписку V2Ray для удобного управления всеми серверами\n"
+        "• Связаться с поддержкой для решения любых вопросов\n\n"
         "Выберите вариант ниже:"
     )
     help_menu_users.add(message.from_user.id)
@@ -413,4 +410,28 @@ def register_common_handlers(dp: Dispatcher, user_states: dict) -> None:
     @dp.message_handler(lambda m: m.text == "Перейти на подписку")
     async def migrate_to_subscription_handler(message: types.Message):
         await handle_migrate_to_subscription(message)
+    
+    # Регистрация обработчика callback для инлайн кнопки "Перейти на подписку"
+    @dp.callback_query_handler(lambda c: c.data == "migrate_to_subscription")
+    async def migrate_to_subscription_callback_handler(callback_query: types.CallbackQuery):
+        """Обработчик callback от инлайн кнопки 'Перейти на подписку'"""
+        await callback_query.answer("Обработка запроса...")
+        
+        # Используем message из callback_query, если оно есть
+        # Если нет, создаем новое сообщение
+        if callback_query.message:
+            # Меняем текст сообщения, чтобы оно соответствовало обработчику
+            callback_query.message.text = "Перейти на подписку"
+            await handle_migrate_to_subscription(callback_query.message)
+        else:
+            # Если message отсутствует, отправляем сообщение пользователю
+            bot = get_bot_instance()
+            if bot:
+                help_keyboard = get_help_keyboard()
+                await safe_send_message(
+                    bot,
+                    callback_query.from_user.id,
+                    "❌ Не удалось обработать запрос. Пожалуйста, используйте кнопку в меню 'Помощь' -> 'Перейти на подписку'",
+                    reply_markup=help_keyboard
+                )
 

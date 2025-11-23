@@ -35,9 +35,6 @@ def get_main_menu(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
 def get_help_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура для помощи"""
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(KeyboardButton("Перевыпустить ключ"))
-    keyboard.add(KeyboardButton("Сменить приложение"))
-    keyboard.add(KeyboardButton("Сменить страну"))
     keyboard.add(KeyboardButton("Перейти на подписку"))
     keyboard.add(KeyboardButton("💬 Связаться с поддержкой"))
     keyboard.add(KeyboardButton("🔙 Назад"))
