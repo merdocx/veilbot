@@ -79,7 +79,7 @@
                     </td>
                     <td class="keys-table__cell keys-table__cell--email">
                         {% if key.telegram_id %}
-                            <div class="cell-primary" title="{{ key.telegram_id }}">{{ key.telegram_id }}</div>
+                            <div class="cell-primary" title="{{ key.telegram_id }}">TG: {{ key.telegram_id }}</div>
                         {% else %}
                             <div class="cell-primary text-muted">—</div>
                         {% endif %}
@@ -89,6 +89,9 @@
                             <div class="cell-secondary text-muted">—</div>
                         {% endif %}
                         <div class="cell-secondary text-muted">{{ key.tariff or '—' }}</div>
+                        {% if key.subscription_id %}
+                        <div class="cell-secondary text-muted">Подписка: #{{ key.subscription_id }}</div>
+                        {% endif %}
                     </td>
                     <td class="keys-table__cell keys-table__cell--server">
                         <div class="cell-primary">{{ key.server or '—' }}</div>

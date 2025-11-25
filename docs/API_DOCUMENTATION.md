@@ -190,66 +190,10 @@ curl -X GET "https://your-domain.com/api/keys/84570736-8bf5-47af-92d4-3a08f2693e
 
 ## 📊 Мониторинг трафика
 
-### 1. Получение трафика для всех ключей
-**GET** `/api/traffic/simple`
+### 1. Получение трафика для конкретного ключа
+**GET** `/api/keys/{key_id}/traffic`
 
-Возвращает статистику трафика для всех активных ключей на основе активных соединений.
-
-#### Ответ:
-```json
-{
-  "status": "success",
-  "data": {
-    "ports": {
-      "10001": {
-        "port": 10001,
-        "connections": 37,
-        "total_bytes": 33323549,
-        "rx_bytes": 16661774,
-        "tx_bytes": 16661774,
-        "total_formatted": "31.78 MB",
-        "rx_formatted": "15.89 MB",
-        "tx_formatted": "15.89 MB",
-        "traffic_rate": 134128.74,
-        "interface_traffic": {
-          "rx_bytes": 5754086174,
-          "tx_bytes": 5486110273,
-          "total_bytes": 11240196447,
-          "timestamp": 1754307939.2700043
-        },
-        "connection_details": [
-          {
-            "local": "[::ffff:146.103.100.14]:10001",
-            "remote": "[::ffff:109.252.116.174]:1896",
-            "state": "ESTAB"
-          }
-        ],
-        "timestamp": 1754307939.2557962,
-        "source": "simple_monitor",
-        "method": "connection_based_estimation",
-        "uuid": "e9828d67-08e2-4942-815d-61f41b3dacf7"
-      }
-    },
-    "total_connections": 37,
-    "total_bytes": 33323549,
-    "timestamp": 1754307939.2557921
-  },
-  "timestamp": "2025-08-04T14:45:39.255792"
-}
-```
-
-#### Пример:
-```bash
-curl -X GET "https://your-domain.com/api/traffic/simple" \
-  -H "X-API-Key: ***REMOVED***"
-```
-
----
-
-### 2. Получение трафика для конкретного ключа
-**GET** `/api/keys/{key_id}/traffic/simple`
-
-Возвращает статистику трафика для конкретного ключа на основе активных соединений.
+Возвращает накопительную статистику трафика для конкретного ключа с момента создания.
 
 #### Параметры:
 - `key_id` - ID или UUID ключа
@@ -258,58 +202,25 @@ curl -X GET "https://your-domain.com/api/traffic/simple" \
 ```json
 {
   "status": "success",
-  "key": {
-    "id": "11461131-0644-438d-9429-cb5e7f60fd80",
-    "name": "nvipetrenko@gmail.con",
-    "uuid": "e9828d67-08e2-4942-815d-61f41b3dacf7",
-    "created_at": "2025-08-04T14:34:13.878594",
-    "is_active": true,
-    "port": 10001
-  },
-  "traffic": {
-    "port": 10001,
-    "connections": 37,
-    "total_bytes": 33323549,
-    "rx_bytes": 16661774,
-    "tx_bytes": 16661774,
-    "total_formatted": "31.78 MB",
-    "rx_formatted": "15.89 MB",
-    "tx_formatted": "15.89 MB",
-    "traffic_rate": 134128.74,
-    "interface_traffic": {
-      "rx_bytes": 5754086174,
-      "tx_bytes": 5486110273,
-      "total_bytes": 11240196447,
-      "timestamp": 1754307939.2700043
-    },
-    "connection_details": [
-      {
-        "local": "[::ffff:146.103.100.14]:10001",
-        "remote": "[::ffff:109.252.116.174]:1896",
-        "state": "ESTAB"
-      }
-    ],
-    "timestamp": 1754307939.2557962,
-    "source": "simple_monitor",
-    "method": "connection_based_estimation",
-    "uuid": "e9828d67-08e2-4942-815d-61f41b3dacf7"
-  },
-  "timestamp": "2025-08-04T14:45:39.255792"
+  "key_id": "84570736-8bf5-47af-92d4-3a08f2693ef8",
+  "key_uuid": "44ed718f-9f5d-4bd9-8585-e5a875cd3858",
+  "total_bytes": 3072000,
+  "timestamp": "2025-08-02T15:22:39.822640"
 }
 ```
 
 #### Пример:
 ```bash
-curl -X GET "https://your-domain.com/api/keys/11461131-0644-438d-9429-cb5e7f60fd80/traffic/simple" \
+curl -X GET "https://your-domain.com/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8/traffic" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
 ---
 
-### 3. Сброс статистики трафика для ключа
-**POST** `/api/keys/{key_id}/traffic/simple/reset`
+### 2. Сброс статистики трафика для ключа
+**POST** `/api/keys/{key_id}/traffic/reset`
 
-Сбрасывает статистику трафика для конкретного ключа.
+Сбрасывает накопительную статистику трафика для конкретного ключа.
 
 #### Параметры:
 - `key_id` - ID или UUID ключа
@@ -319,14 +230,14 @@ curl -X GET "https://your-domain.com/api/keys/11461131-0644-438d-9429-cb5e7f60fd
 {
   "status": "success",
   "message": "Traffic stats reset successfully",
-  "key_id": "11461131-0644-438d-9429-cb5e7f60fd80",
-  "timestamp": "2025-08-04T14:45:39.255792"
+  "key_id": "84570736-8bf5-47af-92d4-3a08f2693ef8",
+  "timestamp": "2025-08-02T15:22:39.822640"
 }
 ```
 
 #### Пример:
 ```bash
-curl -X POST "https://your-domain.com/api/keys/11461131-0644-438d-9429-cb5e7f60fd80/traffic/simple/reset" \
+curl -X POST "https://your-domain.com/api/keys/84570736-8bf5-47af-92d4-3a08f2693ef8/traffic/reset" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -653,14 +564,14 @@ curl -s -X GET "https://your-domain.com/api/keys/$KEY_ID/config" \
   python3 -c "import json, sys; print(json.load(sys.stdin)['client_config'])"
 ```
 
-### Мониторинг трафика (запланировано)
+### Мониторинг трафика
 ```bash
-# Получаем общую статистику трафика
-curl -s -X GET "https://your-domain.com/api/traffic/simple" \
+# Получаем трафик конкретного ключа (накопительная статистика)
+curl -s -X GET "https://your-domain.com/api/keys/$KEY_ID/traffic" \
   -H "X-API-Key: ***REMOVED***"
 
-# Получаем трафик конкретного ключа
-curl -s -X GET "https://your-domain.com/api/keys/$KEY_ID/traffic/simple" \
+# Сбрасываем статистику трафика
+curl -s -X POST "https://your-domain.com/api/keys/$KEY_ID/traffic/reset" \
   -H "X-API-Key: ***REMOVED***"
 ```
 
@@ -669,32 +580,7 @@ curl -s -X GET "https://your-domain.com/api/keys/$KEY_ID/traffic/simple" \
 # Проверяем статус портов
 curl -s -X GET "https://your-domain.com/api/system/ports" \
   -H "X-API-Key: ***REMOVED***"
-
-# Сбрасываем статистику трафика
-curl -s -X POST "https://your-domain.com/api/keys/$KEY_ID/traffic/simple/reset" \
-  -H "X-API-Key: ***REMOVED***"
 ```
-
----
-
-## 🎯 Особенности системы мониторинга
-
-### Преимущества простого мониторинга:
-- ✅ **Надежность** - основан на активных соединениях
-- 🔍 **Точность** - отслеживает реальные соединения
-- ⚡ **Производительность** - кэширование 30 секунд
-- 📊 **Детализация** - показывает состояния соединений
-- 🛠️ **Простота** - один метод для всех случаев
-
-### Поддерживаемые состояния соединений:
-- **ESTAB** - установленные соединения
-- **LAST-ACK** - завершающиеся соединения  
-- **CLOSE-WAIT** - ожидающие закрытия
-
-### Метод оценки трафика:
-- **connection_based_estimation** - оценка на основе количества соединений
-- **interface_traffic** - общий трафик интерфейса
-- **traffic_rate** - скорость трафика в байтах/сек
 
 ---
 

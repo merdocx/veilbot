@@ -82,7 +82,7 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
         if subscription_token:
             subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
             msg = (
-                f"✅ *Подписка V2Ray успешно создана!*\n\n"
+                f"✅ *Подписка успешно создана!*\n\n"
                 f"🔗 *Ссылка подписки:*\n"
                 f"`{subscription_url}`\n\n"
                 f"⏳ *Срок действия:* {format_duration(tariff.get('duration_sec', 0))}\n\n"
@@ -113,6 +113,27 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
                     "✅ Бесплатная подписка создана, но не удалось получить ссылку. Попробуйте позже.",
                     reply_markup=main_menu,
                 )
+
+        outline_result = result.get("outline_key") or {}
+        outline_status = outline_result.get("status")
+        if outline_status == "issued" and outline_result.get("access_url"):
+            outline_tariff = outline_result.get("tariff") or tariff or {}
+            outline_msg = (
+                "🎁 *Также мы подготовили для вас запасной Outline ключ (потребуется скачать другое приложение):*\n\n"
+                f"{format_key_message_unified(outline_result['access_url'], 'outline', outline_tariff)}"
+            )
+            await message.answer(
+                outline_msg,
+                reply_markup=main_menu,
+                disable_web_page_preview=True,
+                parse_mode="Markdown",
+            )
+        elif outline_status == "no_server":
+            await message.answer(
+                "⚠️ Не удалось автоматически создать Outline ключ — нет доступных серверов. "
+                "Вы сможете получить его позже через «Получить доступ».",
+                reply_markup=main_menu,
+            )
     else:
         if status == "no_server":
             logging.info("No free V2Ray servers available for user %s", user_id)

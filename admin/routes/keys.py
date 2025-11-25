@@ -47,8 +47,8 @@ def _format_bytes(num_bytes: Optional[float]) -> str:
     return f"{normalized:.2f} {units[idx]}"
 
 
-def _parse_traffic_value(raw_value: Optional[str]) -> Dict[str, Any]:
-    if not raw_value:
+def _parse_traffic_value(raw_value: Optional[str | int | float]) -> Dict[str, Any]:
+    if not raw_value and raw_value != 0:
         return {
             "display": "—",
             "bytes": None,
@@ -56,7 +56,11 @@ def _parse_traffic_value(raw_value: Optional[str]) -> Dict[str, Any]:
             "state": "unknown",
         }
 
-    normalized = raw_value.strip()
+    # Если значение - число, конвертируем в строку
+    if isinstance(raw_value, (int, float)):
+        normalized = str(raw_value)
+    else:
+        normalized = raw_value.strip()
     if normalized in {"N/A", "Error"}:
         state = "error" if normalized == "Error" else "na"
         return {
@@ -203,7 +207,9 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     usage_idx = 13 if row_len > 13 else None
     over_limit_idx = 14 if row_len > 14 else None
     notified_idx = 15 if row_len > 15 else None
-    traffic_raw_idx = 16 if row_len > 16 else (12 if row_len > 12 else None)
+    # traffic_raw используем из usage_idx (traffic_usage_bytes), а не отдельный столбец
+    traffic_raw_idx = usage_idx  # Используем traffic_usage_bytes как raw значение
+    subscription_id_idx = 16 if row_len > 16 else None
 
     traffic_raw = get(traffic_raw_idx)
     traffic_info = _parse_traffic_value(traffic_raw)
@@ -273,6 +279,8 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     # Формируем ID с протоколом для отображения (чтобы различать ключи с одинаковым ID из разных таблиц)
     display_id = f"{key_id}_{protocol}" if protocol else str(key_id)
 
+    subscription_id = get(subscription_id_idx)
+    
     return {
         "id": display_id,
         "numeric_id": key_id,  # Сохраняем числовой ID для операций
@@ -282,6 +290,7 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
         "telegram_id": str(get(user_id_idx)) if get(user_id_idx) else '',
         "server": row[5] or '',
         "tariff": get(tariff_idx) or '',
+        "subscription_id": subscription_id if subscription_id else None,
         "protocol": protocol,
         "protocol_label": protocol_info["label"],
         "protocol_icon": protocol_info["icon"],

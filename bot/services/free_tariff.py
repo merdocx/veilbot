@@ -362,6 +362,8 @@ async def issue_free_v2ray_subscription_on_start(message: types.Message) -> Dict
     user_id = message.from_user.id
     telegram_user = message.from_user
 
+    outline_result: Dict[str, Any] | None = None
+
     with get_db_cursor(commit=True) as cursor:
         if check_free_tariff_limit_by_protocol_and_country(
             cursor,
@@ -425,6 +427,21 @@ async def issue_free_v2ray_subscription_on_start(message: types.Message) -> Dict
                 protocol="v2ray",
                 country=FREE_V2RAY_COUNTRY,
             )
+
+            try:
+                outline_result = await _issue_outline_key_for_start(
+                    cursor=cursor,
+                    message=message,
+                    user_id=user_id,
+                    tariff=tariff,
+                    subscription_id=subscription_data["id"],
+                )
+            except Exception as outline_exc:  # noqa: BLE001
+                logging.exception(
+                    "Failed to auto-issue Outline key for user %s: %s",
+                    user_id,
+                    outline_exc,
+                )
             
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to create free V2Ray subscription for user %s: %s", user_id, exc)
@@ -466,11 +483,159 @@ async def issue_free_v2ray_subscription_on_start(message: types.Message) -> Dict
         "expires_at": subscription_data["expires_at"],
         "created_keys": subscription_data.get("created_keys", 0),
         "failed_servers": subscription_data.get("failed_servers", []),
+        "outline_key": outline_result,
     }
 
 
 # Алиас для обратной совместимости
 issue_free_v2ray_key_on_start = issue_free_v2ray_subscription_on_start
+
+
+async def _issue_outline_key_for_start(
+    cursor: sqlite3.Cursor,
+    message: types.Message,
+    user_id: int,
+    tariff: Dict[str, Any],
+    subscription_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Создает бесплатный Outline ключ при первом /start.
+    """
+    if check_free_tariff_limit_by_protocol_and_country(
+        cursor,
+        user_id,
+        protocol="outline",
+        country=None,
+        enforce_global=False,
+    ):
+        return {"status": "already_issued"}
+
+    server = select_available_server_by_protocol(
+        cursor,
+        protocol="outline",
+    )
+    if not server:
+        logging.warning("No Outline servers available for free auto-issue")
+        return {"status": "no_server"}
+
+    server_id, server_name, api_url, cert_sha256, domain, api_key, v2ray_path = server
+    server_config = {
+        "api_url": api_url,
+        "cert_sha256": cert_sha256,
+    }
+
+    protocol_client = ProtocolFactory.create_protocol("outline", server_config)
+    key_email = (
+        f"{user_id}_subscription_{subscription_id}@veilbot.com"
+        if subscription_id
+        else f"user_{user_id}@veilbot.com"
+    )
+
+    now = int(time.time())
+    expiry_at = now + int(tariff.get("duration_sec") or 0)
+    traffic_limit_mb = int(tariff.get("traffic_limit_mb") or 0)
+
+    user_data: Dict[str, Any] | None = None
+
+    try:
+        user_data = await protocol_client.create_user(key_email)
+        if not user_data or not user_data.get("id") or not user_data.get("accessUrl"):
+            raise RuntimeError("Invalid response from Outline server while creating key")
+
+        access_url = user_data["accessUrl"]
+        outline_key_id = user_data["id"]
+
+        with safe_foreign_keys_off(cursor):
+            cursor.execute(
+                """
+                INSERT INTO keys (
+                    server_id,
+                    user_id,
+                    access_url,
+                    expiry_at,
+                    traffic_limit_mb,
+                    notified,
+                    key_id,
+                    created_at,
+                    email,
+                    tariff_id,
+                    protocol,
+                    subscription_id
+                )
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'outline', ?)
+                """,
+                (
+                    server_id,
+                    user_id,
+                    access_url,
+                    expiry_at,
+                    traffic_limit_mb,
+                    outline_key_id,
+                    now,
+                    key_email,
+                    tariff["id"],
+                    subscription_id,
+                ),
+            )
+
+        cursor.execute("SELECT country FROM servers WHERE id = ?", (server_id,))
+        row_country = cursor.fetchone()
+        server_country = row_country[0] if row_country else None
+
+        record_free_key_usage(
+            cursor,
+            user_id=user_id,
+            protocol="outline",
+            country=server_country,
+        )
+
+        try:
+            security_logger = get_security_logger()
+            if security_logger:
+                security_logger.log_key_creation(
+                    user_id=user_id,
+                    key_id=outline_key_id,
+                    protocol="outline",
+                    server_id=server_id,
+                    tariff_id=tariff["id"],
+                    ip_address=None,
+                    user_agent="Telegram Bot (/start auto-issue - outline)",
+                )
+        except Exception as sec_exc:  # noqa: BLE001
+            logging.warning("Failed to log security event for Outline key: %s", sec_exc)
+
+        logging.info(
+            "Issued Outline key %s for user %s on server %s",
+            outline_key_id,
+            user_id,
+            server_id,
+        )
+
+        return {
+            "status": "issued",
+            "access_url": access_url,
+            "key_id": outline_key_id,
+            "server": {
+                "id": server_id,
+                "name": server_name,
+                "country": server_country,
+            },
+            "expires_at": expiry_at,
+            "tariff": tariff,
+        }
+    except Exception:
+        # Если Outline ключ создан и произошла ошибка позже - очищаем
+        try:
+            if protocol_client and user_data and user_data.get("id"):
+                await protocol_client.delete_user(user_data["id"])
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logging.warning("Failed to cleanup Outline user after error: %s", cleanup_exc)
+        raise
+    finally:
+        try:
+            await protocol_client.close()
+        except Exception as close_exc:  # noqa: BLE001
+            logging.debug("Failed to close Outline protocol client: %s", close_exc)
 
 
 async def _create_v2ray_key_for_start(

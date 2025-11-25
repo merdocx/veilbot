@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 from app.infra.sqlite_utils import open_connection
+from app.infra.foreign_keys import safe_foreign_keys_off
 from app.settings import settings
 
 
@@ -69,11 +70,48 @@ class ServerRepository:
             )
             conn.commit()
 
-    def delete_server(self, server_id: int) -> None:
+    def delete_server(self, server_id: int) -> Dict[str, int]:
+        """
+        Полностью удалить сервер вместе со всеми ключами.
+
+        Возвращает статистику, чтобы маршруты могли логировать результат.
+        """
+        stats = {
+            "outline_keys_deleted": 0,
+            "v2ray_keys_deleted": 0,
+            "subscriptions_affected": 0,
+        }
+        affected_subscriptions: set[int] = set()
+
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("DELETE FROM servers WHERE id = ?", (server_id,))
+
+            # Сохраняем затронутые подписки до удаления ключей
+            c.execute(
+                "SELECT DISTINCT subscription_id FROM v2ray_keys WHERE server_id = ? AND subscription_id IS NOT NULL",
+                (server_id,),
+            )
+            affected_subscriptions.update(sub_id for (sub_id,) in c.fetchall() if sub_id)
+
+            c.execute(
+                "SELECT DISTINCT subscription_id FROM keys WHERE server_id = ? AND subscription_id IS NOT NULL",
+                (server_id,),
+            )
+            affected_subscriptions.update(sub_id for (sub_id,) in c.fetchall() if sub_id)
+
+            with safe_foreign_keys_off(c):
+                c.execute("DELETE FROM v2ray_keys WHERE server_id = ?", (server_id,))
+                stats["v2ray_keys_deleted"] = c.rowcount
+
+                c.execute("DELETE FROM keys WHERE server_id = ?", (server_id,))
+                stats["outline_keys_deleted"] = c.rowcount
+
+                c.execute("DELETE FROM servers WHERE id = ?", (server_id,))
+
             conn.commit()
+
+        stats["subscriptions_affected"] = len(affected_subscriptions)
+        return stats
 
     def outline_key_counts(self, server_ids: List[int]) -> dict:
         if not server_ids:

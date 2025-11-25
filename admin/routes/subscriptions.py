@@ -748,13 +748,20 @@ async def sync_keys_with_servers(request: Request):
         log_admin_action(request, "SYNC_KEYS_START", "Starting key synchronization with servers")
         
         # Запускаем синхронизацию
-        result = await sync_all_keys_with_servers(dry_run=False, server_id=None)
+        result = await sync_all_keys_with_servers(
+            dry_run=False,
+            server_id=None,
+            ensure_missing_keys=True,
+            delete_orphaned_server_keys=True,
+        )
         
         log_admin_action(
             request,
             "SYNC_KEYS_COMPLETE",
             f"Key synchronization completed: updated={result.get('updated', 0)}, "
-            f"unchanged={result.get('unchanged', 0)}, failed={result.get('failed', 0)}"
+            f"unchanged={result.get('unchanged', 0)}, failed={result.get('failed', 0)}, "
+            f"missing_keys_created={result.get('missing_keys_created', 0)}, "
+            f"orphaned_remote_deleted={result.get('orphaned_remote_deleted', 0)}"
         )
         
         return JSONResponse({
@@ -766,6 +773,14 @@ async def sync_keys_with_servers(request: Request):
                 "unchanged": result.get("unchanged", 0),
                 "failed": result.get("failed", 0),
                 "servers_processed": result.get("servers_processed", 0),
+                "missing_pairs_total": result.get("missing_pairs_total", 0),
+                "missing_keys_created": result.get("missing_keys_created", 0),
+                "missing_keys_failed": result.get("missing_keys_failed", 0),
+                "missing_keys_servers": result.get("missing_keys_servers", 0),
+                "orphaned_remote_detected": result.get("orphaned_remote_detected", 0),
+                "orphaned_remote_deleted": result.get("orphaned_remote_deleted", 0),
+                "orphaned_remote_delete_errors": result.get("orphaned_remote_delete_errors", 0),
+                "orphaned_remote_servers": result.get("orphaned_remote_servers", 0),
             }
         })
     except ImportError as e:

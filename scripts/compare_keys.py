@@ -268,43 +268,96 @@ async def compare_servers() -> List[ComparisonResult]:
 
 
 def print_report(results: List[ComparisonResult]) -> None:
+    """Вывести детальный отчет о сравнении ключей"""
+    print("=" * 80)
+    print("ОТЧЕТ О СРАВНЕНИИ КЛЮЧЕЙ: БАЗА ДАННЫХ vs СЕРВЕРЫ")
+    print("=" * 80)
+    print()
+    
+    total_servers = len(results)
+    synced_servers = sum(1 for r in results if not r.errors and not r.missing_on_server 
+                         and not r.missing_in_db and not r.db_without_remote_id)
+    total_db_keys = sum(r.db_count for r in results)
+    total_remote_keys = sum(r.remote_count for r in results)
+    total_missing_on_server = sum(len(r.missing_on_server) for r in results)
+    total_missing_in_db = sum(len(r.missing_in_db) for r in results)
+    
+    print(f"📊 ОБЩАЯ СТАТИСТИКА:")
+    print(f"   Всего серверов: {total_servers}")
+    print(f"   Синхронизировано: {synced_servers}")
+    print(f"   Всего ключей в БД: {total_db_keys}")
+    print(f"   Всего ключей на серверах: {total_remote_keys}")
+    print(f"   Отсутствует на серверах: {total_missing_on_server}")
+    print(f"   Отсутствует в БД: {total_missing_in_db}")
+    print()
+    print("=" * 80)
+    print()
+    
     for res in results:
-        header = f"Server {res.server.name} (ID {res.server.id}, protocol {res.server.protocol}"
-        if res.server.country:
-            header += f", country {res.server.country}"
-        header += ")"
+        header = f"🔹 Сервер: {res.server.name}"
         print(header)
-        print(f"  DB keys: {res.db_count}")
-        print(f"  Server keys: {res.remote_count}")
+        print(f"   ID: {res.server.id} | Протокол: {res.server.protocol.upper()}")
+        if res.server.country:
+            print(f"   Страна: {res.server.country}")
+        print(f"   Ключей в БД: {res.db_count}")
+        print(f"   Ключей на сервере: {res.remote_count}")
 
         if res.errors:
+            print(f"   ⚠️  ОШИБКИ ({len(res.errors)}):")
             for err in res.errors:
-                print(f"  ERROR: {err}")
+                print(f"      • {err}")
             print()
             continue
 
+        status_icon = "✅" if (not res.missing_on_server and not res.missing_in_db 
+                              and not res.db_without_remote_id) else "⚠️"
+        
         if res.missing_on_server:
-            print(f"  Missing on server ({len(res.missing_on_server)}):")
-            for item in res.missing_on_server:
-                print("    - DB entry:", json.dumps(item, ensure_ascii=False))
+            print(f"   {status_icon} Отсутствует на сервере ({len(res.missing_on_server)}):")
+            for idx, item in enumerate(res.missing_on_server[:10], 1):
+                db_entry = item.get("db_entry", {})
+                hint = item.get("matching_hint", {})
+                key_id = hint.get("key_id") or hint.get("uuid") or "N/A"
+                email = db_entry.get("email") or hint.get("email") or "N/A"
+                print(f"      {idx}. ID в БД: {db_entry.get('id', 'N/A')}, "
+                      f"Ключ: {key_id[:20]}..., Email: {email}")
+            if len(res.missing_on_server) > 10:
+                print(f"      ... и еще {len(res.missing_on_server) - 10} ключей")
+            print()
 
         if res.missing_in_db:
-            print(f"  Missing in DB ({len(res.missing_in_db)}):")
-            for item in res.missing_in_db:
-                print("    - Remote key:", json.dumps(item, ensure_ascii=False))
+            print(f"   {status_icon} Отсутствует в БД ({len(res.missing_in_db)}):")
+            for idx, item in enumerate(res.missing_in_db[:10], 1):
+                remote_key = item.get("remote_key", {})
+                hint = item.get("matching_hint", {})
+                uuid = hint.get("uuid") or extract_v2ray_uuid(remote_key) or "N/A"
+                name = remote_key.get("name") or hint.get("name") or "N/A"
+                key_id = remote_key.get("id", "N/A")
+                print(f"      {idx}. UUID: {uuid[:20]}..., "
+                      f"ID: {key_id[:20]}..., Имя: {name}")
+            if len(res.missing_in_db) > 10:
+                print(f"      ... и еще {len(res.missing_in_db) - 10} ключей")
+            print()
 
         if res.db_without_remote_id:
-            print(f"  DB entries without remote id ({len(res.db_without_remote_id)}):")
-            for item in res.db_without_remote_id:
-                print("    -", json.dumps(item, ensure_ascii=False))
+            print(f"   ⚠️  Ключи в БД без ID сервера ({len(res.db_without_remote_id)}):")
+            for idx, item in enumerate(res.db_without_remote_id[:10], 1):
+                key_id = item.get("key_id") or item.get("v2ray_uuid") or "N/A"
+                email = item.get("email") or "N/A"
+                print(f"      {idx}. ID в БД: {item.get('id', 'N/A')}, "
+                      f"Ключ: {key_id[:20]}..., Email: {email}")
+            if len(res.db_without_remote_id) > 10:
+                print(f"      ... и еще {len(res.db_without_remote_id) - 10} ключей")
+            print()
 
         if (
             not res.missing_on_server
             and not res.missing_in_db
             and not res.db_without_remote_id
         ):
-            print("  ✔ Everything matches")
+            print("   ✅ Все ключи синхронизированы")
 
+        print("-" * 80)
         print()
 
 

@@ -291,7 +291,7 @@ class KeyRepository:
         offset: int = 0,
         cursor: str | None = None,
     ) -> list[tuple]:
-        # Columns: id, key_id, access_url, created_at, expiry_at, server_name, email, user_id, tariff_name, protocol, traffic_limit_mb, api_url, api_key
+        # Columns: id, key_id, access_url, created_at, expiry_at, server_name, email, user_id, tariff_name, protocol, traffic_limit_mb, api_url, api_key, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified, subscription_id
         sort_map = {
             'created_at': 3,
             'expiry_at': 4,
@@ -323,7 +323,8 @@ class KeyRepository:
                     "SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, k.expiry_at, "
                     "IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol, "
                     "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, '' as api_url, '' as api_key, "
-                    "0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified "
+                    "0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified, "
+                    "NULL AS subscription_id "
                     "FROM keys k LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
                 )
                 where = []
@@ -348,7 +349,7 @@ class KeyRepository:
                     "k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol, "
                     "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "
                     "COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes, NULL AS traffic_over_limit_at, "
-                    "0 AS traffic_over_limit_notified "
+                    "0 AS traffic_over_limit_notified, k.subscription_id "
                     "FROM v2ray_keys k LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
                 )
                 where = []

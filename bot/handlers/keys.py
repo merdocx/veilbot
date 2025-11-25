@@ -253,7 +253,7 @@ async def handle_my_keys_btn(message: types.Message):
         return
     
     if all_keys:
-        msg += "*Отдельные ключи:*\n\n"
+        msg += "*Запасные ключи (потребуется скачать другое приложение):*\n\n"
     
     for key in all_keys:
         remaining_seconds = key['expiry'] - now

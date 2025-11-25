@@ -307,13 +307,20 @@
                     },
                 });
 
+                const responseClone = response.clone();
                 let data;
                 try {
                     data = await response.json();
                 } catch (jsonError) {
-                    const text = await response.text();
-                    console.error('[VeilBot][subscriptions] Failed to parse JSON response:', text);
-                    throw new Error(`Ошибка сервера (${response.status}): ${text.substring(0, 200)}`);
+                    let textSnippet = '';
+                    try {
+                        const text = await responseClone.text();
+                        textSnippet = text.substring(0, 200);
+                    } catch (textError) {
+                        textSnippet = `Failed to read response body: ${textError}`;
+                    }
+                    console.error('[VeilBot][subscriptions] Failed to parse JSON response:', textSnippet);
+                    throw new Error(`Ошибка сервера (${response.status}): ${textSnippet}`);
                 }
 
                 if (!response.ok || !data.success) {
@@ -328,6 +335,10 @@
                 const unchanged = stats.unchanged || 0;
                 const failed = stats.failed || 0;
                 const serversProcessed = stats.servers_processed || 0;
+                const missingPairs = stats.missing_pairs_total || 0;
+                const missingCreated = stats.missing_keys_created || 0;
+                const missingFailed = stats.missing_keys_failed || 0;
+                const missingServers = stats.missing_keys_servers || 0;
                 
                 // Формируем детальное сообщение об успешной синхронизации
                 let message = '✅ Синхронизация ключей завершена успешно! ';
@@ -336,6 +347,15 @@
                     message += `, ошибок: ${failed}`;
                 }
                 message += `. Серверов: ${serversProcessed}`;
+                if (missingPairs > 0) {
+                    message += `. Недостающих ключей найдено: ${missingPairs}, создано: ${missingCreated}`;
+                    if (missingFailed > 0) {
+                        message += `, ошибок при создании: ${missingFailed}`;
+                    }
+                    if (missingServers > 0) {
+                        message += `. Серверов с недостающими ключами: ${missingServers}`;
+                    }
+                }
                 
                 // Показываем уведомление с увеличенным временем отображения
                 notify(message, 'success', 5000);

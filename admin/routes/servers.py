@@ -267,7 +267,16 @@ async def delete_server(request: Request, server_id: int):
         else:
             server_protocol = None
         
-        repo.delete_server(server_id)
+        deletion_stats = repo.delete_server(server_id)
+        log_admin_action(
+            request,
+            "DELETE_SERVER_CLEANUP",
+            (
+                f"ID: {server_id}, outline_keys_deleted={deletion_stats.get('outline_keys_deleted', 0)}, "
+                f"v2ray_keys_deleted={deletion_stats.get('v2ray_keys_deleted', 0)}, "
+                f"subscriptions_affected={deletion_stats.get('subscriptions_affected', 0)}"
+            ),
+        )
         
         # Инвалидируем кэш меню бота
         try:
