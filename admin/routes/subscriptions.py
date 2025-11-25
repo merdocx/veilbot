@@ -187,12 +187,21 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             keys_info = []
             for key_row in keys_list:
                 (
-                    key_id, v2ray_uuid, email, key_created_at, key_expires_at,
-                    server_name, country, traffic_limit_mb, traffic_usage_bytes
+                    key_id,
+                    protocol,
+                    identifier,
+                    email,
+                    key_created_at,
+                    key_expires_at,
+                    server_name,
+                    country,
+                    traffic_limit_mb,
+                    traffic_usage_bytes,
                 ) = key_row
                 keys_info.append({
                     "id": key_id,
-                    "uuid": v2ray_uuid[:8] + "..." if v2ray_uuid else "—",
+                    "protocol": protocol,
+                    "identifier": identifier[:8] + "..." if identifier else "—",
                     "email": email or "—",
                     "server": server_name or "—",
                     "country": country or "—",

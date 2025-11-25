@@ -970,14 +970,14 @@ class SubscriptionPurchaseService:
                 f"expires_at={expires_at}"
             )
             
-            # Шаг 3: Создаем ключи на всех активных V2Ray серверах
+            # Шаг 3: Создаем ключи на всех активных серверах (V2Ray и Outline)
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     """
-                    SELECT id, name, api_url, api_key, domain, v2ray_path
+                    SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256
                     FROM servers
-                    WHERE protocol = 'v2ray' AND active = 1
-                    ORDER BY id
+                    WHERE active = 1 AND (protocol = 'v2ray' OR protocol = 'outline')
+                    ORDER BY protocol, id
                     """
                 ) as cursor:
                     servers = await cursor.fetchall()
@@ -985,95 +985,156 @@ class SubscriptionPurchaseService:
             created_keys = 0
             failed_servers = []
             
-            for server_id, server_name, api_url, api_key, domain, v2ray_path in servers:
+            for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in servers:
                 v2ray_uuid = None
+                outline_key_id = None
                 protocol_client = None
                 try:
                     # Генерация email для ключа
                     key_email = f"{payment.user_id}_subscription_{subscription_id}@veilbot.com"
                     
-                    # Создание ключа через V2Ray API
-                    server_config = {
-                        'api_url': api_url,
-                        'api_key': api_key,
-                        'domain': domain,
-                    }
-                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                    user_data = await protocol_client.create_user(key_email, name=server_name)
-                    
-                    if not user_data or not user_data.get('uuid'):
-                        raise Exception("Failed to create user on V2Ray server")
-                    
-                    v2ray_uuid = user_data['uuid']
-                    
-                    # Получение client_config
-                    client_config = await protocol_client.get_user_config(
-                        v2ray_uuid,
-                        {
+                    # Создание ключа в зависимости от протокола
+                    if protocol == 'v2ray':
+                        server_config = {
+                            'api_url': api_url,
+                            'api_key': api_key,
                             'domain': domain,
-                            'port': 443,
-                            'email': key_email,
-                        },
-                    )
+                        }
+                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                        user_data = await protocol_client.create_user(key_email, name=server_name)
+                        
+                        if not user_data or not user_data.get('uuid'):
+                            raise Exception("Failed to create user on V2Ray server")
+                        
+                        v2ray_uuid = user_data['uuid']
+                        
+                        # Получение client_config
+                        client_config = await protocol_client.get_user_config(
+                            v2ray_uuid,
+                            {
+                                'domain': domain,
+                                'port': 443,
+                                'email': key_email,
+                            },
+                        )
+                        
+                        # Извлекаем VLESS URL из конфигурации
+                        if 'vless://' in client_config:
+                            lines = client_config.split('\n')
+                            for line in lines:
+                                if line.strip().startswith('vless://'):
+                                    client_config = line.strip()
+                                    break
+                        
+                        # Сохранение V2Ray ключа в БД
+                        async with open_async_connection(self.db_path) as conn:
+                            await conn.execute("PRAGMA foreign_keys = OFF")
+                            try:
+                                cursor = await conn.execute(
+                                    """
+                                    INSERT INTO v2ray_keys 
+                                    (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        server_id,
+                                        payment.user_id,
+                                        v2ray_uuid,
+                                        key_email,
+                                        now,
+                                        expires_at,
+                                        tariff['id'],
+                                        client_config,
+                                        subscription_id,
+                                    ),
+                                )
+                                await conn.commit()
+                                
+                                # Проверяем, что ключ действительно сохранен
+                                async with conn.execute(
+                                    "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
+                                    (server_id, payment.user_id, subscription_id, v2ray_uuid)
+                                ) as check_cursor:
+                                    if not await check_cursor.fetchone():
+                                        raise Exception(f"Key was not saved to database for server {server_id}")
+                                
+                            finally:
+                                await conn.execute("PRAGMA foreign_keys = ON")
                     
-                    # Извлекаем VLESS URL из конфигурации
-                    if 'vless://' in client_config:
-                        lines = client_config.split('\n')
-                        for line in lines:
-                            if line.strip().startswith('vless://'):
-                                client_config = line.strip()
-                                break
-                    
-                    # Сохранение ключа в БД
-                    async with open_async_connection(self.db_path) as conn:
-                        await conn.execute("PRAGMA foreign_keys = OFF")
-                        try:
-                            cursor = await conn.execute(
-                                """
-                                INSERT INTO v2ray_keys 
-                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    server_id,
-                                    payment.user_id,
-                                    v2ray_uuid,
-                                    key_email,
-                                    now,
-                                    expires_at,
-                                    tariff['id'],
-                                    client_config,
-                                    subscription_id,
-                                ),
-                            )
-                            await conn.commit()
-                            
-                            # Проверяем, что ключ действительно сохранен
-                            async with conn.execute(
-                                "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
-                                (server_id, payment.user_id, subscription_id, v2ray_uuid)
-                            ) as check_cursor:
-                                if not await check_cursor.fetchone():
-                                    raise Exception(f"Key was not saved to database for server {server_id}")
-                            
-                        finally:
-                            await conn.execute("PRAGMA foreign_keys = ON")
+                    elif protocol == 'outline':
+                        server_config = {
+                            'api_url': api_url,
+                            'cert_sha256': cert_sha256,
+                        }
+                        protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+                        user_data = await protocol_client.create_user(key_email)
+                        
+                        if not user_data or not user_data.get('id'):
+                            raise Exception("Failed to create user on Outline server")
+                        
+                        outline_key_id = user_data['id']
+                        access_url = user_data['accessUrl']
+                        
+                        # Сохранение Outline ключа в БД
+                        async with open_async_connection(self.db_path) as conn:
+                            await conn.execute("PRAGMA foreign_keys = OFF")
+                            try:
+                                cursor = await conn.execute(
+                                    """
+                                    INSERT INTO keys 
+                                    (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
+                                    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        server_id,
+                                        payment.user_id,
+                                        access_url,
+                                        expires_at,
+                                        0,  # traffic_limit_mb
+                                        outline_key_id,
+                                        now,
+                                        key_email,
+                                        tariff['id'],
+                                        'outline',
+                                        subscription_id,
+                                    ),
+                                )
+                                await conn.commit()
+                                
+                                # Проверяем, что ключ действительно сохранен
+                                async with conn.execute(
+                                    "SELECT id FROM keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND key_id = ?",
+                                    (server_id, payment.user_id, subscription_id, outline_key_id)
+                                ) as check_cursor:
+                                    if not await check_cursor.fetchone():
+                                        raise Exception(f"Key was not saved to database for server {server_id}")
+                                
+                            finally:
+                                await conn.execute("PRAGMA foreign_keys = ON")
+                    else:
+                        logger.warning(
+                            f"[SUBSCRIPTION] Unknown protocol {protocol} for server {server_id}, skipping"
+                        )
+                        continue
                     
                     created_keys += 1
                     logger.info(
-                        f"[SUBSCRIPTION] Created key for subscription {subscription_id} on server {server_id} ({server_name})"
+                        f"[SUBSCRIPTION] Created {protocol} key for subscription {subscription_id} on server {server_id} ({server_name})"
                     )
                     
                 except Exception as e:
                     logger.error(
-                        f"[SUBSCRIPTION] Failed to create key for subscription {subscription_id} "
+                        f"[SUBSCRIPTION] Failed to create {protocol} key for subscription {subscription_id} "
                         f"on server {server_id} ({server_name}): {e}",
                         exc_info=True,
                     )
                     # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
-                    if v2ray_uuid and protocol_client:
+                    if protocol_client:
                         try:
-                            await protocol_client.delete_user(v2ray_uuid)
+                            if protocol == 'v2ray' and v2ray_uuid:
+                                await protocol_client.delete_user(v2ray_uuid)
+                            elif protocol == 'outline' and outline_key_id:
+                                await protocol_client.delete_user(outline_key_id)
                             logger.info(f"[SUBSCRIPTION] Cleaned up orphaned key on server {server_id}")
                         except Exception as cleanup_error:
                             logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned key: {cleanup_error}")

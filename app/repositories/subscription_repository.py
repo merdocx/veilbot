@@ -202,19 +202,38 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def get_subscription_keys_for_deletion(self, subscription_id: int) -> List[Tuple]:
-        """Получить все ключи подписки для удаления"""
+        """Получить все ключи подписки для удаления (v2ray и outline)
+        Returns: List of tuples: (key_id, api_url, api_key/cert_sha256, protocol)"""
+        result = []
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            # V2Ray ключи
             c.execute(
                 """
-                SELECT k.v2ray_uuid, s.api_url, s.api_key
+                SELECT k.v2ray_uuid, s.api_url, s.api_key, 'v2ray' as protocol
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.subscription_id = ?
                 """,
                 (subscription_id,),
             )
-            return c.fetchall()
+            v2ray_keys = c.fetchall()
+            result.extend(v2ray_keys)
+            
+            # Outline ключи
+            c.execute(
+                """
+                SELECT k.key_id, s.api_url, s.cert_sha256, 'outline' as protocol
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.subscription_id = ? AND k.protocol = 'outline'
+                """,
+                (subscription_id,),
+            )
+            outline_keys = c.fetchall()
+            result.extend(outline_keys)
+            
+        return result
     
     def get_subscription_keys_with_server_info(self, subscription_id: int) -> List[Tuple]:
         """Получить все ключи подписки с информацией о серверах для получения трафика из API
@@ -234,7 +253,7 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def delete_subscription_keys(self, subscription_id: int) -> int:
-        """Удалить все ключи подписки из БД"""
+        """Удалить все ключи подписки из БД (v2ray и outline)"""
         from app.infra.foreign_keys import safe_foreign_keys_off
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -243,7 +262,13 @@ class SubscriptionRepository:
                     "DELETE FROM v2ray_keys WHERE subscription_id = ?",
                     (subscription_id,),
                 )
-                deleted_count = c.rowcount
+                v2ray_deleted = c.rowcount
+                c.execute(
+                    "DELETE FROM keys WHERE subscription_id = ?",
+                    (subscription_id,),
+                )
+                outline_deleted = c.rowcount
+                deleted_count = v2ray_deleted + outline_deleted
             conn.commit()
             return deleted_count
 
@@ -402,22 +427,40 @@ class SubscriptionRepository:
                 return rows
 
     async def get_subscription_keys_for_deletion_async(self, subscription_id: int) -> List[Tuple]:
-        """Получить все ключи подписки для удаления (асинхронная версия)"""
+        """Получить все ключи подписки для удаления (асинхронная версия, v2ray и outline)
+        Returns: List of tuples: (key_id, api_url, api_key/cert_sha256, protocol)"""
+        result = []
         async with open_async_connection(self.db_path) as conn:
+            # V2Ray ключи
             async with conn.execute(
                 """
-                SELECT k.v2ray_uuid, s.api_url, s.api_key
+                SELECT k.v2ray_uuid, s.api_url, s.api_key, 'v2ray' as protocol
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
                 WHERE k.subscription_id = ?
                 """,
                 (subscription_id,),
             ) as cursor:
-                rows = await cursor.fetchall()
-                return rows
+                v2ray_keys = await cursor.fetchall()
+                result.extend(v2ray_keys)
+            
+            # Outline ключи
+            async with conn.execute(
+                """
+                SELECT k.key_id, s.api_url, s.cert_sha256, 'outline' as protocol
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.subscription_id = ? AND k.protocol = 'outline'
+                """,
+                (subscription_id,),
+            ) as cursor:
+                outline_keys = await cursor.fetchall()
+                result.extend(outline_keys)
+        
+        return result
 
     async def delete_subscription_keys_async(self, subscription_id: int) -> int:
-        """Удалить все ключи подписки из БД (асинхронная версия)"""
+        """Удалить все ключи подписки из БД (асинхронная версия, v2ray и outline)"""
         async with open_async_connection(self.db_path) as conn:
             # Отключаем foreign keys для асинхронного соединения
             await conn.execute("PRAGMA foreign_keys=OFF")
@@ -426,7 +469,13 @@ class SubscriptionRepository:
                     "DELETE FROM v2ray_keys WHERE subscription_id = ?",
                     (subscription_id,),
                 )
-                deleted_count = cursor.rowcount
+                v2ray_deleted = cursor.rowcount
+                cursor = await conn.execute(
+                    "DELETE FROM keys WHERE subscription_id = ?",
+                    (subscription_id,),
+                )
+                outline_deleted = cursor.rowcount
+                deleted_count = v2ray_deleted + outline_deleted
                 await conn.commit()
                 return deleted_count
             finally:
@@ -450,13 +499,22 @@ class SubscriptionRepository:
                     s.last_updated_at,
                     s.notified,
                     t.name as tariff_name,
-                    COUNT(vk.id) as keys_count,
+                    COALESCE(vk.v2ray_count, 0) + COALESCE(ok.outline_count, 0) as keys_count,
                     s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
-                LEFT JOIN v2ray_keys vk ON vk.subscription_id = s.id
+                LEFT JOIN (
+                    SELECT subscription_id, COUNT(*) as v2ray_count
+                    FROM v2ray_keys
+                    GROUP BY subscription_id
+                ) vk ON vk.subscription_id = s.id
+                LEFT JOIN (
+                    SELECT subscription_id, COUNT(*) as outline_count
+                    FROM keys
+                    WHERE protocol = 'outline'
+                    GROUP BY subscription_id
+                ) ok ON ok.subscription_id = s.id
                 WHERE s.is_active = 1
-                GROUP BY s.id
                 ORDER BY s.created_at DESC
                 LIMIT ? OFFSET ?
                 """,
@@ -488,13 +546,22 @@ class SubscriptionRepository:
                     s.last_updated_at,
                     s.notified,
                     t.name as tariff_name,
-                    COUNT(vk.id) as keys_count,
+                    COALESCE(vk.v2ray_count, 0) + COALESCE(ok.outline_count, 0) as keys_count,
                     s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
-                LEFT JOIN v2ray_keys vk ON vk.subscription_id = s.id
+                LEFT JOIN (
+                    SELECT subscription_id, COUNT(*) as v2ray_count
+                    FROM v2ray_keys
+                    GROUP BY subscription_id
+                ) vk ON vk.subscription_id = s.id
+                LEFT JOIN (
+                    SELECT subscription_id, COUNT(*) as outline_count
+                    FROM keys
+                    WHERE protocol = 'outline'
+                    GROUP BY subscription_id
+                ) ok ON ok.subscription_id = s.id
                 WHERE s.id = ?
-                GROUP BY s.id
                 """,
                 (subscription_id,),
             )
@@ -507,21 +574,52 @@ class SubscriptionRepository:
             c.execute(
                 """
                 SELECT 
-                    vk.id,
-                    vk.v2ray_uuid,
-                    vk.email,
-                    vk.created_at,
-                    vk.expiry_at,
-                    s.name as server_name,
-                    s.country,
-                    vk.traffic_limit_mb,
-                    vk.traffic_usage_bytes
-                FROM v2ray_keys vk
-                JOIN servers s ON vk.server_id = s.id
-                WHERE vk.subscription_id = ?
-                ORDER BY s.country, s.name
+                    key_id,
+                    protocol,
+                    identifier,
+                    email,
+                    created_at,
+                    expiry_at,
+                    server_name,
+                    country,
+                    traffic_limit_mb,
+                    traffic_usage_bytes
+                FROM (
+                    SELECT 
+                        vk.id AS key_id,
+                        'v2ray' AS protocol,
+                        vk.v2ray_uuid AS identifier,
+                        vk.email,
+                        vk.created_at,
+                        vk.expiry_at,
+                        s.name AS server_name,
+                        s.country,
+                        vk.traffic_limit_mb,
+                        vk.traffic_usage_bytes
+                    FROM v2ray_keys vk
+                    JOIN servers s ON vk.server_id = s.id
+                    WHERE vk.subscription_id = ?
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        k.id AS key_id,
+                        'outline' AS protocol,
+                        k.key_id AS identifier,
+                        k.email,
+                        k.created_at,
+                        k.expiry_at,
+                        s.name AS server_name,
+                        s.country,
+                        k.traffic_limit_mb,
+                        0 AS traffic_usage_bytes
+                    FROM keys k
+                    JOIN servers s ON k.server_id = s.id
+                    WHERE k.subscription_id = ? AND k.protocol = 'outline'
+                )
+                ORDER BY server_name, country, protocol
                 """,
-                (subscription_id,),
+                (subscription_id, subscription_id),
             )
             return c.fetchall()
 

@@ -800,6 +800,22 @@ def migrate_add_subscription_id_to_v2ray_keys():
     finally:
         conn.close()
 
+def migrate_add_subscription_id_to_keys():
+    """Добавление поля subscription_id в keys для связи с подписками (outline ключи)"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE keys ADD COLUMN subscription_id INTEGER")
+        conn.commit()
+        logging.info("Поле subscription_id добавлено в keys")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name: subscription_id" in str(e).lower():
+            logging.info("Поле subscription_id уже существует в keys")
+        else:
+            raise
+    finally:
+        conn.close()
+
 def migrate_add_subscription_traffic_limits():
     """Добавление полей для контроля трафика подписок"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1208,6 +1224,7 @@ def _run_all_migrations():
     migrate_fix_traffic_stats_foreign_keys()
     migrate_add_subscriptions_table()
     migrate_add_subscription_id_to_v2ray_keys()
+    migrate_add_subscription_id_to_keys()
     migrate_add_subscription_indexes()
     migrate_add_subscription_traffic_limits()
     migrate_add_purchase_notification_sent()
