@@ -16,17 +16,31 @@ from logging.handlers import RotatingFileHandler
 # Ensure project root on sys.path BEFORE importing top-level packages
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 from app.logging_config import setup_logging, _SecretMaskingFilter
 from app.settings import settings
 from app.infra.sqlite_utils import open_connection
 from dotenv import load_dotenv
 
+
+def _init_log_dir() -> str:
+    """Ensure log directory exists, fall back to local path if system dir is unavailable."""
+    preferred = os.getenv("VEILBOT_LOG_DIR", "/var/log/veilbot")
+    try:
+        os.makedirs(preferred, exist_ok=True)
+        return preferred
+    except PermissionError:
+        fallback = os.path.join(BASE_DIR, "logs")
+        os.makedirs(fallback, exist_ok=True)
+        sys.stderr.write(
+            f"[admin/main] Warning: cannot write to {preferred}, using {fallback} instead\n"
+        )
+        return fallback
+
+
 # Setup logging
-LOG_DIR = os.getenv("VEILBOT_LOG_DIR", "/var/log/veilbot")
-os.makedirs(LOG_DIR, exist_ok=True)
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
+LOG_DIR = _init_log_dir()
 app = FastAPI(title="VeilBot Admin", version="2.3.0")
 
 # Logging setup
