@@ -80,7 +80,7 @@ async def create_missing_keys_for_available_servers(server_id: Optional[int] = N
 
     with get_db_cursor() as cursor:
         query = """
-            SELECT id, name, api_url, api_key, domain, available_for_purchase
+            SELECT id, name, api_url, api_key, domain, available_for_purchase, max_keys
             FROM servers
             WHERE protocol = 'v2ray'
               AND active = 1
@@ -154,6 +154,21 @@ async def create_missing_keys_for_available_servers(server_id: Optional[int] = N
         if not pending_subscriptions:
             continue
 
+        max_keys = int(server.get("max_keys") or 0)
+        capacity_limited = max_keys > 0
+        active_keys = 0
+        if capacity_limited:
+            with get_db_cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM v2ray_keys
+                    WHERE server_id = ? AND expiry_at > ?
+                    """,
+                    (server["id"], now),
+                )
+                result = cursor.fetchone()
+                active_keys = (result[0] if result else 0) or 0
+
         api_url = server.get("api_url")
         api_key = server.get("api_key")
         domain = server.get("domain")
@@ -164,6 +179,16 @@ async def create_missing_keys_for_available_servers(server_id: Optional[int] = N
                 "Пропускаем сервер %s (id=%s) — отсутствуют api_url или api_key",
                 server_name,
                 server["id"],
+            )
+            stats["missing_keys_failed"] += len(pending_subscriptions)
+            continue
+
+        if capacity_limited and active_keys >= max_keys:
+            logger.warning(
+                "Пропускаем сервер %s (id=%s) — достигнут лимит ключей (%s)",
+                server_name,
+                server["id"],
+                max_keys,
             )
             stats["missing_keys_failed"] += len(pending_subscriptions)
             continue
@@ -195,6 +220,17 @@ async def create_missing_keys_for_available_servers(server_id: Optional[int] = N
             expires_at = subscription["expires_at"]
             tariff_id = subscription["tariff_id"]
             key_email = f"{user_id}_subscription_{sub_id}@veilbot.com"
+
+            if capacity_limited and active_keys >= max_keys:
+                logger.info(
+                    "  Сервер %s (id=%s) достиг лимита ключей (%s), пропускаем подписку %s",
+                    server_name,
+                    server["id"],
+                    max_keys,
+                    sub_id,
+                )
+                stats["missing_keys_failed"] += 1
+                continue
 
             # Перепроверяем в БД перед созданием (мог появиться конкурентно)
             with get_db_cursor() as cursor:
@@ -265,6 +301,8 @@ async def create_missing_keys_for_available_servers(server_id: Optional[int] = N
                 invalidate_subscription_cache(token)
                 existing_pairs.add((server["id"], sub_id))
                 stats["missing_keys_created"] += 1
+                if capacity_limited:
+                    active_keys += 1
             except Exception as creation_error:
                 stats["missing_keys_failed"] += 1
                 logger.error(
@@ -497,10 +535,10 @@ async def sync_all_keys_with_servers(
     logger.info(f"Ключи распределены по {len(keys_by_server)} серверам")
     
     for server_id_key, server_keys in keys_by_server.items():
-        server_name = server_keys[0][6]  # server_name
-        domain = server_keys[0][7]  # domain
-        api_url = server_keys[0][8]  # api_url
-        api_key = server_keys[0][9]  # api_key
+        server_name = server_keys[0][7]  # server_name (index 7)
+        domain = server_keys[0][8]  # domain (index 8)
+        api_url = server_keys[0][9]  # api_url (index 9)
+        api_key = server_keys[0][10]  # api_key (index 10)
         
         logger.info(f"\n{'='*60}")
         logger.info(f"Сервер #{server_id_key}: {server_name}")
@@ -521,6 +559,9 @@ async def sync_all_keys_with_servers(
             for key_row in server_keys
             if key_row[5]
         }
+        
+        logger.info(f"  API URL from DB: {api_url!r}")
+        logger.info(f"  Domain from DB: {domain!r}")
         
         server_config = {
             'api_url': api_url,

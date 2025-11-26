@@ -1,7 +1,7 @@
 # Миграция с utils.py на sqlite_utils.py - ЗАВЕРШЕНА ✅
 
 Дата завершения: 2025-01-21  
-Версия проекта: 2.3.0
+Версия проекта: 2.3.1
 
 ## 📊 Итоговая статистика
 
@@ -49,7 +49,7 @@
 - `scripts/delete_user_all_data.py`
 - `scripts/manage_subscriptions.py`
 - `scripts/delete_user_subscription.py`
-- `scripts/sync_all_keys_with_servers.py`
+- `scripts/sync_all_keys_with_servers.py` (обновлена логика синхронизации с учетом лимита `max_keys` при создании недостающих подписочных ключей)
 - `scripts/update_subscription_keys_short_ids.py`
 - `scripts/cleanup_user_and_orphaned.py`
 
