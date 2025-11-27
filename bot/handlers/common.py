@@ -3,6 +3,7 @@
 """
 import asyncio
 import logging
+import time
 from typing import Dict, Optional, Set
 from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -86,7 +87,18 @@ async def handle_help_back(message: types.Message) -> None:
     await message.answer("Главное меню:", reply_markup=main_menu)
 
 
-async def broadcast_message(message_text: str, admin_id: Optional[int] = None) -> None:
+AUDIENCE_LABELS = {
+    "all_started": "всем, кто нажал /start",
+    "has_subscription": "всем с активной подпиской",
+    "started_without_subscription": "нажали /start, но без подписки",
+}
+
+
+async def broadcast_message(
+    message_text: str,
+    admin_id: Optional[int] = None,
+    audience: str = "all_started",
+) -> None:
     """
     Функция для рассылки сообщений всем пользователям бота
     
@@ -100,13 +112,44 @@ async def broadcast_message(message_text: str, admin_id: Optional[int] = None) -
     total_users = 0
     
     try:
-        # Получаем всех пользователей из таблицы users
+        audience_value = audience if audience in AUDIENCE_LABELS else "all_started"
+        now_ts = int(time.time())
+        
+        # Получаем пользователей согласно выбранной аудитории
         with get_db_cursor() as cursor:
-            cursor.execute("""
-                SELECT user_id FROM users 
-                WHERE blocked = 0
-                ORDER BY user_id
-            """)
+            if audience_value == "has_subscription":
+                cursor.execute(
+                    """
+                    SELECT DISTINCT u.user_id
+                    FROM users u
+                    JOIN subscriptions s ON s.user_id = u.user_id
+                    WHERE u.blocked = 0 AND s.is_active = 1 AND s.expires_at > ?
+                    ORDER BY u.user_id
+                    """,
+                    (now_ts,),
+                )
+            elif audience_value == "started_without_subscription":
+                cursor.execute(
+                    """
+                    SELECT u.user_id
+                    FROM users u
+                    LEFT JOIN subscriptions s 
+                        ON s.user_id = u.user_id
+                        AND s.is_active = 1
+                        AND s.expires_at > ?
+                    WHERE u.blocked = 0 AND s.user_id IS NULL
+                    ORDER BY u.user_id
+                    """,
+                    (now_ts,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT user_id FROM users 
+                    WHERE blocked = 0
+                    ORDER BY user_id
+                    """
+                )
             user_ids = [row[0] for row in cursor.fetchall()]
             total_users = len(user_ids)
         
@@ -129,13 +172,16 @@ async def broadcast_message(message_text: str, admin_id: Optional[int] = None) -
         
         # Отправляем отчет администратору
         if admin_id:
+            audience_label = AUDIENCE_LABELS.get(audience_value, AUDIENCE_LABELS["all_started"])
             report = (
                 f"📊 *Отчет о рассылке*\n\n"
                 f"✅ Успешно отправлено: {success_count}\n"
                 f"❌ Ошибок: {failed_count}\n"
                 f"📈 Всего пользователей: {total_users}\n"
-                f"📊 Процент успеха: {(success_count/total_users*100):.1f}%"
+                f"🎯 Аудитория: {audience_label}\n"
             )
+            if total_users:
+                report += f"📊 Процент успеха: {(success_count/total_users*100):.1f}%"
             await safe_send_message(bot, admin_id, report, parse_mode='Markdown', mark_blocked=False)
             
     except Exception as e:

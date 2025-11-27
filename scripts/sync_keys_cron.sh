@@ -43,3 +43,4 @@ find "$LOG_DIR" -name "sync_keys_*.log" -type f -mtime +30 -delete 2>/dev/null |
 
 exit $SYNC_EXIT_CODE
 
+

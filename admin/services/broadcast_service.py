@@ -13,7 +13,7 @@ from bot.handlers.common import broadcast_message
 logger = logging.getLogger(__name__)
 
 
-async def send_broadcast(message_text: str) -> Dict[str, Any]:
+async def send_broadcast(message_text: str, audience: str = "all_started") -> Dict[str, Any]:
     """
     Отправить рассылку всем пользователям бота
     
@@ -35,8 +35,8 @@ async def send_broadcast(message_text: str) -> Dict[str, Any]:
         logger.info("Bot instance зарегистрирован для рассылки")
         
         # Запускаем рассылку
-        logger.info("Запуск рассылки...")
-        await broadcast_message(message_text, admin_id=ADMIN_ID)
+        logger.info("Запуск рассылки... (audience=%s)", audience)
+        await broadcast_message(message_text, admin_id=ADMIN_ID, audience=audience)
         logger.info("Рассылка завершена")
         
         return {

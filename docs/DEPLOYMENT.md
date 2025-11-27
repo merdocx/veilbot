@@ -131,6 +131,7 @@ sudo certbot --nginx -d veil-bot.ru -d www.veil-bot.ru --non-interactive --agree
 ### 3. Проверка автопродления
 ```bash
 sudo certbot renew --dry-run
+sudo systemctl status certbot.timer
 ```
 
 ## Настройка бэкапов
@@ -153,6 +154,15 @@ crontab -e
 ```
 
 Если используется systemd timer, убедитесь, что каталог `db_backups/` сохраняется на отдельном диске или в объектном хранилище.
+
+### Автоматизация ротации логов
+```bash
+sudo cp setup/veilbot-logrotate.service /etc/systemd/system/
+sudo cp setup/veilbot-logrotate.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now veilbot-logrotate.timer
+sudo systemctl list-timers 'veilbot-logrotate*'
+```
 
 ## Восстановление после сбоя
 

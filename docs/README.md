@@ -178,6 +178,7 @@ veilbot/
 ### **Автоматизация**
 - GitHub Actions workflow `.github/workflows/ci.yml` выполняет `npm run lint` и `pytest`
 - Регулярный бэкап SQLite оформляется как systemd timer (`setup/veilbot-db-backup.timer`)
+- Ротация логов подключается отдельным таймером (`setup/veilbot-logrotate.timer`)
 - Health-check эндпоинт админки: `GET /healthz` (см. `docs/RUNBOOK.md`)
 
 ## 🔒 Безопасность

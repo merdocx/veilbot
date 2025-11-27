@@ -180,199 +180,6 @@ async def auto_delete_expired_keys() -> None:
     )
 
 
-async def notify_expiring_keys() -> None:
-    """Уведомление пользователей об истекающих ключах."""
-
-    async def job() -> None:
-        bot = get_bot_instance()
-        if not bot:
-            logging.debug("Bot instance is not available for notify_expiring_keys")
-            return
-
-        outline_updates = []
-        v2ray_updates = []
-        notifications_to_send = []
-
-        with get_db_cursor() as cursor:
-            now = int(time.time())
-            one_day = 86400
-            one_hour = 3600
-            ten_minutes = 600
-
-            cursor.execute(
-                """
-                SELECT k.id, k.user_id, k.access_url, k.expiry_at,
-                       k.created_at, COALESCE(k.notified, 0) as notified
-                FROM keys k
-                WHERE k.expiry_at > ?
-                """,
-                (now,),
-            )
-            outline_rows = cursor.fetchall()
-
-            for key_id_db, user_id, access_url, expiry, created_at, notified in outline_rows:
-                remaining_time = expiry - now
-                if created_at is None:
-                    logging.warning("Skipping Outline key %s - created_at is None", key_id_db)
-                    continue
-
-                # Проверяем наличие активной подписки у пользователя
-                cursor.execute("""
-                    SELECT id FROM subscriptions
-                    WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-                    LIMIT 1
-                """, (user_id, now))
-                has_active_subscription = cursor.fetchone() is not None
-                
-                # Если у пользователя есть активная подписка, пропускаем уведомление о продлении ключа
-                if has_active_subscription:
-                    continue
-
-                original_duration = expiry - created_at
-                ten_percent_threshold = int(original_duration * 0.1)
-                message = None
-                new_notified = notified
-
-                if (
-                    original_duration > one_day
-                    and one_hour < remaining_time <= one_day
-                    and (notified & 4) == 0
-                ):
-                    time_str = format_duration(remaining_time)
-                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{access_url}`\nПродлите доступ:"
-                    new_notified = notified | 4
-                elif (
-                    original_duration > one_hour
-                    and ten_minutes < remaining_time <= (one_hour + 60)
-                    and (notified & 2) == 0
-                ):
-                    time_str = format_duration(remaining_time)
-                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{access_url}`\nПродлите доступ:"
-                    new_notified = notified | 2
-                elif remaining_time > 0 and remaining_time <= ten_minutes and (notified & 8) == 0:
-                    time_str = format_duration(remaining_time)
-                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{access_url}`\nПродлите доступ:"
-                    new_notified = notified | 8
-                elif remaining_time > 0 and remaining_time <= ten_percent_threshold and (notified & 1) == 0:
-                    time_str = format_duration(remaining_time)
-                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{access_url}`\nПродлите доступ:"
-                    new_notified = notified | 1
-
-                if message:
-                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-                    keyboard = InlineKeyboardMarkup()
-                    keyboard.add(InlineKeyboardButton("🔁 Продлить", callback_data="buy"))
-                    notifications_to_send.append((user_id, message, keyboard))
-                    outline_updates.append((new_notified, key_id_db))
-
-            cursor.execute(
-                """
-                SELECT k.id, k.user_id, k.client_config, k.expiry_at,
-                       k.created_at, COALESCE(k.notified, 0) as notified
-                FROM v2ray_keys k
-                WHERE k.expiry_at > ?
-                """,
-                (now,),
-            )
-            v2ray_rows = cursor.fetchall()
-
-            for key_id_db, user_id, client_config, expiry, created_at, notified in v2ray_rows:
-                remaining_time = expiry - now
-                if created_at is None:
-                    logging.warning("Skipping V2Ray key %s - created_at is None", key_id_db)
-                    continue
-
-                # Проверяем наличие активной подписки у пользователя
-                cursor.execute("""
-                    SELECT id FROM subscriptions
-                    WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-                    LIMIT 1
-                """, (user_id, now))
-                has_active_subscription = cursor.fetchone() is not None
-                
-                # Если у пользователя есть активная подписка, пропускаем уведомление о продлении ключа
-                if has_active_subscription:
-                    continue
-
-                original_duration = expiry - created_at
-                ten_percent_threshold = int(original_duration * 0.1)
-                message = None
-                new_notified = notified
-                key_display = client_config or "V2Ray ключ"
-
-                if (
-                    original_duration > one_day
-                    and one_hour < remaining_time <= one_day
-                    and (notified & 4) == 0
-                ):
-                    time_str = format_duration(remaining_time)
-                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{key_display}`\nПродлите доступ:"
-                    new_notified = notified | 4
-                elif (
-                    original_duration > one_hour
-                    and ten_minutes < remaining_time <= (one_hour + 60)
-                    and (notified & 2) == 0
-                ):
-                    time_str = format_duration(remaining_time)
-                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{key_display}`\nПродлите доступ:"
-                    new_notified = notified | 2
-                elif remaining_time > 0 and remaining_time <= ten_minutes and (notified & 8) == 0:
-                    time_str = format_duration(remaining_time)
-                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{key_display}`\nПродлите доступ:"
-                    new_notified = notified | 8
-                elif remaining_time > 0 and remaining_time <= ten_percent_threshold and (notified & 1) == 0:
-                    time_str = format_duration(remaining_time)
-                    message = f"⏳ Ваш ключ истечет через {time_str}:\n`{key_display}`\nПродлите доступ:"
-                    new_notified = notified | 1
-
-                if message:
-                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-                    keyboard = InlineKeyboardMarkup()
-                    keyboard.add(InlineKeyboardButton("🔁 Продлить", callback_data="buy"))
-                    notifications_to_send.append((user_id, message, keyboard))
-                    v2ray_updates.append((new_notified, key_id_db))
-
-        # Отправляем уведомления (safe_send_message теперь имеет встроенный retry механизм)
-        for user_id, message, keyboard in notifications_to_send:
-            result = await safe_send_message(
-                bot,
-                user_id,
-                message,
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
-                parse_mode="Markdown",
-            )
-            if result:
-                logging.info("Sent expiry notification to user %s", user_id)
-            else:
-                logging.warning("Failed to deliver expiry notification to user %s after retries", user_id)
-
-        # Обновляем флаги уведомлений в БД
-        # safe_send_message теперь имеет встроенный retry механизм (до 3 попыток),
-        # поэтому большинство временных ошибок будут обработаны автоматически
-        if outline_updates:
-            with get_db_cursor(commit=True) as cursor:
-                cursor.executemany("UPDATE keys SET notified = ? WHERE id = ?", outline_updates)
-                logging.info("Updated %s Outline keys with expiry notifications", len(outline_updates))
-
-        if v2ray_updates:
-            with get_db_cursor(commit=True) as cursor:
-                cursor.executemany(
-                    "UPDATE v2ray_keys SET notified = ? WHERE id = ?",
-                    v2ray_updates,
-                )
-                logging.info("Updated %s V2Ray keys with expiry notifications", len(v2ray_updates))
-
-    await _run_periodic(
-        "notify_expiring_keys",
-        interval_seconds=60,
-        job=job,
-        max_backoff=600,
-    )
-
-
 def _format_bytes_short(num_bytes: Optional[float]) -> str:
     if not num_bytes or num_bytes <= 0:
         return "0 Б"
@@ -1158,7 +965,7 @@ async def monitor_subscription_traffic_limits() -> None:
                     remaining = max(0, deadline_ts - now)
                     
                     message = (
-                        "⚠️ Превышен лимит трафика для вашей подписки V2Ray.\n"
+                        "⚠️ Превышен лимит трафика для вашей подписки.\n"
                         f"Тариф: {tariff_name or 'V2Ray'}\n"
                         f"Израсходовано: {usage_display} из {limit_display}.\n"
                         f"Подписка будет отключена через {format_duration(remaining)}.\n"
@@ -1185,7 +992,7 @@ async def monitor_subscription_traffic_limits() -> None:
                         limit_display = _format_bytes_short(limit_bytes)
                         usage_display = _format_bytes_short(total_usage)
                         message = (
-                            "❌ Ваша подписка V2Ray отключена из-за превышения лимита трафика.\n"
+                            "❌ Ваша подписка отключена из-за превышения лимита трафика.\n"
                             f"Тариф: {tariff_name or 'V2Ray'}\n"
                             f"Израсходовано: {usage_display} из {limit_display}.\n"
                             "Продлите доступ, чтобы восстановить подписку."
@@ -1280,7 +1087,7 @@ async def notify_expiring_subscriptions() -> None:
                     time_str = format_duration(remaining_time)
                     subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                     message = (
-                        f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
+                        f"⏳ Ваша подписка истечет через {time_str}\n\n"
                         f"🔗 `{subscription_url}`\n\n"
                         f"Продлите доступ:"
                     )
@@ -1293,7 +1100,7 @@ async def notify_expiring_subscriptions() -> None:
                     time_str = format_duration(remaining_time)
                     subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                     message = (
-                        f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
+                        f"⏳ Ваша подписка истечет через {time_str}\n\n"
                         f"🔗 `{subscription_url}`\n\n"
                         f"Продлите доступ:"
                     )
@@ -1302,7 +1109,7 @@ async def notify_expiring_subscriptions() -> None:
                     time_str = format_duration(remaining_time)
                     subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                     message = (
-                        f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
+                        f"⏳ Ваша подписка истечет через {time_str}\n\n"
                         f"🔗 `{subscription_url}`\n\n"
                         f"Продлите доступ:"
                     )
@@ -1311,7 +1118,7 @@ async def notify_expiring_subscriptions() -> None:
                     time_str = format_duration(remaining_time)
                     subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                     message = (
-                        f"⏳ Ваша подписка V2Ray истечет через {time_str}\n\n"
+                        f"⏳ Ваша подписка истечет через {time_str}\n\n"
                         f"🔗 `{subscription_url}`\n\n"
                         f"Продлите доступ:"
                     )

@@ -6,7 +6,6 @@ import time
 from unittest.mock import patch, MagicMock, AsyncMock
 from bot.services.background_tasks import (
     auto_delete_expired_keys,
-    notify_expiring_keys,
     check_key_availability
 )
 

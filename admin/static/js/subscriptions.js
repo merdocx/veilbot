@@ -299,13 +299,20 @@
             syncButton.innerHTML = '<span class="material-icons icon-small">hourglass_empty</span> Синхронизация...';
             
             try {
+                // Создаем AbortController для таймаута (5 минут)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+                
                 const response = await fetch('/subscriptions/sync-keys', {
                     method: 'POST',
                     headers: {
                         'Accept': 'application/json',
                         'X-Requested-With': 'XMLHttpRequest',
                     },
+                    signal: controller.signal,
                 });
+                
+                clearTimeout(timeoutId);
 
                 const responseClone = response.clone();
                 let data;
@@ -370,8 +377,19 @@
                 }, 3000);
             } catch (error) {
                 console.error('[VeilBot][subscriptions] Sync keys error:', error);
-                const errorMessage = error instanceof Error ? error.message : String(error);
-                notify(`Ошибка синхронизации: ${errorMessage}`, 'error', 5000);
+                let errorMessage = 'Неизвестная ошибка';
+                
+                if (error.name === 'AbortError') {
+                    errorMessage = 'Синхронизация прервана по таймауту (более 5 минут). Процесс может продолжаться на сервере.';
+                } else if (error instanceof TypeError && error.message.includes('fetch')) {
+                    errorMessage = 'Ошибка сети при синхронизации. Проверьте подключение к интернету.';
+                } else if (error instanceof Error) {
+                    errorMessage = error.message;
+                } else {
+                    errorMessage = String(error);
+                }
+                
+                notify(`Ошибка синхронизации: ${errorMessage}`, 'error', 8000);
                 syncButton.innerHTML = originalText;
                 syncButton.disabled = false;
                 syncButton.classList.remove('btn-success');

@@ -545,7 +545,6 @@ def select_available_server(
 # Импортируем их оттуда
 from bot.services.background_tasks import (
     auto_delete_expired_keys,
-    notify_expiring_keys,
     check_key_availability,
     process_pending_paid_payments
 )

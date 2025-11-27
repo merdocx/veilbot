@@ -211,7 +211,21 @@ class V2RayProtocol(VPNProtocol):
     
     def __init__(self, api_url: str, api_key: str = None):
         base_url = api_url.strip()
+        logger.debug(f"[V2RayProtocol.__init__] Input api_url: {api_url!r}")
         parsed = urlparse(base_url)
+        logger.debug(f"[V2RayProtocol.__init__] Parsed: scheme={parsed.scheme!r}, netloc={parsed.netloc!r}, path={parsed.path!r}")
+        
+        # Проверяем, что URL содержит протокол
+        if not parsed.scheme:
+            # Если протокол отсутствует, добавляем https://
+            if base_url.startswith('/'):
+                # Если начинается с /, это относительный путь - это ошибка
+                raise ValueError(f"Invalid API URL format (missing protocol and starts with /): {api_url}")
+            # Пытаемся добавить https://
+            base_url = f"https://{base_url}"
+            parsed = urlparse(base_url)
+            logger.debug(f"[V2RayProtocol.__init__] Added https://, new parsed: scheme={parsed.scheme!r}, netloc={parsed.netloc!r}, path={parsed.path!r}")
+        
         path = (parsed.path or "").rstrip('/')
         segments = [seg for seg in path.split('/') if seg]
         if not segments:
@@ -223,6 +237,11 @@ class V2RayProtocol(VPNProtocol):
             path = f"/{path}"
         normalized = parsed._replace(path=path)
         self.api_url = urlunparse(normalized).rstrip('/')
+        logger.info(f"[V2RayProtocol.__init__] Final self.api_url: {self.api_url}")
+        
+        # Финальная проверка, что URL валидный
+        if not self.api_url.startswith(('http://', 'https://')):
+            raise ValueError(f"Failed to construct valid API URL from: {api_url}. Result: {self.api_url}")
         # API требует аутентификации
         self.headers = {
             'Content-Type': 'application/json',
@@ -534,6 +553,13 @@ class V2RayProtocol(VPNProtocol):
                 session = self._session
                 config_url = f"{self.api_url}/keys/{user_id}/link"
                 logger.debug(f"[GET_CONFIG] Attempt {attempt + 1}/{max_retries}: GET {config_url}")
+                logger.debug(f"[GET_CONFIG] self.api_url = {self.api_url}")
+                
+                # Проверяем, что URL содержит протокол
+                if not config_url.startswith(('http://', 'https://')):
+                    error_msg = f"Invalid URL format (missing protocol): {config_url}. self.api_url = {self.api_url}"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
                 
                 async with session.get(
                         config_url,
@@ -610,14 +636,19 @@ class V2RayProtocol(VPNProtocol):
                             raise Exception(f"V2Ray API returned status {response.status} after {max_retries} attempts. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
                     
             except Exception as e:
-                logger.error(f"Error getting V2Ray user config (attempt {attempt + 1}/{max_retries}): {e}")
+                import traceback
+                error_details = str(e)
+                error_type = type(e).__name__
+                # Логируем на уровне ERROR для видимости в production логах
+                logger.error(f"Error getting V2Ray user config (attempt {attempt + 1}/{max_retries}): {error_type}: {error_details}")
+                logger.error(f"Full traceback: {traceback.format_exc()}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
                     continue
                 else:
                     # Выбрасываем исключение вместо использования fallback с хардкодом short id
                     logger.error(f"Failed to get client_config after {max_retries} attempts for user {user_id}")
-                    raise Exception(f"Failed to get client_config from V2Ray API after {max_retries} attempts: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
+                    raise Exception(f"Failed to get client_config from V2Ray API after {max_retries} attempts: {error_type}: {error_details}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
         
         # Если цикл не вернул значение, выбрасываем исключение
         raise Exception(f"Failed to get client_config from V2Ray API for user {user_id}. No valid response received after {max_retries} attempts.")

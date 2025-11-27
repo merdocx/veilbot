@@ -26,7 +26,7 @@ sudo journalctl -u veilbot-admin.service -f
 - `admin_audit.log` – действия в админке
 - `veilbot_security.log` – события безопасности
 
-Ротация выполняется скриптом `scripts/rotate_logs.sh` и сохраняет архивы в `/var/log/veilbot/archive/`.
+Ротация выполняется скриптом `scripts/rotate_logs.sh` (автоматически запускается единичным сервисом `veilbot-logrotate.service` через таймер `veilbot-logrotate.timer`) и сохраняет архивы в `/var/log/veilbot/archive/`.
 
 ## 3. Резервное копирование БД
 
@@ -89,6 +89,12 @@ sqlite3 /root/veilbot/vpn.db "SELECT COUNT(*) FROM keys WHERE expiry_at > strfti
 
 # Ручная ротация логов
 /root/veilbot/scripts/rotate_logs.sh
+
+# Проверка таймера логов
+sudo systemctl list-timers 'veilbot-logrotate*'
+
+# Статус автообновления SSL
+sudo systemctl status certbot.timer
 ```
 
 ## 8. Утилитарные скрипты для администратора
