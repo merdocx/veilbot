@@ -637,7 +637,9 @@ class SubscriptionRepository:
     
     def get_subscription_traffic_limit(self, subscription_id: int) -> int:
         """Получить лимит трафика подписки (в байтах)
-        Сначала проверяет индивидуальный лимит подписки, затем лимит из тарифа"""
+        Логика:
+        - Если traffic_limit_mb установлен (не NULL), используется он (0 = безлимит)
+        - Если traffic_limit_mb NULL, используется лимит из тарифа"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             # Сначала проверяем индивидуальный лимит подписки
@@ -647,10 +649,11 @@ class SubscriptionRepository:
                 WHERE id = ?
             """, (subscription_id,))
             result = c.fetchone()
-            if result and result[0] and result[0] > 0:
+            # Если значение установлено (не NULL), используем его (даже если 0 = безлимит)
+            if result and result[0] is not None:
                 return int(result[0]) * 1024 * 1024  # Конвертация МБ в байты
             
-            # Если индивидуального лимита нет, берем из тарифа
+            # Если индивидуального лимита нет (NULL), берем из тарифа
             c.execute("""
                 SELECT COALESCE(t.traffic_limit_mb, 0)
                 FROM subscriptions s
@@ -678,7 +681,9 @@ class SubscriptionRepository:
     def update_subscription_traffic_limit(self, subscription_id: int, traffic_limit_mb: int | None) -> None:
         """Обновить лимит трафика подписки (в МБ)
         Если traffic_limit_mb = None, поле не обновляется
-        Если traffic_limit_mb = 0, лимит будет браться из тарифа"""
+        Если traffic_limit_mb = 0, устанавливается безлимит (0 байт)
+        Если traffic_limit_mb > 0, устанавливается конкретный лимит
+        Если нужно использовать лимит из тарифа, нужно установить NULL (не 0)"""
         import logging
         logger = logging.getLogger(__name__)
         if traffic_limit_mb is None:
@@ -704,7 +709,10 @@ class SubscriptionRepository:
     
     def get_subscriptions_with_traffic_limits(self, now: int) -> List[Tuple]:
         """Получить активные подписки с лимитами трафика
-        Проверяет сначала индивидуальный лимит подписки, затем лимит из тарифа"""
+        Логика:
+        - Если traffic_limit_mb установлен (не NULL), используется он (0 = безлимит)
+        - Если traffic_limit_mb NULL, используется лимит из тарифа
+        Возвращает только подписки с лимитом > 0 (безлимитные не включаются)"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
@@ -716,13 +724,13 @@ class SubscriptionRepository:
                     s.traffic_over_limit_notified,
                     s.expires_at,
                     s.tariff_id,
-                    COALESCE(NULLIF(s.traffic_limit_mb, 0), t.traffic_limit_mb, 0) AS traffic_limit_mb,
+                    COALESCE(s.traffic_limit_mb, t.traffic_limit_mb, 0) AS traffic_limit_mb,
                     t.name AS tariff_name
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
                 WHERE s.is_active = 1
                   AND s.expires_at > ?
-                  AND (COALESCE(NULLIF(s.traffic_limit_mb, 0), t.traffic_limit_mb, 0) > 0)
+                  AND (COALESCE(s.traffic_limit_mb, t.traffic_limit_mb, 0) > 0)
             """, (now,))
             return c.fetchall()
     

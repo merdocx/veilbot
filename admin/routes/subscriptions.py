@@ -326,22 +326,31 @@ async def edit_subscription_route(request: Request, subscription_id: int):
         new_expiry = int(dt.timestamp())
         
         # Парсим лимит трафика (логика как в keys.py)
+        # Важно: проверяем наличие поля в форме, а не только значение
+        # Если поле присутствует в форме (даже если пустое или 0), нужно обновить лимит
         new_limit: int | None = None
-        if traffic_limit_str is not None:
-            trimmed = traffic_limit_str.strip()
-            if trimmed == "":
-                new_limit = 0
+        traffic_limit_present = "traffic_limit_mb" in form_dict
+        
+        if traffic_limit_present:
+            traffic_limit_str = form.get("traffic_limit_mb")
+            if traffic_limit_str is not None:
+                trimmed = traffic_limit_str.strip()
+                if trimmed == "":
+                    new_limit = 0
+                else:
+                    try:
+                        new_limit = int(trimmed)
+                    except ValueError:
+                        if _is_json_request(request):
+                            return JSONResponse({"error": "traffic_limit_mb must be an integer"}, status_code=400)
+                        return RedirectResponse(url="/subscriptions", status_code=303)
+                    if new_limit < 0:
+                        if _is_json_request(request):
+                            return JSONResponse({"error": "traffic_limit_mb must be >= 0"}, status_code=400)
+                        return RedirectResponse(url="/subscriptions", status_code=303)
             else:
-                try:
-                    new_limit = int(trimmed)
-                except ValueError:
-                    if _is_json_request(request):
-                        return JSONResponse({"error": "traffic_limit_mb must be an integer"}, status_code=400)
-                    return RedirectResponse(url="/subscriptions", status_code=303)
-                if new_limit < 0:
-                    if _is_json_request(request):
-                        return JSONResponse({"error": "traffic_limit_mb must be >= 0"}, status_code=400)
-                    return RedirectResponse(url="/subscriptions", status_code=303)
+                # Поле есть в форме, но значение None - значит пустое, устанавливаем 0
+                new_limit = 0
         
         subscription_repo = SubscriptionRepository(DB_PATH)
         subscription = subscription_repo.get_subscription_by_id(subscription_id)
@@ -354,8 +363,10 @@ async def edit_subscription_route(request: Request, subscription_id: int):
         # Обновляем срок подписки
         subscription_repo.extend_subscription(subscription_id, new_expiry)
         
-        # Обновляем лимит трафика (только если значение было передано)
-        if new_limit is not None:
+        # Обновляем лимит трафика (если поле было в форме, включая случай когда значение 0)
+        # Важно: проверяем наличие поля в форме, а не только значение new_limit
+        # Это позволяет сохранить значение 0 (без лимита)
+        if traffic_limit_present and new_limit is not None:
             logger.info(f"About to update subscription {subscription_id} traffic_limit_mb: new_limit={new_limit}, type={type(new_limit)}")
             subscription_repo.update_subscription_traffic_limit(subscription_id, new_limit)
             logger.info(f"Updated subscription {subscription_id} traffic_limit_mb to {new_limit}")

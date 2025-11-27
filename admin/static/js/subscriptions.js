@@ -203,9 +203,18 @@
 
         const formData = new FormData(form);
         
-        // Обрабатываем traffic_limit_mb: если поле есть в форме, оно уже в FormData
-        // Если поле пустое, оно будет отправлено как пустая строка (будет обработано как 0 на сервере)
-        // Если поле не найдено, оно не будет в FormData (будет None на сервере, лимит не обновится)
+        // Обрабатываем traffic_limit_mb: явно обрабатываем значение 0
+        // Важно: если пользователь вводит 0, нужно явно отправить "0", а не пустую строку
+        const trafficLimitInput = form.querySelector('#traffic_limit_mb');
+        if (trafficLimitInput) {
+            const trafficLimitValue = trafficLimitInput.value.trim();
+            // Если поле пустое, отправляем пустую строку (будет обработано как 0 на сервере)
+            // Если поле содержит 0, явно отправляем "0"
+            if (trafficLimitValue === '' || trafficLimitValue === '0') {
+                formData.set('traffic_limit_mb', trafficLimitValue === '0' ? '0' : '');
+            }
+            // Если значение не пустое и не 0, оно уже в FormData
+        }
 
         try {
             const response = await fetch(form.action, {

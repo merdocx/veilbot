@@ -77,7 +77,7 @@ def fetch_active_subscriptions(cursor: sqlite3.Cursor) -> list[Dict]:
             s.user_id,
             s.expires_at,
             s.tariff_id,
-            COALESCE(NULLIF(s.traffic_limit_mb, 0), t.traffic_limit_mb, 0) AS traffic_limit_mb
+            COALESCE(s.traffic_limit_mb, t.traffic_limit_mb, 0) AS traffic_limit_mb
         FROM subscriptions s
         LEFT JOIN tariffs t ON s.tariff_id = t.id
         WHERE s.is_active = 1
