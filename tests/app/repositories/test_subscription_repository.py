@@ -151,11 +151,24 @@ def test_get_subscriptions_with_traffic_limits_fallbacks_to_tariff(repo):
     conn.execute(
         "INSERT INTO tariffs (id, name, traffic_limit_mb) VALUES (2, 'premium', 512)"
     )
-    _insert_subscription(
-        conn,
-        tariff_id=2,
-        traffic_limit_mb=0,
-        expires_at=int(time.time()) + 10_000,
+    # Создаем подписку с NULL в traffic_limit_mb, чтобы проверить fallback на тариф
+    # Теперь 0 означает безлимит, а NULL означает использовать тариф
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO subscriptions (
+            user_id, subscription_token, created_at, expires_at, tariff_id,
+            is_active, notified, traffic_limit_mb, traffic_usage_bytes,
+            traffic_over_limit_at, traffic_over_limit_notified,
+            last_updated_at, purchase_notification_sent
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1, "token-2", now - 10, now + 10_000, 2,
+            1, 0, None, 0,  # traffic_limit_mb = None (NULL) для fallback на тариф
+            None, 0, None, 0
+        )
     )
     conn.commit()
     conn.close()
