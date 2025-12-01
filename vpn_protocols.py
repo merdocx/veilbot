@@ -403,7 +403,7 @@ class V2RayProtocol(VPNProtocol):
                         if not client_config:
                             logger.info(f"Config not obtained, trying sync and retry...")
                             try:
-                                sync_success = await self.sync_xray_config()
+                                sync_success = await self.sync_xray_config(timeout=5.0)
                                 if sync_success:
                                     logger.info(f"Sync successful, retrying link fetch...")
                                     # Повторная попытка после синхронизации
@@ -473,15 +473,20 @@ class V2RayProtocol(VPNProtocol):
                         # Вызываем синхронизацию для гарантии применения ключа
                         # Согласно документации API, ключ автоматически применяется при создании,
                         # но дополнительная синхронизация гарантирует применение
-                        try:
-                            sync_success = await self.sync_xray_config()
-                            if sync_success:
-                                logger.info(f"Successfully synchronized Xray config via HandlerService API after creating key {key_id} (UUID: {uuid_value})")
-                            else:
-                                logger.warning(f"Failed to synchronize Xray config after creating key {key_id}, but key was created and should be applied automatically via HandlerService API")
-                        except Exception as sync_error:
-                            # Не прерываем выполнение, если синхронизация не удалась
-                            logger.error(f"Error syncing Xray config after creating key {key_id}: {sync_error}")
+                        # Запускаем синхронизацию в фоне, чтобы не блокировать создание ключа
+                        async def sync_in_background():
+                            try:
+                                sync_success = await self.sync_xray_config(timeout=5.0)
+                                if sync_success:
+                                    logger.debug(f"Successfully synchronized Xray config via HandlerService API after creating key {key_id} (UUID: {uuid_value})")
+                                # Не логируем предупреждения для неудачной синхронизации, так как это не критично
+                            except Exception as sync_error:
+                                # Не прерываем выполнение, если синхронизация не удалась
+                                logger.debug(f"Xray config sync failed for key {key_id}: {sync_error} (non-critical)")
+                        
+                        # Запускаем синхронизацию в фоне без ожидания
+                        import asyncio
+                        asyncio.create_task(sync_in_background())
                         
                         # API возвращает key_id (integer) согласно документации
                         # Сохраняем для обратной совместимости и как id, и как key_id
@@ -1099,17 +1104,26 @@ class V2RayProtocol(VPNProtocol):
             logger.error(f"Error getting V2Ray Xray config status: {e}")
             return {}
     
-    async def sync_xray_config(self) -> bool:
+    async def sync_xray_config(self, timeout: float = 5.0) -> bool:
         """Синхронизировать конфигурацию Xray через HandlerService API
         
         Согласно документации API, этот метод применяет изменения через Xray HandlerService API
         без перезапуска сервиса, обеспечивая нулевое время простоя и мгновенную активацию ключей.
+        
+        Args:
+            timeout: Таймаут для запроса в секундах (по умолчанию 5 секунд)
+        
+        Returns:
+            True если синхронизация успешна, False в противном случае
         """
         try:
+            # Используем более короткий таймаут для синхронизации
+            sync_timeout = aiohttp.ClientTimeout(total=timeout, connect=2, sock_read=timeout-2)
             session = self._session
             async with session.post(
                     f"{self.api_url}/system/xray/sync-config",
-                    headers=self.headers
+                    headers=self.headers,
+                    timeout=sync_timeout
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
@@ -1119,11 +1133,22 @@ class V2RayProtocol(VPNProtocol):
                             return True
                         else:
                             logger.warning(f"Unexpected Xray sync response: {message}")
+                    elif response.status == 404:
+                        # 404 означает, что эндпоинт не поддерживается на этом сервере
+                        # Это не критично, так как ключи применяются автоматически при создании
+                        logger.debug(f"Xray sync endpoint not available (404) on {self.api_url}, key will be applied automatically")
+                        return False
                     else:
-                        logger.error(f"Failed to sync Xray config: {response.status}")
+                        logger.warning(f"Failed to sync Xray config: {response.status} (non-critical, key was created successfully)")
                     return False
+        except asyncio.TimeoutError:
+            logger.warning(f"Xray config sync timeout after {timeout}s (non-critical, key was created successfully)")
+            return False
+        except aiohttp.ClientError as e:
+            logger.warning(f"Network error during Xray config sync: {e} (non-critical, key was created successfully)")
+            return False
         except Exception as e:
-            logger.error(f"Error syncing V2Ray Xray config: {e}")
+            logger.warning(f"Error syncing V2Ray Xray config: {e} (non-critical, key was created successfully)")
             return False
     
     async def validate_xray_sync(self) -> Dict:

@@ -5,6 +5,7 @@
 import asyncio
 import time
 import logging
+import sqlite3
 from collections import defaultdict
 from typing import Optional, Callable, Awaitable, Dict, Any
 from datetime import datetime
@@ -1373,6 +1374,26 @@ async def create_keys_for_new_server(server_id: int) -> None:
                                 client_config = line.strip()
                                 break
                     
+                    # Перепроверяем в БД перед созданием (мог появиться конкурентно)
+                    with get_db_cursor() as check_cursor:
+                        check_cursor.execute("""
+                            SELECT id FROM v2ray_keys
+                            WHERE server_id = ? AND subscription_id = ?
+                        """, (server_id, subscription_id))
+                        if check_cursor.fetchone():
+                            logger.debug(
+                                f"Key already exists for subscription {subscription_id} on server {server_id}, skipping"
+                            )
+                            await protocol_client.close()
+                            # Удаляем созданный на сервере ключ, так как он не нужен
+                            try:
+                                await protocol_client.delete_user(v2ray_uuid)
+                            except Exception as cleanup_error:
+                                logger.warning(
+                                    f"Failed to cleanup orphaned key on server {server_id}: {cleanup_error}"
+                                )
+                            continue
+                    
                     # Сохранить V2Ray ключ в БД
                     # Временно отключаем проверку внешних ключей из-за несоответствия структуры users(id) vs users(user_id)
                     with get_db_cursor(commit=True) as cursor:
@@ -1393,6 +1414,21 @@ async def create_keys_for_new_server(server_id: int) -> None:
                                 client_config,
                                 subscription_id,
                             ))
+                        except sqlite3.IntegrityError as e:
+                            # Если все же произошла ошибка уникальности (например, по v2ray_uuid)
+                            logger.warning(
+                                f"Integrity error when inserting key for subscription {subscription_id} "
+                                f"on server {server_id}: {e}. Key may have been created concurrently."
+                            )
+                            await protocol_client.close()
+                            # Удаляем созданный на сервере ключ, так как он не нужен
+                            try:
+                                await protocol_client.delete_user(v2ray_uuid)
+                            except Exception as cleanup_error:
+                                logger.warning(
+                                    f"Failed to cleanup orphaned key on server {server_id}: {cleanup_error}"
+                                )
+                            continue
                         finally:
                             cursor.connection.execute("PRAGMA foreign_keys = ON")
                 
@@ -1595,6 +1631,27 @@ async def check_and_create_keys_for_new_servers() -> None:
                                     client_config = line.strip()
                                     break
                         
+                        # Перепроверяем в БД перед созданием (мог появиться конкурентно)
+                        with get_db_cursor() as check_cursor:
+                            check_cursor.execute("""
+                                SELECT id FROM v2ray_keys
+                                WHERE server_id = ? AND subscription_id = ?
+                            """, (server_id, subscription_id))
+                            if check_cursor.fetchone():
+                                logger.debug(
+                                    f"Periodic check: Key already exists for subscription {subscription_id} "
+                                    f"on server {server_id}, skipping"
+                                )
+                                await protocol_client.close()
+                                # Удаляем созданный на сервере ключ, так как он не нужен
+                                try:
+                                    await protocol_client.delete_user(v2ray_uuid)
+                                except Exception as cleanup_error:
+                                    logger.warning(
+                                        f"Periodic check: Failed to cleanup orphaned key on server {server_id}: {cleanup_error}"
+                                    )
+                                continue
+                        
                         # Сохранить ключ в БД
                         # Временно отключаем проверку внешних ключей из-за несоответствия структуры users(id) vs users(user_id)
                         with get_db_cursor(commit=True) as cursor:
@@ -1615,6 +1672,21 @@ async def check_and_create_keys_for_new_servers() -> None:
                                     client_config,
                                     subscription_id,
                                 ))
+                            except sqlite3.IntegrityError as e:
+                                # Если все же произошла ошибка уникальности (например, по v2ray_uuid)
+                                logger.warning(
+                                    f"Periodic check: Integrity error when inserting key for subscription {subscription_id} "
+                                    f"on server {server_id}: {e}. Key may have been created concurrently."
+                                )
+                                await protocol_client.close()
+                                # Удаляем созданный на сервере ключ, так как он не нужен
+                                try:
+                                    await protocol_client.delete_user(v2ray_uuid)
+                                except Exception as cleanup_error:
+                                    logger.warning(
+                                        f"Periodic check: Failed to cleanup orphaned key on server {server_id}: {cleanup_error}"
+                                    )
+                                continue
                             finally:
                                 cursor.connection.execute("PRAGMA foreign_keys = ON")
                         
@@ -1727,6 +1799,31 @@ async def sync_subscription_keys_with_active_servers() -> None:
                         if key[1] not in active_server_ids
                     ]
                     
+                    # Находим дубликаты: несколько ключей одной подписки на одном сервере
+                    # Группируем ключи по server_id
+                    keys_by_server = defaultdict(list)
+                    for key in existing_keys:
+                        key_id, server_id, v2ray_uuid, api_url, api_key = key
+                        if server_id in active_server_ids:  # Только для активных серверов
+                            keys_by_server[server_id].append(key)
+                    
+                    # Для каждого сервера, если есть несколько ключей - оставляем самый новый, остальные удаляем
+                    duplicate_keys_to_delete = []
+                    for server_id, server_keys in keys_by_server.items():
+                        if len(server_keys) > 1:
+                            # Сортируем по id (больший id = более новый ключ)
+                            server_keys_sorted = sorted(server_keys, key=lambda k: k[0], reverse=True)
+                            # Оставляем первый (самый новый), остальные - дубликаты
+                            for duplicate_key in server_keys_sorted[1:]:
+                                duplicate_keys_to_delete.append(duplicate_key)
+                                logger.info(
+                                    f"Sync: Found duplicate key {duplicate_key[0]} for subscription {subscription_id} "
+                                    f"on server {server_id}, will be deleted"
+                                )
+                    
+                    # Добавляем дубликаты к списку на удаление
+                    keys_to_delete.extend(duplicate_keys_to_delete)
+                    
                     # Создаем недостающие ключи
                     for server_id in servers_to_create:
                         if server_id not in active_servers_dict:
@@ -1768,6 +1865,27 @@ async def sync_subscription_keys_with_active_servers() -> None:
                                         client_config = line.strip()
                                         break
                             
+                            # Перепроверяем в БД перед созданием (мог появиться конкурентно)
+                            with get_db_cursor() as check_cursor:
+                                check_cursor.execute("""
+                                    SELECT id FROM v2ray_keys
+                                    WHERE server_id = ? AND subscription_id = ?
+                                """, (server_id, subscription_id))
+                                if check_cursor.fetchone():
+                                    logger.debug(
+                                        f"Sync: Key already exists for subscription {subscription_id} "
+                                        f"on server {server_id}, skipping"
+                                    )
+                                    await protocol_client.close()
+                                    # Удаляем созданный на сервере ключ, так как он не нужен
+                                    try:
+                                        await protocol_client.delete_user(v2ray_uuid)
+                                    except Exception as cleanup_error:
+                                        logger.warning(
+                                            f"Sync: Failed to cleanup orphaned key on server {server_id}: {cleanup_error}"
+                                        )
+                                    continue
+                            
                             # Сохраняем ключ в БД
                             with get_db_cursor(commit=True) as cursor:
                                 cursor.connection.execute("PRAGMA foreign_keys = OFF")
@@ -1787,6 +1905,21 @@ async def sync_subscription_keys_with_active_servers() -> None:
                                         client_config,
                                         subscription_id,
                                     ))
+                                except sqlite3.IntegrityError as e:
+                                    # Если все же произошла ошибка уникальности (например, по v2ray_uuid)
+                                    logger.warning(
+                                        f"Sync: Integrity error when inserting key for subscription {subscription_id} "
+                                        f"on server {server_id}: {e}. Key may have been created concurrently."
+                                    )
+                                    await protocol_client.close()
+                                    # Удаляем созданный на сервере ключ, так как он не нужен
+                                    try:
+                                        await protocol_client.delete_user(v2ray_uuid)
+                                    except Exception as cleanup_error:
+                                        logger.warning(
+                                            f"Sync: Failed to cleanup orphaned key on server {server_id}: {cleanup_error}"
+                                        )
+                                    continue
                                 finally:
                                     cursor.connection.execute("PRAGMA foreign_keys = ON")
                             
@@ -1807,9 +1940,11 @@ async def sync_subscription_keys_with_active_servers() -> None:
                             )
                             continue
                     
-                    # Удаляем ключи на неактивных серверах
+                    # Удаляем ключи на неактивных серверах и дубликаты
                     for key_id, server_id, v2ray_uuid, api_url, api_key in keys_to_delete:
                         try:
+                            deleted_from_server = False
+                            
                             # Удаляем через V2Ray API
                             if api_url and api_key and v2ray_uuid:
                                 server_config = {
@@ -1819,39 +1954,66 @@ async def sync_subscription_keys_with_active_servers() -> None:
                                 }
                                 protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
                                 try:
-                                    await protocol_client.delete_user(v2ray_uuid)
-                                    logger.debug(
-                                        f"Sync: Deleted key {v2ray_uuid[:8]}... "
-                                        f"from server {server_id} via API"
-                                    )
+                                    deleted_from_server = await protocol_client.delete_user(v2ray_uuid)
+                                    if deleted_from_server:
+                                        logger.debug(
+                                            f"Sync: Deleted key {v2ray_uuid[:8]}... "
+                                            f"from server {server_id} via API"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
+                                            f"from server {server_id} via API (returned False)"
+                                        )
                                 except Exception as api_error:
                                     logger.warning(
                                         f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
                                         f"from server {server_id} via API: {api_error}"
                                     )
+                                    deleted_from_server = False
                                 finally:
                                     await protocol_client.close()
+                            else:
+                                # Если нет данных для удаления с сервера, считаем что нужно удалить из БД
+                                # (например, ключ уже удален с сервера вручную)
+                                logger.debug(
+                                    f"Sync: Key {key_id} has no server info, will delete from DB only"
+                                )
+                                deleted_from_server = True  # Разрешаем удаление из БД
                             
-                            # Удаляем из БД
-                            with get_db_cursor(commit=True) as cursor:
-                                with safe_foreign_keys_off(cursor):
-                                    cursor.execute(
-                                        "DELETE FROM v2ray_keys WHERE id = ?",
-                                        (key_id,)
-                                    )
-                            
-                            invalidate_subscription_cache(token)
-                            total_deleted += 1
-                            logger.info(
-                                f"Sync: Deleted key {key_id} for subscription {subscription_id} "
-                                f"from inactive server {server_id}"
-                            )
+                            # Удаляем из БД только если удаление с сервера успешно или нет данных о сервере
+                            if deleted_from_server:
+                                with get_db_cursor(commit=True) as cursor:
+                                    with safe_foreign_keys_off(cursor):
+                                        cursor.execute(
+                                            "DELETE FROM v2ray_keys WHERE id = ?",
+                                            (key_id,)
+                                        )
+                                        deleted_count = cursor.rowcount
+                                        if deleted_count > 0:
+                                            total_deleted += 1
+                                            logger.info(
+                                                f"Sync: Deleted key {key_id} for subscription {subscription_id} "
+                                                f"from server {server_id}"
+                                            )
+                                        else:
+                                            logger.warning(
+                                                f"Sync: Key {key_id} not found in DB (may have been deleted already)"
+                                            )
+                                
+                                invalidate_subscription_cache(token)
+                            else:
+                                # Не удаляем из БД, если не удалось удалить с сервера
+                                total_failed_delete += 1
+                                logger.warning(
+                                    f"Sync: Skipping DB deletion for key {key_id} because server deletion failed. "
+                                    f"Key remains in DB to prevent desync."
+                                )
                             
                         except Exception as e:
                             total_failed_delete += 1
                             logger.error(
-                                f"Sync: Failed to delete key {key_id} for subscription {subscription_id} "
-                                f"from server {server_id}: {e}",
+                                f"Sync: Failed to delete key {key_id} for subscription {subscription_id}: {e}",
                                 exc_info=True
                             )
                             continue
@@ -1863,11 +2025,11 @@ async def sync_subscription_keys_with_active_servers() -> None:
                     )
                     continue
             
-            if total_created > 0 or total_deleted > 0 or total_failed_create > 0 or total_failed_delete > 0:
-                logger.info(
-                    f"Sync completed: {total_created} created, {total_deleted} deleted, "
-                    f"{total_failed_create} failed to create, {total_failed_delete} failed to delete"
-                )
+            # Всегда логируем завершение синхронизации
+            logger.info(
+                f"Sync completed: {total_created} created, {total_deleted} deleted, "
+                f"{total_failed_create} failed to create, {total_failed_delete} failed to delete"
+            )
         
         except Exception as e:
             logger.error(f"Error in sync_subscription_keys_with_active_servers: {e}", exc_info=True)
