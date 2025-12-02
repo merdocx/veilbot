@@ -66,7 +66,18 @@
     <!-- Filters -->
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
-            <input type="text" id="global-search" data-table-id="payments-table" placeholder="Поиск по всем столбцам..." class="filter-input filter-input--grow">
+            <form method="get" action="/payments" id="search-form" style="display: flex; gap: 8px; flex: 1;">
+                <input type="text" id="global-search" name="q" value="{{ search_query }}" placeholder="Поиск по ID, payment_id, email, user_id..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
+                <input type="hidden" name="page" value="1" id="search-page-input">
+                {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+                {% if user_id %}<input type="hidden" name="user_id" value="{{ user_id }}">{% endif %}
+                {% if tariff_id %}<input type="hidden" name="tariff_id" value="{{ tariff_id }}">{% endif %}
+                {% if provider %}<input type="hidden" name="provider" value="{{ provider }}">{% endif %}
+                {% if protocol %}<input type="hidden" name="protocol" value="{{ protocol }}">{% endif %}
+                {% if country %}<input type="hidden" name="country" value="{{ country }}">{% endif %}
+                {% if preset %}<input type="hidden" name="preset" value="{{ preset }}">{% endif %}
+                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+            </form>
             <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
@@ -156,7 +167,7 @@
 {% if pages > 1 %}
 <div class="pagination">
     {% if page > 1 %}
-        <a href="?page={{ page - 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}">
+        <a href="?page={{ page - 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
             <span class="material-icons icon-small">chevron_left</span>
         </a>
     {% endif %}
@@ -165,7 +176,7 @@
         {% if p == page %}
             <a href="#" class="active">{{ p }}</a>
         {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
-            <a href="?page={{ p }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}">{{ p }}</a>
+            <a href="?page={{ p }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">{{ p }}</a>
         {% elif p == 4 and page > 5 %}
             <span>...</span>
         {% elif p == pages - 3 and page < pages - 4 %}
@@ -174,7 +185,7 @@
     {% endfor %}
     
     {% if page < pages %}
-        <a href="?page={{ page + 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}">
+        <a href="?page={{ page + 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
             <span class="material-icons icon-small">chevron_right</span>
         </a>
     {% endif %}

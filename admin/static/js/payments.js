@@ -133,12 +133,16 @@ const initPaymentsPage = () => {
 
     initStatusFilters();
 
-    if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
-        window.VeilBotCommon.initTableSearch({
+    // Инициализируем live-поиск
+    if (typeof window.initLiveSearch === 'function') {
+        window.initLiveSearch({
+            pageUrl: '/payments',
             tableSelector: '#payments-table',
+            statsSelector: '.stats-grid',
+            paginationSelector: '.pagination',
         });
     } else {
-        console.warn('[VeilBot][payments] initTableSearch недоступен');
+        console.warn('[VeilBot][payments] initLiveSearch недоступен');
     }
 };
 

@@ -34,12 +34,15 @@ const initServersPage = () => {
         toggleProtocolFields();
     }
 
-    if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
-        window.VeilBotCommon.initTableSearch({
+    // Инициализируем live-поиск
+    if (typeof window.initLiveSearch === 'function') {
+        window.initLiveSearch({
+            pageUrl: '/servers',
             tableSelector: '#servers-table',
+            statsSelector: '.stats-grid',
         });
     } else {
-        console.warn('[VeilBot][servers] initTableSearch недоступен');
+        console.warn('[VeilBot][servers] initLiveSearch недоступен');
     }
 };
 

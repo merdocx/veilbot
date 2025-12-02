@@ -324,7 +324,8 @@ async def webhook_logs_page(
     event: str | None = None,
     payment_id: str | None = None,
     sort_by: str | None = None,
-    sort_order: str | None = None
+    sort_order: str | None = None,
+    q: str | None = None,
 ):
     """Страница логов вебхуков"""
     if not request.session.get("admin_logged_in"):
@@ -333,6 +334,9 @@ async def webhook_logs_page(
     offset = (max(page, 1) - 1) * limit
     where = []
     params = []
+    
+    # Нормализуем поисковый запрос
+    search_query = q.strip() if q and q.strip() else None
     
     if provider:
         where.append("provider = ?")
@@ -343,6 +347,20 @@ async def webhook_logs_page(
     if payment_id:
         where.append("payload LIKE ?")
         params.append(f"%{payment_id}%")
+    
+    if search_query:
+        search_pattern = f"%{search_query}%"
+        # Поиск по всем столбцам: id, provider, event, payment_id (в payload), ip, status_code
+        search_conditions = [
+            "CAST(id AS TEXT) LIKE ?",
+            "provider LIKE ?",
+            "event LIKE ?",
+            "payload LIKE ?",
+            "IFNULL(ip,'') LIKE ?",
+            "CAST(status_code AS TEXT) LIKE ?",
+        ]
+        where.append("(" + " OR ".join(search_conditions) + ")")
+        params.extend([search_pattern] * len(search_conditions))
     
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -394,6 +412,7 @@ async def webhook_logs_page(
             "filters": {"provider": provider or "", "event": event or ""},
             "sort": {"by": (sort_by or "created_at"), "order": (sort_order or "DESC")},
             "payment_id": payment_id or "",
+            "search_query": search_query or "",
             "csrf_token": get_csrf_token(request),
             "status": status_msg or "",
         },

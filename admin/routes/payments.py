@@ -56,6 +56,7 @@ async def payments_page(
     email: str | None = None,
     created_after: str | None = None,   # YYYY-MM-DD
     created_before: str | None = None,  # YYYY-MM-DD
+    q: str | None = None,
 ):
     """Страница списка платежей"""
     if not request.session.get("admin_logged_in"):
@@ -103,6 +104,9 @@ async def payments_page(
             ca_dt = None
             cb_dt = None
 
+        # Нормализуем поисковый запрос
+        search_query = q.strip() if q and q.strip() else None
+        
         filter_obj = PaymentFilter(
             user_id=user_id,
             tariff_id=tariff_id,
@@ -114,6 +118,7 @@ async def payments_page(
             offset=(page - 1) * limit,
             created_after=ca_dt,
             created_before=cb_dt,
+            search_query=search_query,
         )
 
         # Presets
@@ -203,6 +208,7 @@ async def payments_page(
                 "created_after": created_after or "",
                 "created_before": created_before or "",
             },
+            "search_query": search_query or "",
             "csrf_token": get_csrf_token(request),
         },
     )

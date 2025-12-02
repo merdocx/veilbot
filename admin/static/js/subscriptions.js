@@ -355,6 +355,7 @@
                 const missingCreated = stats.missing_keys_created || 0;
                 const missingFailed = stats.missing_keys_failed || 0;
                 const missingServers = stats.missing_keys_servers || 0;
+                const errorDetails = stats.error_details || [];
                 
                 // Формируем детальное сообщение об успешной синхронизации
                 let message = '✅ Синхронизация ключей завершена успешно! ';
@@ -373,8 +374,23 @@
                     }
                 }
                 
+                // Добавляем детали ошибок, если они есть
+                if (failed > 0 && errorDetails.length > 0) {
+                    message += '\n\n❌ Детали ошибок:\n';
+                    errorDetails.slice(0, 10).forEach((error, index) => {
+                        const keyInfo = error.key_id ? `Ключ #${error.key_id}` : 'Неизвестный ключ';
+                        const uuidInfo = error.v2ray_uuid ? ` (UUID: ${error.v2ray_uuid.substring(0, 8)}...)` : '';
+                        const serverInfo = error.server_name ? ` [${error.server_name}]` : '';
+                        message += `${index + 1}. ${keyInfo}${uuidInfo}${serverInfo}: ${error.error}\n`;
+                    });
+                    if (errorDetails.length > 10) {
+                        message += `... и еще ${errorDetails.length - 10} ошибок`;
+                    }
+                }
+                
                 // Показываем уведомление с увеличенным временем отображения
-                notify(message, 'success', 5000);
+                const notificationTime = failed > 0 ? 15000 : 5000; // Больше времени, если есть ошибки
+                notify(message, failed > 0 ? 'warning' : 'success', notificationTime);
                 
                 // Восстанавливаем кнопку с индикацией успеха
                 syncButton.innerHTML = '<span class="material-icons icon-small">check_circle</span> Синхронизировано';

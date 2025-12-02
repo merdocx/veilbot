@@ -5,8 +5,9 @@ import asyncio
 import logging
 import time
 from typing import Dict, Optional, Set
+from pathlib import Path
 from aiogram import Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from config import ADMIN_ID, SUPPORT_USERNAME
 from app.infra.sqlite_utils import get_db_cursor
 from bot.core import get_bot_instance
@@ -17,6 +18,8 @@ from bot.utils import safe_send_message
 # Временное хранилище для текстов рассылки
 broadcast_texts: Dict[int, str] = {}
 help_menu_users: Set[int] = set()
+APPLE_TV_GUIDE_IMAGE_PATH = Path("bot/static/images/apple_tv_shadowrocket.png")
+SHADOWROCKET_APP_URL = "https://apps.apple.com/app/shadowrocket/id932747118"
 
 
 async def handle_invite_friend(message: types.Message) -> None:
@@ -45,7 +48,7 @@ async def handle_help(message: types.Message) -> None:
     help_keyboard = get_help_keyboard()
     help_text = (
         "В данном меню вы можете:\n\n"
-        "• Перейти на подписку V2Ray для удобного управления всеми серверами\n"
+        "• Получить инструкцию по подключению подписки к Apple TV\n"
         "• Связаться с поддержкой для решения любых вопросов\n\n"
         "Выберите вариант ниже:"
     )
@@ -406,6 +409,33 @@ async def handle_migrate_to_subscription(message: types.Message) -> None:
         await BotErrorHandler.handle_error(message, e, "handle_migrate_to_subscription", bot, ADMIN_ID)
 
 
+async def handle_apple_tv_instruction(message: types.Message) -> None:
+    """Отправляет инструкцию по подключению Shadowrocket к Apple TV"""
+    help_keyboard = get_help_keyboard()
+    caption = (
+        "📺 *Инструкция по подключению к Apple TV*\n\n"
+        "Скачайте на iPhone приложение Shadowrocket и следуйте инструкции с картинки.\n\n"
+        f"🔗 [Скачать Shadowrocket]({SHADOWROCKET_APP_URL})"
+    )
+    
+    if APPLE_TV_GUIDE_IMAGE_PATH.exists():
+        await message.answer_photo(
+            InputFile(APPLE_TV_GUIDE_IMAGE_PATH),
+            caption=caption,
+            parse_mode="Markdown",
+            reply_markup=help_keyboard
+        )
+    else:
+        logging.warning(
+            "Apple TV guide image not found at %s", APPLE_TV_GUIDE_IMAGE_PATH
+        )
+        await message.answer(
+            caption + "\n\n⚠️ Изображение временно недоступно.",
+            parse_mode="Markdown",
+            reply_markup=help_keyboard
+        )
+
+
 def register_common_handlers(dp: Dispatcher, user_states: dict) -> None:
     """
     Регистрирует обработчики общих команд
@@ -418,6 +448,10 @@ def register_common_handlers(dp: Dispatcher, user_states: dict) -> None:
     @dp.message_handler(lambda m: m.text == "Помощь")
     async def help_handler(message: types.Message):
         await handle_help(message)
+    
+    @dp.message_handler(lambda m: m.text == "Инструкция по подключению к Apple TV")
+    async def apple_tv_instruction_handler(message: types.Message):
+        await handle_apple_tv_instruction(message)
     
     @dp.message_handler(lambda m: m.text == "💬 Связаться с поддержкой")
     async def support_handler(message: types.Message):
@@ -477,7 +511,7 @@ def register_common_handlers(dp: Dispatcher, user_states: dict) -> None:
                 await safe_send_message(
                     bot,
                     callback_query.from_user.id,
-                    "❌ Не удалось обработать запрос. Пожалуйста, используйте кнопку в меню 'Помощь' -> 'Перейти на подписку'",
+                    "❌ Не удалось обработать запрос. Пожалуйста, повторите попытку позже или свяжитесь с поддержкой.",
                     reply_markup=help_keyboard
                 )
 

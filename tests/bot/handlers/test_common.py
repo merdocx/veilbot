@@ -8,7 +8,8 @@ from bot.handlers.common import (
     handle_invite_friend,
     handle_help,
     handle_support,
-    handle_help_back
+    handle_help_back,
+    handle_apple_tv_instruction
 )
 
 
@@ -44,7 +45,7 @@ class TestCommonHandlers:
         mock_message.answer.assert_called_once()
         help_text = mock_message.answer.call_args[0][0]
         assert "В данном меню вы можете" in help_text
-        assert "Перейти на подписку" in help_text
+        assert "инструкцию по подключению" in help_text.lower()
         assert "Связаться с поддержкой" in help_text
     
     @pytest.mark.asyncio
@@ -74,4 +75,28 @@ class TestCommonHandlers:
         
         mock_message.answer.assert_called_once()
         assert "Главное меню" in mock_message.answer.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_handle_apple_tv_instruction_without_image(self, mock_message):
+        """Фолбэк без изображения"""
+        await handle_apple_tv_instruction(mock_message)
+        
+        mock_message.answer.assert_called_once()
+        assert "Изображение временно недоступно" in mock_message.answer.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_handle_apple_tv_instruction_with_image(self, mock_message, tmp_path, monkeypatch):
+        """Отправка инструкции с изображением"""
+        guide_path = tmp_path / "guide.png"
+        # Пишем минимальный PNG-хедер, чтобы InputFile мог открыть файл
+        guide_path.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+        
+        mock_message.answer_photo = AsyncMock(return_value=None)
+        import bot.handlers.common as common_module
+        monkeypatch.setattr(common_module, "APPLE_TV_GUIDE_IMAGE_PATH", guide_path)
+        
+        await handle_apple_tv_instruction(mock_message)
+        
+        mock_message.answer_photo.assert_called_once()
+        mock_message.answer.assert_not_called()
 

@@ -275,6 +275,23 @@ class PaymentRepository:
             conditions.append("created_at <= ?")
             params.append(int(filter_obj.created_before.timestamp()))
         
+        if filter_obj.search_query:
+            search_pattern = f"%{filter_obj.search_query}%"
+            # Поиск по всем столбцам: id, payment_id, user_id, tariff_id, email, status, provider, country, protocol
+            search_conditions = [
+                "CAST(id AS TEXT) LIKE ?",
+                "payment_id LIKE ?",
+                "CAST(user_id AS TEXT) LIKE ?",
+                "CAST(tariff_id AS TEXT) LIKE ?",
+                "IFNULL(email,'') LIKE ?",
+                "status LIKE ?",
+                "provider LIKE ?",
+                "IFNULL(country,'') LIKE ?",
+                "IFNULL(protocol,'') LIKE ?",
+            ]
+            conditions.append("(" + " OR ".join(search_conditions) + ")")
+            params.extend([search_pattern] * len(search_conditions))
+        
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         return where_clause, params
     

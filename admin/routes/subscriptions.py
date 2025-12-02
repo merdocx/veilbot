@@ -366,14 +366,11 @@ async def edit_subscription_route(request: Request, subscription_id: int):
         # Обновляем лимит трафика (если поле было в форме, включая случай когда значение 0)
         # Важно: проверяем наличие поля в форме, а не только значение new_limit
         # Это позволяет сохранить значение 0 (без лимита)
+        # Примечание: Лимиты трафика контролируются на уровне подписки, а не отдельных ключей
         if traffic_limit_present and new_limit is not None:
             logger.info(f"About to update subscription {subscription_id} traffic_limit_mb: new_limit={new_limit}, type={type(new_limit)}")
             subscription_repo.update_subscription_traffic_limit(subscription_id, new_limit)
             logger.info(f"Updated subscription {subscription_id} traffic_limit_mb to {new_limit}")
-            
-            # Синхронно обновляем лимиты трафика всех ключей подписки
-            updated_keys_traffic = subscription_repo.update_subscription_keys_traffic_limit(subscription_id, new_limit)
-            logger.info(f"Updated traffic_limit_mb for {updated_keys_traffic} keys in subscription {subscription_id}")
         
         # Проверяем, что значение действительно сохранилось
         check_sub = subscription_repo.get_subscription_by_id(subscription_id)
@@ -792,6 +789,7 @@ async def sync_keys_with_servers(request: Request):
                 "orphaned_remote_deleted": result.get("orphaned_remote_deleted", 0),
                 "orphaned_remote_delete_errors": result.get("orphaned_remote_delete_errors", 0),
                 "orphaned_remote_servers": result.get("orphaned_remote_servers", 0),
+                "error_details": result.get("error_details", []),
             }
         })
     except ImportError as e:

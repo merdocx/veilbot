@@ -54,8 +54,14 @@ class ServerForm(BaseModel):
         # Разрешаем домен или IP
         if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', value):
             return value
-        if re.match(r'^\\d{1,3}(\\.\\d{1,3}){3}$', value):
-            return value
+        # Проверка IPv4 адреса
+        ip_pattern = r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$'
+        match = re.match(ip_pattern, value)
+        if match:
+            # Проверяем, что каждое число в диапазоне 0-255
+            parts = [int(match.group(i)) for i in range(1, 5)]
+            if all(0 <= part <= 255 for part in parts):
+                return value
         raise ValueError('Invalid domain or IP format')
     
     @validator('api_key')

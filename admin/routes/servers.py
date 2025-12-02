@@ -38,9 +38,9 @@ def _normalize_v2ray_api_url(api_url: str) -> str:
     return urlunparse(normalized).rstrip('/')
 
 
-def _prepare_servers_context(repo: ServerRepository) -> tuple[list[dict], int]:
+def _prepare_servers_context(repo: ServerRepository, search_query: str | None = None) -> tuple[list[dict], int]:
     """Build a list of server dicts ready for template rendering."""
-    raw_servers = repo.list_servers()
+    raw_servers = repo.list_servers(search_query=search_query)
     if not raw_servers:
         return [], 0
 
@@ -105,13 +105,14 @@ def _prepare_servers_context(repo: ServerRepository) -> tuple[list[dict], int]:
 
 
 @router.get("/servers", response_class=HTMLResponse)
-async def servers_page(request: Request):
+async def servers_page(request: Request, q: str | None = None):
     """Страница списка серверов"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
 
     repo = ServerRepository(DATABASE_PATH)
-    servers_for_template, active_servers = _prepare_servers_context(repo)
+    search_query = q.strip() if q and q.strip() else None
+    servers_for_template, active_servers = _prepare_servers_context(repo, search_query=search_query)
 
     return templates.TemplateResponse(
         "servers.html",
@@ -119,6 +120,7 @@ async def servers_page(request: Request):
             "request": request,
             "servers": servers_for_template,
             "active_servers": active_servers,
+            "search_query": search_query or '',
             "csrf_token": get_csrf_token(request),
         },
     )

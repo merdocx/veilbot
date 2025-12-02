@@ -384,10 +384,12 @@
             table.addEventListener('click', handleTableClick);
         }
 
-        // Серверный поиск вместо клиентского
-        const searchForm = document.getElementById('search-form');
-        const searchInput = document.getElementById('global-search');
-        const resetSearchBtn = document.getElementById('reset-search-btn');
+        // Серверный поиск вместо клиентского (live-поиск без перезагрузки страницы)
+        // Инициализируем поиск с небольшой задержкой, чтобы common.js успел загрузиться
+        setTimeout(() => {
+            const searchForm = document.getElementById('search-form');
+            const searchInput = document.getElementById('global-search');
+            const resetSearchBtn = document.getElementById('reset-search-btn');
         
         if (searchForm && searchInput) {
             // Убеждаемся, что клиентский поиск не активен для этого элемента
@@ -395,6 +397,51 @@
             searchInput.setAttribute('data-auto-search', '1');
             
             let searchTimeout = null;
+
+            const applySearchResponse = async (response) => {
+                if (!response.ok) {
+                    throw new Error(`Search request failed with status ${response.status}`);
+                }
+                const html = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+
+                const newStats = doc.querySelector('.stats-grid');
+                const newTableBody = doc.querySelector('#keys-table tbody');
+                const newPagination = doc.querySelector('.pagination');
+
+                const currentStats = document.querySelector('.stats-grid');
+                const currentTableBody = document.querySelector('#keys-table tbody');
+                const currentPagination = document.querySelector('.pagination');
+
+                if (newStats && currentStats) {
+                    currentStats.replaceWith(newStats);
+                }
+                if (newTableBody && currentTableBody) {
+                    currentTableBody.replaceWith(newTableBody);
+                }
+                if (newPagination) {
+                    if (currentPagination) {
+                        currentPagination.replaceWith(newPagination);
+                    } else {
+                        // Если пагинации не было (одна страница), но теперь есть – добавляем после таблицы
+                        const tableWrapper = document.querySelector('.table-scroll');
+                        if (tableWrapper && tableWrapper.parentElement) {
+                            tableWrapper.parentElement.appendChild(newPagination);
+                        }
+                    }
+                } else if (currentPagination) {
+                    // Если пагинация была, но теперь не нужна – удаляем
+                    currentPagination.remove();
+                }
+
+                // После замены DOM нужно заново навесить обработчики событий
+                const updatedTable = document.getElementById('keys-table');
+                if (updatedTable) {
+                    updatedTable.removeEventListener('click', handleTableClick);
+                    updatedTable.addEventListener('click', handleTableClick);
+                }
+            };
             
             const performSearch = () => {
                 // Сбрасываем страницу на первую при поиске
@@ -402,13 +449,44 @@
                 if (pageInput) {
                     pageInput.value = '1';
                 }
-                // Отправляем форму на сервер
-                searchForm.submit();
+                // Формируем URL с параметрами поиска
+                const formData = new FormData(searchForm);
+                const params = new URLSearchParams(formData);
+                const url = `/keys?${params.toString()}`;
+
+                // Выполняем запрос через fetch, чтобы обновить таблицу без перезагрузки
+                fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'text/html',
+                    },
+                })
+                    .then((response) => applySearchResponse(response))
+                    .catch((error) => {
+                        // В случае ошибки откатываемся к обычному переходу по ссылке
+                        console.error('[VeilBot][keys] live search failed, falling back to full reload', error);
+                        window.location.href = url;
+                    });
             };
             
             const handleSearchInput = (event) => {
                 // Останавливаем всплытие, чтобы клиентский поиск не сработал
                 event.stopImmediatePropagation();
+                event.stopPropagation();
+                
+                const searchValue = event.target.value;
+                
+                // Обновляем URL без перезагрузки
+                const url = new URL(window.location.href);
+                if (searchValue && searchValue.trim()) {
+                    url.searchParams.set('q', searchValue.trim());
+                } else {
+                    url.searchParams.delete('q');
+                }
+                url.searchParams.set('page', '1');
+                window.history.pushState({}, '', url.toString());
+                
                 // Debounce: ждем 500ms после последнего ввода
                 if (searchTimeout) {
                     clearTimeout(searchTimeout);
@@ -437,33 +515,65 @@
                 performSearch();
             };
             
-            const handleResetSearch = (event) => {
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                if (searchInput.value) {
-                    searchInput.value = '';
-                    // При сбросе поиска убираем параметр q из URL
-                    const url = new URL(window.location.href);
-                    url.searchParams.delete('q');
-                    url.searchParams.set('page', '1');
-                    window.location.href = url.toString();
-                }
-            };
-            
-            // Удаляем все существующие обработчики, если они есть
+            // Удаляем все существующие обработчики, если они есть, и добавляем новые
+            // Клонируем input чтобы удалить старые обработчики от common.js
             const newInput = searchInput.cloneNode(true);
+            // Сохраняем значение перед клонированием
+            const currentValue = searchInput.value;
             searchInput.parentNode.replaceChild(newInput, searchInput);
             const freshSearchInput = document.getElementById('global-search');
             
-            // Добавляем обработчики с capture фазой, чтобы они сработали первыми
-            freshSearchInput.addEventListener('input', handleSearchInput, { capture: true, passive: false });
+            // Восстанавливаем значение
+            freshSearchInput.value = currentValue;
+            
+            // Убеждаемся, что атрибуты установлены
+            freshSearchInput.setAttribute('data-server-search', '1');
+            freshSearchInput.setAttribute('data-auto-search', '1');
+            
+            // Добавляем обработчики с capture: true чтобы перехватить событие до других обработчиков
+            // Используем once: false чтобы обработчик работал постоянно
+            freshSearchInput.addEventListener('input', (e) => {
+                console.log('[VeilBot][keys] Input event triggered', e.target.value);
+                handleSearchInput(e);
+            }, { capture: true, passive: false });
+            
             freshSearchInput.addEventListener('keydown', handleSearchKeydown, { capture: true, passive: false });
             searchForm.addEventListener('submit', handleSearchSubmit, { capture: true, passive: false });
             
+            // Обновляем handleResetSearch чтобы использовать freshSearchInput
+            const handleResetSearchUpdated = (event) => {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                
+                // Очищаем поле ввода
+                freshSearchInput.value = '';
+                
+                // Обновляем URL без перезагрузки
+                const url = new URL(window.location.href);
+                url.searchParams.delete('q');
+                url.searchParams.set('page', '1');
+                window.history.pushState({}, '', url.toString());
+                
+                // Выполняем поиск с пустым запросом
+                if (searchTimeout) {
+                    clearTimeout(searchTimeout);
+                }
+                // Обновляем значение в форме перед поиском
+                const pageInput = searchForm.querySelector('input[name="page"]');
+                if (pageInput) {
+                    pageInput.value = '1';
+                }
+                performSearch();
+            };
+            
             if (resetSearchBtn) {
-                resetSearchBtn.addEventListener('click', handleResetSearch, { capture: true, passive: false });
+                resetSearchBtn.addEventListener('click', handleResetSearchUpdated, { capture: true, passive: false });
             }
+            
+            // Для отладки: проверяем что обработчик работает
+            console.log('[VeilBot][keys] Live search initialized on element:', freshSearchInput);
         }
+        }, 100); // Задержка 100ms чтобы common.js успел инициализироваться
 
         updateProgressBars();
     };

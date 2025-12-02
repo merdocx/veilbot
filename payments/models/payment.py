@@ -157,5 +157,6 @@ class PaymentFilter(BaseModel):
     is_pending: Optional[bool] = Field(None, description="Ожидающие платежи")
     created_after: Optional[datetime] = Field(None, description="Созданные после")
     created_before: Optional[datetime] = Field(None, description="Созданные до")
+    search_query: Optional[str] = Field(None, description="Поисковый запрос по всем полям")
     limit: int = Field(100, description="Лимит результатов")
     offset: int = Field(0, description="Смещение")

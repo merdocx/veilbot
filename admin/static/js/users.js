@@ -1,10 +1,25 @@
 const initUsersPage = () => {
-    if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
-        window.VeilBotCommon.initTableSearch({
+    // Инициализируем live-поиск
+    if (typeof window.initLiveSearch === 'function') {
+        window.initLiveSearch({
+            pageUrl: '/users',
             tableSelector: '#users-table',
+            statsSelector: '.stats-grid',
+            paginationSelector: '.pagination',
         });
     } else {
-        console.warn('[VeilBot][users] initTableSearch недоступен');
+        console.warn('[VeilBot][users] initLiveSearch недоступен, загружаем скрипт...');
+        const script = document.createElement('script');
+        script.src = '/static/js/live-search.js';
+        script.onload = () => {
+            window.initLiveSearch({
+                pageUrl: '/users',
+                tableSelector: '#users-table',
+                statsSelector: '.stats-grid',
+                paginationSelector: '.pagination',
+            });
+        };
+        document.head.appendChild(script);
     }
 };
 

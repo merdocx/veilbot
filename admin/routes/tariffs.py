@@ -23,15 +23,17 @@ DATABASE_PATH = settings.DATABASE_PATH
 
 
 @router.get("/tariffs")
-async def tariffs_page(request: Request):
+async def tariffs_page(request: Request, q: str | None = None):
     """Страница списка тарифов"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
-    tariffs = TariffRepository(DATABASE_PATH).list_tariffs()
+    search_query = q.strip() if q and q.strip() else None
+    tariffs = TariffRepository(DATABASE_PATH).list_tariffs(search_query=search_query)
     return templates.TemplateResponse("tariffs.html", {
         "request": request, 
         "tariffs": tariffs,
+        "search_query": search_query or "",
         "csrf_token": get_csrf_token(request)
     })
 

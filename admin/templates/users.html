@@ -30,7 +30,11 @@
     <!-- Filters -->
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
-            <input type="text" id="global-search" data-table-id="users-table" placeholder="Поиск по всем столбцам..." class="filter-input filter-input--grow">
+            <form method="get" action="/users" id="search-form" style="display: flex; gap: 8px; flex: 1;">
+                <input type="text" id="global-search" name="q" value="{{ q }}" placeholder="Поиск по ID, email..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
+                <input type="hidden" name="page" value="1" id="search-page-input">
+                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+            </form>
             <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
@@ -108,21 +112,21 @@
 {% if pages > 1 %}
 <div class="pagination">
     {% if page > 1 %}
-        <a href="/users?page={{ page-1 }}&limit={{ limit }}&q={{ q }}">
+        <a href="/users?page={{ page-1 }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}">
             <span class="material-icons icon-small">chevron_left</span>
         </a>
     {% endif %}
     
     {% for p in range(1, pages+1) %}
         {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
-            <a class="{% if p==page %}active{% endif %}" href="/users?page={{ p }}&limit={{ limit }}&q={{ q }}">{{ p }}</a>
+            <a class="{% if p==page %}active{% endif %}" href="/users?page={{ p }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ p }}</a>
         {% elif p == page-3 or p == page+3 %}
             <span>...</span>
         {% endif %}
     {% endfor %}
     
     {% if page < pages %}
-        <a href="/users?page={{ page+1 }}&limit={{ limit }}&q={{ q }}">
+        <a href="/users?page={{ page+1 }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}">
             <span class="material-icons icon-small">chevron_right</span>
         </a>
     {% endif %}

@@ -10,12 +10,29 @@ class ServerRepository:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or settings.DATABASE_PATH
 
-    def list_servers(self) -> List[Tuple]:
+    def list_servers(self, search_query: str | None = None) -> List[Tuple]:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute(
-                "SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase FROM servers"
-            )
+            if search_query:
+                search_pattern = f"%{search_query}%"
+                c.execute(
+                    """
+                    SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase 
+                    FROM servers
+                    WHERE CAST(id AS TEXT) LIKE ? 
+                       OR name LIKE ? 
+                       OR country LIKE ? 
+                       OR protocol LIKE ? 
+                       OR domain LIKE ?
+                       OR api_url LIKE ?
+                    ORDER BY id
+                    """,
+                    (search_pattern, search_pattern, search_pattern, search_pattern, search_pattern, search_pattern)
+                )
+            else:
+                c.execute(
+                    "SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase FROM servers"
+                )
             return c.fetchall()
 
     def add_server(

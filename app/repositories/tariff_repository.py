@@ -9,10 +9,25 @@ class TariffRepository:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or settings.DATABASE_PATH
 
-    def list_tariffs(self) -> List[Tuple]:
+    def list_tariffs(self, search_query: str | None = None) -> List[Tuple]:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT id, name, duration_sec, price_rub, traffic_limit_mb, price_crypto_usd FROM tariffs ORDER BY price_rub ASC")
+            if search_query:
+                search_pattern = f"%{search_query}%"
+                c.execute(
+                    """
+                    SELECT id, name, duration_sec, price_rub, traffic_limit_mb, price_crypto_usd 
+                    FROM tariffs
+                    WHERE CAST(id AS TEXT) LIKE ? 
+                       OR name LIKE ? 
+                       OR CAST(price_rub AS TEXT) LIKE ?
+                       OR CAST(traffic_limit_mb AS TEXT) LIKE ?
+                    ORDER BY price_rub ASC
+                    """,
+                    (search_pattern, search_pattern, search_pattern, search_pattern)
+                )
+            else:
+                c.execute("SELECT id, name, duration_sec, price_rub, traffic_limit_mb, price_crypto_usd FROM tariffs ORDER BY price_rub ASC")
             return c.fetchall()
 
     def get_tariff(self, tariff_id: int) -> Tuple | None:

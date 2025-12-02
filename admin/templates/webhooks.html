@@ -12,16 +12,22 @@
   </div>
 
   <div class="filter-bar filter-bar--compact">
-    <form method="get" action="/webhooks" class="flex-wrap">
+    <form method="get" action="/webhooks" id="search-form" class="flex-wrap" style="display: flex; gap: 8px; flex: 1;">
+      <input type="text" name="q" value="{{ search_query }}" placeholder="Поиск по ID, провайдеру, событию, payment_id..." class="form-control" style="flex: 1;" data-server-search="1" data-auto-search="1">
       <input type="text" name="provider" placeholder="Провайдер" value="{{ filters.provider }}" class="form-control" />
       <input type="text" name="event" placeholder="Событие" value="{{ filters.event }}" class="form-control" />
       <input type="text" name="payment_id" placeholder="payment_id" value="{{ payment_id }}" class="form-control" />
-      <input type="hidden" name="page" value="1" />
+      <input type="hidden" name="page" value="1" id="search-page-input" />
+      <button class="btn btn-primary" type="submit" style="display: none;" id="search-submit-btn">Поиск</button>
       <button class="btn btn-primary" type="submit">
         <span class="material-icons icon-small">filter_list</span>
         Фильтр
       </button>
     </form>
+    <button type="button" class="btn" id="reset-search-btn">
+      <span class="material-icons icon-small">clear</span>
+      Сбросить
+    </button>
   </div>
 
   <div class="table-scroll mt-2">
@@ -66,20 +72,24 @@
   <div class="pagination">
     {% set pages = (total // limit) + (1 if (total % limit) else 0) %}
     {% if page > 1 %}
-      <a class="btn" href="/webhooks?page={{ page-1 }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}">←</a>
+      <a class="btn" href="/webhooks?page={{ page-1 }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">←</a>
     {% endif %}
     {% for p in range(1, pages+1) %}
       {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
-        <a class="btn {% if p==page %}active{% endif %}" href="/webhooks?page={{ p }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}">{{ p }}</a>
+        <a class="btn {% if p==page %}active{% endif %}" href="/webhooks?page={{ p }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">{{ p }}</a>
       {% elif p == page-3 or p == page+3 %}
         <span class="text-muted">…</span>
       {% endif %}
     {% endfor %}
     {% if page < pages %}
-      <a class="btn" href="/webhooks?page={{ page+1 }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}">→</a>
+      <a class="btn" href="/webhooks?page={{ page+1 }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">→</a>
     {% endif %}
   </div>
 </div>
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/webhooks.js?v=20251202"></script>
+{% endblock %}
 {% endblock %}
 
 

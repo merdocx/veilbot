@@ -11,6 +11,21 @@
         <p class="card-subtitle">Управление тарифными планами</p>
     </div>
 
+    <!-- Filters -->
+    <div class="filter-bar">
+        <div class="filter-bar__group flex-1">
+            <form method="get" action="/tariffs" id="search-form" style="display: flex; gap: 8px; flex: 1;">
+                <input type="text" id="global-search" name="q" value="{{ search_query }}" placeholder="Поиск по ID, названию, цене..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
+                <input type="hidden" name="page" value="1" id="search-page-input">
+                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+            </form>
+            <button type="button" class="btn" id="reset-search-btn">
+                <span class="material-icons icon-small">clear</span>
+                Сбросить
+            </button>
+        </div>
+    </div>
+
     <!-- Table -->
     <div class="table-scroll">
         <table class="material-table" id="tariffs-table">
@@ -130,4 +145,8 @@
         </form>
     </div>
 </div>
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/tariffs.js?v=20251202"></script>
+{% endblock %}
 {% endblock %}

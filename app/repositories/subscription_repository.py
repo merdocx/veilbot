@@ -182,7 +182,11 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def get_subscription_keys(self, subscription_id: int, user_id: int, now: int) -> List[Tuple]:
-        """Получить все активные ключи подписки"""
+        """Получить все активные ключи подписки
+        
+        Примечание: Лимиты трафика и времени контролируются на уровне подписки,
+        а не отдельных ключей. Поэтому проверка лимита на уровне ключа не выполняется.
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
@@ -193,7 +197,6 @@ class SubscriptionRepository:
                 WHERE k.subscription_id = ? 
                   AND k.user_id = ?
                   AND k.expiry_at > ?
-                  AND (k.traffic_limit_mb = 0 OR k.traffic_usage_bytes < k.traffic_limit_mb * 1024 * 1024)
                   AND s.active = 1
                 ORDER BY s.country, s.name
                 """,
@@ -407,7 +410,11 @@ class SubscriptionRepository:
             await conn.commit()
 
     async def get_subscription_keys_async(self, subscription_id: int, user_id: int, now: int) -> List[Tuple]:
-        """Получить все активные ключи подписки (асинхронная версия)"""
+        """Получить все активные ключи подписки (асинхронная версия)
+        
+        Примечание: Лимиты трафика и времени контролируются на уровне подписки,
+        а не отдельных ключей. Поэтому проверка лимита на уровне ключа не выполняется.
+        """
         async with open_async_connection(self.db_path) as conn:
             async with conn.execute(
                 """
@@ -417,7 +424,6 @@ class SubscriptionRepository:
                 WHERE k.subscription_id = ? 
                   AND k.user_id = ?
                   AND k.expiry_at > ?
-                  AND (k.traffic_limit_mb = 0 OR k.traffic_usage_bytes < k.traffic_limit_mb * 1024 * 1024)
                   AND s.active = 1
                 ORDER BY s.country, s.name
                 """,
@@ -751,7 +757,12 @@ class SubscriptionRepository:
             return updated_count
     
     def update_subscription_keys_traffic_limit(self, subscription_id: int, traffic_limit_mb: int) -> int:
-        """Обновить лимит трафика всех ключей подписки (в МБ)"""
+        """Обновить лимит трафика всех ключей подписки (в МБ)
+        
+        ВНИМАНИЕ: Этот метод обновляет значение в БД, но не влияет на логику проверки лимитов.
+        Лимиты трафика для ключей подписки контролируются на уровне подписки, а не отдельных ключей.
+        Этот метод оставлен для обратной совместимости и синхронизации данных в БД.
+        """
         import logging
         logger = logging.getLogger(__name__)
         with open_connection(self.db_path) as conn:
