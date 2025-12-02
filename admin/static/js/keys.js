@@ -384,13 +384,85 @@
             table.addEventListener('click', handleTableClick);
         }
 
-        if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
-            window.VeilBotCommon.initTableSearch({
-                tableSelector: '#keys-table',
-                extraDataAttributes: ['serverName'],
-            });
-        } else {
-            console.warn('[VeilBot][keys] initTableSearch недоступен');
+        // Серверный поиск вместо клиентского
+        const searchForm = document.getElementById('search-form');
+        const searchInput = document.getElementById('global-search');
+        const resetSearchBtn = document.getElementById('reset-search-btn');
+        
+        if (searchForm && searchInput) {
+            // Убеждаемся, что клиентский поиск не активен для этого элемента
+            searchInput.setAttribute('data-server-search', '1');
+            searchInput.setAttribute('data-auto-search', '1');
+            
+            let searchTimeout = null;
+            
+            const performSearch = () => {
+                // Сбрасываем страницу на первую при поиске
+                const pageInput = searchForm.querySelector('input[name="page"]');
+                if (pageInput) {
+                    pageInput.value = '1';
+                }
+                // Отправляем форму на сервер
+                searchForm.submit();
+            };
+            
+            const handleSearchInput = (event) => {
+                // Останавливаем всплытие, чтобы клиентский поиск не сработал
+                event.stopImmediatePropagation();
+                // Debounce: ждем 500ms после последнего ввода
+                if (searchTimeout) {
+                    clearTimeout(searchTimeout);
+                }
+                searchTimeout = setTimeout(performSearch, 500);
+            };
+            
+            const handleSearchKeydown = (event) => {
+                // При нажатии Enter сразу отправляем
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    if (searchTimeout) {
+                        clearTimeout(searchTimeout);
+                    }
+                    performSearch();
+                }
+            };
+            
+            const handleSearchSubmit = (event) => {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                if (searchTimeout) {
+                    clearTimeout(searchTimeout);
+                }
+                performSearch();
+            };
+            
+            const handleResetSearch = (event) => {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                if (searchInput.value) {
+                    searchInput.value = '';
+                    // При сбросе поиска убираем параметр q из URL
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete('q');
+                    url.searchParams.set('page', '1');
+                    window.location.href = url.toString();
+                }
+            };
+            
+            // Удаляем все существующие обработчики, если они есть
+            const newInput = searchInput.cloneNode(true);
+            searchInput.parentNode.replaceChild(newInput, searchInput);
+            const freshSearchInput = document.getElementById('global-search');
+            
+            // Добавляем обработчики с capture фазой, чтобы они сработали первыми
+            freshSearchInput.addEventListener('input', handleSearchInput, { capture: true, passive: false });
+            freshSearchInput.addEventListener('keydown', handleSearchKeydown, { capture: true, passive: false });
+            searchForm.addEventListener('submit', handleSearchSubmit, { capture: true, passive: false });
+            
+            if (resetSearchBtn) {
+                resetSearchBtn.addEventListener('click', handleResetSearch, { capture: true, passive: false });
+            }
         }
 
         updateProgressBars();

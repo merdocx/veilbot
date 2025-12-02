@@ -245,11 +245,20 @@ class KeyRepository:
         tariff_id: int | None = None,
         protocol: str | None = None,
         server_id: int | None = None,
+        search_query: str | None = None,
     ) -> int:
         total = 0
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            def apply_common_conditions(base_sql: str, params: list) -> tuple[str, list]:
+            def apply_common_conditions(base_sql: str, params: list, is_outline: bool = True) -> tuple[str, list]:
+                # Добавляем JOIN для поиска по server_name и tariff_name
+                needs_join = search_query is not None
+                if needs_join:
+                    if is_outline:
+                        base_sql += " LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
+                    else:
+                        base_sql += " LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
+                
                 where = []
                 if user_id is not None:
                     where.append("k.user_id = ?")
@@ -263,16 +272,39 @@ class KeyRepository:
                 if server_id is not None:
                     where.append("k.server_id = ?")
                     params.append(server_id)
+                if search_query:
+                    search_pattern = f"%{search_query}%"
+                    # Поиск по всем столбцам: id, email, key_id, server_name, tariff_name, user_id, subscription_id
+                    search_conditions = [
+                        "CAST(k.id AS TEXT) LIKE ?",  # Поиск по числовому ID
+                        "k.email LIKE ?",
+                        "IFNULL(s.name,'') LIKE ?",
+                        "IFNULL(t.name,'') LIKE ?",
+                        "CAST(k.user_id AS TEXT) LIKE ?",  # Поиск по user_id
+                    ]
+                    if is_outline:
+                        search_conditions.append("k.key_id LIKE ?")
+                        # Поиск по полному ID с протоколом (например, "206_outline")
+                        search_conditions.append("(k.id || '_outline') LIKE ?")
+                    else:
+                        search_conditions.append("k.v2ray_uuid LIKE ?")
+                        # Поиск по полному ID с протоколом (например, "206_v2ray")
+                        search_conditions.append("(k.id || '_v2ray') LIKE ?")
+                        # Поиск по subscription_id для V2Ray ключей
+                        search_conditions.append("CAST(k.subscription_id AS TEXT) LIKE ?")
+                    where.append("(" + " OR ".join(search_conditions) + ")")
+                    # Добавляем параметры для каждого условия поиска
+                    params.extend([search_pattern] * len(search_conditions))
                 where_sql = (" WHERE " + " AND ".join(where)) if where else ""
                 return base_sql + where_sql, params
 
             if protocol in (None, '', 'outline'):
-                sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [])
+                sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
                 c.execute(sql, params)
                 row = c.fetchone()
                 total += int(row[0] or 0)
             if protocol in (None, '', 'v2ray'):
-                sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [])
+                sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
                 c.execute(sql, params)
                 row = c.fetchone()
                 total += int(row[0] or 0)
@@ -290,6 +322,7 @@ class KeyRepository:
         limit: int = 50,
         offset: int = 0,
         cursor: str | None = None,
+        search_query: str | None = None,
     ) -> list[tuple]:
         # Columns: id, key_id, access_url, created_at, expiry_at, server_name, email, user_id, tariff_name, protocol, traffic_limit_mb, api_url, api_key, traffic_usage_bytes, traffic_over_limit_at, traffic_over_limit_notified, subscription_id
         sort_map = {
@@ -336,6 +369,21 @@ class KeyRepository:
                     where.append("k.tariff_id = ?"); params.append(tariff_id)
                 if server_id is not None:
                     where.append("k.server_id = ?"); params.append(server_id)
+                if search_query:
+                    search_pattern = f"%{search_query}%"
+                    # Поиск по всем столбцам: id, email, key_id, server_name, tariff_name, user_id
+                    search_conditions = [
+                        "CAST(k.id AS TEXT) LIKE ?",  # Поиск по числовому ID
+                        "k.email LIKE ?",
+                        "k.key_id LIKE ?",
+                        "IFNULL(s.name,'') LIKE ?",
+                        "IFNULL(t.name,'') LIKE ?",
+                        "CAST(k.user_id AS TEXT) LIKE ?",  # Поиск по user_id
+                        # Поиск по полному ID с протоколом (например, "206_outline")
+                        "(k.id || '_outline') LIKE ?",
+                    ]
+                    where.append("(" + " OR ".join(search_conditions) + ")")
+                    params.extend([search_pattern] * len(search_conditions))
                 # ИСПРАВЛЕНИЕ: Не применяем keyset_where здесь, т.к. он использует алиас "k" который может вызвать проблемы
                 # keyset_where будет применен к обернутому запросу после UNION
                 if where:
@@ -361,6 +409,23 @@ class KeyRepository:
                     where.append("k.tariff_id = ?"); params.append(tariff_id)
                 if server_id is not None:
                     where.append("k.server_id = ?"); params.append(server_id)
+                if search_query:
+                    search_pattern = f"%{search_query}%"
+                    # Поиск по всем столбцам: id, email, v2ray_uuid, server_name, tariff_name, user_id, subscription_id
+                    search_conditions = [
+                        "CAST(k.id AS TEXT) LIKE ?",  # Поиск по числовому ID
+                        "k.email LIKE ?",
+                        "k.v2ray_uuid LIKE ?",
+                        "IFNULL(s.name,'') LIKE ?",
+                        "IFNULL(t.name,'') LIKE ?",
+                        "CAST(k.user_id AS TEXT) LIKE ?",  # Поиск по user_id
+                        # Поиск по полному ID с протоколом (например, "206_v2ray")
+                        "(k.id || '_v2ray') LIKE ?",
+                        # Поиск по subscription_id для V2Ray ключей
+                        "CAST(k.subscription_id AS TEXT) LIKE ?",
+                    ]
+                    where.append("(" + " OR ".join(search_conditions) + ")")
+                    params.extend([search_pattern] * len(search_conditions))
                 # ИСПРАВЛЕНИЕ: Не применяем keyset_where здесь, т.к. он использует алиас "k" который может вызвать проблемы
                 # keyset_where будет применен к обернутому запросу после UNION
                 if where:

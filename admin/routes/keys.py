@@ -630,7 +630,8 @@ async def keys_page(
     sort_by: str | None = None,
     sort_order: str | None = None,
     export: str | None = None,
-    cursor: str | None = None
+    cursor: str | None = None,
+    q: str | None = None,
 ):
     """Страница списка ключей"""
     if not request.session.get("admin_logged_in"):
@@ -640,11 +641,14 @@ async def keys_page(
     log_admin_action(request, "KEYS_PAGE_ACCESS", f"DB_PATH: {DB_PATH}")
 
     key_repo = KeyRepository(DB_PATH)
+    # Нормализуем поисковый запрос
+    search_query = q.strip() if q and q.strip() else None
     total = key_repo.count_keys_unified(
         email=email,
         tariff_id=tariff_id,
         protocol=protocol,
-        server_id=server_id
+        server_id=server_id,
+        search_query=search_query,
     )
     
     # Сортировка по дате создания по умолчанию (всегда)
@@ -672,6 +676,7 @@ async def keys_page(
         limit=limit,
         offset=(page-1)*limit if not use_cursor else 0,
         cursor=cursor if use_cursor else None,
+        search_query=search_query,
     )
     
     # Получаем данные о трафике и реальную конфигурацию для V2Ray ключей
@@ -825,6 +830,7 @@ async def keys_page(
         "user_id": '',
         "server": '',
         "protocol": protocol or '',
+        "search_query": search_query or '',
         "filters": {"email": email or '', "tariff_id": tariff_id or '', "protocol": protocol or '', "server_id": server_id or ''},
         "sort": {"by": sort_by_eff, "order": sort_order_eff},
         "csrf_token": get_csrf_token(request),

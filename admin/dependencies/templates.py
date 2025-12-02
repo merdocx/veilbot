@@ -3,6 +3,7 @@
 """
 import os
 from datetime import datetime
+from urllib.parse import quote
 
 from starlette.requests import Request
 from starlette.templating import Jinja2Templates
@@ -117,6 +118,13 @@ def tojson_filter(value, indent=2):
         return json.dumps(str(value), ensure_ascii=False, indent=indent)
 
 
+def urlencode_filter(value):
+    """URL-кодирование строки для использования в query параметрах"""
+    if value is None:
+        return ""
+    return quote(str(value), safe="")
+
+
 # Добавляем кастомные фильтры
 templates.env.filters['timestamp'] = timestamp_filter
 templates.env.filters['my_datetime_local'] = my_datetime_local_filter
@@ -125,6 +133,7 @@ templates.env.filters['status_text'] = status_text_filter
 templates.env.filters['pretty_json'] = pretty_json_filter
 templates.env.filters['safe_truncate'] = safe_truncate_filter
 templates.env.filters['tojson'] = tojson_filter
+templates.env.filters['urlencode'] = urlencode_filter
 
 
 def get_templates() -> Jinja2Templates:

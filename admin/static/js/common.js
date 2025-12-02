@@ -27,7 +27,7 @@ const resolveElement = (value, fallbackSelector) => {
 
 const initAutoTableSearch = (config = {}) => {
     const searchInput = resolveElement(config.input, config.inputSelector || '#global-search');
-    if (!searchInput || searchInput.dataset.autoSearch === '1') {
+    if (!searchInput || searchInput.dataset.autoSearch === '1' || searchInput.dataset.serverSearch === '1') {
         return null;
     }
 
@@ -454,7 +454,17 @@ const loadTraffic = async (keyId) => {
     }
 };
 
-const initTableSearch = (config = {}) => initAutoTableSearch(config);
+const initTableSearch = (config = {}) => {
+    // Если не указан явный input, проверяем наличие data-server-search
+    if (!config.input && !config.inputSelector) {
+        const defaultInput = document.querySelector('#global-search');
+        if (defaultInput && defaultInput.dataset.serverSearch === '1') {
+            // Пропускаем инициализацию для серверного поиска
+            return null;
+        }
+    }
+    return initAutoTableSearch(config);
+};
 
 const initLazyTrafficLoading = () => {
     // Placeholder for future IntersectionObserver integration.
