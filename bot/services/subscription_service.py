@@ -579,16 +579,17 @@ class SubscriptionService:
             await self.repository.extend_subscription_async(existing_id, new_expires_at)
             
             # Продлеваем все ключи подписки на серверах (v2ray и outline)
-            now = int(time.time())
+            # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
+            # Это гарантирует, что при продлении подписки все ключи будут активны
             with get_db_cursor(commit=True) as cursor:
                 # Продлеваем V2Ray ключи
                 cursor.execute(
                     """
                     UPDATE v2ray_keys 
                     SET expiry_at = ? 
-                    WHERE subscription_id = ? AND expiry_at > ?
+                    WHERE subscription_id = ?
                     """,
-                    (new_expires_at, existing_id, now)
+                    (new_expires_at, existing_id)
                 )
                 v2ray_keys_extended = cursor.rowcount
                 
@@ -597,9 +598,9 @@ class SubscriptionService:
                     """
                     UPDATE keys 
                     SET expiry_at = ? 
-                    WHERE subscription_id = ? AND expiry_at > ?
+                    WHERE subscription_id = ?
                     """,
-                    (new_expires_at, existing_id, now)
+                    (new_expires_at, existing_id)
                 )
                 outline_keys_extended = cursor.rowcount
                 

@@ -7,7 +7,8 @@
 
 {% block content %}
 <!-- Stats Cards -->
-<div class="stats-grid">
+<!-- DEBUG: total={{ total }}, active_count={{ active_count }}, expired_count={{ expired_count }}, v2ray_count={{ v2ray_count }} -->
+<div class="stats-grid" data-debug-stats='{"total":{{ total }},"active":{{ active_count }},"expired":{{ expired_count }},"v2ray":{{ v2ray_count }}}'>
     <div class="stat-card" data-stat="total">
         <div class="stat-value" data-stat-value>{{ total }}</div>
         <div class="stat-label">Всего ключей</div>
@@ -23,6 +24,10 @@
     <div class="stat-card" data-stat="v2ray">
         <div class="stat-value" data-stat-value>{{ v2ray_count }}</div>
         <div class="stat-label">V2Ray</div>
+    </div>
+    <div class="stat-card" data-stat="outline">
+        <div class="stat-value" data-stat-value>{{ outline_count }}</div>
+        <div class="stat-label">Outline</div>
     </div>
 </div>
 

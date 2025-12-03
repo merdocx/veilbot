@@ -641,6 +641,34 @@ class SubscriptionRepository:
             result = c.fetchone()
             return int(result[0] or 0) if result else 0
     
+    def get_all_subscriptions_traffic_sum(self, subscription_ids: list[int]) -> dict[int, int]:
+        """Получить суммарный трафик всех ключей для списка подписок (batch-операция)
+        
+        Returns:
+            dict: {subscription_id: total_usage_bytes}
+        """
+        if not subscription_ids:
+            return {}
+        
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            # Используем IN для получения всех сумм одним запросом
+            placeholders = ','.join('?' * len(subscription_ids))
+            c.execute(f"""
+                SELECT 
+                    subscription_id,
+                    COALESCE(SUM(traffic_usage_bytes), 0) as total_usage
+                FROM v2ray_keys
+                WHERE subscription_id IN ({placeholders})
+                GROUP BY subscription_id
+            """, subscription_ids)
+            results = c.fetchall()
+            # Создаем словарь, включая подписки с нулевым трафиком
+            traffic_map = {sub_id: 0 for sub_id in subscription_ids}
+            for row in results:
+                traffic_map[row[0]] = int(row[1] or 0)
+            return traffic_map
+    
     def get_subscription_traffic_limit(self, subscription_id: int) -> int:
         """Получить лимит трафика подписки (в байтах)
         Логика:
@@ -682,6 +710,28 @@ class SubscriptionRepository:
                     last_updated_at = ?
                 WHERE id = ?
             """, (usage_bytes, now, subscription_id))
+            conn.commit()
+    
+    def batch_update_subscriptions_traffic(self, traffic_updates: list[tuple[int, int]]) -> None:
+        """Batch-обновление трафика для нескольких подписок
+        
+        Args:
+            traffic_updates: список кортежей (subscription_id, usage_bytes)
+        """
+        if not traffic_updates:
+            return
+        
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            now = int(time.time())
+            # Подготавливаем данные с добавлением timestamp
+            updates_with_time = [(usage_bytes, now, sub_id) for sub_id, usage_bytes in traffic_updates]
+            c.executemany("""
+                UPDATE subscriptions
+                SET traffic_usage_bytes = ?,
+                    last_updated_at = ?
+                WHERE id = ?
+            """, updates_with_time)
             conn.commit()
     
     def update_subscription_traffic_limit(self, subscription_id: int, traffic_limit_mb: int | None) -> None:

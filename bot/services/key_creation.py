@@ -1063,15 +1063,28 @@ async def process_referral_bonus(
             subscription_repo.extend_subscription(subscription_id, new_expires_at)
             
             # Продлеваем все ключи подписки
+            # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
             cursor.execute(
                 """
                 UPDATE v2ray_keys 
                 SET expiry_at = ? 
-                WHERE subscription_id = ? AND expiry_at > ?
+                WHERE subscription_id = ?
                 """,
-                (new_expires_at, subscription_id, now)
+                (new_expires_at, subscription_id)
             )
-            keys_extended = cursor.rowcount
+            v2ray_keys_extended = cursor.rowcount
+            
+            # Продлеваем Outline ключи подписки
+            cursor.execute(
+                """
+                UPDATE keys 
+                SET expiry_at = ? 
+                WHERE subscription_id = ?
+                """,
+                (new_expires_at, subscription_id)
+            )
+            outline_keys_extended = cursor.rowcount
+            keys_extended = v2ray_keys_extended + outline_keys_extended
             
             # Отправляем уведомление
             bot = get_bot_instance()

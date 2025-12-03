@@ -330,6 +330,7 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
 
 
 def _compute_key_stats(db_path: str, now_ts: int) -> Dict[str, int]:
+    """Вычисляет общую статистику по всем ключам (без фильтров)"""
     with open_connection(db_path) as conn:
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM keys")
@@ -350,6 +351,146 @@ def _compute_key_stats(db_path: str, now_ts: int) -> Dict[str, int]:
         "active": active,
         "expired": expired,
         "v2ray": int(v2ray_total),
+    }
+
+
+def _compute_filtered_key_stats(
+    db_path: str,
+    now_ts: int,
+    email: str | None = None,
+    tariff_id: int | None = None,
+    protocol: str | None = None,
+    server_id: int | None = None,
+    search_query: str | None = None,
+) -> Dict[str, int]:
+    """Вычисляет статистику по ключам с учетом фильтров"""
+    key_repo = KeyRepository(db_path)
+    
+    # Получаем общее количество с учетом фильтров
+    total = key_repo.count_keys_unified(
+        email=email,
+        tariff_id=tariff_id,
+        protocol=protocol,
+        server_id=server_id,
+        search_query=search_query,
+    )
+    
+    # Считаем активные и истекшие ключи с учетом фильтров
+    # Используем ту же логику, что и в count_keys_unified
+    with open_connection(db_path) as conn:
+        c = conn.cursor()
+        
+        def apply_common_conditions(base_sql: str, params: list, is_outline: bool = True) -> tuple[str, list]:
+            # Добавляем JOIN для поиска по server_name и tariff_name
+            # JOIN нужен только если есть search_query или если нужны данные из servers/tariffs
+            needs_join = search_query is not None
+            if needs_join:
+                base_sql += " LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
+            
+            where = []
+            if email:
+                where.append("k.email LIKE ?")
+                params.append(f"%{email}%")
+            if tariff_id is not None:
+                where.append("k.tariff_id = ?")
+                params.append(tariff_id)
+            if server_id is not None:
+                where.append("k.server_id = ?")
+                params.append(server_id)
+            if search_query:
+                search_pattern = f"%{search_query}%"
+                search_conditions = [
+                    "CAST(k.id AS TEXT) LIKE ?",
+                    "k.email LIKE ?",
+                    "IFNULL(s.name,'') LIKE ?",
+                    "IFNULL(t.name,'') LIKE ?",
+                    "CAST(k.user_id AS TEXT) LIKE ?",
+                ]
+                if is_outline:
+                    search_conditions.append("k.key_id LIKE ?")
+                    search_conditions.append("(k.id || '_outline') LIKE ?")
+                else:
+                    search_conditions.append("k.v2ray_uuid LIKE ?")
+                    search_conditions.append("(k.id || '_v2ray') LIKE ?")
+                    search_conditions.append("CAST(k.subscription_id AS TEXT) LIKE ?")
+                where.append("(" + " OR ".join(search_conditions) + ")")
+                params.extend([search_pattern] * len(search_conditions))
+            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+            return base_sql + where_sql, params
+        
+        outline_active = 0
+        outline_expired = 0
+        outline_total = 0
+        v2ray_active = 0
+        v2ray_expired = 0
+        v2ray_total = 0
+        
+        # Считаем активные и истекшие Outline ключи
+        if protocol in (None, '', 'outline'):
+            # Активные: expiry_at > now_ts AND expiry_at IS NOT NULL
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
+            if "WHERE" in sql:
+                sql += " AND k.expiry_at > ? AND k.expiry_at IS NOT NULL"
+            else:
+                sql += " WHERE k.expiry_at > ? AND k.expiry_at IS NOT NULL"
+            params.append(now_ts)
+            c.execute(sql, params)
+            outline_active = c.fetchone()[0] or 0
+            
+            # Истекшие: expiry_at <= now_ts OR expiry_at IS NULL
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
+            if "WHERE" in sql:
+                sql += " AND (k.expiry_at <= ? OR k.expiry_at IS NULL)"
+            else:
+                sql += " WHERE (k.expiry_at <= ? OR k.expiry_at IS NULL)"
+            params.append(now_ts)
+            c.execute(sql, params)
+            outline_expired = c.fetchone()[0] or 0
+            
+            # Считаем общее количество Outline ключей (для статистики outline_count)
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
+            c.execute(sql, params)
+            outline_total = c.fetchone()[0] or 0
+        
+        # Считаем активные и истекшие V2Ray ключи
+        if protocol in (None, '', 'v2ray'):
+            # Активные: expiry_at > now_ts AND expiry_at IS NOT NULL
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
+            if "WHERE" in sql:
+                sql += " AND k.expiry_at > ? AND k.expiry_at IS NOT NULL"
+            else:
+                sql += " WHERE k.expiry_at > ? AND k.expiry_at IS NOT NULL"
+            params.append(now_ts)
+            c.execute(sql, params)
+            v2ray_active = c.fetchone()[0] or 0
+            
+            # Истекшие: expiry_at <= now_ts OR expiry_at IS NULL
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
+            if "WHERE" in sql:
+                sql += " AND (k.expiry_at <= ? OR k.expiry_at IS NULL)"
+            else:
+                sql += " WHERE (k.expiry_at <= ? OR k.expiry_at IS NULL)"
+            params.append(now_ts)
+            c.execute(sql, params)
+            v2ray_expired = c.fetchone()[0] or 0
+            
+            # Считаем общее количество V2Ray ключей (для статистики v2ray_count)
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
+            c.execute(sql, params)
+            v2ray_total = c.fetchone()[0] or 0
+        
+        active = int(outline_active) + int(v2ray_active)
+        expired = int(outline_expired) + int(v2ray_expired)
+    
+    # Если expired не совпадает с (total - active), используем явно посчитанное значение
+    # Это гарантирует правильный подсчет даже если есть ключи с NULL expiry_at
+    
+    return {
+        "total": total,
+        "active": active,
+        "expired": expired,
+        "v2ray": int(v2ray_total),
+        "outline": int(outline_total),
     }
 
 
@@ -529,7 +670,8 @@ def _load_key_view_model(key_repo: KeyRepository, key_id: int | str, now_ts: int
                         SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, k.expiry_at,
                                IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol,
                                COALESCE(k.traffic_limit_mb, 0), '' as api_url, '' as api_key,
-                               0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified
+                               0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified,
+                               k.subscription_id
                         FROM keys k
                         LEFT JOIN servers s ON k.server_id = s.id
                         LEFT JOIN tariffs t ON k.tariff_id = t.id
@@ -641,8 +783,30 @@ async def keys_page(
     log_admin_action(request, "KEYS_PAGE_ACCESS", f"DB_PATH: {DB_PATH}")
 
     key_repo = KeyRepository(DB_PATH)
-    # Нормализуем поисковый запрос
-    search_query = q.strip() if q and q.strip() else None
+    # Нормализуем параметры фильтров - пустые строки должны быть None
+    email_normalized = email.strip() if (email and isinstance(email, str) and email.strip()) else None
+    protocol_normalized = protocol.strip() if (protocol and isinstance(protocol, str) and protocol.strip()) else None
+    search_query_normalized = q.strip() if (q and isinstance(q, str) and q.strip()) else None
+    tariff_id_normalized = tariff_id if tariff_id else None
+    server_id_normalized = server_id if server_id else None
+    
+    # Логируем нормализованные параметры
+    logging.info(
+        f"Keys page RAW params: email={repr(email)}, tariff_id={tariff_id}, "
+        f"protocol={repr(protocol)}, server_id={server_id}, search_query={repr(q)}"
+    )
+    logging.info(
+        f"Keys page NORMALIZED params: email={repr(email_normalized)}, tariff_id={tariff_id_normalized}, "
+        f"protocol={repr(protocol_normalized)}, server_id={server_id_normalized}, search_query={repr(search_query_normalized)}"
+    )
+    
+    # Используем нормализованные значения
+    email = email_normalized
+    protocol = protocol_normalized
+    search_query = search_query_normalized
+    tariff_id = tariff_id_normalized
+    server_id = server_id_normalized
+    
     total = key_repo.count_keys_unified(
         email=email,
         tariff_id=tariff_id,
@@ -796,7 +960,63 @@ async def keys_page(
         except Exception as e:
             logging.error(f"CSV export error: {e}")
 
-    pages = (total + limit - 1) // limit
+    key_models = [_build_key_view_model(key_row, now_ts) for key_row in keys_with_traffic]
+    
+    # Считаем статистику из всех ключей с учетом фильтров, а не только из отображаемых на странице
+    # Логируем параметры для отладки
+    # Логируем параметры для отладки
+    logging.info(
+        f"Keys page stats calculation: email={repr(email)}, tariff_id={tariff_id}, "
+        f"protocol={repr(protocol)}, server_id={server_id}, search_query={repr(search_query)}"
+    )
+    
+    filtered_stats = _compute_filtered_key_stats(
+        DB_PATH,
+        now_ts,
+        email=email,
+        tariff_id=tariff_id,
+        protocol=protocol,
+        server_id=server_id,
+        search_query=search_query,
+    )
+    
+    logging.info(
+        f"Keys page filtered_stats result: total={filtered_stats['total']}, "
+        f"active={filtered_stats['active']}, expired={filtered_stats['expired']}, "
+        f"v2ray={filtered_stats['v2ray']}"
+    )
+    
+    # Извлекаем значения из filtered_stats
+    # ВАЖНО: Используем значения напрямую из filtered_stats, не пересчитываем
+    active_count = int(filtered_stats.get("active", 0))
+    expired_count = int(filtered_stats.get("expired", 0))
+    v2ray_count = int(filtered_stats.get("v2ray", 0))
+    outline_count = int(filtered_stats.get("outline", 0))
+    total_from_stats = int(filtered_stats.get("total", 0))
+    
+    # КРИТИЧЕСКАЯ ПРОВЕРКА: убеждаемся, что значения правильные
+    if active_count != filtered_stats["active"] or expired_count != filtered_stats["expired"] or v2ray_count != filtered_stats["v2ray"] or outline_count != filtered_stats["outline"]:
+        logging.error(
+            f"CRITICAL: Values mismatch after extraction! "
+            f"filtered_stats={filtered_stats}, "
+            f"active_count={active_count}, expired_count={expired_count}, v2ray_count={v2ray_count}, outline_count={outline_count}"
+        )
+        # Исправляем значения
+        active_count = int(filtered_stats["active"])
+        expired_count = int(filtered_stats["expired"])
+        v2ray_count = int(filtered_stats["v2ray"])
+        outline_count = int(filtered_stats["outline"])
+    
+    # Логируем для отладки, если есть расхождение
+    if total != total_from_stats:
+        logging.warning(
+            f"Keys page stats mismatch: count_keys_unified={total}, "
+            f"_compute_filtered_key_stats={total_from_stats}, "
+            f"active={active_count}, expired={expired_count}"
+        )
+    
+    # Используем total_from_stats для пагинации
+    pages = (total_from_stats + limit - 1) // limit if total_from_stats > 0 else 1
 
     # Генерируем cursor для следующей страницы
     next_cursor = None
@@ -808,22 +1028,32 @@ async def keys_page(
             key_id_cursor = last_row[0]
             next_cursor = KeysetPagination.encode_cursor(created_at_cursor, key_id_cursor)
         keys_with_traffic = keys_with_traffic[:limit]
+        key_models = [_build_key_view_model(key_row, now_ts) for key_row in keys_with_traffic]
 
-    key_models = [_build_key_view_model(key_row, now_ts) for key_row in keys_with_traffic]
-    active_count = sum(1 for key in key_models if key["status"] == "active")
-    expired_count = total - active_count
-    v2ray_count = sum(1 for key in key_models if key["protocol"] == "v2ray")
-
+    # Финальная проверка значений перед передачей в шаблон
+    # Убеждаемся, что значения не были изменены после извлечения
+    assert active_count == filtered_stats["active"], f"active_count changed: {active_count} != {filtered_stats['active']}"
+    assert expired_count == filtered_stats["expired"], f"expired_count changed: {expired_count} != {filtered_stats['expired']}"
+    assert v2ray_count == filtered_stats["v2ray"], f"v2ray_count changed: {v2ray_count} != {filtered_stats['v2ray']}"
+    assert outline_count == filtered_stats["outline"], f"outline_count changed: {outline_count} != {filtered_stats['outline']}"
+    
+    logging.info(
+        f"Keys page FINAL values for template: total={total_from_stats}, "
+        f"active_count={active_count}, expired_count={expired_count}, "
+        f"v2ray_count={v2ray_count}, outline_count={outline_count}"
+    )
+    
     return templates.TemplateResponse("keys.html", {
         "request": request,
         "keys": key_models,
         "current_time": now_ts,
         "page": page,
         "limit": limit,
-        "total": total,
+        "total": total_from_stats,  # Используем total из статистики для согласованности
         "active_count": active_count,
         "expired_count": expired_count,
         "v2ray_count": v2ray_count,
+        "outline_count": outline_count,
         "pages": pages,
         "next_cursor": next_cursor,
         "email": email or '',
@@ -834,7 +1064,7 @@ async def keys_page(
         "filters": {"email": email or '', "tariff_id": tariff_id or '', "protocol": protocol or '', "server_id": server_id or ''},
         "sort": {"by": sort_by_eff, "order": sort_order_eff},
         "csrf_token": get_csrf_token(request),
-        "stats_overview": _compute_key_stats(DB_PATH, now_ts),
+        # stats_overview больше не используется, статистика берется из filtered_stats
     })
 
 

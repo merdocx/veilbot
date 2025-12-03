@@ -552,6 +552,7 @@ class SubscriptionPurchaseService:
                 # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
                 # Это гарантирует, что при продлении подписки все ключи будут активны
                 async with open_async_connection(self.db_path) as conn:
+                    # Продлеваем V2Ray ключи
                     cursor = await conn.execute(
                         """
                         UPDATE v2ray_keys 
@@ -560,10 +561,25 @@ class SubscriptionPurchaseService:
                         """,
                         (new_expires_at, subscription_id)
                     )
-                    keys_extended = cursor.rowcount
+                    v2ray_keys_extended = cursor.rowcount
+                    
+                    # Продлеваем Outline ключи
+                    cursor = await conn.execute(
+                        """
+                        UPDATE keys 
+                        SET expiry_at = ? 
+                        WHERE subscription_id = ?
+                        """,
+                        (new_expires_at, subscription_id)
+                    )
+                    outline_keys_extended = cursor.rowcount
+                    keys_extended = v2ray_keys_extended + outline_keys_extended
                     await conn.commit()
                 
-                logger.info(f"[SUBSCRIPTION] Extended {keys_extended} keys for subscription {subscription_id}")
+                logger.info(
+                    f"[SUBSCRIPTION] Extended {v2ray_keys_extended} V2Ray keys and {outline_keys_extended} Outline keys "
+                    f"for subscription {subscription_id}"
+                )
                 
                 # Шаг 2.5: Сбрасываем трафик всех ключей подписки при продлении
                 try:

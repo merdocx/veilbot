@@ -2,12 +2,11 @@
 Обработчик кнопки "Мои ключи"
 """
 import time
-import logging
 from typing import Optional
 from aiogram import Dispatcher, types
 from app.infra.sqlite_utils import get_db_cursor
 from config import PROTOCOLS
-from vpn_protocols import format_duration, ProtocolFactory, normalize_vless_host
+from vpn_protocols import format_duration
 from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
 from app.repositories.subscription_repository import SubscriptionRepository
@@ -36,7 +35,6 @@ async def handle_my_keys_btn(message: types.Message):
     now = int(time.time())
     
     all_keys = []
-    keys_to_update = []  # Список ключей, для которых нужно обновить конфигурацию в БД
     
     # Получаем активную подписку V2Ray
     subscription_info = None
@@ -86,16 +84,6 @@ async def handle_my_keys_btn(message: types.Message):
             WHERE k.user_id = ? AND k.expiry_at > ?
         """, (user_id, now))
         outline_keys = cursor.fetchall()
-        
-        # Получаем V2Ray ключи БЕЗ подписки (отдельные ключи)
-        cursor.execute("""
-            SELECT k.v2ray_uuid, k.expiry_at, s.domain, s.v2ray_path, s.country, k.email, s.api_url, s.api_key, k.client_config,
-                   k.traffic_limit_mb, k.traffic_usage_bytes
-            FROM v2ray_keys k
-            JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ? AND k.subscription_id IS NULL
-        """, (user_id, now))
-        v2ray_keys = cursor.fetchall()
     
     # Добавляем Outline ключи
     for access_url, exp, protocol, country, limit_mb in outline_keys:
@@ -108,104 +96,6 @@ async def handle_my_keys_btn(message: types.Message):
             'traffic_limit_mb': limit_mb or 0,
             'traffic_usage_bytes': None,
         })
-    
-    # Добавляем V2Ray ключи
-    for (
-        v2ray_uuid,
-        exp,
-        domain,
-        path,
-        country,
-        email,
-        api_url,
-        api_key,
-        saved_config,
-        limit_mb,
-        usage_bytes,
-    ) in v2ray_keys:
-        config = None
-        normalized_saved = None
-
-        if saved_config and 'vless://' in saved_config:
-            lines = saved_config.split('\n')
-            for line in lines:
-                if line.strip().startswith('vless://'):
-                    normalized_saved = normalize_vless_host(
-                        line.strip(),
-                        domain,
-                        api_url or ''
-                    )
-                    break
-            else:
-                normalized_saved = normalize_vless_host(
-                    saved_config.strip(),
-                    domain,
-                    api_url or ''
-                )
-        elif saved_config:
-            normalized_saved = saved_config.strip()
-
-        # Всегда пытаемся получить актуальную конфигурацию с сервера
-        if api_url and api_key:
-            server_config = {'api_url': api_url, 'api_key': api_key}
-            try:
-                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                fetched_config = await protocol_client.get_user_config(v2ray_uuid, {
-                    'domain': domain,
-                    'port': 443,
-                    'path': path or '/v2ray',
-                    'email': email or f"user_{user_id}@veilbot.com"
-                })
-                if 'vless://' in fetched_config:
-                    lines = fetched_config.split('\n')
-                    for line in lines:
-                        if line.strip().startswith('vless://'):
-                            fetched_config = line.strip()
-                            break
-                fetched_config = normalize_vless_host(
-                    fetched_config.strip(),
-                    domain,
-                    api_url or ''
-                )
-
-                config = fetched_config
-                if not normalized_saved or normalized_saved != fetched_config:
-                    keys_to_update.append((fetched_config, v2ray_uuid))
-                    logging.info(
-                        "[MY_KEYS] Refreshed client_config for UUID %s (updated DB)",
-                        v2ray_uuid[:8],
-                    )
-            except Exception as e:
-                logging.error(f"Error getting V2Ray config for {v2ray_uuid}: {e}")
-
-        if not config:
-            config = normalized_saved
-
-        if not config:
-            # Fallback к старому формату при отсутствии данных
-            config = (
-                f"vless://{v2ray_uuid}@{domain or 'example.com'}:443"
-                "?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome"
-                "&pbk=TJcEEU2FS6nX_mBo-qXiuq9xBaP1nAcVia1MlYyUHWQ&sid=827d3b463ef6638f"
-                f"&spx=/&type=tcp&flow=#{email or 'VeilBot-V2Ray'}"
-            )
-        
-        all_keys.append({
-            'type': 'v2ray',
-            'config': config,
-            'expiry': exp,
-            'protocol': 'v2ray',
-            'country': country,
-            'traffic_limit_mb': limit_mb or 0,
-            'traffic_usage_bytes': usage_bytes if usage_bytes is not None else 0,
-            'traffic_over_limit_at': None,  # Колонка удалена из таблицы v2ray_keys
-        })
-    
-    # Обновляем конфигурации в БД, если нужно
-    if keys_to_update:
-        with get_db_cursor(commit=True) as cursor:
-            for config, v2ray_uuid in keys_to_update:
-                cursor.execute("UPDATE v2ray_keys SET client_config = ? WHERE v2ray_uuid = ?", (config, v2ray_uuid))
 
     # Формируем сообщение
     msg = ""

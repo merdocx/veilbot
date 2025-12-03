@@ -320,7 +320,7 @@ async def handle_migrate_to_subscription(message: types.Message) -> None:
             )
             return
         
-        # Проверка наличия ключей
+        # Проверка наличия ключей (только Outline, так как V2Ray ключи теперь только в подписках)
         now = int(time.time())
         has_keys = False
         
@@ -332,14 +332,7 @@ async def handle_migrate_to_subscription(message: types.Message) -> None:
             """, (user_id, now))
             outline_count = cursor.fetchone()[0]
             
-            # Проверяем V2Ray отдельные ключи
-            cursor.execute("""
-                SELECT COUNT(*) FROM v2ray_keys 
-                WHERE user_id = ? AND expiry_at > ? AND subscription_id IS NULL
-            """, (user_id, now))
-            v2ray_count = cursor.fetchone()[0]
-            
-            has_keys = outline_count > 0 or v2ray_count > 0
+            has_keys = outline_count > 0
         
         if not has_keys:
             await message.answer(

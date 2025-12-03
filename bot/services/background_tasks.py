@@ -10,7 +10,7 @@ from collections import defaultdict
 from typing import Optional, Callable, Awaitable, Dict, Any, List, Tuple
 from datetime import datetime
 
-from app.infra.sqlite_utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor, retry_db_operation
 from outline import delete_key
 from vpn_protocols import format_duration, ProtocolFactory
 from bot.utils import format_key_message, format_key_message_unified, safe_send_message
@@ -853,24 +853,33 @@ async def monitor_subscription_traffic_limits() -> None:
         now = int(time.time())
         repo = SubscriptionRepository()
         
+        # ОПТИМИЗАЦИЯ: Разделяем чтение и запись
+        # Шаг 1: Читаем все необходимые данные из БД (без долгих операций между чтениями)
+        active_keys = []
+        subscriptions = []
+        traffic_sums = {}
+        
         # Получить все активные (не истекшие) ключи V2Ray
-        with get_db_cursor() as cursor:
-            cursor.execute("""
-                SELECT 
-                    k.id,
-                    k.v2ray_uuid,
-                    k.server_id,
-                    k.subscription_id,
-                    IFNULL(s.api_url, '') AS api_url,
-                    IFNULL(s.api_key, '') AS api_key
-                FROM v2ray_keys k
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.expiry_at > ?
-                  AND s.protocol = 'v2ray'
-                  AND s.api_url IS NOT NULL
-                  AND s.api_key IS NOT NULL
-            """, (now,))
-            active_keys = cursor.fetchall()
+        def read_active_keys():
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        k.id,
+                        k.v2ray_uuid,
+                        k.server_id,
+                        k.subscription_id,
+                        IFNULL(s.api_url, '') AS api_url,
+                        IFNULL(s.api_key, '') AS api_key
+                    FROM v2ray_keys k
+                    JOIN servers s ON k.server_id = s.id
+                    WHERE k.expiry_at > ?
+                      AND s.protocol = 'v2ray'
+                      AND s.api_url IS NOT NULL
+                      AND s.api_key IS NOT NULL
+                """, (now,))
+                return cursor.fetchall()
+        
+        active_keys = retry_db_operation(read_active_keys, max_attempts=3)
         
         if not active_keys:
             logging.debug("[TRAFFIC] No active V2Ray keys found")
@@ -878,6 +887,15 @@ async def monitor_subscription_traffic_limits() -> None:
         
         logging.info(f"[TRAFFIC] Found {len(active_keys)} active V2Ray keys to update")
         
+        # Получить активные подписки с лимитами (читаем сразу после ключей)
+        subscriptions = repo.get_subscriptions_with_traffic_limits(now)
+        
+        if subscriptions:
+            # Оптимизация: получить все суммы трафика одним batch-запросом
+            subscription_ids = [sub[0] for sub in subscriptions]
+            traffic_sums = repo.get_all_subscriptions_traffic_sum(subscription_ids)
+        
+        # Шаг 2: Выполняем долгие операции с API (БД уже закрыта, блокировок нет)
         # Запросить трафик для каждого ключа индивидуально через GET /api/keys/{key_id}/traffic
         # Создаем список задач с привязкой к key_id
         tasks_with_keys: list[tuple[int, asyncio.Task]] = []
@@ -909,7 +927,7 @@ async def monitor_subscription_traffic_limits() -> None:
                 if result is not None:
                     usage_map[key_id] = result
         
-        # Обновить traffic_usage_bytes в БД для всех ключей (перезаписать абсолютным значением)
+        # Шаг 3: Выполняем все записи в БД (одна транзакция для всех обновлений ключей)
         key_updates = []
         for key_id, usage_bytes in usage_map.items():
             if usage_bytes is not None:
@@ -917,15 +935,15 @@ async def monitor_subscription_traffic_limits() -> None:
         
         logging.info(f"[TRAFFIC] Updating traffic for {len(key_updates)} keys")
         if key_updates:
-            with get_db_cursor(commit=True) as cursor:
-                cursor.executemany(
-                    "UPDATE v2ray_keys SET traffic_usage_bytes = ? WHERE id = ?",
-                    key_updates
-                )
-                logging.info(f"[TRAFFIC] Updated traffic_usage_bytes for {len(key_updates)} keys")
-        
-        # Получить активные подписки с лимитами
-        subscriptions = repo.get_subscriptions_with_traffic_limits(now)
+            def update_keys_traffic():
+                with get_db_cursor(commit=True) as cursor:
+                    cursor.executemany(
+                        "UPDATE v2ray_keys SET traffic_usage_bytes = ? WHERE id = ?",
+                        key_updates
+                    )
+            
+            retry_db_operation(update_keys_traffic, max_attempts=3)
+            logging.info(f"[TRAFFIC] Updated traffic_usage_bytes for {len(key_updates)} keys")
         
         if not subscriptions:
             logging.debug("[TRAFFIC] No active subscriptions with traffic limits found")
@@ -935,18 +953,19 @@ async def monitor_subscription_traffic_limits() -> None:
         warn_notifications = []
         disable_notifications = []
         updates = []
+        traffic_updates = []  # Для batch-обновления трафика
         
         for sub in subscriptions:
             subscription_id, user_id, stored_usage, over_limit_at, notified_flags, expires_at, tariff_id, limit_mb, tariff_name = sub
             
-            # Агрегировать трафик всех ключей подписки
-            total_usage = repo.get_subscription_traffic_sum(subscription_id)
+            # Получить трафик из batch-результата
+            total_usage = traffic_sums.get(subscription_id, 0)
             
-            # Обновить traffic_usage_bytes в подписке
-            repo.update_subscription_traffic(subscription_id, total_usage)
+            # Добавить в список для batch-обновления
+            traffic_updates.append((subscription_id, total_usage))
             
-            # Получить лимит из тарифа или индивидуального лимита подписки
-            limit_bytes = repo.get_subscription_traffic_limit(subscription_id)
+            # Вычислить лимит в байтах (limit_mb уже есть в данных подписки)
+            limit_bytes = int(limit_mb) * 1024 * 1024 if limit_mb else 0
             
             # Проверить превышение лимита
             over_limit = limit_bytes > 0 and total_usage > limit_bytes
@@ -987,8 +1006,10 @@ async def monitor_subscription_traffic_limits() -> None:
                 if should_disable:
                     disable_success = await _disable_subscription_keys(subscription_id)
                     if disable_success:
-                        # Деактивировать подписку
-                        repo.deactivate_subscription(subscription_id)
+                        # Деактивировать подписку (с retry)
+                        def deactivate_sub():
+                            repo.deactivate_subscription(subscription_id)
+                        retry_db_operation(deactivate_sub, max_attempts=3)
                         
                         limit_display = _format_bytes_short(limit_bytes)
                         usage_display = _format_bytes_short(total_usage)
@@ -1012,15 +1033,26 @@ async def monitor_subscription_traffic_limits() -> None:
                 subscription_id
             ))
         
-        # Обновить БД
+        # Batch-обновление трафика всех подписок одним запросом (с retry)
+        if traffic_updates:
+            def update_subscriptions_traffic():
+                repo.batch_update_subscriptions_traffic(traffic_updates)
+            
+            retry_db_operation(update_subscriptions_traffic, max_attempts=3)
+            logging.info(f"[TRAFFIC] Batch-updated traffic for {len(traffic_updates)} subscriptions")
+        
+        # Batch-обновление флагов подписок (с retry)
         if updates:
-            with get_db_cursor(commit=True) as cursor:
-                cursor.executemany("""
-                    UPDATE subscriptions
-                    SET traffic_over_limit_at = ?,
-                        traffic_over_limit_notified = ?
-                    WHERE id = ?
-                """, updates)
+            def update_subscriptions_flags():
+                with get_db_cursor(commit=True) as cursor:
+                    cursor.executemany("""
+                        UPDATE subscriptions
+                        SET traffic_over_limit_at = ?,
+                            traffic_over_limit_notified = ?
+                        WHERE id = ?
+                    """, updates)
+            
+            retry_db_operation(update_subscriptions_flags, max_attempts=3)
         
         # Отправить уведомления
         bot = get_bot_instance()
