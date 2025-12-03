@@ -64,7 +64,7 @@ def init_db():
         traffic_usage_bytes INTEGER DEFAULT 0,
         subscription_id INTEGER,
         FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
-        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (user_id) REFERENCES users(user_id),
         FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
     )""")
 
@@ -909,7 +909,7 @@ def migrate_remove_traffic_limit_fields_from_v2ray_keys():
                 traffic_usage_bytes INTEGER DEFAULT 0,
                 subscription_id INTEGER,
                 FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
                 FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
             )
         """)
@@ -1220,7 +1220,6 @@ def _run_all_migrations():
     migrate_add_traffic_monitoring_to_v2ray_keys()
     migrate_add_available_for_purchase_to_servers()
     migrate_add_server_cascade_to_keys()
-    migrate_fix_v2ray_keys_foreign_keys()
     migrate_fix_traffic_stats_foreign_keys()
     migrate_add_subscriptions_table()
     migrate_add_subscription_id_to_v2ray_keys()
@@ -1229,6 +1228,7 @@ def _run_all_migrations():
     migrate_add_subscription_traffic_limits()
     migrate_add_purchase_notification_sent()
     migrate_remove_traffic_limit_fields_from_v2ray_keys()
+    migrate_fix_v2ray_keys_foreign_keys()  # Исправляем foreign keys после всех миграций, изменяющих структуру v2ray_keys
     migrate_remove_traffic_snapshot_tables()
 
 # Выполняем миграции после определения всех функций
