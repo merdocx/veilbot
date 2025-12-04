@@ -140,6 +140,13 @@ async def payments_page(
         if email:
             payments = [p for p in payments if (p.email or "").lower() == email.lower()]
 
+    # Статистика по всей базе (для верхних блоков)
+    stats = await repo.get_statistics()
+    total_payments_all = stats["total_count"]
+    pending_count_all = stats["pending_count"]
+    paid_count_all = stats["paid_count"]
+    completed_total_amount = stats["completed_total_amount"]
+
     # Быстрая статистика для заголовка
     try:
         paid_count = len([p for p in payments if (getattr(p, 'status', None) and str(getattr(p.status, 'value', p.status)) == 'paid') or (hasattr(p, 'is_paid') and callable(getattr(p, 'is_paid', None)) and p.is_paid())])
@@ -192,6 +199,10 @@ async def payments_page(
             "paid_count": paid_count,
             "pending_count": pending_count,
             "failed_count": failed_count,
+            "total_payments_all": total_payments_all,
+            "pending_count_all": pending_count_all,
+            "paid_count_all": paid_count_all,
+            "completed_total_amount": completed_total_amount,
             "email": email or "",
             "user_id": user_id or "",
             "payment_id": payment_id or "",

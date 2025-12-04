@@ -317,11 +317,13 @@ class SubscriptionPurchaseService:
                 return False, error_msg
             
             # Создаем подписку в БД
+            traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
             subscription_id = await self.subscription_repo.create_subscription_async(
                 user_id=payment.user_id,
                 subscription_token=subscription_token,
                 expires_at=expires_at,
                 tariff_id=tariff['id'],
+                traffic_limit_mb=traffic_limit_mb,
             )
             
             logger.info(
@@ -377,14 +379,15 @@ class SubscriptionPurchaseService:
                                 client_config = line.strip()
                                 break
                     
+                    traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
                     async with open_async_connection(self.db_path) as conn:
                         await conn.execute("PRAGMA foreign_keys = OFF")
                         try:
                             cursor = await conn.execute(
                                 """
                                 INSERT INTO v2ray_keys 
-                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id, traffic_limit_mb)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     server_id,
@@ -396,6 +399,7 @@ class SubscriptionPurchaseService:
                                     tariff['id'],
                                     client_config,
                                     subscription_id,
+                                    traffic_limit_mb,
                                 ),
                             )
                             await conn.commit()
@@ -545,32 +549,40 @@ class SubscriptionPurchaseService:
                     f"{existing_expires_at} -> {new_expires_at} (+{tariff['duration_sec']}s)"
                 )
                 
-                # Шаг 1: Обновляем подписку
+                # Шаг 1: Обновляем подписку (срок и лимит трафика)
                 await self.subscription_repo.extend_subscription_async(subscription_id, new_expires_at)
+                
+                # Обновляем лимит трафика подписки из тарифа
+                traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+                if traffic_limit_mb > 0:
+                    await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, traffic_limit_mb)
+                    logger.info(
+                        f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {traffic_limit_mb} MB"
+                    )
                 
                 # Шаг 2: Продлеваем все ключи подписки
                 # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
                 # Это гарантирует, что при продлении подписки все ключи будут активны
                 async with open_async_connection(self.db_path) as conn:
-                    # Продлеваем V2Ray ключи
+                    # Продлеваем V2Ray ключи и обновляем лимит трафика
                     cursor = await conn.execute(
                         """
                         UPDATE v2ray_keys 
-                        SET expiry_at = ? 
+                        SET expiry_at = ?, traffic_limit_mb = ?
                         WHERE subscription_id = ?
                         """,
-                        (new_expires_at, subscription_id)
+                        (new_expires_at, traffic_limit_mb, subscription_id)
                     )
                     v2ray_keys_extended = cursor.rowcount
                     
-                    # Продлеваем Outline ключи
+                    # Продлеваем Outline ключи и обновляем лимит трафика
                     cursor = await conn.execute(
                         """
                         UPDATE keys 
-                        SET expiry_at = ? 
+                        SET expiry_at = ?, traffic_limit_mb = ?
                         WHERE subscription_id = ?
                         """,
-                        (new_expires_at, subscription_id)
+                        (new_expires_at, traffic_limit_mb, subscription_id)
                     )
                     outline_keys_extended = cursor.rowcount
                     keys_extended = v2ray_keys_extended + outline_keys_extended
@@ -1100,12 +1112,13 @@ class SubscriptionPurchaseService:
                         )
                     else:
                         # Создаем новую подписку
+                        traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
                         cursor = await conn.execute(
                             """
-                            INSERT INTO subscriptions (user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified)
-                            VALUES (?, ?, ?, ?, ?, 1, 0)
+                            INSERT INTO subscriptions (user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified, traffic_limit_mb)
+                            VALUES (?, ?, ?, ?, ?, 1, 0, ?)
                             """,
-                            (payment.user_id, subscription_token, now, expires_at, tariff['id']),
+                            (payment.user_id, subscription_token, now, expires_at, tariff['id'], traffic_limit_mb),
                         )
                         subscription_id = cursor.lastrowid
                         await conn.commit()
@@ -1197,14 +1210,15 @@ class SubscriptionPurchaseService:
                                     break
                         
                         # Сохранение V2Ray ключа в БД
+                        traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
                         async with open_async_connection(self.db_path) as conn:
                             await conn.execute("PRAGMA foreign_keys = OFF")
                             try:
                                 cursor = await conn.execute(
                                     """
                                     INSERT INTO v2ray_keys 
-                                    (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id, traffic_limit_mb)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                     """,
                                     (
                                         server_id,
@@ -1216,6 +1230,7 @@ class SubscriptionPurchaseService:
                                         tariff['id'],
                                         client_config,
                                         subscription_id,
+                                        traffic_limit_mb,
                                     ),
                                 )
                                 await conn.commit()
@@ -1274,6 +1289,7 @@ class SubscriptionPurchaseService:
                     access_url = user_data['accessUrl']
                     
                     # Сохранение Outline ключа в БД
+                    traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
                     async with open_async_connection(self.db_path) as conn:
                         await conn.execute("PRAGMA foreign_keys = OFF")
                         try:
@@ -1288,7 +1304,7 @@ class SubscriptionPurchaseService:
                                     payment.user_id,
                                     access_url,
                                     expires_at,
-                                    0,  # traffic_limit_mb
+                                    traffic_limit_mb,
                                     outline_key_id,
                                     now,
                                     key_email,

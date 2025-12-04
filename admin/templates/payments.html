@@ -15,18 +15,8 @@
         data-preset-filter=""
         aria-pressed="{{ 'true' if (current_status == '' and current_preset == '') else 'false' }}"
         aria-label="Показать все платежи">
-        <div class="stat-value">{{ total }}</div>
+        <div class="stat-value">{{ total_payments_all }}</div>
         <div class="stat-label">Все платежи</div>
-    </button>
-
-    <button type="button"
-        class="stat-card stat-card--action"
-        data-status-filter="paid"
-        data-preset-filter=""
-        aria-pressed="{{ 'true' if current_status == 'paid' else 'false' }}"
-        aria-label="Показать оплаченные платежи">
-        <div class="stat-value">{{ paid_count }}</div>
-        <div class="stat-label">Оплачено</div>
     </button>
 
     <button type="button"
@@ -35,18 +25,28 @@
         data-preset-filter=""
         aria-pressed="{{ 'true' if current_status == 'pending' or current_preset == 'pending' else 'false' }}"
         aria-label="Показать ожидающие платежи">
-        <div class="stat-value">{{ pending_count }}</div>
+        <div class="stat-value">{{ pending_count_all }}</div>
         <div class="stat-label">Ожидает</div>
     </button>
 
     <button type="button"
         class="stat-card stat-card--action"
+        data-status-filter="paid"
+        data-preset-filter=""
+        aria-pressed="{{ 'true' if current_status == 'paid' else 'false' }}"
+        aria-label="Показать оплаченные платежи">
+        <div class="stat-value">{{ paid_count_all }}</div>
+        <div class="stat-label">Оплачено</div>
+    </button>
+
+    <button type="button"
+        class="stat-card stat-card--action"
         data-status-filter=""
-        data-preset-filter="errors"
-        aria-pressed="{{ 'true' if current_preset == 'errors' or current_status in ['failed','cancelled','expired'] else 'false' }}"
-        aria-label="Показать проблемные платежи">
-        <div class="stat-value">{{ failed_count }}</div>
-        <div class="stat-label">Проблемы</div>
+        data-preset-filter=""
+        aria-pressed="false"
+        aria-label="Общая сумма по завершенным платежам">
+        <div class="stat-value">{{ completed_total_amount | rub }}</div>
+        <div class="stat-label">Сумма (completed)</div>
     </button>
 </div>
 

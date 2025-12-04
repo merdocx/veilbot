@@ -778,3 +778,48 @@ class PaymentRepository:
         except Exception as e:
             logger.error(f"Error checking payment existence: {e}")
             return False
+    
+    async def get_statistics(self) -> Dict[str, Any]:
+        """Получение статистики по платежам"""
+        try:
+            async with open_async_connection(self.db_path) as conn:
+                # Общее количество платежей
+                async with conn.execute("SELECT COUNT(*) FROM payments") as cursor:
+                    total_count = (await cursor.fetchone())[0] or 0
+                
+                # Количество pending платежей
+                async with conn.execute(
+                    "SELECT COUNT(*) FROM payments WHERE status = ?",
+                    (PaymentStatus.PENDING.value,)
+                ) as cursor:
+                    pending_count = (await cursor.fetchone())[0] or 0
+                
+                # Количество paid платежей
+                async with conn.execute(
+                    "SELECT COUNT(*) FROM payments WHERE status = ?",
+                    (PaymentStatus.PAID.value,)
+                ) as cursor:
+                    paid_count = (await cursor.fetchone())[0] or 0
+                
+                # Общая сумма по completed платежам
+                async with conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = ?",
+                    (PaymentStatus.COMPLETED.value,)
+                ) as cursor:
+                    completed_total = (await cursor.fetchone())[0] or 0
+                
+                return {
+                    "total_count": total_count,
+                    "pending_count": pending_count,
+                    "paid_count": paid_count,
+                    "completed_total_amount": completed_total,
+                }
+                
+        except Exception as e:
+            logger.error(f"Error getting payment statistics: {e}")
+            return {
+                "total_count": 0,
+                "pending_count": 0,
+                "paid_count": 0,
+                "completed_total_amount": 0,
+            }

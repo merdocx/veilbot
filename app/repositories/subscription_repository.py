@@ -283,16 +283,32 @@ class SubscriptionRepository:
         subscription_token: str,
         expires_at: int,
         tariff_id: Optional[int] = None,
+        traffic_limit_mb: Optional[int] = None,
     ) -> int:
         """Создать новую подписку (асинхронная версия)"""
         async with open_async_connection(self.db_path) as conn:
             now = int(time.time())
+            # Если traffic_limit_mb не передан, пытаемся получить из тарифа
+            if traffic_limit_mb is None and tariff_id:
+                try:
+                    async with conn.execute(
+                        "SELECT traffic_limit_mb FROM tariffs WHERE id = ?",
+                        (tariff_id,)
+                    ) as tariff_cursor:
+                        tariff_row = await tariff_cursor.fetchone()
+                        if tariff_row:
+                            traffic_limit_mb = tariff_row[0] or 0
+                except Exception:
+                    traffic_limit_mb = 0
+            if traffic_limit_mb is None:
+                traffic_limit_mb = 0
+            
             cursor = await conn.execute(
                 """
-                INSERT INTO subscriptions (user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified)
-                VALUES (?, ?, ?, ?, ?, 1, 0)
+                INSERT INTO subscriptions (user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified, traffic_limit_mb)
+                VALUES (?, ?, ?, ?, ?, 1, 0, ?)
                 """,
-                (user_id, subscription_token, now, expires_at, tariff_id),
+                (user_id, subscription_token, now, expires_at, tariff_id, traffic_limit_mb),
             )
             await conn.commit()
             return cursor.lastrowid
@@ -762,6 +778,38 @@ class SubscriptionRepository:
             c.execute("SELECT traffic_limit_mb FROM subscriptions WHERE id = ?", (subscription_id,))
             result = c.fetchone()
             logger.info(f"Verified subscription {subscription_id} traffic_limit_mb in DB: {result[0] if result else 'None'}")
+    
+    async def update_subscription_traffic_limit_async(self, subscription_id: int, traffic_limit_mb: int | None) -> None:
+        """Обновить лимит трафика подписки (в МБ) - асинхронная версия
+        Если traffic_limit_mb = None, поле не обновляется
+        Если traffic_limit_mb = 0, устанавливается безлимит (0 байт)
+        Если traffic_limit_mb > 0, устанавливается конкретный лимит"""
+        import logging
+        logger = logging.getLogger(__name__)
+        if traffic_limit_mb is None:
+            logger.info(f"Skipping traffic_limit_mb update for subscription {subscription_id} (None value)")
+            return
+        
+        async with open_async_connection(self.db_path) as conn:
+            now = int(time.time())
+            logger.info(f"Updating subscription {subscription_id} traffic_limit_mb: input={traffic_limit_mb}, saving={traffic_limit_mb}")
+            await conn.execute(
+                """
+                UPDATE subscriptions
+                SET traffic_limit_mb = ?,
+                    last_updated_at = ?
+                WHERE id = ?
+                """,
+                (traffic_limit_mb, now, subscription_id)
+            )
+            await conn.commit()
+            # Проверяем, что значение действительно обновилось
+            async with conn.execute(
+                "SELECT traffic_limit_mb FROM subscriptions WHERE id = ?",
+                (subscription_id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+                logger.info(f"Verified subscription {subscription_id} traffic_limit_mb in DB: {result[0] if result else 'None'}")
     
     def get_subscriptions_with_traffic_limits(self, now: int) -> List[Tuple]:
         """Получить активные подписки с лимитами трафика
