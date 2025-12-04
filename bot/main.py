@@ -176,6 +176,7 @@ def start_background_tasks(loop):
         check_and_create_keys_for_new_servers,
         retry_failed_subscription_notifications,
         sync_subscription_keys_with_active_servers,
+        cleanup_expired_payments,
     )
     
     background_tasks = [
@@ -188,6 +189,7 @@ def start_background_tasks(loop):
         check_and_create_keys_for_new_servers(),
         retry_failed_subscription_notifications(),
         sync_subscription_keys_with_active_servers(),
+        cleanup_expired_payments(),
     ]
     
     for task in background_tasks:

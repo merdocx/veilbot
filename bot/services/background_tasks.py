@@ -656,6 +656,40 @@ async def process_pending_paid_payments() -> None:
 
 
 
+async def cleanup_expired_payments() -> None:
+    """
+    Периодическая очистка истекших платежей:
+    перевод старых pending платежей в статус expired.
+    """
+
+    async def job() -> None:
+        try:
+            # Используем новый платежный модуль через memory_optimizer (как в других задачах)
+            from memory_optimizer import get_payment_service
+
+            payment_service = get_payment_service()
+            if not payment_service:
+                logging.debug("Payment service is not available for cleanup_expired_payments")
+                return
+
+            # 24 часа по умолчанию — соответствует смыслу истечения платежной ссылки
+            cleaned_count = await payment_service.cleanup_expired_payments(hours=24)
+            if cleaned_count:
+                logging.info(
+                    "[PAYMENTS] cleanup_expired_payments marked %s payments as expired",
+                    cleaned_count,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Error in cleanup_expired_payments job: %s", exc, exc_info=True)
+
+    await _run_periodic(
+        "cleanup_expired_payments",
+        interval_seconds=3600,  # раз в час
+        job=job,
+        max_backoff=21600,  # до 6 часов при повторяющихся ошибках
+    )
+
+
 async def auto_delete_expired_subscriptions() -> None:
     """Автоматическое удаление истекших подписок с grace period 24 часа."""
     

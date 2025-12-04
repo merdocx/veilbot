@@ -663,13 +663,13 @@ class PaymentService:
     
     async def cleanup_expired_payments(self, hours: int = 24) -> int:
         """
-        Очистка истекших платежей
+        Очистка истекших платежей (перевод старых pending в статус expired)
         
         Args:
             hours: Количество часов для определения истечения
             
         Returns:
-            Количество удаленных платежей
+            Количество помеченных как expired платежей
         """
         try:
             # Получаем истекшие платежи
@@ -684,7 +684,7 @@ class PaymentService:
             # Помечаем как истекшие
             cleaned_count = 0
             for payment in expired_payments:
-                payment.mark_as_failed()
+                payment.mark_as_expired()
                 await self.payment_repo.update(payment)
                 cleaned_count += 1
             

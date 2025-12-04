@@ -98,6 +98,11 @@ class Payment:
         self.status = PaymentStatus.FAILED
         self.updated_at = datetime.now(timezone.utc)
     
+    def mark_as_expired(self):
+        """Отметить как истекший (не был оплачен в отведенное время)"""
+        self.status = PaymentStatus.EXPIRED
+        self.updated_at = datetime.now(timezone.utc)
+    
     def mark_as_cancelled(self):
         """Отметить как отмененный"""
         self.status = PaymentStatus.CANCELLED
