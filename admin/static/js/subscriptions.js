@@ -295,12 +295,42 @@
         }
     };
 
-    const handleSyncKeys = async () => {
-        const confirmed = window.confirm('Запустить синхронизацию ключей с серверами? Это может занять некоторое время.');
-        if (!confirmed) {
+    const openSyncKeysModal = () => {
+        const syncModal = document.getElementById('sync-keys-modal');
+        if (!syncModal) {
+            console.warn('[VeilBot][subscriptions] Sync keys modal not found');
             return;
         }
+        syncModal.classList.add('vb-modal--open');
+        syncModal.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('vb-modal-open');
+        
+        const firstFocusable = syncModal.querySelector('[data-modal-focus], input, button, select, textarea');
+        if (firstFocusable && typeof firstFocusable.focus === 'function') {
+            firstFocusable.focus();
+        }
+    };
 
+    const closeSyncKeysModal = () => {
+        const syncModal = document.getElementById('sync-keys-modal');
+        if (!syncModal) {
+            return;
+        }
+        syncModal.classList.remove('vb-modal--open');
+        syncModal.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('vb-modal-open');
+        const syncForm = document.getElementById('syncKeysForm');
+        if (syncForm) {
+            syncForm.reset();
+            // Восстанавливаем значения по умолчанию
+            syncForm.querySelector('input[name="dry_run"][value="true"]').checked = true;
+            syncForm.querySelector('input[name="server_scope"][value="all"]').checked = true;
+            syncForm.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+            document.getElementById('server-select-field').style.display = 'none';
+        }
+    };
+
+    const handleSyncKeys = async (syncParams) => {
         const syncButton = document.getElementById('sync-keys-btn');
         if (syncButton) {
             syncButton.disabled = true;
@@ -308,16 +338,18 @@
             syncButton.innerHTML = '<span class="material-icons icon-small">hourglass_empty</span> Синхронизация...';
             
             try {
-                // Создаем AbortController для таймаута (5 минут)
+                // Создаем AbortController для таймаута (10 минут)
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+                const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000);
                 
                 const response = await fetch('/subscriptions/sync-keys', {
                     method: 'POST',
                     headers: {
                         'Accept': 'application/json',
+                        'Content-Type': 'application/json',
                         'X-Requested-With': 'XMLHttpRequest',
                     },
+                    body: JSON.stringify(syncParams),
                     signal: controller.signal,
                 });
                 
@@ -405,7 +437,7 @@
                 let errorMessage = 'Неизвестная ошибка';
                 
                 if (error.name === 'AbortError') {
-                    errorMessage = 'Синхронизация прервана по таймауту (более 5 минут). Процесс может продолжаться на сервере.';
+                    errorMessage = 'Синхронизация прервана по таймауту (более 10 минут). Процесс может продолжаться на сервере.';
                 } else if (error instanceof TypeError && error.message.includes('fetch')) {
                     errorMessage = 'Ошибка сети при синхронизации. Проверьте подключение к интернету.';
                 } else if (error instanceof Error) {
@@ -420,6 +452,48 @@
                 syncButton.classList.remove('btn-success');
             }
         }
+    };
+
+    const handleSyncKeysFormSubmit = async (e) => {
+        e.preventDefault();
+        
+        const form = e.target;
+        const formData = new FormData(form);
+        
+        // Собираем параметры
+        const syncParams = {
+            dry_run: formData.get('dry_run') === 'true',
+            server_scope: formData.get('server_scope'),
+            server_id: formData.get('server_scope') === 'single' ? parseInt(formData.get('server_id')) : null,
+            create_missing: formData.has('create_missing'),
+            delete_orphaned_on_servers: formData.has('delete_orphaned_on_servers'),
+            delete_inactive_server_keys: formData.has('delete_inactive_server_keys'),
+            sync_configs: formData.has('sync_configs'),
+            include_v2ray: formData.has('include_v2ray'),
+            include_outline: formData.has('include_outline'),
+        };
+        
+        // Валидация: хотя бы один протокол должен быть выбран
+        if (!syncParams.include_v2ray && !syncParams.include_outline) {
+            const protocolHint = document.getElementById('protocol-hint');
+            if (protocolHint) {
+                protocolHint.style.display = 'block';
+            }
+            notify('Необходимо выбрать хотя бы один протокол (V2Ray или Outline)', 'error', 5000);
+            return;
+        }
+        
+        // Валидация: если выбран один сервер, должен быть указан server_id
+        if (syncParams.server_scope === 'single' && !syncParams.server_id) {
+            notify('Необходимо выбрать сервер при выборе "Один сервер"', 'error', 5000);
+            return;
+        }
+        
+        // Закрываем модальное окно
+        closeSyncKeysModal();
+        
+        // Запускаем синхронизацию
+        await handleSyncKeys(syncParams);
     };
 
     const handleTableClick = (event) => {
@@ -486,7 +560,65 @@
 
         const syncButton = document.getElementById('sync-keys-btn');
         if (syncButton) {
-            syncButton.addEventListener('click', handleSyncKeys);
+            syncButton.addEventListener('click', openSyncKeysModal);
+        }
+        
+        // Обработчик формы синхронизации
+        const syncKeysForm = document.getElementById('syncKeysForm');
+        if (syncKeysForm) {
+            syncKeysForm.addEventListener('submit', handleSyncKeysFormSubmit);
+        }
+        
+        // Показываем/скрываем выбор сервера в зависимости от выбранной области
+        const serverScopeRadios = document.querySelectorAll('input[name="server_scope"]');
+        const serverSelectField = document.getElementById('server-select-field');
+        const serverIdSelect = document.getElementById('server_id');
+        
+        serverScopeRadios.forEach(radio => {
+            radio.addEventListener('change', () => {
+                if (radio.value === 'single') {
+                    if (serverSelectField) {
+                        serverSelectField.style.display = 'block';
+                    }
+                    if (serverIdSelect) {
+                        serverIdSelect.required = true;
+                    }
+                } else {
+                    if (serverSelectField) {
+                        serverSelectField.style.display = 'none';
+                    }
+                    if (serverIdSelect) {
+                        serverIdSelect.required = false;
+                        serverIdSelect.value = '';
+                    }
+                }
+            });
+        });
+        
+        // Скрываем подсказку об ошибке протоколов при изменении чекбоксов
+        const protocolCheckboxes = document.querySelectorAll('input[name="include_v2ray"], input[name="include_outline"]');
+        const protocolHint = document.getElementById('protocol-hint');
+        protocolCheckboxes.forEach(checkbox => {
+            checkbox.addEventListener('change', () => {
+                if (protocolHint) {
+                    protocolHint.style.display = 'none';
+                }
+            });
+        });
+        
+        // Обработчик закрытия модального окна синхронизации
+        const syncModal = document.getElementById('sync-keys-modal');
+        if (syncModal) {
+            const closeButtons = syncModal.querySelectorAll('[data-modal-close]');
+            closeButtons.forEach(btn => {
+                btn.addEventListener('click', closeSyncKeysModal);
+            });
+            
+            // Закрытие по клику на backdrop
+            const backdrop = syncModal.querySelector('.vb-modal__backdrop');
+            if (backdrop) {
+                backdrop.addEventListener('click', closeSyncKeysModal);
+            }
         }
 
         if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {

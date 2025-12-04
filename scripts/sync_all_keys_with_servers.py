@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Скрипт для синхронизации всех ключей V2Ray и Outline с серверами
-Обновляет client_config в БД актуальными данными с серверов
-Удаляет ключи с серверов, которых нет в базе данных
+Полностью переписан согласно ТЗ для оптимизации и упрощения логики
 """
 import sys
 import os
@@ -28,21 +27,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def extract_sid_sni(config: str) -> Tuple[Optional[str], Optional[str]]:
-    """Извлечь short id и SNI из конфигурации"""
-    if not config or '?' not in config:
-        return None, None
-    
-    try:
-        params_str = config.split('?')[1].split('#')[0]
-        params = urllib.parse.parse_qs(params_str)
-        sid = params.get('sid', [None])[0]
-        sni = params.get('sni', [None])[0]
-        return sid, sni
-    except Exception:
-        return None, None
-
-
 def extract_v2ray_uuid(remote_entry: Dict[str, Any]) -> Optional[str]:
     """Извлечь UUID ключа V2Ray из ответа сервера"""
     uuid = remote_entry.get("uuid")
@@ -63,1046 +47,1310 @@ def extract_outline_key_id(remote_entry: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-async def create_missing_keys_for_available_servers(server_id: Optional[int] = None) -> Dict[str, Any]:
-    """
-    Создать недостающие ключи V2Ray на серверах, доступных для покупки.
-    Рассматриваются только активные подписки.
-    """
-    stats = {
-        "missing_pairs_total": 0,
-        "missing_keys_created": 0,
-        "missing_keys_failed": 0,
-        "servers_checked": 0,
-        "servers_with_missing_keys": 0,
-    }
-
-    now = int(time.time())
-
-    with get_db_cursor() as cursor:
-        query = """
-            SELECT id, name, api_url, api_key, domain, available_for_purchase, max_keys
-            FROM servers
-            WHERE protocol = 'v2ray'
-              AND active = 1
-              AND available_for_purchase = 1
-        """
-        params: List[Any] = []
-        if server_id is not None:
-            query += " AND id = ?"
-            params.append(server_id)
-
-        cursor.execute(query, params)
-        server_rows = cursor.fetchall()
-
-    if not server_rows:
-        return stats
-
-    servers = [dict(row) for row in server_rows]
-    stats["servers_checked"] = len(servers)
-
-    with get_db_cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT id, user_id, subscription_token, expires_at, tariff_id
-            FROM subscriptions
-            WHERE is_active = 1
-              AND expires_at > ?
-            """,
-            (now,),
-        )
-        subscription_rows = cursor.fetchall()
-
-    if not subscription_rows:
-        return stats
-
-    subscriptions = [dict(row) for row in subscription_rows]
-
-    server_ids = [server["id"] for server in servers]
-    # Сначала собираем все пары (server_id, subscription_id) из БД
-    db_pairs_by_server: Dict[int, Dict[int, str]] = {}  # {server_id: {subscription_id: v2ray_uuid}}
-    if server_ids:
-        placeholders = ",".join("?" for _ in server_ids)
-        with get_db_cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT server_id, subscription_id, v2ray_uuid
-                FROM v2ray_keys
-                WHERE subscription_id IS NOT NULL
-                  AND server_id IN ({placeholders})
-                """,
-                server_ids,
-            )
-            for row in cursor.fetchall():
-                server_id_db, sub_id_db, uuid_db = row
-                if server_id_db not in db_pairs_by_server:
-                    db_pairs_by_server[server_id_db] = {}
-                db_pairs_by_server[server_id_db][sub_id_db] = uuid_db
-
-    # Проверяем наличие ключей на серверах и формируем список недостающих
-    missing_pairs_by_server: Dict[int, List[Dict[str, Any]]] = {}
-    api_semaphore = asyncio.Semaphore(5)  # Ограничиваем параллелизм проверок
+class ServerClientPool:
+    """Пул клиентов для переиспользования соединений к серверам"""
     
-    async def check_key_on_server(server_id: int, sub_id: int, v2ray_uuid: str, 
-                                  api_url: str, api_key: str, domain: str) -> bool:
-        """Проверить наличие ключа на сервере"""
-        async with api_semaphore:
+    def __init__(self):
+        self._clients: Dict[int, Any] = {}
+        self._outline_keys_cache: Dict[int, List[Dict]] = {}
+        self._v2ray_keys_cache: Dict[int, List[Dict]] = {}
+    
+    async def get_client(self, server: Dict[str, Any]) -> Optional[Any]:
+        """Получить или создать клиент для сервера"""
+        server_id = server["id"]
+        if server_id not in self._clients:
             try:
-                server_config = {
-                    "api_url": api_url,
-                    "api_key": api_key,
-                    "domain": domain,
-                }
-                protocol_client = ProtocolFactory.create_protocol("v2ray", server_config)
+                if server["protocol"] == "v2ray":
+                    if not server.get("api_url") or not server.get("api_key"):
+                        return None
+                    self._clients[server_id] = ProtocolFactory.create_protocol("v2ray", {
+                        "api_url": server["api_url"],
+                        "api_key": server["api_key"],
+                        "domain": server.get("domain"),
+                    })
+                elif server["protocol"] == "outline":
+                    if not server.get("api_url"):
+                        return None
+                    self._clients[server_id] = ProtocolFactory.create_protocol("outline", {
+                        "api_url": server["api_url"],
+                        "cert_sha256": server.get("cert_sha256") or "",
+                    })
+                else:
+                    return None
+            except Exception as e:
+                logger.warning(f"Не удалось создать клиент для сервера #{server_id}: {e}")
+                return None
+        return self._clients.get(server_id)
+    
+    async def get_all_keys_cached(self, server_id: int, protocol: str, client: Any) -> List[Dict]:
+        """Получить все ключи с сервера с кэшированием"""
+        cache_key = server_id
+        if protocol == "outline":
+            if cache_key not in self._outline_keys_cache:
                 try:
-                    key_email = f"user_subscription_{sub_id}@veilbot.com"
-                    await protocol_client.get_user_config(
-                        v2ray_uuid,
-                        {
-                            'domain': domain or 'veil-bot.ru',
-                            'port': 443,
-                            'email': key_email,
-                        }
+                    self._outline_keys_cache[cache_key] = await asyncio.wait_for(
+                        client.get_all_keys(),
+                        timeout=30.0
                     )
-                    return True
+                except asyncio.TimeoutError:
+                    logger.warning(f"Таймаут при получении ключей с сервера #{server_id}")
+                    return []
                 except Exception as e:
-                    error_str = str(e).lower()
-                    if '404' in error_str or 'not found' in error_str:
-                        return False
-                    # Для других ошибок считаем, что ключ существует
-                    return True
-                finally:
-                    await protocol_client.close()
-            except Exception:
-                # В случае ошибки считаем, что ключ существует
-                return True
-    
-    # Проверяем ключи на серверах параллельно
-    check_tasks = []
-    server_info_map = {s["id"]: s for s in servers}
-    
-    for server_id, sub_dict in db_pairs_by_server.items():
-        server_info = server_info_map.get(server_id)
-        if not server_info:
-            continue
-        api_url = server_info.get("api_url")
-        api_key = server_info.get("api_key")
-        domain = server_info.get("domain")
-        if not api_url or not api_key:
-            continue
-        
-        for sub_id, v2ray_uuid in sub_dict.items():
-            check_tasks.append((
-                server_id, sub_id, v2ray_uuid,
-                check_key_on_server(server_id, sub_id, v2ray_uuid, api_url, api_key, domain or '')
-            ))
-    
-    # Выполняем проверки параллельно
-    existing_pairs = set()
-    if check_tasks:
-        check_results = await asyncio.gather(*[task[3] for task in check_tasks], return_exceptions=True)
-        keys_to_delete = []
-        
-        for i, (server_id, sub_id, v2ray_uuid, _) in enumerate(check_tasks):
-            result = check_results[i]
-            if isinstance(result, Exception) or result:
-                # Ключ существует на сервере или ошибка проверки
-                existing_pairs.add((server_id, sub_id))
-            else:
-                # Ключ НЕ существует на сервере - нужно пересоздать
-                logger.info(
-                    f"Ключ для подписки {sub_id} на сервере {server_id} "
-                    f"есть в БД (UUID: {v2ray_uuid[:8]}...), но отсутствует на сервере, будет пересоздан"
-                )
-                # Найдем key_id для удаления
-                with get_db_cursor() as cursor:
-                    cursor.execute(
-                        "SELECT id FROM v2ray_keys WHERE server_id = ? AND subscription_id = ?",
-                        (server_id, sub_id)
-                    )
-                    key_row = cursor.fetchone()
-                    if key_row:
-                        keys_to_delete.append(key_row[0])
-        
-        # Удаляем записи из БД для ключей, которых нет на сервере
-        if keys_to_delete:
-            with get_db_cursor(commit=True) as cursor:
-                cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                    logger.warning(f"Ошибка получения ключей с сервера #{server_id}: {e}")
+                    return []
+            return self._outline_keys_cache.get(cache_key, [])
+        elif protocol == "v2ray":
+            if cache_key not in self._v2ray_keys_cache:
                 try:
-                    placeholders = ','.join('?' * len(keys_to_delete))
-                    cursor.execute(f"DELETE FROM v2ray_keys WHERE id IN ({placeholders})", keys_to_delete)
-                    logger.info(f"Удалено {len(keys_to_delete)} записей из БД для пересоздания на серверах")
-                finally:
-                    cursor.connection.execute("PRAGMA foreign_keys = ON")
+                    self._v2ray_keys_cache[cache_key] = await asyncio.wait_for(
+                        client.get_all_keys(),
+                        timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Таймаут при получении ключей с сервера #{server_id}")
+                    return []
+                except Exception as e:
+                    logger.warning(f"Ошибка получения ключей с сервера #{server_id}: {e}")
+                    return []
+            return self._v2ray_keys_cache.get(cache_key, [])
+        return []
     
-    # Формируем список недостающих пар (теперь без ключей, которых нет на сервере)
-    for server in servers:
-        server_missing: List[Dict[str, Any]] = []
-        for subscription in subscriptions:
-            sub_id = subscription["id"]
-            if sub_id is None:
-                continue
-            # Проверяем, есть ли ключ в БД И на сервере
-            server_id = server["id"]
-            if (server_id, sub_id) in existing_pairs:
-                continue
-            server_missing.append(subscription)
-        if server_missing:
-            missing_pairs_by_server[server["id"]] = server_missing
-            stats["missing_pairs_total"] += len(server_missing)
-
-    if stats["missing_pairs_total"] == 0:
-        return stats
-
-    for server in servers:
-        pending_subscriptions = missing_pairs_by_server.get(server["id"])
-        if not pending_subscriptions:
-            continue
-
-        max_keys = int(server.get("max_keys") or 0)
-        capacity_limited = max_keys > 0
-        active_keys = 0
-        if capacity_limited:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT COUNT(*) FROM v2ray_keys
-                    WHERE server_id = ? AND expiry_at > ?
-                    """,
-                    (server["id"], now),
-                )
-                result = cursor.fetchone()
-                active_keys = (result[0] if result else 0) or 0
-
-        api_url = server.get("api_url")
-        api_key = server.get("api_key")
-        domain = server.get("domain")
-        server_name = server.get("name") or f"Server #{server['id']}"
-
-        if not api_url or not api_key:
-            logger.warning(
-                "Пропускаем сервер %s (id=%s) — отсутствуют api_url или api_key",
-                server_name,
-                server["id"],
-            )
-            stats["missing_keys_failed"] += len(pending_subscriptions)
-            continue
-
-        if capacity_limited and active_keys >= max_keys:
-            logger.warning(
-                "Пропускаем сервер %s (id=%s) — достигнут лимит ключей (%s)",
-                server_name,
-                server["id"],
-                max_keys,
-            )
-            stats["missing_keys_failed"] += len(pending_subscriptions)
-            continue
-
-        protocol_client = None
-        try:
-            server_config = {
-                "api_url": api_url,
-                "api_key": api_key,
-                "domain": domain,
-            }
-            protocol_client = ProtocolFactory.create_protocol("v2ray", server_config)
-        except Exception as client_error:
-            logger.error(
-                "Не удалось создать клиента V2Ray для сервера %s (id=%s): %s",
-                server_name,
-                server["id"],
-                client_error,
-            )
-            stats["missing_keys_failed"] += len(pending_subscriptions)
-            continue
-
-        stats["servers_with_missing_keys"] += 1
-
-        for subscription in pending_subscriptions:
-            sub_id = subscription["id"]
-            user_id = subscription["user_id"]
-            token = subscription["subscription_token"]
-            expires_at = subscription["expires_at"]
-            tariff_id = subscription["tariff_id"]
-            key_email = f"{user_id}_subscription_{sub_id}@veilbot.com"
-
-            if capacity_limited and active_keys >= max_keys:
-                logger.info(
-                    "  Сервер %s (id=%s) достиг лимита ключей (%s), пропускаем подписку %s",
-                    server_name,
-                    server["id"],
-                    max_keys,
-                    sub_id,
-                )
-                stats["missing_keys_failed"] += 1
-                continue
-
-            # Перепроверяем в БД перед созданием (мог появиться конкурентно)
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT id, v2ray_uuid FROM v2ray_keys
-                    WHERE server_id = ? AND subscription_id = ?
-                    """,
-                    (server["id"], sub_id),
-                )
-                existing_key = cursor.fetchone()
-                if existing_key:
-                    key_id, v2ray_uuid = existing_key
-                    # Проверяем, существует ли ключ на сервере
-                    try:
-                        key_email = f"{user_id}_subscription_{sub_id}@veilbot.com"
-                        fetched_config = await protocol_client.get_user_config(
-                            v2ray_uuid,
-                            {
-                                'domain': domain,
-                                'port': 443,
-                                'email': key_email,
-                            }
-                        )
-                        # Если ключ существует на сервере, пропускаем создание
-                        existing_pairs.add((server["id"], sub_id))
-                        continue
-                    except Exception as e:
-                        # Если 404 - ключа нет на сервере, удаляем запись из БД и создаем заново
-                        error_str = str(e).lower()
-                        if '404' in error_str or 'not found' in error_str:
-                            logger.info(
-                                f"  Ключ {key_id} (UUID: {v2ray_uuid[:8]}...) для подписки {sub_id} "
-                                f"есть в БД, но отсутствует на сервере {server_name}, пересоздаем"
-                            )
-                            with get_db_cursor(commit=True) as del_cursor:
-                                del_cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_id,))
-                        else:
-                            # Для других ошибок считаем, что ключ существует
-                            existing_pairs.add((server["id"], sub_id))
-                            continue
-
-            created_uuid: Optional[str] = None
+    async def close_all(self):
+        """Закрыть все клиенты"""
+        for server_id, client in self._clients.items():
             try:
-                user_data = await protocol_client.create_user(key_email, name=server_name)
-                if not user_data or not user_data.get("uuid"):
-                    raise RuntimeError("V2Ray сервер не вернул uuid при создании пользователя")
-
-                created_uuid = user_data["uuid"]
-
-                client_config = await protocol_client.get_user_config(
-                    created_uuid,
-                    {
-                        "domain": domain or settings.domain or "veil-bot.ru",
-                        "port": 443,
-                        "email": key_email,
-                    },
-                )
-
-                if "vless://" in client_config:
-                    for line in client_config.split("\n"):
-                        candidate = line.strip()
-                        if candidate.startswith("vless://"):
-                            client_config = candidate
-                            break
-
-                client_config = normalize_vless_host(
-                    client_config,
-                    domain,
-                    api_url or "",
-                )
-                client_config = remove_fragment_from_vless(client_config)
-
-                with get_db_cursor(commit=True) as cursor:
-                    with safe_foreign_keys_off(cursor):
-                        cursor.execute(
-                            """
-                            INSERT INTO v2ray_keys
-                            (server_id, user_id, v2ray_uuid, email, created_at, expiry_at,
-                             tariff_id, client_config, subscription_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                server["id"],
-                                user_id,
-                                created_uuid,
-                                key_email,
-                                int(time.time()),
-                                expires_at,
-                                tariff_id,
-                                client_config,
-                                sub_id,
-                            ),
-                        )
-
-                invalidate_subscription_cache(token)
-                existing_pairs.add((server["id"], sub_id))
-                stats["missing_keys_created"] += 1
-                if capacity_limited:
-                    active_keys += 1
-            except Exception as creation_error:
-                stats["missing_keys_failed"] += 1
-                logger.error(
-                    "Не удалось создать недостающий ключ для подписки %s на сервере %s (id=%s): %s",
-                    sub_id,
-                    server_name,
-                    server["id"],
-                    creation_error,
-                    exc_info=True,
-                )
-                if protocol_client and created_uuid:
-                    try:
-                        await protocol_client.delete_user(created_uuid)
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            "Не удалось удалить незафиксированный ключ %s на сервере %s: %s",
-                            created_uuid,
-                            server["id"],
-                            cleanup_error,
-                        )
-
-        if protocol_client:
-            try:
-                await protocol_client.close()
-            except Exception:
-                pass
-
-    return stats
+                await client.close()
+            except Exception as e:
+                logger.warning(f"Ошибка закрытия клиента для сервера #{server_id}: {e}")
+        self._clients.clear()
+        self._outline_keys_cache.clear()
+        self._v2ray_keys_cache.clear()
 
 
-async def sync_outline_server_keys(
-    server_id: int,
-    server_name: str,
+async def check_server_availability(
+    protocol: str,
     api_url: str,
-    cert_sha256: Optional[str],
-    dry_run: bool,
-    delete_orphaned: bool,
-    orphan_stats: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Синхронизировать Outline ключи для одного сервера (только удаление лишних)"""
-    result = {
-        "protocol": "outline",
-        "updated": 0,
-        "unchanged": 0,
-        "failed": 0,
-    }
-    
-    if not delete_orphaned:
-        return result
-    
+    api_key: Optional[str] = None,
+    cert_sha256: Optional[str] = None,
+    timeout: float = 10.0
+) -> bool:
+    """Проверить доступность сервера через API"""
     try:
-        # Получаем ключи из БД
-        with get_db_cursor() as cursor:
-            cursor.execute("""
-                SELECT key_id, email
-                FROM keys
-                WHERE server_id = ? AND (key_id IS NOT NULL AND key_id != '')
-            """, (server_id,))
-            db_keys = cursor.fetchall()
-        
-        db_key_ids: Set[str] = {str(row[0]).strip() for row in db_keys if row[0]}
-        db_emails: Set[str] = {(row[1] or "").lower().strip() for row in db_keys if row[1]}
-        
-        # Получаем ключи с сервера
-        server_config = {
-            'api_url': api_url,
-            'cert_sha256': cert_sha256 or '',
-        }
-        protocol_client = ProtocolFactory.create_protocol('outline', server_config)
-        
-        try:
-            remote_keys = await protocol_client.get_all_keys()
-        except Exception as remote_error:
-            logger.error(f"    ✗ Не удалось получить список ключей с сервера {server_name}: {remote_error}")
-            orphan_stats["orphaned_remote_delete_errors"] += 1
-            return result
-        
-        keys_to_delete: List[Dict[str, Any]] = []
-        for remote_entry in remote_keys or []:
-            remote_key_id = extract_outline_key_id(remote_entry)
-            if not remote_key_id or remote_key_id in db_key_ids:
-                continue
-            
-            remote_name = (remote_entry.get("name") or "").lower().strip()
-            if remote_name in db_emails:
-                continue
-            
-            keys_to_delete.append({
-                "key_id": remote_key_id,
-                "name": remote_entry.get("name"),
-            })
-        
-        if keys_to_delete:
-            orphan_stats["servers_with_orphaned_keys"] += 1
-            orphan_stats["orphaned_remote_detected"] += len(keys_to_delete)
-            logger.info(f"    Обнаружено {len(keys_to_delete)} ключей на сервере без соответствия в БД")
-            
-            if dry_run:
-                logger.info("    [DRY RUN] Ключи не удалялись")
-            else:
-                for key_info in keys_to_delete:
-                    key_id = key_info["key_id"]
-                    try:
-                        deleted = await protocol_client.delete_user(key_id)
-                        if deleted:
-                            orphan_stats["orphaned_remote_deleted"] += 1
-                            logger.info(f"      ✓ Удален лишний ключ {key_id}")
-                        else:
-                            orphan_stats["orphaned_remote_delete_errors"] += 1
-                            logger.warning(f"      ✗ Не удалось удалить лишний ключ {key_id}")
-                    except Exception as delete_error:
-                        orphan_stats["orphaned_remote_delete_errors"] += 1
-                        logger.error(
-                            f"      ✗ Ошибка при удалении ключа {key_id}: {delete_error}",
-                            exc_info=True,
-                        )
+        if protocol == "v2ray":
+            server_config = {"api_url": api_url, "api_key": api_key or ""}
+            protocol_client = ProtocolFactory.create_protocol("v2ray", server_config)
+        elif protocol == "outline":
+            server_config = {"api_url": api_url, "cert_sha256": cert_sha256 or ""}
+            protocol_client = ProtocolFactory.create_protocol("outline", server_config)
         else:
-            logger.info("    Лишних ключей на сервере не найдено")
+            return False
         
         try:
-            await protocol_client.close()
-        except Exception:
-            pass
-            
+            # Пытаемся получить список ключей с таймаутом
+            await asyncio.wait_for(protocol_client.get_all_keys(), timeout=timeout)
+            return True
+        finally:
+            # Закрываем клиент только если у него есть метод close
+            if hasattr(protocol_client, 'close'):
+                try:
+                    await protocol_client.close()
+                except Exception:
+                    pass
+    except asyncio.TimeoutError:
+        logger.warning(f"Таймаут при проверке доступности сервера {api_url}")
+        return False
     except Exception as e:
-        logger.error(f"    ✗ Ошибка обработки Outline сервера {server_name}: {e}", exc_info=True)
-        result["failed"] = 1
-    
-    return result
-
-
-async def _sync_single_key(
-    key_data: tuple,
-    protocol_client: Any,
-    domain: str,
-    api_url: str,
-    dry_run: bool,
-    api_semaphore: asyncio.Semaphore,
-) -> Dict[str, Any]:
-    """
-    Синхронизировать один ключ с сервером.
-    
-    Returns:
-        dict с результатами: updated, unchanged, failed, key_id, new_config, subscription_id
-    """
-    (
-        key_id,
-        v2ray_uuid,
-        old_client_config,
-        server_id_db,
-        user_id,
-        email,
-        subscription_id,
-        server_name_db,
-        domain_db,
-        api_url_db,
-        api_key_db,
-        active
-    ) = key_data
-    
-    result = {
-        'updated': False,
-        'unchanged': False,
-        'failed': False,
-        'key_id': key_id,
-        'new_config': None,
-        'subscription_id': subscription_id,
-        'error_message': None,
-        'v2ray_uuid': v2ray_uuid,
-        'server_name': server_name_db,
-    }
-    
-    async with api_semaphore:  # Rate limiting
-        try:
-            logger.debug(f"  Ключ #{key_id} (UUID: {v2ray_uuid[:8]}...)")
-            
-            # Получаем актуальную конфигурацию с сервера
-            fetched_config = await protocol_client.get_user_config(
-                v2ray_uuid,
-                {
-                    'domain': domain,
-                    'port': 443,
-                    'email': f'user_{user_id}@veilbot.com',
-                },
-            )
-            
-            # Извлекаем VLESS URL из конфигурации
-            if 'vless://' in fetched_config:
-                lines = fetched_config.split('\n')
-                for line in lines:
-                    if line.strip().startswith('vless://'):
-                        fetched_config = line.strip()
-                        break
-            
-            # Нормализуем конфигурацию
-            new_client_config = normalize_vless_host(
-                fetched_config,
-                domain,
-                api_url or ''
-            )
-            
-            # Удаляем фрагмент (email) из конфигурации
-            new_client_config = remove_fragment_from_vless(new_client_config)
-            
-            # Извлекаем short id и SNI для сравнения
-            old_sid, old_sni = extract_sid_sni(old_client_config) if old_client_config else (None, None)
-            new_sid, new_sni = extract_sid_sni(new_client_config)
-            
-            # Проверяем, изменилась ли конфигурация
-            if old_client_config == new_client_config:
-                logger.debug(f"    ✓ Конфигурация не изменилась")
-                result['unchanged'] = True
-                return result
-            
-            # Логируем изменения
-            if old_sid != new_sid:
-                logger.info(f"    🔄 Short ID изменился: {old_sid[:8] if old_sid else 'N/A'}... -> {new_sid[:8] if new_sid else 'N/A'}...")
-            if old_sni != new_sni:
-                logger.info(f"    🔄 SNI изменился: {old_sni or 'N/A'} -> {new_sni or 'N/A'}")
-            
-            result['new_config'] = new_client_config
-            result['updated'] = True
-            
-            if dry_run:
-                logger.info(f"    [DRY RUN] Ключ #{key_id} будет обновлен")
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"    ✗ Ошибка при синхронизации ключа #{key_id}: {e}")
-            result['failed'] = True
-            result['updated'] = False
-            result['error_message'] = error_msg
-    
-    return result
+        logger.warning(f"Сервер {api_url} недоступен: {e}")
+        return False
 
 
 async def sync_all_keys_with_servers(
     dry_run: bool = False,
     server_id: Optional[int] = None,
-    ensure_missing_keys: bool = False,
-    delete_orphaned_server_keys: bool = False,
+    create_missing: bool = True,
+    delete_orphaned_on_servers: bool = True,
+    delete_inactive_server_keys: bool = True,
+    sync_configs: bool = True,
+    include_v2ray: bool = True,
+    include_outline: bool = True,
 ) -> dict:
     """
-    Синхронизировать все ключи V2Ray и Outline с серверами.
+    Синхронизировать все ключи V2Ray и Outline с серверами согласно ТЗ.
     
-    Оптимизированная версия с:
-    - Параллельной обработкой ключей батчами (по 50 ключей одновременно)
-    - Батчингом обновлений БД (executemany вместо отдельных UPDATE)
-    - Батчингом инвалидации кэша (один запрос для получения всех токенов подписок)
-    - Rate limiting для API-запросов (Semaphore для ограничения параллелизма)
+    Алгоритм:
+    1. Подготовка данных
+    2. Удаление ключей для недоступных серверов (active = 0 или удалены) - если delete_inactive_server_keys=True
+    3. Синхронизация V2Ray ключей (если include_v2ray=True):
+       - Создание недостающих ключей (только для available_for_purchase = 1) - если create_missing=True
+       - Удаление лишних ключей с серверов - если delete_orphaned_on_servers=True
+       - Синхронизация VLESS ссылок (для всех активных серверов) - если sync_configs=True
+    4. Синхронизация Outline ключей (если include_outline=True):
+       - Создание недостающих ключей на сервере №8 (если available_for_purchase = 1) - если create_missing=True
+       - Удаление лишних ключей - если delete_orphaned_on_servers=True
+       - Синхронизация access_url (для всех активных серверов) - если sync_configs=True
     
     Args:
-        dry_run: Если True, только показывает что будет обновлено, не изменяет БД и не удаляет ключи
+        dry_run: Если True, только показывает что будет обновлено, не изменяет БД
         server_id: Если указан, синхронизирует только ключи с этого сервера
-        ensure_missing_keys: Если True, создает недостающие V2Ray ключи на серверах
-        delete_orphaned_server_keys: Если True, удаляет на серверах ключи, которых нет в БД
+        create_missing: Создавать недостающие ключи для подписок
+        delete_orphaned_on_servers: Удалять лишние ключи с серверов (которых нет в БД)
+        delete_inactive_server_keys: Удалять ключи для неактивных/удалённых серверов из БД
+        sync_configs: Синхронизировать конфигурации (VLESS / access_url)
+        include_v2ray: Включать синхронизацию V2Ray ключей
+        include_outline: Включать синхронизацию Outline ключей
     
     Returns:
         dict: Словарь со статистикой синхронизации
     """
-    missing_stats = {
-        "missing_pairs_total": 0,
-        "missing_keys_created": 0,
-        "missing_keys_failed": 0,
-        "servers_checked": 0,
-        "servers_with_missing_keys": 0,
+    start_time = time.time()
+    stats = {
+        "servers_processed": 0,
+        "servers_unavailable": 0,
+        "keys_deleted_from_db": 0,
+        "keys_deleted_from_servers": 0,
+        "v2ray_keys_created": 0,
+        "v2ray_configs_updated": 0,
+        "outline_keys_created": 0,
+        "outline_configs_updated": 0,
+        "outline_keys_removed": 0,
+        "errors": 0,
+        "errors_details": [],
+        "duration_seconds": 0.0,
     }
 
-    orphan_stats = {
-        "orphaned_remote_detected": 0,
-        "orphaned_remote_deleted": 0,
-        "orphaned_remote_delete_errors": 0,
-        "servers_with_orphaned_keys": 0,
-    }
-
-    if ensure_missing_keys and not dry_run:
-        missing_stats = await create_missing_keys_for_available_servers(server_id=server_id)
-
-    # Получаем все активные ключи V2Ray
+    now = int(time.time())
+    api_semaphore = asyncio.Semaphore(10)  # Rate limiting для API-запросов
+    
+    logger.info("=" * 60)
+    logger.info("Начало синхронизации ключей")
+    logger.info("=" * 60)
+    
+    # ========== ЭТАП 1: Подготовка данных ==========
+    logger.info("\n[ЭТАП 1] Подготовка данных...")
+    
+    # Получаем все серверы
     with get_db_cursor() as cursor:
         if server_id:
             cursor.execute("""
-                SELECT 
-                    k.id,
-                    k.v2ray_uuid,
-                    k.client_config,
-                    k.server_id,
-                    k.user_id,
-                    k.email,
-                    k.subscription_id,
-                    s.name as server_name,
-                    s.domain,
-                    s.api_url,
-                    s.api_key,
-                    s.active
-                FROM v2ray_keys k
-                JOIN servers s ON k.server_id = s.id
-                WHERE s.protocol = 'v2ray'
-                  AND s.active = 1
-                  AND k.server_id = ?
-                ORDER BY k.server_id, k.id
+                SELECT id, name, protocol, api_url, api_key, cert_sha256, domain, 
+                       active, available_for_purchase
+            FROM servers
+                WHERE id = ?
             """, (server_id,))
         else:
             cursor.execute("""
-                SELECT 
-                    k.id,
-                    k.v2ray_uuid,
-                    k.client_config,
-                    k.server_id,
-                    k.user_id,
-                    k.email,
-                    k.subscription_id,
-                    s.name as server_name,
-                    s.domain,
-                    s.api_url,
-                    s.api_key,
-                    s.active
-                FROM v2ray_keys k
-                JOIN servers s ON k.server_id = s.id
-                WHERE s.protocol = 'v2ray'
-                  AND s.active = 1
-                ORDER BY k.server_id, k.id
+                SELECT id, name, protocol, api_url, api_key, cert_sha256, domain,
+                       active, available_for_purchase
+                FROM servers
             """)
-        keys = cursor.fetchall()
+        server_rows = cursor.fetchall()
+
+    servers = []
+    for row in server_rows:
+        servers.append({
+            "id": row[0],
+            "name": row[1] or f"Server #{row[0]}",
+            "protocol": row[2] or "outline",
+            "api_url": row[3],
+            "api_key": row[4],
+            "cert_sha256": row[5],
+            "domain": row[6],
+            "active": bool(row[7]),
+            "available_for_purchase": bool(row[8]),
+        })
     
-    logger.info(f"Найдено {len(keys)} ключей V2Ray для синхронизации")
+    # Получаем активные подписки
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, user_id, subscription_token, expires_at, tariff_id
+            FROM subscriptions
+            WHERE is_active = 1 AND expires_at > ?
+        """, (now,))
+        subscription_rows = cursor.fetchall()
+
+    subscriptions = []
+    for row in subscription_rows:
+        subscriptions.append({
+            "id": row[0],
+            "user_id": row[1],
+            "subscription_token": row[2],
+            "expires_at": row[3],
+            "tariff_id": row[4],
+        })
     
-    total_updated = 0
-    total_failed = 0
-    total_skipped = 0
-    total_unchanged = 0
-    error_details: List[Dict[str, Any]] = []  # Список деталей ошибок
+    logger.info(f"  Серверов в БД: {len(servers)}")
+    logger.info(f"  Активных подписок: {len(subscriptions)}")
     
-    # Группируем ключи по серверам для эффективной обработки
-    keys_by_server = {}
-    for key_data in keys:
-        server_id_key = key_data[3]  # server_id
-        if server_id_key not in keys_by_server:
-            keys_by_server[server_id_key] = []
-        keys_by_server[server_id_key].append(key_data)
+    # ========== ЭТАП 2: Удаление ключей для недоступных серверов ==========
+    active_servers = [s for s in servers if s["active"]]
+    unavailable_by_api = []  # Серверы, недоступные по API, но активные в БД
     
-    logger.info(f"Ключи распределены по {len(keys_by_server)} серверам")
+    if delete_inactive_server_keys:
+        logger.info("\n[ЭТАП 2] Удаление ключей для недоступных серверов...")
+        
+        # ВАЖНО: Удаляем ключи ТОЛЬКО для серверов с active = 0 или отсутствующих в БД
+        # Серверы с active = 1, но временно недоступные по API, НЕ должны терять ключи
+        unavailable_server_ids = []
+        for server in servers:
+            if not server["active"]:
+                unavailable_server_ids.append(server["id"])
+                logger.info(f"  Сервер #{server['id']} ({server['name']}) неактивен в БД")
+        
+        # Проверяем доступность активных серверов по API (только для логирования и фильтрации)
+        # НО НЕ удаляем ключи для временно недоступных серверов!
+        server_availability_tasks = []
+        for server in active_servers:
+            task = check_server_availability(
+                server["protocol"],
+                server["api_url"],
+                server.get("api_key"),
+                server.get("cert_sha256"),
+            )
+            server_availability_tasks.append((server["id"], task))
+        
+        if server_availability_tasks:
+            availability_results = await asyncio.gather(
+                *[task for _, task in server_availability_tasks],
+                return_exceptions=True
+            )
+            
+            for i, (server_id, _) in enumerate(server_availability_tasks):
+                result = availability_results[i]
+                if isinstance(result, Exception) or not result:
+                    unavailable_by_api.append(server_id)
+                    server_name = next((s["name"] for s in servers if s["id"] == server_id), f"Server #{server_id}")
+                    logger.warning(f"  Сервер #{server_id} ({server_name}) временно недоступен по API (ключи сохранены)")
+        
+        # Удаляем ключи ТОЛЬКО для серверов с active = 0
+        if unavailable_server_ids:
+            placeholders = ','.join('?' * len(unavailable_server_ids))
+            if not dry_run:
+                with get_db_cursor(commit=True) as cursor:
+                    with safe_foreign_keys_off(cursor):
+                        # Удаляем V2Ray ключи
+                        cursor.execute(f"""
+                            DELETE FROM v2ray_keys
+                            WHERE server_id IN ({placeholders})
+                        """, unavailable_server_ids)
+                        v2ray_deleted = cursor.rowcount
+                        
+                        # Удаляем Outline ключи
+                        cursor.execute(f"""
+                            DELETE FROM keys
+                            WHERE server_id IN ({placeholders})
+                        """, unavailable_server_ids)
+                        outline_deleted = cursor.rowcount
+                        
+                        total_deleted = v2ray_deleted + outline_deleted
+                        stats["keys_deleted_from_db"] = total_deleted
+                        logger.info(f"  Удалено ключей из БД: {total_deleted} (V2Ray: {v2ray_deleted}, Outline: {outline_deleted})")
+            else:
+                logger.info(f"  [DRY RUN] Будет удалено ключей из БД для {len(unavailable_server_ids)} неактивных серверов")
+        
+        stats["servers_unavailable"] = len(unavailable_server_ids)
+    else:
+        logger.info("\n[ЭТАП 2] Пропущен (delete_inactive_server_keys=False)")
+        # Все равно проверяем доступность для фильтрации
+        server_availability_tasks = []
+        for server in active_servers:
+            task = check_server_availability(
+                server["protocol"],
+                server["api_url"],
+                server.get("api_key"),
+                server.get("cert_sha256"),
+            )
+            server_availability_tasks.append((server["id"], task))
+        
+        if server_availability_tasks:
+            availability_results = await asyncio.gather(
+                *[task for _, task in server_availability_tasks],
+                return_exceptions=True
+            )
+            
+            for i, (server_id, _) in enumerate(server_availability_tasks):
+                result = availability_results[i]
+                if isinstance(result, Exception) or not result:
+                    unavailable_by_api.append(server_id)
+                    server_name = next((s["name"] for s in servers if s["id"] == server_id), f"Server #{server_id}")
+                    logger.warning(f"  Сервер #{server_id} ({server_name}) временно недоступен по API (ключи сохранены)")
     
-    for server_id_key, server_keys in keys_by_server.items():
-        server_name = server_keys[0][7]  # server_name (index 7)
-        domain = server_keys[0][8]  # domain (index 8)
-        api_url = server_keys[0][9]  # api_url (index 9)
-        api_key = server_keys[0][10]  # api_key (index 10)
+    # Фильтруем серверы: оставляем только активные (независимо от доступности по API)
+    # Серверы, недоступные по API, будут пропущены на этапах синхронизации, но ключи останутся в БД
+    available_servers = [s for s in servers if s["active"]]
+    
+    # Исключаем недоступные по API серверы из списка для создания ключей
+    # (чтобы не тратить время на таймауты), но оставляем их для синхронизации конфигураций
+    available_for_creation = [
+        s for s in available_servers
+        if s["id"] not in unavailable_by_api
+    ]
+    
+    # Разделяем серверы по протоколам и доступности к покупке
+    v2ray_servers_for_purchase = []
+    v2ray_servers_all = []
+    outline_servers_all = []
+    outline_server_8 = None
+    
+    if include_v2ray:
+        v2ray_servers_for_purchase = [
+            s for s in available_for_creation
+            if s["protocol"] == "v2ray" and s["available_for_purchase"]
+        ]
+        v2ray_servers_all = [
+            s for s in available_servers
+            if s["protocol"] == "v2ray"
+        ]
+        logger.info(f"  V2Ray серверов доступных к покупке: {len(v2ray_servers_for_purchase)}")
+        logger.info(f"  V2Ray серверов активных (всего): {len(v2ray_servers_all)}")
+    
+    if include_outline:
+        outline_servers_all = [
+            s for s in available_servers
+            if s["protocol"] == "outline"
+        ]
+        outline_server_8 = next(
+            (s for s in outline_servers_all if s["id"] == 8 and s["available_for_purchase"]),
+            None
+        )
+        logger.info(f"  Outline серверов активных: {len(outline_servers_all)}")
+        logger.info(f"  Outline сервер №8 доступен: {outline_server_8 is not None}")
+    
+    if unavailable_by_api:
+        logger.info(f"  ⚠️  Пропущено недоступных по API серверов: {len(unavailable_by_api)} (ключи не будут созданы, но останутся в БД)")
+    
+    # ОПТИМИЗАЦИЯ: Создаем словарь для быстрого доступа к серверам по ID
+    servers_by_id = {s["id"]: s for s in servers}
+    
+    # ОПТИМИЗАЦИЯ: Создаем пул клиентов для переиспользования
+    client_pool = ServerClientPool()
+    
+    # ОПТИМИЗАЦИЯ: Semaphore для параллельной обработки серверов (до 5 одновременно)
+    server_semaphore = asyncio.Semaphore(5)
+    
+    try:
+        # ========== ЭТАП 3: Синхронизация V2Ray ключей ==========
+        if include_v2ray:
+            logger.info("\n[ЭТАП 3] Синхронизация V2Ray ключей...")
+            
+            # 3.1. Создание недостающих ключей (только для серверов с available_for_purchase = 1)
+            if create_missing:
+                logger.info("  [3.1] Создание недостающих ключей...")
+                
+                async def process_server_create_keys(server: Dict[str, Any]) -> None:
+                    """Обработать один сервер: создать недостающие ключи"""
+                    async with server_semaphore:
+                        server_id = server["id"]
+                        server_name = server["name"]
+                        
+                        try:
+                            # ОПТИМИЗАЦИЯ: Используем пул клиентов
+                            protocol_client = await client_pool.get_client(server)
+                            if not protocol_client:
+                                logger.warning(f"    Сервер #{server_id} ({server_name}): не удалось создать клиент")
+                                return
+
+                            # Получаем существующие ключи для этого сервера
+                            with get_db_cursor() as cursor:
+                                cursor.execute("""
+                                    SELECT subscription_id, v2ray_uuid
+                                    FROM v2ray_keys
+                                    WHERE server_id = ? AND subscription_id IS NOT NULL
+                                """, (server_id,))
+                                existing_keys = {row[0]: row[1] for row in cursor.fetchall()}
+                            
+                            # Находим подписки без ключей на этом сервере
+                            missing_subscriptions = [
+                                sub for sub in subscriptions
+                                if sub["id"] not in existing_keys
+                            ]
+                            
+                            if missing_subscriptions:
+                                logger.info(f"    Сервер #{server_id} ({server_name}): создаем {len(missing_subscriptions)} ключей")
+                                
+                                for subscription in missing_subscriptions:
+                                    sub_id = subscription["id"]
+                                    user_id = subscription["user_id"]
+                                    token = subscription["subscription_token"]
+                                    expires_at = subscription["expires_at"]
+                                    tariff_id = subscription["tariff_id"]
+                                    key_email = f"{user_id}_subscription_{sub_id}@veilbot.com"
+
+                                    try:
+                                        # Создаем ключ на сервере с таймаутом
+                                        async with api_semaphore:
+                                            user_data = await asyncio.wait_for(
+                                                protocol_client.create_user(key_email, name=server_name),
+                                                timeout=15.0  # Таймаут 15 секунд для создания ключа
+                                            )
+                                            if not user_data or not user_data.get("uuid"):
+                                                raise RuntimeError("V2Ray сервер не вернул uuid при создании пользователя")
+
+                                            created_uuid = user_data["uuid"]
+
+                                            # Получаем client_config с таймаутом
+                                            client_config = await asyncio.wait_for(
+                                                protocol_client.get_user_config(
+                                                    created_uuid,
+                                                    {
+                                                        "domain": server.get("domain") or settings.domain or "veil-bot.ru",
+                                                        "port": 443,
+                                                        "email": key_email,
+                                                    },
+                                                ),
+                                                timeout=15.0  # Таймаут 15 секунд для получения конфигурации
+                                            )
+
+                                            # Извлекаем VLESS URL
+                                            if "vless://" in client_config:
+                                                for line in client_config.split("\n"):
+                                                    candidate = line.strip()
+                                                    if candidate.startswith("vless://"):
+                                                        client_config = candidate
+                                                        break
+
+                                            # Нормализуем конфигурацию
+                                            client_config = normalize_vless_host(
+                                                client_config,
+                                                server.get("domain"),
+                                                server["api_url"] or "",
+                                            )
+                                            client_config = remove_fragment_from_vless(client_config)
+
+                                            # Сохраняем в БД
+                                            if not dry_run:
+                                                with get_db_cursor(commit=True) as cursor:
+                                                    with safe_foreign_keys_off(cursor):
+                                                        cursor.execute("""
+                                                            INSERT INTO v2ray_keys
+                                                            (server_id, user_id, v2ray_uuid, email, created_at, expiry_at,
+                                                             tariff_id, client_config, subscription_id)
+                                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                        """, (
+                                                            server_id,
+                                                            user_id,
+                                                            created_uuid,
+                                                            key_email,
+                                                            now,
+                                                            expires_at,
+                                                            tariff_id,
+                                                            client_config,
+                                                            sub_id,
+                                                        ))
+
+                                            invalidate_subscription_cache(token)
+                                            
+                                            stats["v2ray_keys_created"] += 1
+                                            logger.debug(f"      Создан ключ для подписки {sub_id}")
+                                            
+                                    except asyncio.TimeoutError:
+                                        stats["errors"] += 1
+                                        error_msg = f"Таймаут создания ключа для подписки {sub_id} (сервер #{server_id} медленно отвечает)"
+                                        stats["errors_details"].append({
+                                            "type": "v2ray_create_timeout",
+                                            "server_id": server_id,
+                                            "subscription_id": sub_id,
+                                            "error": error_msg,
+                                        })
+                                        logger.warning(f"      ⏱️  {error_msg}")
+                                        if len(stats["errors_details"]) >= 50:
+                                            break
+                                    except Exception as e:
+                                        stats["errors"] += 1
+                                        error_msg = f"Ошибка создания ключа для подписки {sub_id}: {e}"
+                                        stats["errors_details"].append({
+                                            "type": "v2ray_create",
+                                            "server_id": server_id,
+                                            "subscription_id": sub_id,
+                                            "error": error_msg,
+                                        })
+                                        logger.error(f"      ✗ {error_msg}")
+                                        if len(stats["errors_details"]) >= 50:
+                                            break
+                            
+                            stats["servers_processed"] += 1
+                            
+                        except Exception as e:
+                            stats["errors"] += 1
+                            error_msg = f"Ошибка обработки сервера #{server_id}: {e}"
+                            stats["errors_details"].append({
+                                "type": "v2ray_server",
+                                "server_id": server_id,
+                                "error": error_msg,
+                            })
+                            logger.error(f"    ✗ {error_msg}")
+                
+                # ОПТИМИЗАЦИЯ: Параллельная обработка серверов (до 5 одновременно)
+                if v2ray_servers_for_purchase:
+                    create_tasks = [process_server_create_keys(server) for server in v2ray_servers_for_purchase]
+                    await asyncio.gather(*create_tasks, return_exceptions=True)
+            else:
+                logger.info("  [3.1] Пропущено (create_missing=False)")
+            
+            # 3.2. Удаление лишних ключей с серверов
+            if delete_orphaned_on_servers:
+                logger.info("  [3.2] Удаление лишних ключей с серверов...")
         
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Сервер #{server_id_key}: {server_name}")
-        logger.info(f"Ключей на сервере: {len(server_keys)}")
+        async def process_server_delete_orphaned(server: Dict[str, Any]) -> None:
+            """Обработать один сервер: удалить лишние ключи"""
+            async with server_semaphore:
+                server_id = server["id"]
+                server_name = server["name"]
+                
+                try:
+                    # ОПТИМИЗАЦИЯ: Используем пул клиентов
+                    protocol_client = await client_pool.get_client(server)
+                    if not protocol_client:
+                        return
+                    
+                    # Получаем ключи из БД
+                    with get_db_cursor() as cursor:
+                        cursor.execute("""
+                            SELECT v2ray_uuid, email
+                            FROM v2ray_keys
+                            WHERE server_id = ?
+                        """, (server_id,))
+                        db_keys = cursor.fetchall()
+                    
+                    db_uuids: Set[str] = {row[0].strip() for row in db_keys if row[0]}
+                    db_emails: Set[str] = {(row[1] or "").lower().strip() for row in db_keys if row[1]}
+                    
+                    # ОПТИМИЗАЦИЯ: Используем кэшированные ключи
+                    remote_keys = await client_pool.get_all_keys_cached(server_id, "v2ray", protocol_client)
+                    if not remote_keys:
+                        return
+                    
+                    # Находим ключи для удаления
+                    keys_to_delete = []
+                    for remote_entry in remote_keys:
+                        remote_uuid = extract_v2ray_uuid(remote_entry)
+                        if not remote_uuid or remote_uuid in db_uuids:
+                            continue
+                        
+                        remote_name = (remote_entry.get("name") or "").lower().strip()
+                        remote_email = (remote_entry.get("email") or "").lower().strip()
+                        
+                        key_info = remote_entry.get("key") if isinstance(remote_entry.get("key"), dict) else None
+                        if isinstance(key_info, dict):
+                            remote_name = remote_name or (key_info.get("name") or "").lower().strip()
+                            remote_email = remote_email or (key_info.get("email") or "").lower().strip()
+                        
+                        if remote_name in db_emails or remote_email in db_emails:
+                            continue
+                        
+                        key_identifier = (
+                            remote_entry.get("id")
+                            or remote_entry.get("key_id")
+                            or (key_info.get("id") if isinstance(key_info, dict) else None)
+                            or (key_info.get("key_id") if isinstance(key_info, dict) else None)
+                            or remote_uuid
+                        )
+                        
+                        keys_to_delete.append({
+                            "uuid": remote_uuid,
+                            "id": key_identifier,
+                        })
+                    
+                    # Удаляем лишние ключи
+                    if keys_to_delete:
+                        logger.info(f"    Сервер #{server_id} ({server_name}): найдено {len(keys_to_delete)} лишних ключей")
+                        
+                        if not dry_run:
+                            async def delete_key(key_info: Dict[str, Any]) -> bool:
+                                async with api_semaphore:
+                                    try:
+                                        deleted = await protocol_client.delete_user(str(key_info["id"]))
+                                        if deleted:
+                                            stats["keys_deleted_from_servers"] += 1
+                                            return True
+                                        return False
+                                    except Exception as e:
+                                        logger.warning(f"      Ошибка удаления ключа {key_info['uuid'][:8]}...: {e}")
+                                        return False
+                            
+                            delete_tasks = [delete_key(key_info) for key_info in keys_to_delete]
+                            await asyncio.gather(*delete_tasks, return_exceptions=True)
+                
+                except Exception as e:
+                    stats["errors"] += 1
+                    error_msg = f"Ошибка удаления лишних ключей с сервера #{server_id}: {e}"
+                    stats["errors_details"].append({
+                        "type": "v2ray_delete_orphaned",
+                        "server_id": server_id,
+                        "error": error_msg,
+                    })
+                    logger.error(f"    ✗ {error_msg}")
         
-        if not api_url or not api_key:
-            logger.warning(f"  ⚠️  Нет API URL или ключа для сервера #{server_id_key}")
-            for key_row in server_keys:
-                error_details.append({
-                    'key_id': key_row[0],  # key_id
-                    'server_name': server_name,
-                    'error': f'Нет API URL или ключа для сервера {server_name}',
-                    'v2ray_uuid': key_row[1],  # v2ray_uuid
-                })
-            total_failed += len(server_keys)
-            continue
+        # ОПТИМИЗАЦИЯ: Параллельная обработка серверов (до 5 одновременно)
+        if v2ray_servers_all:
+            delete_tasks = [process_server_delete_orphaned(server) for server in v2ray_servers_all]
+            await asyncio.gather(*delete_tasks, return_exceptions=True)
         
-        db_uuids: Set[str] = {
-            (key_row[1] or "").strip()
-            for key_row in server_keys
-            if key_row[1]
-        }
-        db_emails: Set[str] = {
-            (key_row[5] or "").lower().strip()
-            for key_row in server_keys
-            if key_row[5]
-        }
+        # 3.3. Синхронизация VLESS ссылок (для всех активных серверов)
+        if sync_configs:
+            logger.info("  [3.3] Синхронизация VLESS ссылок...")
+            
+            # ОПТИМИЗАЦИЯ: Удаляем ключи для несуществующих серверов и неактивных подписок
+            if not dry_run:
+                with get_db_cursor(commit=True) as cursor:
+                    # Удаляем ключи для несуществующих серверов
+                    cursor.execute("""
+                        DELETE FROM v2ray_keys
+                        WHERE server_id NOT IN (SELECT id FROM servers)
+                    """)
+                    deleted_orphaned_servers = cursor.rowcount
+                    
+                    # Удаляем ключи для неактивных подписок
+                    cursor.execute("""
+                        DELETE FROM v2ray_keys
+                        WHERE subscription_id IS NOT NULL
+                        AND subscription_id NOT IN (
+                            SELECT id FROM subscriptions 
+                            WHERE is_active = 1 AND expires_at > ?
+                        )
+                    """, (now,))
+                    deleted_inactive_subs = cursor.rowcount
+                    
+                    if deleted_orphaned_servers > 0 or deleted_inactive_subs > 0:
+                        logger.info(f"    Удалено ключей: {deleted_orphaned_servers} для несуществующих серверов, {deleted_inactive_subs} для неактивных подписок")
+        else:
+            logger.info("  [3.3] Пропущено (sync_configs=False)")
         
-        logger.info(f"  API URL from DB: {api_url!r}")
-        logger.info(f"  Domain from DB: {domain!r}")
+        # Получаем все V2Ray ключи для синхронизации (только для активных серверов и подписок)
+        with get_db_cursor() as cursor:
+            if server_id:
+                cursor.execute("""
+                    SELECT k.id, k.v2ray_uuid, k.client_config, k.server_id, k.user_id, k.email,
+                           k.subscription_id, s.name, s.domain, s.api_url, s.api_key
+                    FROM v2ray_keys k
+                    JOIN servers s ON k.server_id = s.id
+                    WHERE s.protocol = 'v2ray' AND s.active = 1 AND k.server_id = ?
+                    AND (k.subscription_id IS NULL OR k.subscription_id IN (
+                        SELECT id FROM subscriptions WHERE is_active = 1 AND expires_at > ?
+                    ))
+                """, (server_id, now))
+            else:
+                cursor.execute("""
+                    SELECT k.id, k.v2ray_uuid, k.client_config, k.server_id, k.user_id, k.email,
+                           k.subscription_id, s.name, s.domain, s.api_url, s.api_key
+                    FROM v2ray_keys k
+                    JOIN servers s ON k.server_id = s.id
+                    WHERE s.protocol = 'v2ray' AND s.active = 1
+                    AND (k.subscription_id IS NULL OR k.subscription_id IN (
+                        SELECT id FROM subscriptions WHERE is_active = 1 AND expires_at > ?
+                    ))
+                """, (now,))
+            v2ray_keys = cursor.fetchall()
         
-        server_config = {
-            'api_url': api_url,
-            'api_key': api_key,
-            'domain': domain,
-        }
+        logger.info(f"    Найдено {len(v2ray_keys)} V2Ray ключей для синхронизации")
         
-        protocol_client = None
-        try:
-            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"  ✗ Ошибка создания клиента для сервера #{server_id_key}: {e}")
-            for key_row in server_keys:
-                error_details.append({
-                    'key_id': key_row[0],  # key_id
-                    'server_name': server_name,
-                    'error': f'Ошибка создания клиента для сервера: {error_msg}',
-                    'v2ray_uuid': key_row[1],  # v2ray_uuid
-                })
-            total_failed += len(server_keys)
-            continue
+        # Группируем ключи по серверам
+        keys_by_server: Dict[int, List[Tuple]] = {}
+        for key_row in v2ray_keys:
+            server_id_key = key_row[3]
+            if server_id_key not in keys_by_server:
+                keys_by_server[server_id_key] = []
+            keys_by_server[server_id_key].append(key_row)
         
-        server_updated = 0
-        server_failed = 0
-        server_skipped = 0
-        server_unchanged = 0
-        
-        # ОПТИМИЗАЦИЯ: Получаем все токены подписок одним запросом
-        subscription_ids_for_tokens = {key[6] for key in server_keys if key[6]}  # subscription_id
+        # Получаем токены подписок для инвалидации кэша
+        subscription_ids = {key[6] for key in v2ray_keys if key[6]}
         subscription_tokens_map: Dict[int, str] = {}
-        if subscription_ids_for_tokens:
-            placeholders = ','.join('?' * len(subscription_ids_for_tokens))
+        if subscription_ids:
+            placeholders = ','.join('?' * len(subscription_ids))
             with get_db_cursor() as cursor:
                 cursor.execute(f"""
                     SELECT id, subscription_token
                     FROM subscriptions
                     WHERE id IN ({placeholders})
-                """, list(subscription_ids_for_tokens))
+                """, list(subscription_ids))
                 for sub_id, token in cursor.fetchall():
                     subscription_tokens_map[sub_id] = token
         
-        # ОПТИМИЗАЦИЯ: Rate limiting для API-запросов
-        api_semaphore = asyncio.Semaphore(10)
-        
-        # ОПТИМИЗАЦИЯ: Параллельная обработка ключей батчами
-        key_batch_size = 50  # Обрабатываем по 50 ключей параллельно
-        all_key_updates: List[Tuple[str, int]] = []  # (new_config, key_id)
+        # Синхронизируем конфигурации по серверам
+        all_updates: List[Tuple[str, int]] = []  # (new_config, key_id)
         tokens_to_invalidate = set()
         
-        for i in range(0, len(server_keys), key_batch_size):
-            key_batch = server_keys[i:i + key_batch_size]
-            
-            # Создаем задачи для батча ключей
-            key_tasks = [
-                _sync_single_key(
-                    key_data, protocol_client, domain, api_url, dry_run, api_semaphore
-                )
-                for key_data in key_batch
-            ]
-            
-            # Параллельно обрабатываем батч ключей
-            key_results = await asyncio.gather(*key_tasks, return_exceptions=True)
-            
-            # Обрабатываем результаты
-            for key_result in key_results:
-                if isinstance(key_result, Exception):
-                    server_failed += 1
-                    total_failed += 1
-                    logger.error(f"Sync: Exception processing key: {key_result}", exc_info=True)
-                    error_details.append({
-                        'key_id': None,
-                        'server_name': server_name,
-                        'error': str(key_result),
-                        'v2ray_uuid': None,
-                    })
-                    continue
+        async def process_server_sync_configs(server_id_key: int, server_keys: List[Tuple]) -> Tuple[List[Tuple[str, int]], Set[str]]:
+            """Обработать один сервер: синхронизировать конфигурации ключей"""
+            async with server_semaphore:
+                server_updates = []
+                server_tokens = set()
                 
-                if key_result['failed']:
-                    server_failed += 1
-                    total_failed += 1
-                    if key_result.get('error_message'):
-                        error_details.append({
-                            'key_id': key_result.get('key_id'),
-                            'server_name': key_result.get('server_name', server_name),
-                            'error': key_result.get('error_message'),
-                            'v2ray_uuid': key_result.get('v2ray_uuid'),
-                        })
-                elif key_result['unchanged']:
-                    server_unchanged += 1
-                    total_unchanged += 1
-                elif key_result['updated']:
-                    if not dry_run:
-                        all_key_updates.append((key_result['new_config'], key_result['key_id']))
-                        # Добавляем токен для инвалидации кэша
-                        if key_result['subscription_id']:
-                            token = subscription_tokens_map.get(key_result['subscription_id'])
-                            if token:
-                                tokens_to_invalidate.add(token)
-                    server_updated += 1
-                    total_updated += 1
+                # ОПТИМИЗАЦИЯ: Используем словарь для быстрого доступа
+                server_info = servers_by_id.get(server_id_key)
+                if not server_info:
+                    return ([], set())
+                
+                try:
+                    # ОПТИМИЗАЦИЯ: Используем пул клиентов
+                    protocol_client = await client_pool.get_client(server_info)
+                    if not protocol_client:
+                        return ([], set())
+                    
+                    async def sync_single_v2ray_key(key_row: Tuple) -> Optional[Tuple[str, int]]:
+                        """Синхронизировать один V2Ray ключ"""
+                        async with api_semaphore:
+                            try:
+                                key_id, v2ray_uuid, old_config, _, user_id, email, sub_id, _, domain, _, _ = key_row
+                                
+                                # ОПТИМИЗАЦИЯ: Если конфигурация уже есть и не пустая, проверяем только если нужно
+                                # Но мы все равно должны проверить, так как конфигурация на сервере могла измениться
+                                # Уменьшаем таймаут для ускорения
+                                fetched_config = await asyncio.wait_for(
+                                    protocol_client.get_user_config(
+                                        v2ray_uuid,
+                                        {
+                                            "domain": domain or "veil-bot.ru",
+                                            "port": 443,
+                                            "email": email or f"user_{user_id}@veilbot.com",
+                                        },
+                                    ),
+                                    timeout=10.0  # Уменьшен таймаут с 30 до 10 секунд
+                                )
+                                
+                                # Извлекаем VLESS URL
+                                if "vless://" in fetched_config:
+                                    for line in fetched_config.split("\n"):
+                                        if line.strip().startswith("vless://"):
+                                            fetched_config = line.strip()
+                                            break
+                                
+                                # Нормализуем конфигурацию
+                                new_config = normalize_vless_host(
+                                    fetched_config,
+                                    domain,
+                                    server_info["api_url"] or "",
+                                )
+                                new_config = remove_fragment_from_vless(new_config)
+                                
+                                # Сравниваем с текущей конфигурацией
+                                if old_config != new_config:
+                                    return (new_config, key_id)
+                                return None
+                                
+                            except asyncio.TimeoutError:
+                                logger.warning(f"      ⏱️  Таймаут синхронизации ключа #{key_row[0]} (сервер медленно отвечает)")
+                                return None
+                            except Exception as e:
+                                logger.warning(f"      Ошибка синхронизации ключа #{key_row[0]}: {e}")
+                                return None
+                    
+                    # Параллельно синхронизируем ключи батчами (для БД операций)
+                    batch_size = 50
+                    for i in range(0, len(server_keys), batch_size):
+                        batch = server_keys[i:i + batch_size]
+                        sync_tasks = [sync_single_v2ray_key(key_row) for key_row in batch]
+                        batch_results = await asyncio.gather(*sync_tasks, return_exceptions=True)
+                        
+                        for result in batch_results:
+                            if isinstance(result, Exception):
+                                continue
+                            if result:
+                                server_updates.append(result)
+                                # Добавляем токен для инвалидации
+                                key_row = next((k for k in batch if k[0] == result[1]), None)
+                                if key_row and key_row[6]:  # subscription_id
+                                    token = subscription_tokens_map.get(key_row[6])
+                                    if token:
+                                        server_tokens.add(token)
+                
+                except Exception as e:
+                    stats["errors"] += 1
+                    error_msg = f"Ошибка синхронизации конфигураций сервера #{server_id_key}: {e}"
+                    stats["errors_details"].append({
+                        "type": "v2ray_sync_configs",
+                        "server_id": server_id_key,
+                        "error": error_msg,
+                    })
+                    logger.error(f"    ✗ {error_msg}")
+                
+                return server_updates, server_tokens
         
-        # ОПТИМИЗАЦИЯ: Батчинг обновлений БД
-        if all_key_updates and not dry_run:
-            with get_db_cursor(commit=True) as update_cursor:
-                update_cursor.executemany("""
+        # ОПТИМИЗАЦИЯ: Параллельная обработка серверов (до 5 одновременно)
+        if keys_by_server:
+            sync_config_tasks = [
+                process_server_sync_configs(server_id_key, server_keys)
+                for server_id_key, server_keys in keys_by_server.items()
+            ]
+            sync_results = await asyncio.gather(*sync_config_tasks, return_exceptions=True)
+            
+            for result in sync_results:
+                if isinstance(result, Exception):
+                    continue
+                if isinstance(result, tuple) and len(result) == 2:
+                    updates, tokens = result
+                    all_updates.extend(updates)
+                    tokens_to_invalidate.update(tokens)
+        
+        # Обновляем конфигурации в БД батчем
+        if all_updates and not dry_run:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.executemany("""
                     UPDATE v2ray_keys
                     SET client_config = ?
                     WHERE id = ?
-                """, all_key_updates)
-                logger.info(f"    ✓ Обновлено {len(all_key_updates)} ключей батчем в БД")
+                """, all_updates)
+                stats["v2ray_configs_updated"] = len(all_updates)
+                logger.info(f"    Обновлено конфигураций: {len(all_updates)}")
         
-        # ОПТИМИЗАЦИЯ: Батчинг инвалидации кэша
-        for token in tokens_to_invalidate:
-            invalidate_subscription_cache(token)
+        # Инвалидируем кэш подписок
+        if not dry_run:
+            for token in tokens_to_invalidate:
+                invalidate_subscription_cache(token)
 
-        if delete_orphaned_server_keys:
-            remote_fetch_failed = False
-            try:
-                remote_keys = await protocol_client.get_all_keys()
-            except Exception as remote_error:
-                logger.error(
-                    f"    ✗ Не удалось получить список ключей с сервера {server_name}: {remote_error}"
-                )
-                orphan_stats["orphaned_remote_delete_errors"] += 1
-                remote_keys = []
-                remote_fetch_failed = True
-
-            keys_to_delete: List[Dict[str, Any]] = []
-            for remote_entry in remote_keys or []:
-                remote_uuid = extract_v2ray_uuid(remote_entry)
-                if not remote_uuid or remote_uuid in db_uuids:
-                    continue
-
-                remote_name = (remote_entry.get("name") or "").lower().strip()
-                remote_email = (remote_entry.get("email") or "").lower().strip()
-
-                key_info = remote_entry.get("key") if isinstance(remote_entry.get("key"), dict) else None
-                if isinstance(key_info, dict):
-                    remote_name = remote_name or (key_info.get("name") or "").lower().strip()
-                    remote_email = remote_email or (key_info.get("email") or "").lower().strip()
-
-                if remote_name in db_emails or remote_email in db_emails:
-                    continue
-
-                key_identifier = (
-                    remote_entry.get("id")
-                    or remote_entry.get("key_id")
-                    or (key_info.get("id") if isinstance(key_info, dict) else None)
-                    or (key_info.get("key_id") if isinstance(key_info, dict) else None)
-                    or remote_uuid
-                )
-
-                keys_to_delete.append(
-                    {
-                        "uuid": remote_uuid,
-                        "id": key_identifier,
-                        "name": remote_entry.get("name") or (key_info.get("name") if isinstance(key_info, dict) else None),
-                    }
-                )
-
-            if keys_to_delete:
-                orphan_stats["servers_with_orphaned_keys"] += 1
-                orphan_stats["orphaned_remote_detected"] += len(keys_to_delete)
-                logger.info(
-                    f"    Обнаружено {len(keys_to_delete)} ключей на сервере без соответствия в БД"
-                )
-                if dry_run:
-                    logger.info("    [DRY RUN] Ключи не удалялись")
-                else:
-                    # ОПТИМИЗАЦИЯ: Параллельное удаление orphaned ключей
-                    async def delete_orphaned_key(key_info: Dict[str, Any]) -> bool:
-                        remote_uuid = key_info["uuid"]
-                        key_identifier = key_info["id"] or remote_uuid
-                        async with api_semaphore:  # Rate limiting
-                            try:
-                                deleted = await protocol_client.delete_user(str(key_identifier))
-                                if deleted:
-                                    orphan_stats["orphaned_remote_deleted"] += 1
-                                    logger.info(f"      ✓ Удален лишний ключ {remote_uuid[:8]}...")
-                                    return True
-                                else:
-                                    orphan_stats["orphaned_remote_delete_errors"] += 1
-                                    logger.warning(f"      ✗ Не удалось удалить лишний ключ {remote_uuid[:8]}...")
-                                    return False
-                            except Exception as delete_error:
-                                orphan_stats["orphaned_remote_delete_errors"] += 1
-                                logger.error(
-                                    f"      ✗ Ошибка при удалении ключа {remote_uuid[:8]}...: {delete_error}",
-                                    exc_info=True,
-                                )
-                                return False
-                    
-                    # Параллельно удаляем ключи
-                    delete_tasks = [delete_orphaned_key(key_info) for key_info in keys_to_delete]
-                    await asyncio.gather(*delete_tasks, return_exceptions=True)
-            elif not remote_fetch_failed:
-                logger.info("    Лишних ключей на сервере не найдено")
+        # ========== ЭТАП 4: Синхронизация Outline ключей ==========
+        if include_outline:
+            logger.info("\n[ЭТАП 4] Синхронизация Outline ключей...")
         
-        logger.info(f"\n  Итого для сервера #{server_id_key}:")
-        logger.info(f"    Обновлено: {server_updated}")
-        logger.info(f"    Не изменилось: {server_unchanged}")
-        logger.info(f"    Ошибок: {server_failed}")
+            # 4.1. Создание недостающих ключей на сервере №8
+            if outline_server_8:
+                server_id = outline_server_8["id"]
+                server_name = outline_server_8["name"]
+            
+            # Пропускаем сервер, если он недоступен по API
+            if server_id in unavailable_by_api:
+                logger.warning(f"  [4.1] Сервер №8 ({server_name}) недоступен по API - пропускаем создание ключей (ключи сохранены в БД)")
+            else:
+                logger.info("  [4.1] Создание недостающих ключей на сервере №8...")
+                
+                try:
+                    # ОПТИМИЗАЦИЯ: Используем пул клиентов
+                    protocol_client = await client_pool.get_client(outline_server_8)
+                    if not protocol_client:
+                        logger.warning(f"    Сервер №8 ({server_name}): не удалось создать клиент")
+                    else:
+                        # Получаем существующие Outline ключи подписок на сервере №8
+                        with get_db_cursor() as cursor:
+                            cursor.execute("""
+                                SELECT subscription_id, key_id
+                                FROM keys
+                                WHERE server_id = 8 AND subscription_id IS NOT NULL
+                            """)
+                            existing_keys = {row[0]: row[1] for row in cursor.fetchall()}
+                        
+                        # Находим подписки без ключей
+                        missing_subscriptions = [
+                            sub for sub in subscriptions
+                            if sub["id"] not in existing_keys
+                        ]
+                        
+                        if missing_subscriptions:
+                            logger.info(f"    Сервер №8 ({server_name}): создаем {len(missing_subscriptions)} ключей")
+                            
+                            for subscription in missing_subscriptions:
+                                sub_id = subscription["id"]
+                                user_id = subscription["user_id"]
+                                token = subscription["subscription_token"]
+                                expires_at = subscription["expires_at"]
+                                tariff_id = subscription["tariff_id"]
+                                key_email = f"{user_id}_subscription_{sub_id}@veilbot.com"
+                                
+                                try:
+                                    # Создаем ключ на сервере с таймаутом
+                                    user_data = await asyncio.wait_for(
+                                        protocol_client.create_user(key_email),
+                                        timeout=15.0  # Таймаут 15 секунд для создания ключа
+                                    )
+                                    if not user_data or not user_data.get("id"):
+                                        raise RuntimeError("Outline сервер не вернул id при создании ключа")
+                                    
+                                    key_id = str(user_data["id"])
+                                    access_url = user_data.get("accessUrl") or user_data.get("access_url") or ""
+                                    
+                                    # Сохраняем в БД
+                                    if not dry_run:
+                                        with get_db_cursor(commit=True) as cursor:
+                                            with safe_foreign_keys_off(cursor):
+                                                cursor.execute("""
+                                                    INSERT INTO keys
+                                                    (server_id, user_id, key_id, access_url, email, created_at, expiry_at,
+                                                     tariff_id, subscription_id, protocol)
+                                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'outline')
+                                                """, (
+                                                    8,
+                                                    user_id,
+                                                    key_id,
+                                                    access_url,
+                                                    key_email,
+                                                    now,
+                                                    expires_at,
+                                                    tariff_id,
+                                                    sub_id,
+                                                ))
+                                        
+                                        invalidate_subscription_cache(token)
+                                    
+                                    stats["outline_keys_created"] += 1
+                                    logger.debug(f"      Создан ключ для подписки {sub_id}")
+                                    
+                                except asyncio.TimeoutError:
+                                    stats["errors"] += 1
+                                    error_msg = f"Таймаут создания Outline ключа для подписки {sub_id} (сервер №8 медленно отвечает)"
+                                    stats["errors_details"].append({
+                                        "type": "outline_create_timeout",
+                                        "server_id": 8,
+                                        "subscription_id": sub_id,
+                                        "error": error_msg,
+                                    })
+                                    logger.warning(f"      ⏱️  {error_msg}")
+                                    if len(stats["errors_details"]) >= 50:
+                                        break
+                                except Exception as e:
+                                    stats["errors"] += 1
+                                    error_msg = f"Ошибка создания Outline ключа для подписки {sub_id}: {e}"
+                                    stats["errors_details"].append({
+                                        "type": "outline_create",
+                                        "server_id": 8,
+                                        "subscription_id": sub_id,
+                                        "error": error_msg,
+                                    })
+                                    logger.error(f"      ✗ {error_msg}")
+                                    if len(stats["errors_details"]) >= 50:
+                                        break
+                        
+                        stats["servers_processed"] += 1
+                
+                except Exception as e:
+                    stats["errors"] += 1
+                    error_msg = f"Ошибка обработки сервера №8: {e}"
+                    stats["errors_details"].append({
+                        "type": "outline_server_8",
+                        "server_id": 8,
+                        "error": error_msg,
+                    })
+                    logger.error(f"    ✗ {error_msg}")
         
-        if protocol_client:
-            try:
-                await protocol_client.close()
-            except Exception:
-                pass
-    
-    # Обрабатываем Outline серверы (только удаление лишних ключей)
-    if delete_orphaned_server_keys:
-        logger.info(f"\n{'='*60}")
-        logger.info("Обработка Outline серверов (удаление лишних ключей)")
-        logger.info(f"{'='*60}")
+        # 4.2. Удаление Outline ключей подписок с других серверов (не №8)
+        logger.info("  [4.2] Удаление Outline ключей подписок с других серверов...")
         
         with get_db_cursor() as cursor:
-            if server_id:
-                cursor.execute("""
-                    SELECT id, name, api_url, cert_sha256
-                    FROM servers
-                    WHERE protocol = 'outline' AND active = 1 AND id = ?
-                    ORDER BY id
-                """, (server_id,))
-            else:
-                cursor.execute("""
-                    SELECT id, name, api_url, cert_sha256
-                    FROM servers
-                    WHERE protocol = 'outline' AND active = 1
-                    ORDER BY id
-                """)
-            outline_servers = cursor.fetchall()
+            cursor.execute("""
+                SELECT id, server_id, key_id, subscription_id
+                FROM keys
+                WHERE subscription_id IS NOT NULL AND server_id != 8 AND protocol = 'outline'
+            """)
+            keys_to_remove = cursor.fetchall()
         
-        if outline_servers:
-            logger.info(f"Найдено {len(outline_servers)} активных Outline серверов")
+        if keys_to_remove:
+            logger.info(f"    Найдено {len(keys_to_remove)} Outline ключей подписок на серверах, отличных от №8")
             
-            for server_row in outline_servers:
-                server_id_outline, server_name_outline, api_url_outline, cert_sha256_outline = server_row
+            for key_row in keys_to_remove:
+                key_db_id, server_id, key_id, sub_id = key_row
                 
-                logger.info(f"\n{'='*60}")
-                logger.info(f"Outline сервер #{server_id_outline}: {server_name_outline}")
-                
-                if not api_url_outline:
-                    logger.warning(f"  ⚠️  Нет API URL для сервера #{server_id_outline}")
+                # ОПТИМИЗАЦИЯ: Используем словарь для быстрого доступа
+                server_info = servers_by_id.get(server_id)
+                if not server_info:
+                    # Удаляем из БД, если сервер недоступен
+                    if not dry_run:
+                        with get_db_cursor(commit=True) as cursor:
+                            with safe_foreign_keys_off(cursor):
+                                cursor.execute("DELETE FROM keys WHERE id = ?", (key_db_id,))
+                    stats["outline_keys_removed"] += 1
                     continue
                 
-                await sync_outline_server_keys(
-                    server_id_outline,
-                    server_name_outline,
-                    api_url_outline,
-                    cert_sha256_outline,
-                    dry_run,
-                    delete_orphaned_server_keys,
-                    orphan_stats,
-                )
-        else:
-            logger.info("Активных Outline серверов не найдено")
-    
-    logger.info(f"\n{'='*60}")
-    logger.info(f"ИТОГО:")
-    logger.info(f"  Обновлено ключей V2Ray: {total_updated}")
-    logger.info(f"  Не изменилось V2Ray: {total_unchanged}")
-    logger.info(f"  Ошибок V2Ray: {total_failed}")
+                try:
+                    # ОПТИМИЗАЦИЯ: Используем пул клиентов
+                    protocol_client = await client_pool.get_client(server_info)
+                    if not protocol_client:
+                        # Удаляем из БД, если не удалось создать клиент
+                        if not dry_run:
+                            with get_db_cursor(commit=True) as cursor:
+                                with safe_foreign_keys_off(cursor):
+                                    cursor.execute("DELETE FROM keys WHERE id = ?", (key_db_id,))
+                        stats["outline_keys_removed"] += 1
+                        continue
+                    
+                    # Удаляем ключ с сервера
+                    if not dry_run:
+                        async with api_semaphore:
+                            await protocol_client.delete_user(key_id)
+                        
+                        # Удаляем из БД
+                        with get_db_cursor(commit=True) as cursor:
+                            with safe_foreign_keys_off(cursor):
+                                cursor.execute("DELETE FROM keys WHERE id = ?", (key_db_id,))
+                    
+                    stats["outline_keys_removed"] += 1
+                    stats["keys_deleted_from_servers"] += 1
+                    logger.debug(f"      Удален ключ подписки {sub_id} с сервера #{server_id}")
+                    
+                except Exception as e:
+                    logger.warning(f"      Ошибка удаления ключа {key_id} с сервера #{server_id}: {e}")
+                    # Удаляем из БД в любом случае
+                    if not dry_run:
+                        with get_db_cursor(commit=True) as cursor:
+                            with safe_foreign_keys_off(cursor):
+                                cursor.execute("DELETE FROM keys WHERE id = ?", (key_db_id,))
+                    stats["outline_keys_removed"] += 1
+        
+            else:
+                logger.info("  [4.2] Пропущено (delete_orphaned_on_servers=False)")
+            
+            # 4.3. Удаление лишних Outline ключей с серверов
+            if delete_orphaned_on_servers:
+                logger.info("  [4.3] Удаление лишних Outline ключей с серверов...")
+        
+        async def process_outline_server_delete_orphaned(server: Dict[str, Any]) -> None:
+            """Обработать один Outline сервер: удалить лишние ключи"""
+            async with server_semaphore:
+                server_id = server["id"]
+                server_name = server["name"]
+                
+                try:
+                    # ОПТИМИЗАЦИЯ: Используем пул клиентов
+                    protocol_client = await client_pool.get_client(server)
+                    if not protocol_client:
+                        return
 
-    if delete_orphaned_server_keys:
-        logger.info(f"  Найдено лишних ключей: {orphan_stats['orphaned_remote_detected']}")
-        logger.info(f"  Удалено лишних ключей: {orphan_stats['orphaned_remote_deleted']}")
-        logger.info(f"  Ошибок при удалении: {orphan_stats['orphaned_remote_delete_errors']}")
+                    # Получаем ключи из БД
+                    with get_db_cursor() as cursor:
+                        cursor.execute("""
+                            SELECT key_id, email
+                            FROM keys
+                            WHERE server_id = ? AND (key_id IS NOT NULL AND key_id != '')
+                        """, (server_id,))
+                        db_keys = cursor.fetchall()
+                    
+                    db_key_ids: Set[str] = {str(row[0]).strip() for row in db_keys if row[0]}
+                    db_emails: Set[str] = {(row[1] or "").lower().strip() for row in db_keys if row[1]}
+                    
+                    # ОПТИМИЗАЦИЯ: Используем кэшированные ключи
+                    remote_keys = await client_pool.get_all_keys_cached(server_id, "outline", protocol_client)
+                    if not remote_keys:
+                        return
+
+                    # Находим ключи для удаления
+                    keys_to_delete = []
+                    for remote_entry in remote_keys:
+                        remote_key_id = extract_outline_key_id(remote_entry)
+                        if not remote_key_id or remote_key_id in db_key_ids:
+                            continue
+
+                        remote_name = (remote_entry.get("name") or "").lower().strip()
+                        if remote_name in db_emails:
+                            continue
+
+                        keys_to_delete.append({"key_id": remote_key_id})
+                    
+                    # Удаляем лишние ключи
+                    if keys_to_delete:
+                        logger.info(f"    Сервер #{server_id} ({server_name}): найдено {len(keys_to_delete)} лишних ключей")
+                        
+                        if not dry_run:
+                            async def delete_outline_key(key_info: Dict[str, Any]) -> bool:
+                                async with api_semaphore:
+                                    try:
+                                        deleted = await protocol_client.delete_user(key_info["key_id"])
+                                        if deleted:
+                                            stats["keys_deleted_from_servers"] += 1
+                                            return True
+                                        return False
+                                    except Exception as e:
+                                        logger.warning(f"      Ошибка удаления ключа {key_info['key_id']}: {e}")
+                                        return False
+                            
+                            delete_tasks = [delete_outline_key(key_info) for key_info in keys_to_delete]
+                            await asyncio.gather(*delete_tasks, return_exceptions=True)
+                
+                except Exception as e:
+                    stats["errors"] += 1
+                    error_msg = f"Ошибка удаления лишних Outline ключей с сервера #{server_id}: {e}"
+                    stats["errors_details"].append({
+                        "type": "outline_delete_orphaned",
+                        "server_id": server_id,
+                        "error": error_msg,
+                    })
+                    logger.error(f"    ✗ {error_msg}")
+        
+        # ОПТИМИЗАЦИЯ: Параллельная обработка серверов (до 5 одновременно)
+        if outline_servers_all:
+            outline_delete_tasks = [process_outline_server_delete_orphaned(server) for server in outline_servers_all]
+            await asyncio.gather(*outline_delete_tasks, return_exceptions=True)
+        
+        # 4.4. Синхронизация Outline конфигураций (access_url)
+        if sync_configs:
+            logger.info("  [4.4] Синхронизация Outline конфигураций...")
+            
+            # Получаем все Outline ключи для синхронизации
+            with get_db_cursor() as cursor:
+                if server_id:
+                    cursor.execute("""
+                SELECT k.id, k.key_id, k.access_url, k.server_id, k.user_id, k.email,
+                       k.subscription_id, s.name, s.api_url, s.cert_sha256
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE s.protocol = 'outline' AND s.active = 1 AND k.server_id = ?
+                  AND k.key_id IS NOT NULL AND k.key_id != ''
+                    """, (server_id,))
+                else:
+                    cursor.execute("""
+                        SELECT k.id, k.key_id, k.access_url, k.server_id, k.user_id, k.email,
+                               k.subscription_id, s.name, s.api_url, s.cert_sha256
+                        FROM keys k
+                        JOIN servers s ON k.server_id = s.id
+                        WHERE s.protocol = 'outline' AND s.active = 1
+                          AND k.key_id IS NOT NULL AND k.key_id != ''
+                    """)
+                outline_keys = cursor.fetchall()
+        
+        logger.info(f"    Найдено {len(outline_keys)} Outline ключей для синхронизации")
+        
+        # Группируем ключи по серверам
+        outline_keys_by_server: Dict[int, List[Tuple]] = {}
+        for key_row in outline_keys:
+            server_id_key = key_row[3]
+            if server_id_key not in outline_keys_by_server:
+                outline_keys_by_server[server_id_key] = []
+            outline_keys_by_server[server_id_key].append(key_row)
+        
+        # Получаем токены подписок для инвалидации кэша
+        outline_subscription_ids = {key[6] for key in outline_keys if key[6]}
+        outline_tokens_to_invalidate = set()
+        if outline_subscription_ids:
+            placeholders = ','.join('?' * len(outline_subscription_ids))
+            with get_db_cursor() as cursor:
+                cursor.execute(f"""
+                    SELECT id, subscription_token
+                    FROM subscriptions
+                    WHERE id IN ({placeholders})
+                """, list(outline_subscription_ids))
+                for sub_id, token in cursor.fetchall():
+                    outline_tokens_to_invalidate.add(token)
+        
+        # Синхронизируем конфигурации
+        outline_updates: List[Tuple[str, int]] = []  # (new_access_url, key_id)
+        
+        async def process_outline_server_sync_configs(server_id_key: int, server_keys: List[Tuple]) -> List[Tuple[str, int]]:
+            """Обработать один Outline сервер: синхронизировать конфигурации ключей"""
+            async with server_semaphore:
+                server_updates = []
+                
+                # ОПТИМИЗАЦИЯ: Используем словарь для быстрого доступа
+                server_info = servers_by_id.get(server_id_key)
+                if not server_info:
+                    return []
+                
+                try:
+                    # ОПТИМИЗАЦИЯ: Используем пул клиентов
+                    protocol_client = await client_pool.get_client(server_info)
+                    if not protocol_client:
+                        return []
+                    
+                    # ОПТИМИЗАЦИЯ: Получаем все ключи один раз и кэшируем
+                    remote_keys_all = await client_pool.get_all_keys_cached(server_id_key, "outline", protocol_client)
+                    remote_keys_dict = {
+                        str(extract_outline_key_id(k)): k
+                        for k in remote_keys_all
+                        if extract_outline_key_id(k)
+                    }
+                    
+                    async def sync_single_outline_key(key_row: Tuple) -> Optional[Tuple[str, int]]:
+                        """Синхронизировать один Outline ключ"""
+                        async with api_semaphore:
+                            try:
+                                key_id_db, key_id, old_access_url, _, _, _, sub_id, _, _, _ = key_row
+                                
+                                # ОПТИМИЗАЦИЯ: Используем кэшированные ключи вместо запроса к серверу
+                                remote_key = remote_keys_dict.get(str(key_id))
+                                
+                                if not remote_key:
+                                    # Ключа нет на сервере - пропускаем (будет удален на другом этапе)
+                                    return None
+                                
+                                # Получаем access_url из ответа сервера
+                                new_access_url = remote_key.get("accessUrl") or remote_key.get("access_url") or ""
+                                
+                                # Сравниваем с текущим access_url
+                                if old_access_url != new_access_url and new_access_url:
+                                    return (new_access_url, key_id_db)
+                                return None
+                                
+                            except Exception as e:
+                                logger.warning(f"      Ошибка синхронизации Outline ключа #{key_row[0]}: {e}")
+                                return None
+                    
+                    # Параллельно синхронизируем ключи батчами (для БД операций)
+                    batch_size = 50
+                    for i in range(0, len(server_keys), batch_size):
+                        batch = server_keys[i:i + batch_size]
+                        sync_tasks = [sync_single_outline_key(key_row) for key_row in batch]
+                        batch_results = await asyncio.gather(*sync_tasks, return_exceptions=True)
+                        
+                        for result in batch_results:
+                            if isinstance(result, Exception):
+                                continue
+                            if result:
+                                server_updates.append(result)
+                
+                except Exception as e:
+                    stats["errors"] += 1
+                    error_msg = f"Ошибка синхронизации Outline конфигураций сервера #{server_id_key}: {e}"
+                    stats["errors_details"].append({
+                        "type": "outline_sync_configs",
+                        "server_id": server_id_key,
+                        "error": error_msg,
+                    })
+                    logger.error(f"    ✗ {error_msg}")
+                
+                return server_updates
+        
+        # ОПТИМИЗАЦИЯ: Параллельная обработка серверов (до 5 одновременно)
+        if outline_keys_by_server:
+            outline_sync_tasks = [
+                process_outline_server_sync_configs(server_id_key, server_keys)
+                for server_id_key, server_keys in outline_keys_by_server.items()
+            ]
+            outline_sync_results = await asyncio.gather(*outline_sync_tasks, return_exceptions=True)
+            
+            for result in outline_sync_results:
+                if isinstance(result, Exception):
+                    continue
+                if isinstance(result, list):
+                    outline_updates.extend(result)
+        
+        # Обновляем access_url в БД батчем
+        if outline_updates and not dry_run:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.executemany("""
+                    UPDATE keys
+                    SET access_url = ?
+                    WHERE id = ?
+                """, outline_updates)
+                stats["outline_configs_updated"] = len(outline_updates)
+                logger.info(f"    Обновлено конфигураций: {len(outline_updates)}")
+        
+        # Инвалидируем кэш подписок
+        if not dry_run:
+            for token in outline_tokens_to_invalidate:
+                invalidate_subscription_cache(token)
+        else:
+            logger.info("  [4.4] Пропущено (sync_configs=False)")
+    
+    finally:
+        # ОПТИМИЗАЦИЯ: Закрываем все клиенты из пула (гарантированно)
+        await client_pool.close_all()
+    
+    # ========== ИТОГОВАЯ СТАТИСТИКА ==========
+    stats["duration_seconds"] = time.time() - start_time
+    
+    logger.info("\n" + "=" * 60)
+    logger.info("ИТОГО:")
+    logger.info(f"  Обработано серверов: {stats['servers_processed']}")
+    logger.info(f"  Недоступных серверов: {stats['servers_unavailable']}")
+    logger.info(f"  Удалено ключей из БД: {stats['keys_deleted_from_db']}")
+    logger.info(f"  Удалено ключей с серверов: {stats['keys_deleted_from_servers']}")
+    logger.info(f"  Создано V2Ray ключей: {stats['v2ray_keys_created']}")
+    logger.info(f"  Обновлено V2Ray конфигураций: {stats['v2ray_configs_updated']}")
+    logger.info(f"  Создано Outline ключей: {stats['outline_keys_created']}")
+    logger.info(f"  Обновлено Outline конфигураций: {stats['outline_configs_updated']}")
+    logger.info(f"  Удалено Outline ключей (не с сервера №8): {stats['outline_keys_removed']}")
+    logger.info(f"  Ошибок: {stats['errors']}")
+    logger.info(f"  Время выполнения: {stats['duration_seconds']:.2f} сек")
+    logger.info("=" * 60)
     
     if dry_run:
-        logger.info(f"\n⚠️  Это был DRY RUN - изменения не были применены")
-        logger.info(f"Запустите скрипт без --dry-run для применения изменений")
+        logger.info("\n⚠️  Это был DRY RUN - изменения не были применены")
     
-    return {
-        "total_keys": len(keys),
-        "updated": total_updated,
-        "unchanged": total_unchanged,
-        "failed": total_failed,
-        "servers_processed": len(keys_by_server),
-        "dry_run": dry_run,
-        "missing_pairs_total": missing_stats.get("missing_pairs_total", 0),
-        "missing_keys_created": missing_stats.get("missing_keys_created", 0),
-        "missing_keys_failed": missing_stats.get("missing_keys_failed", 0),
-        "missing_keys_servers": missing_stats.get("servers_with_missing_keys", 0),
-        "orphaned_remote_detected": orphan_stats.get("orphaned_remote_detected", 0),
-        "orphaned_remote_deleted": orphan_stats.get("orphaned_remote_deleted", 0),
-        "orphaned_remote_delete_errors": orphan_stats.get("orphaned_remote_delete_errors", 0),
-        "orphaned_remote_servers": orphan_stats.get("servers_with_orphaned_keys", 0),
-        "error_details": error_details[:50],  # Ограничиваем до 50 ошибок для избежания больших ответов
-    }
+    return stats
 
 
 async def main():
@@ -1120,16 +1368,6 @@ async def main():
         type=int,
         help='Синхронизировать только ключи с указанного сервера'
     )
-    parser.add_argument(
-        '--ensure-missing-keys',
-        action='store_true',
-        help='Создавать недостающие ключи на серверах, доступных для покупки, перед синхронизацией'
-    )
-    parser.add_argument(
-        '--delete-orphaned',
-        action='store_true',
-        help='Удалять с серверов ключи, которых нет в базе данных'
-    )
     
     args = parser.parse_args()
     
@@ -1137,8 +1375,6 @@ async def main():
         result = await sync_all_keys_with_servers(
             dry_run=args.dry_run,
             server_id=args.server_id,
-            ensure_missing_keys=args.ensure_missing_keys,
-            delete_orphaned_server_keys=args.delete_orphaned,
         )
         if result:
             logger.info(f"\nРезультат синхронизации: {result}")
@@ -1152,4 +1388,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

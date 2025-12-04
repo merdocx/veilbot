@@ -198,6 +198,96 @@
         </div>
     </form>
 {% endcall %}
+
+{% call modal("sync-keys-modal", "Настройки синхронизации ключей") %}
+    <form id="syncKeysForm" class="form">
+        <!-- Режим выполнения -->
+        <div class="form-field">
+            <label class="form-label">Режим выполнения</label>
+            <div class="form-radio-group">
+                <label class="form-radio">
+                    <input type="radio" name="dry_run" value="true" checked>
+                    <span>Режим проверки (dry run)</span>
+                </label>
+                <label class="form-radio">
+                    <input type="radio" name="dry_run" value="false">
+                    <span>Реальная синхронизация</span>
+                </label>
+            </div>
+            <div class="form-hint">В режиме проверки изменения не будут применены, только показано что будет сделано.</div>
+        </div>
+
+        <!-- Область синхронизации -->
+        <div class="form-field">
+            <label class="form-label">Область синхронизации</label>
+            <div class="form-radio-group">
+                <label class="form-radio">
+                    <input type="radio" name="server_scope" value="all" checked>
+                    <span>Все серверы</span>
+                </label>
+                <label class="form-radio">
+                    <input type="radio" name="server_scope" value="single">
+                    <span>Один сервер</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Выбор сервера (показывается только если выбран "Один сервер") -->
+        <div class="form-field" id="server-select-field" style="display: none;">
+            <label for="server_id" class="form-label">Выберите сервер</label>
+            <select id="server_id" name="server_id" class="form-input">
+                <option value="">-- Выберите сервер --</option>
+                {% for server in active_servers %}
+                <option value="{{ server.id }}">{{ server.name }} ({{ server.protocol|upper }})</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Типы операций -->
+        <div class="form-field">
+            <label class="form-label">Типы операций</label>
+            <div class="form-checkbox-group">
+                <label class="form-checkbox">
+                    <input type="checkbox" name="create_missing" checked>
+                    <span>Создавать недостающие ключи</span>
+                </label>
+                <label class="form-checkbox">
+                    <input type="checkbox" name="delete_orphaned_on_servers" checked>
+                    <span>Удалять лишние ключи с серверов (которых нет в БД)</span>
+                </label>
+                <label class="form-checkbox">
+                    <input type="checkbox" name="delete_inactive_server_keys" checked>
+                    <span>Удалять ключи для неактивных/удалённых серверов (только из БД)</span>
+                </label>
+                <label class="form-checkbox">
+                    <input type="checkbox" name="sync_configs" checked>
+                    <span>Синхронизировать конфигурации (VLESS / access_url)</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Фильтр по протоколам -->
+        <div class="form-field">
+            <label class="form-label">Протоколы</label>
+            <div class="form-checkbox-group">
+                <label class="form-checkbox">
+                    <input type="checkbox" name="include_v2ray" checked>
+                    <span>V2Ray</span>
+                </label>
+                <label class="form-checkbox">
+                    <input type="checkbox" name="include_outline" checked>
+                    <span>Outline</span>
+                </label>
+            </div>
+            <div class="form-hint" id="protocol-hint" style="display: none; color: #d32f2f;">Необходимо выбрать хотя бы один протокол.</div>
+        </div>
+
+        <div class="form-actions">
+            <button type="button" class="btn" data-modal-close>Отмена</button>
+            <button type="submit" class="btn btn-primary">Запустить синхронизацию</button>
+        </div>
+    </form>
+{% endcall %}
 {% endblock %}
 
 {% block extra_scripts %}

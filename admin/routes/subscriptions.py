@@ -1,8 +1,9 @@
 """
 API маршруты для подписок V2Ray
 """
-from fastapi import APIRouter, Request, HTTPException, Form
+from fastapi import APIRouter, Request, HTTPException, Form, Body
 from fastapi.responses import PlainTextResponse, RedirectResponse, JSONResponse
+from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 import logging
@@ -17,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from bot.services.subscription_service import SubscriptionService, validate_subscription_token
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.server_repository import ServerRepository
 from app.settings import settings
 from app.infra.sqlite_utils import open_connection
 from app.infra.foreign_keys import safe_foreign_keys_off
@@ -137,7 +139,20 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
         
         subscription_repo = SubscriptionRepository(DB_PATH)
         user_repo = UserRepository(DB_PATH)
+        server_repo = ServerRepository(DB_PATH)
         total = subscription_repo.count_subscriptions()
+        
+        # Получаем список активных серверов для выпадающего списка
+        all_servers = server_repo.list_servers()
+        active_servers = []
+        for server_row in all_servers:
+            server_id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase = server_row
+            if active:
+                active_servers.append({
+                    "id": server_id,
+                    "name": name or f"Server #{server_id}",
+                    "protocol": (protocol or "outline").lower(),
+                })
         
         offset = (page - 1) * limit
         rows = subscription_repo.list_subscriptions(limit=limit, offset=offset)
@@ -266,6 +281,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             "total": total,
             "active_count": active_count,
             "expired_count": expired_count,
+            "active_servers": active_servers,
             "pages": pages,
             "csrf_token": get_csrf_token(request),
         })
@@ -506,51 +522,89 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
     # Получаем все ключи подписки для удаления
     subscription_keys = subscription_repo.get_subscription_keys_for_deletion(subscription_id)
     
-    # Удаляем ключи через V2Ray API
+    # Удаляем ключи через API (V2Ray и Outline)
     deleted_v2ray_count = 0
+    deleted_outline_count = 0
     for key_data in subscription_keys:
-        if not isinstance(key_data, (tuple, list)) or len(key_data) < 3:
+        if not isinstance(key_data, (tuple, list)) or len(key_data) < 4:
             logging.warning(f"Invalid key data structure: {key_data} for subscription {subscription_id}")
             continue
         
-        v2ray_uuid, api_url, api_key = key_data[0], key_data[1], key_data[2]
+        key_id, api_url, api_key_or_cert, protocol = key_data[0], key_data[1], key_data[2], key_data[3]
         
-        if v2ray_uuid and api_url and api_key:
-            protocol_client = None
-            try:
-                log_admin_action(
-                    request,
-                    "V2RAY_DELETE_ATTEMPT",
-                    f"Attempting to delete key {v2ray_uuid} from server {api_url} for subscription {subscription_id}"
-                )
-                protocol_client = V2RayProtocol(api_url, api_key)
-                result = await protocol_client.delete_user(v2ray_uuid)
-                if result:
-                    deleted_v2ray_count += 1
+        if not key_id or not api_url:
+            continue
+        
+        if protocol == 'v2ray':
+            # Удаляем V2Ray ключ
+            if api_key_or_cert:
+                protocol_client = None
+                try:
                     log_admin_action(
                         request,
-                        "V2RAY_DELETE_SUCCESS",
-                        f"Successfully deleted key {v2ray_uuid} for subscription {subscription_id}"
+                        "V2RAY_DELETE_ATTEMPT",
+                        f"Attempting to delete key {key_id} from server {api_url} for subscription {subscription_id}"
                     )
-                else:
+                    protocol_client = V2RayProtocol(api_url, api_key_or_cert)
+                    result = await protocol_client.delete_user(key_id)
+                    if result:
+                        deleted_v2ray_count += 1
+                        log_admin_action(
+                            request,
+                            "V2RAY_DELETE_SUCCESS",
+                            f"Successfully deleted key {key_id} for subscription {subscription_id}"
+                        )
+                    else:
+                        log_admin_action(
+                            request,
+                            "V2RAY_DELETE_FAILED",
+                            f"Failed to delete key {key_id} for subscription {subscription_id}"
+                        )
+                except Exception as e:
+                    logging.error(f"Error deleting V2Ray key {key_id}: {e}", exc_info=True)
                     log_admin_action(
                         request,
-                        "V2RAY_DELETE_FAILED",
-                        f"Failed to delete key {v2ray_uuid} for subscription {subscription_id}"
+                        "V2RAY_DELETE_ERROR",
+                        f"Failed to delete key {key_id} for subscription {subscription_id}: {str(e)}"
                     )
-            except Exception as e:
-                logging.error(f"Error deleting V2Ray key {v2ray_uuid}: {e}", exc_info=True)
-                log_admin_action(
-                    request,
-                    "V2RAY_DELETE_ERROR",
-                    f"Failed to delete key {v2ray_uuid} for subscription {subscription_id}: {str(e)}"
-                )
-            finally:
-                if protocol_client:
-                    try:
-                        await protocol_client.close()
-                    except Exception as close_error:
-                        logging.warning(f"Error closing protocol client: {close_error}")
+                finally:
+                    if protocol_client:
+                        try:
+                            await protocol_client.close()
+                        except Exception as close_error:
+                            logging.warning(f"Error closing protocol client: {close_error}")
+        
+        elif protocol == 'outline':
+            # Удаляем Outline ключ
+            if api_key_or_cert:  # cert_sha256 для Outline
+                try:
+                    log_admin_action(
+                        request,
+                        "OUTLINE_DELETE_ATTEMPT",
+                        f"Attempting to delete key {key_id} from server {api_url} for subscription {subscription_id}"
+                    )
+                    from outline import delete_key
+                    result = delete_key(api_url, api_key_or_cert, key_id)
+                    if result:
+                        deleted_outline_count += 1
+                        log_admin_action(
+                            request,
+                            "OUTLINE_DELETE_SUCCESS",
+                            f"Successfully deleted key {key_id} for subscription {subscription_id}"
+                        )
+                    else:
+                        log_admin_action(
+                            request,
+                            "OUTLINE_DELETE_FAILED",
+                            f"Failed to delete key {key_id} for subscription {subscription_id}"
+                        )
+                except Exception as e:
+                    logging.error(f"Error deleting Outline key {key_id}: {e}", exc_info=True)
+                    log_admin_action(
+                        request,
+                        "OUTLINE_DELETE_ERROR",
+                        f"Failed to delete key {key_id} for subscription {subscription_id}: {str(e)}"
+                    )
     
     # Удаляем ключи из БД
     deleted_keys_count = subscription_repo.delete_subscription_keys(subscription_id)
@@ -580,7 +634,7 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
     log_admin_action(
         request,
         "DELETE_SUBSCRIPTION",
-        f"Subscription ID: {subscription_id}, deleted {deleted_keys_count} keys from DB, {deleted_v2ray_count} from servers, subscription removed from DB"
+        f"Subscription ID: {subscription_id}, deleted {deleted_keys_count} keys from DB, {deleted_v2ray_count} V2Ray + {deleted_outline_count} Outline from servers, subscription removed from DB"
     )
     
     logging.info(f"Successfully deleted subscription {subscription_id} from database")
@@ -588,6 +642,7 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
         "subscription_id": subscription_id,
         "deleted_keys_count": deleted_keys_count,
         "deleted_v2ray_count": deleted_v2ray_count,
+        "deleted_outline_count": deleted_outline_count,
     }
 
 
@@ -746,49 +801,106 @@ async def get_subscription(request: Request, token: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class SyncKeysRequest(BaseModel):
+    """Модель запроса для синхронизации ключей"""
+    dry_run: bool = True
+    server_scope: str = "all"  # "all" или "single"
+    server_id: Optional[int] = None
+    create_missing: bool = True
+    delete_orphaned_on_servers: bool = True
+    delete_inactive_server_keys: bool = True
+    sync_configs: bool = True
+    include_v2ray: bool = True
+    include_outline: bool = True
+
+
 @router.post("/subscriptions/sync-keys")
-async def sync_keys_with_servers(request: Request):
+async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest = Body(...)):
     """Синхронизация всех ключей V2Ray с серверами"""
     if not request.session.get("admin_logged_in"):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     
+    # Валидация параметров
+    if not sync_params.include_v2ray and not sync_params.include_outline:
+        return JSONResponse({
+            "success": False,
+            "error": "Необходимо выбрать хотя бы один протокол (V2Ray или Outline)"
+        }, status_code=400)
+    
+    if sync_params.server_scope == "single" and not sync_params.server_id:
+        return JSONResponse({
+            "success": False,
+            "error": "Необходимо выбрать сервер при выборе 'Один сервер'"
+        }, status_code=400)
+    
     try:
-        log_admin_action(request, "SYNC_KEYS_START", "Starting key synchronization with servers")
-        
-        # Запускаем синхронизацию
-        result = await sync_all_keys_with_servers(
-            dry_run=False,
-            server_id=None,
-            ensure_missing_keys=True,
-            delete_orphaned_server_keys=True,
+        log_admin_action(
+            request, 
+            "SYNC_KEYS_START", 
+            f"Starting key synchronization: dry_run={sync_params.dry_run}, "
+            f"server_scope={sync_params.server_scope}, server_id={sync_params.server_id}, "
+            f"create_missing={sync_params.create_missing}, "
+            f"delete_orphaned={sync_params.delete_orphaned_on_servers}, "
+            f"delete_inactive={sync_params.delete_inactive_server_keys}, "
+            f"sync_configs={sync_params.sync_configs}, "
+            f"v2ray={sync_params.include_v2ray}, outline={sync_params.include_outline}"
         )
+        
+        # Определяем server_id для функции
+        target_server_id = sync_params.server_id if sync_params.server_scope == "single" else None
+        
+        # Запускаем синхронизацию с таймаутом (10 минут)
+        import asyncio
+        try:
+            result = await asyncio.wait_for(
+                sync_all_keys_with_servers(
+                    dry_run=sync_params.dry_run,
+                    server_id=target_server_id,
+                    create_missing=sync_params.create_missing,
+                    delete_orphaned_on_servers=sync_params.delete_orphaned_on_servers,
+                    delete_inactive_server_keys=sync_params.delete_inactive_server_keys,
+                    sync_configs=sync_params.sync_configs,
+                    include_v2ray=sync_params.include_v2ray,
+                    include_outline=sync_params.include_outline,
+                ),
+                timeout=600.0  # 10 минут максимум
+            )
+        except asyncio.TimeoutError:
+            error_msg = "Синхронизация превысила максимальное время выполнения (10 минут). Процесс был прерван."
+            logger.error(error_msg)
+            log_admin_action(request, "SYNC_KEYS_TIMEOUT", error_msg)
+            return JSONResponse({
+                "success": False,
+                "error": error_msg,
+                "message": "Синхронизация заняла слишком много времени и была прервана. Попробуйте запустить синхронизацию для конкретного сервера или проверьте доступность серверов."
+            }, status_code=504)
         
         log_admin_action(
             request,
             "SYNC_KEYS_COMPLETE",
-            f"Key synchronization completed: updated={result.get('updated', 0)}, "
-            f"unchanged={result.get('unchanged', 0)}, failed={result.get('failed', 0)}, "
-            f"missing_keys_created={result.get('missing_keys_created', 0)}, "
-            f"orphaned_remote_deleted={result.get('orphaned_remote_deleted', 0)}"
+            f"Key synchronization completed: v2ray_created={result.get('v2ray_keys_created', 0)}, "
+            f"v2ray_configs_updated={result.get('v2ray_configs_updated', 0)}, "
+            f"outline_created={result.get('outline_keys_created', 0)}, "
+            f"outline_configs_updated={result.get('outline_configs_updated', 0)}, "
+            f"keys_deleted_from_servers={result.get('keys_deleted_from_servers', 0)}, "
+            f"errors={result.get('errors', 0)}"
         )
         
         return JSONResponse({
             "success": True,
             "message": "Синхронизация ключей завершена",
             "stats": {
-                "total_keys": result.get("total_keys", 0),
-                "updated": result.get("updated", 0),
-                "unchanged": result.get("unchanged", 0),
-                "failed": result.get("failed", 0),
                 "servers_processed": result.get("servers_processed", 0),
-                "missing_pairs_total": result.get("missing_pairs_total", 0),
-                "missing_keys_created": result.get("missing_keys_created", 0),
-                "missing_keys_failed": result.get("missing_keys_failed", 0),
-                "missing_keys_servers": result.get("missing_keys_servers", 0),
-                "orphaned_remote_detected": result.get("orphaned_remote_detected", 0),
-                "orphaned_remote_deleted": result.get("orphaned_remote_deleted", 0),
-                "orphaned_remote_delete_errors": result.get("orphaned_remote_delete_errors", 0),
-                "orphaned_remote_servers": result.get("orphaned_remote_servers", 0),
+                "servers_unavailable": result.get("servers_unavailable", 0),
+                "keys_deleted_from_db": result.get("keys_deleted_from_db", 0),
+                "keys_deleted_from_servers": result.get("keys_deleted_from_servers", 0),
+                "v2ray_keys_created": result.get("v2ray_keys_created", 0),
+                "v2ray_configs_updated": result.get("v2ray_configs_updated", 0),
+                "outline_keys_created": result.get("outline_keys_created", 0),
+                "outline_configs_updated": result.get("outline_configs_updated", 0),
+                "outline_keys_removed": result.get("outline_keys_removed", 0),
+                "errors": result.get("errors", 0),
+                "duration_seconds": result.get("duration_seconds", 0),
                 "error_details": result.get("error_details", []),
             }
         })
@@ -800,6 +912,15 @@ async def sync_keys_with_servers(request: Request):
             "success": False,
             "error": error_msg
         }, status_code=500)
+    except asyncio.TimeoutError:
+        error_msg = "Синхронизация превысила максимальное время выполнения (10 минут). Процесс был прерван."
+        logger.error(error_msg)
+        log_admin_action(request, "SYNC_KEYS_TIMEOUT", error_msg)
+        return JSONResponse({
+            "success": False,
+            "error": error_msg,
+            "message": "Синхронизация заняла слишком много времени и была прервана. Попробуйте запустить синхронизацию для конкретного сервера или проверьте доступность серверов."
+        }, status_code=504)
     except Exception as e:
         error_msg = f"Ошибка синхронизации ключей: {str(e)}"
         logger.error(error_msg, exc_info=True)
