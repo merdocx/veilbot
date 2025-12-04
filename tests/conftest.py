@@ -153,6 +153,7 @@ def mock_message() -> MagicMock:
     message.from_user.first_name = "Test"
     message.text = "Test message"
     message.answer = AsyncMock(return_value=None)
+    message.answer_photo = AsyncMock(return_value=None)
     return message
 
 

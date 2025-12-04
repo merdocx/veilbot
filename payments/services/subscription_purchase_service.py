@@ -16,7 +16,7 @@ from app.infra.sqlite_utils import open_async_connection
 from app.settings import settings as app_settings
 from vpn_protocols import ProtocolFactory, format_duration
 from bot.core import get_bot_instance
-from bot.utils import safe_send_message
+from bot.utils import safe_send_message, format_key_message_unified
 from bot.keyboards import get_main_menu
 from bot.services.subscription_traffic_reset import reset_subscription_traffic
 
@@ -665,6 +665,56 @@ class SubscriptionPurchaseService:
                 # НЕ помечаем как completed, чтобы повторить попытку
                 return False, f"Failed to send {notification_type_name} notification to user {payment.user_id}"
             
+            # Шаг 5.5: Если это покупка (is_purchase=True), отправляем информацию о запасных Outline ключах
+            if is_purchase:
+                try:
+                    # Получаем все Outline ключи для этой подписки
+                    async with open_async_connection(self.db_path) as conn:
+                        async with conn.execute(
+                            """
+                            SELECT k.access_url, k.expiry_at, s.country
+                            FROM keys k
+                            JOIN servers s ON k.server_id = s.id
+                            WHERE k.subscription_id = ? AND k.protocol = 'outline' AND k.expiry_at > ?
+                            ORDER BY s.country, k.created_at
+                            """,
+                            (subscription_id, now)
+                        ) as cursor:
+                            outline_keys = await cursor.fetchall()
+                    
+                    if outline_keys:
+                        # Формируем сообщение с запасными Outline ключами
+                        outline_msg = "🎁 *Также мы подготовили для вас запасные Outline ключи (потребуется скачать другое приложение):*\n\n"
+                        
+                        for access_url, key_expiry_at, country in outline_keys:
+                            remaining_time = key_expiry_at - now
+                            country_text = f"🌍 *Страна:* {country}\n" if country else ""
+                            outline_msg += (
+                                f"{country_text}"
+                                f"{format_key_message_unified(access_url, 'outline', tariff, remaining_time)}\n\n"
+                            )
+                        
+                        # Отправляем сообщение с запасными ключами
+                        outline_notification_sent = await self._send_notification_simple(payment.user_id, outline_msg)
+                        if outline_notification_sent:
+                            logger.info(
+                                f"[SUBSCRIPTION] Outline backup keys notification sent to user {payment.user_id} for subscription {subscription_id}"
+                            )
+                        else:
+                            logger.warning(
+                                f"[SUBSCRIPTION] Failed to send Outline backup keys notification to user {payment.user_id} for subscription {subscription_id}"
+                            )
+                    else:
+                        logger.info(
+                            f"[SUBSCRIPTION] No Outline keys found for subscription {subscription_id}, skipping backup keys notification"
+                        )
+                except Exception as outline_error:
+                    logger.error(
+                        f"[SUBSCRIPTION] Error sending Outline backup keys notification for subscription {subscription_id}: {outline_error}",
+                        exc_info=True
+                    )
+                    # Не прерываем процесс, так как основное уведомление уже отправлено
+            
             # Шаг 6: Уведомление успешно отправлено - помечаем платеж как completed
             # ВАЖНО: mark_purchase_notification_sent вызываем ТОЛЬКО для покупки (is_purchase=True)
             # Для продления этот флаг не используется
@@ -825,6 +875,55 @@ class SubscriptionPurchaseService:
                 # НЕ помечаем как completed, чтобы повторить попытку
                 return False, f"Failed to send purchase notification to user {payment.user_id}"
             
+            # Шаг 3.5: Отправляем информацию о запасных Outline ключах
+            try:
+                # Получаем все Outline ключи для этой подписки
+                async with open_async_connection(self.db_path) as conn:
+                    async with conn.execute(
+                        """
+                        SELECT k.access_url, k.expiry_at, s.country
+                        FROM keys k
+                        JOIN servers s ON k.server_id = s.id
+                        WHERE k.subscription_id = ? AND k.protocol = 'outline' AND k.expiry_at > ?
+                        ORDER BY s.country, k.created_at
+                        """,
+                        (subscription_id, now)
+                    ) as cursor:
+                        outline_keys = await cursor.fetchall()
+                
+                if outline_keys:
+                    # Формируем сообщение с запасными Outline ключами
+                    outline_msg = "🎁 *Также мы подготовили для вас запасные Outline ключи (потребуется скачать другое приложение):*\n\n"
+                    
+                    for access_url, key_expiry_at, country in outline_keys:
+                        remaining_time = key_expiry_at - now
+                        country_text = f"🌍 *Страна:* {country}\n" if country else ""
+                        outline_msg += (
+                            f"{country_text}"
+                            f"{format_key_message_unified(access_url, 'outline', tariff, remaining_time)}\n\n"
+                        )
+                    
+                    # Отправляем сообщение с запасными ключами
+                    outline_notification_sent = await self._send_notification_simple(payment.user_id, outline_msg)
+                    if outline_notification_sent:
+                        logger.info(
+                            f"[SUBSCRIPTION] Outline backup keys notification sent to user {payment.user_id} for subscription {subscription_id}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[SUBSCRIPTION] Failed to send Outline backup keys notification to user {payment.user_id} for subscription {subscription_id}"
+                        )
+                else:
+                    logger.info(
+                        f"[SUBSCRIPTION] No Outline keys found for subscription {subscription_id}, skipping backup keys notification"
+                    )
+            except Exception as outline_error:
+                logger.error(
+                    f"[SUBSCRIPTION] Error sending Outline backup keys notification for subscription {subscription_id}: {outline_error}",
+                    exc_info=True
+                )
+                # Не прерываем процесс, так как основное уведомление уже отправлено
+            
             # Шаг 4: Уведомление успешно отправлено - помечаем платеж
             # ВАЖНО: Флаг purchase_notification_sent уже установлен атомарно в Шаге 1
             # Здесь только обновляем статус платежа
@@ -973,35 +1072,90 @@ class SubscriptionPurchaseService:
                 logger.error(f"[SUBSCRIPTION] {error_msg}")
                 return False, error_msg
             
-            # Шаг 2: Создаем подписку в БД
-            subscription_id = await self.subscription_repo.create_subscription_async(
-                user_id=payment.user_id,
-                subscription_token=subscription_token,
-                expires_at=expires_at,
-                tariff_id=tariff['id'],
-            )
+            # Шаг 2: Атомарно создаем подписку в БД с защитой от race condition
+            # ВАЖНО: Используем транзакцию и проверяем наличие подписки непосредственно перед вставкой
+            subscription_id = None
+            async with open_async_connection(self.db_path) as conn:
+                # Начинаем транзакцию
+                await conn.execute("BEGIN IMMEDIATE")
+                try:
+                    # Финальная проверка перед созданием (защита от race condition)
+                    async with conn.execute(
+                        """
+                        SELECT id FROM subscriptions
+                        WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+                        LIMIT 1
+                        """,
+                        (payment.user_id, grace_threshold)
+                    ) as check_cursor:
+                        existing = await check_cursor.fetchone()
+                    
+                    if existing:
+                        # Подписка уже создана другим процессом
+                        subscription_id = existing[0]
+                        await conn.commit()
+                        logger.info(
+                            f"[SUBSCRIPTION] Subscription {subscription_id} already exists (race condition detected), "
+                            f"using existing subscription for user {payment.user_id}"
+                        )
+                    else:
+                        # Создаем новую подписку
+                        cursor = await conn.execute(
+                            """
+                            INSERT INTO subscriptions (user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified)
+                            VALUES (?, ?, ?, ?, ?, 1, 0)
+                            """,
+                            (payment.user_id, subscription_token, now, expires_at, tariff['id']),
+                        )
+                        subscription_id = cursor.lastrowid
+                        await conn.commit()
+                        logger.info(
+                            f"[SUBSCRIPTION] Created subscription {subscription_id} for user {payment.user_id}, "
+                            f"expires_at={expires_at}"
+                        )
+                except Exception as e:
+                    await conn.rollback()
+                    raise e
             
-            logger.info(
-                f"[SUBSCRIPTION] Created subscription {subscription_id} for user {payment.user_id}, "
-                f"expires_at={expires_at}"
-            )
+            if not subscription_id:
+                error_msg = "Failed to create or get subscription"
+                logger.error(f"[SUBSCRIPTION] {error_msg}")
+                return False, error_msg
             
-            # Шаг 3: Создаем ключи на всех активных серверах (V2Ray и Outline)
+            # Шаг 3: Создаем ключи на всех активных серверах
+            # ВАЖНО: Для V2Ray создаем ключи на всех активных серверах
+            # Для Outline создаем только один ключ (приоритет серверу с id=8)
+            
+            # Сначала получаем все V2Ray серверы
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     """
                     SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256
                     FROM servers
-                    WHERE active = 1 AND (protocol = 'v2ray' OR protocol = 'outline')
-                    ORDER BY protocol, id
+                    WHERE active = 1 AND protocol = 'v2ray'
+                    ORDER BY id
                     """
                 ) as cursor:
-                    servers = await cursor.fetchall()
+                    v2ray_servers = await cursor.fetchall()
+            
+            # Получаем Outline сервер (приоритет серверу с id=8)
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256
+                    FROM servers
+                    WHERE active = 1 AND protocol = 'outline'
+                    ORDER BY CASE WHEN id = 8 THEN 0 ELSE 1 END, id
+                    LIMIT 1
+                    """
+                ) as cursor:
+                    outline_server_row = await cursor.fetchone()
             
             created_keys = 0
             failed_servers = []
             
-            for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in servers:
+            # Создаем ключи на всех V2Ray серверах
+            for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in v2ray_servers:
                 v2ray_uuid = None
                 outline_key_id = None
                 protocol_client = None
@@ -1077,84 +1231,108 @@ class SubscriptionPurchaseService:
                             finally:
                                 await conn.execute("PRAGMA foreign_keys = ON")
                     
-                    elif protocol == 'outline':
-                        server_config = {
-                            'api_url': api_url,
-                            'cert_sha256': cert_sha256,
-                        }
-                        protocol_client = ProtocolFactory.create_protocol('outline', server_config)
-                        user_data = await protocol_client.create_user(key_email)
-                        
-                        if not user_data or not user_data.get('id'):
-                            raise Exception("Failed to create user on Outline server")
-                        
-                        outline_key_id = user_data['id']
-                        access_url = user_data['accessUrl']
-                        
-                        # Сохранение Outline ключа в БД
-                        async with open_async_connection(self.db_path) as conn:
-                            await conn.execute("PRAGMA foreign_keys = OFF")
-                            try:
-                                cursor = await conn.execute(
-                                    """
-                                    INSERT INTO keys 
-                                    (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
-                                    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    (
-                                        server_id,
-                                        payment.user_id,
-                                        access_url,
-                                        expires_at,
-                                        0,  # traffic_limit_mb
-                                        outline_key_id,
-                                        now,
-                                        key_email,
-                                        tariff['id'],
-                                        'outline',
-                                        subscription_id,
-                                    ),
-                                )
-                                await conn.commit()
-                                
-                                # Проверяем, что ключ действительно сохранен
-                                async with conn.execute(
-                                    "SELECT id FROM keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND key_id = ?",
-                                    (server_id, payment.user_id, subscription_id, outline_key_id)
-                                ) as check_cursor:
-                                    if not await check_cursor.fetchone():
-                                        raise Exception(f"Key was not saved to database for server {server_id}")
-                                
-                            finally:
-                                await conn.execute("PRAGMA foreign_keys = ON")
-                    else:
-                        logger.warning(
-                            f"[SUBSCRIPTION] Unknown protocol {protocol} for server {server_id}, skipping"
-                        )
-                        continue
-                    
                     created_keys += 1
                     logger.info(
-                        f"[SUBSCRIPTION] Created {protocol} key for subscription {subscription_id} on server {server_id} ({server_name})"
+                        f"[SUBSCRIPTION] Created v2ray key for subscription {subscription_id} on server {server_id} ({server_name})"
                     )
                     
                 except Exception as e:
                     logger.error(
-                        f"[SUBSCRIPTION] Failed to create {protocol} key for subscription {subscription_id} "
+                        f"[SUBSCRIPTION] Failed to create v2ray key for subscription {subscription_id} "
                         f"on server {server_id} ({server_name}): {e}",
                         exc_info=True,
                     )
                     # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
-                    if protocol_client:
+                    if protocol_client and v2ray_uuid:
                         try:
-                            if protocol == 'v2ray' and v2ray_uuid:
-                                await protocol_client.delete_user(v2ray_uuid)
-                            elif protocol == 'outline' and outline_key_id:
-                                await protocol_client.delete_user(outline_key_id)
-                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned key on server {server_id}")
+                            await protocol_client.delete_user(v2ray_uuid)
+                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned v2ray key on server {server_id}")
                         except Exception as cleanup_error:
-                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned key: {cleanup_error}")
+                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned v2ray key: {cleanup_error}")
                     failed_servers.append(server_id)
+            
+            # Создаем один Outline ключ (если есть доступный Outline сервер)
+            if outline_server_row:
+                server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 = outline_server_row
+                outline_key_id = None
+                protocol_client = None
+                try:
+                    # Генерация email для ключа
+                    key_email = f"{payment.user_id}_subscription_{subscription_id}@veilbot.com"
+                    
+                    server_config = {
+                        'api_url': api_url,
+                        'cert_sha256': cert_sha256,
+                    }
+                    protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+                    user_data = await protocol_client.create_user(key_email)
+                    
+                    if not user_data or not user_data.get('id'):
+                        raise Exception("Failed to create user on Outline server")
+                    
+                    outline_key_id = user_data['id']
+                    access_url = user_data['accessUrl']
+                    
+                    # Сохранение Outline ключа в БД
+                    async with open_async_connection(self.db_path) as conn:
+                        await conn.execute("PRAGMA foreign_keys = OFF")
+                        try:
+                            cursor = await conn.execute(
+                                """
+                                INSERT INTO keys 
+                                (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
+                                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    server_id,
+                                    payment.user_id,
+                                    access_url,
+                                    expires_at,
+                                    0,  # traffic_limit_mb
+                                    outline_key_id,
+                                    now,
+                                    key_email,
+                                    tariff['id'],
+                                    'outline',
+                                    subscription_id,
+                                ),
+                            )
+                            await conn.commit()
+                            
+                            # Проверяем, что ключ действительно сохранен
+                            async with conn.execute(
+                                "SELECT id FROM keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND key_id = ?",
+                                (server_id, payment.user_id, subscription_id, outline_key_id)
+                            ) as check_cursor:
+                                if not await check_cursor.fetchone():
+                                    raise Exception(f"Key was not saved to database for server {server_id}")
+                            
+                        finally:
+                            await conn.execute("PRAGMA foreign_keys = ON")
+                    
+                    created_keys += 1
+                    logger.info(
+                        f"[SUBSCRIPTION] Created outline key for subscription {subscription_id} on server {server_id} ({server_name})"
+                    )
+                    
+                except Exception as e:
+                    logger.error(
+                        f"[SUBSCRIPTION] Failed to create outline key for subscription {subscription_id} "
+                        f"on server {server_id} ({server_name}): {e}",
+                        exc_info=True,
+                    )
+                    # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
+                    if protocol_client and outline_key_id:
+                        try:
+                            await protocol_client.delete_user(outline_key_id)
+                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned outline key on server {server_id}")
+                        except Exception as cleanup_error:
+                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned outline key: {cleanup_error}")
+                    failed_servers.append(server_id)
+            else:
+                logger.info(
+                    f"[SUBSCRIPTION] No active outline server found for subscription {subscription_id}, skipping outline key creation"
+                )
             
             if created_keys == 0:
                 error_msg = f"Failed to create any keys for subscription {subscription_id}"
@@ -1241,6 +1419,55 @@ class SubscriptionPurchaseService:
                 )
                 # НЕ помечаем как completed, чтобы повторить попытку
                 return False, f"Failed to send notification to user {payment.user_id}"
+            
+            # Шаг 6.5: Отправляем информацию о запасных Outline ключах
+            try:
+                # Получаем все Outline ключи для этой подписки
+                async with open_async_connection(self.db_path) as conn:
+                    async with conn.execute(
+                        """
+                        SELECT k.access_url, k.expiry_at, s.country
+                        FROM keys k
+                        JOIN servers s ON k.server_id = s.id
+                        WHERE k.subscription_id = ? AND k.protocol = 'outline' AND k.expiry_at > ?
+                        ORDER BY s.country, k.created_at
+                        """,
+                        (subscription_id, now)
+                    ) as cursor:
+                        outline_keys = await cursor.fetchall()
+                
+                if outline_keys:
+                    # Формируем сообщение с запасными Outline ключами
+                    outline_msg = "🎁 *Также мы подготовили для вас запасные Outline ключи (потребуется скачать другое приложение):*\n\n"
+                    
+                    for access_url, key_expiry_at, country in outline_keys:
+                        remaining_time = key_expiry_at - now
+                        country_text = f"🌍 *Страна:* {country}\n" if country else ""
+                        outline_msg += (
+                            f"{country_text}"
+                            f"{format_key_message_unified(access_url, 'outline', tariff, remaining_time)}\n\n"
+                        )
+                    
+                    # Отправляем сообщение с запасными ключами
+                    outline_notification_sent = await self._send_notification_simple(payment.user_id, outline_msg)
+                    if outline_notification_sent:
+                        logger.info(
+                            f"[SUBSCRIPTION] Outline backup keys notification sent to user {payment.user_id} for subscription {subscription_id}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[SUBSCRIPTION] Failed to send Outline backup keys notification to user {payment.user_id} for subscription {subscription_id}"
+                        )
+                else:
+                    logger.info(
+                        f"[SUBSCRIPTION] No Outline keys found for subscription {subscription_id}, skipping backup keys notification"
+                    )
+            except Exception as outline_error:
+                logger.error(
+                    f"[SUBSCRIPTION] Error sending Outline backup keys notification for subscription {subscription_id}: {outline_error}",
+                    exc_info=True
+                )
+                # Не прерываем процесс, так как основное уведомление уже отправлено
             
             # Шаг 7: Уведомление успешно отправлено - помечаем платеж как completed
             # ВАЖНО: Флаг purchase_notification_sent уже установлен атомарно в Шаге 4

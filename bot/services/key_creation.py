@@ -767,7 +767,7 @@ async def create_new_key_flow_with_protocol(
                         protocol=protocol,
                         server_id=server[0],
                         tariff_id=tariff['id'],
-                        ip_address=getattr(message, 'from_user', {}).get('id', None) if message else None,
+                        ip_address=str(message.from_user.id) if message and hasattr(message, 'from_user') and message.from_user and hasattr(message.from_user, 'id') else None,
                         user_agent="Telegram Bot"
                     )
             except Exception as e:
@@ -882,7 +882,7 @@ async def create_new_key_flow_with_protocol(
                         protocol=protocol,
                         server_id=server[0],
                         tariff_id=tariff['id'],
-                        ip_address=getattr(message, 'from_user', {}).get('id', None) if message else None,
+                        ip_address=str(message.from_user.id) if message and hasattr(message, 'from_user') and message.from_user and hasattr(message.from_user, 'id') else None,
                         user_agent="Telegram Bot"
                     )
             except Exception as e:
@@ -973,11 +973,12 @@ async def create_new_key_flow_with_protocol(
         try:
             security_logger = get_security_logger()
             if security_logger:
+                ip_address = str(message.from_user.id) if message and hasattr(message, 'from_user') and message.from_user and hasattr(message.from_user, 'id') else None
                 security_logger.log_suspicious_activity(
                     user_id=user_id,
                     activity_type="key_creation_failed",
                     details=f"Failed to create {protocol} key: {str(e)}",
-                    ip_address=getattr(message, 'from_user', {}).get('id', None) if message else None,
+                    ip_address=ip_address,
                     user_agent="Telegram Bot"
                 )
         except Exception as log_e:

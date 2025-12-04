@@ -420,17 +420,22 @@ async def create_payment_with_email_and_protocol(
                 try:
                     security_logger = get_security_logger()
                     if security_logger:
+                        # Получаем IP адрес из объекта User правильно
+                        ip_address = None
+                        if message and hasattr(message, 'from_user') and message.from_user:
+                            ip_address = str(message.from_user.id) if hasattr(message.from_user, 'id') else None
+                        
                         security_logger.log_payment_success(
                             user_id=user_id,
                             payment_id=payment_id,
                             amount=tariff.get('price_rub', 0) * 100,
                             protocol=protocol,
                             country=country,
-                            ip_address=getattr(message, 'from_user', {}).get('id', None),
+                            ip_address=ip_address,
                             user_agent="Telegram Bot"
                         )
                 except Exception as e:
-                    logging.error(f"Error logging payment success: {e}")
+                    logging.error(f"Error logging payment success: {e}", exc_info=True)
                 
                 # Выбираем сервер с учетом протокола
                 with get_db_cursor() as cursor:
@@ -466,17 +471,22 @@ async def create_payment_with_email_and_protocol(
                 try:
                     security_logger = get_security_logger()
                     if security_logger:
+                        # Получаем IP адрес из объекта User правильно
+                        ip_address = None
+                        if message and hasattr(message, 'from_user') and message.from_user:
+                            ip_address = str(message.from_user.id) if hasattr(message.from_user, 'id') else None
+                        
                         security_logger.log_payment_failure(
                             user_id=user_id,
                             amount=tariff.get('price_rub', 0) * 100,
                             protocol=protocol,
                             error="Payment creation failed",
                             country=country,
-                            ip_address=getattr(message, 'from_user', {}).get('id', None),
+                            ip_address=ip_address,
                             user_agent="Telegram Bot"
                         )
                 except Exception as log_e:
-                    logging.error(f"Error logging payment failure: {log_e}")
+                    logging.error(f"Error logging payment failure: {log_e}", exc_info=True)
                 
                 await message.answer("Ошибка при создании платежа.", reply_markup=get_main_menu(user_id))
                 return
@@ -488,17 +498,22 @@ async def create_payment_with_email_and_protocol(
             try:
                 security_logger = get_security_logger()
                 if security_logger:
+                    # Получаем IP адрес из объекта User правильно
+                    ip_address = None
+                    if message and hasattr(message, 'from_user') and message.from_user:
+                        ip_address = str(message.from_user.id) if hasattr(message.from_user, 'id') else None
+                    
                     security_logger.log_payment_failure(
                         user_id=user_id,
                         amount=tariff.get('price_rub', 0) * 100,
                         protocol=protocol,
                         error=str(e),
                         country=country,
-                        ip_address=getattr(message, 'from_user', {}).get('id', None),
+                        ip_address=ip_address,
                         user_agent="Telegram Bot"
                     )
             except Exception as log_e:
-                logging.error(f"Error logging payment module error: {log_e}")
+                logging.error(f"Error logging payment module error: {log_e}", exc_info=True)
             
             await message.answer("Ошибка при создании платежа.", reply_markup=get_main_menu(user_id))
             return

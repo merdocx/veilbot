@@ -77,12 +77,25 @@ class TestCommonHandlers:
         assert "Главное меню" in mock_message.answer.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_handle_apple_tv_instruction_without_image(self, mock_message):
+    async def test_handle_apple_tv_instruction_without_image(self, mock_message, monkeypatch):
         """Фолбэк без изображения"""
+        # Убеждаемся, что answer_photo является AsyncMock (важно установить ДО вызова функции)
+        mock_message.answer_photo = AsyncMock(return_value=None)
+        
+        import bot.handlers.common as common_module
+        # Мокируем метод exists() чтобы он всегда возвращал False
+        # Это гарантирует, что код пойдет по ветке без изображения
+        original_path = common_module.APPLE_TV_GUIDE_IMAGE_PATH
+        mock_path = MagicMock()
+        mock_path.exists = MagicMock(return_value=False)
+        monkeypatch.setattr(common_module, "APPLE_TV_GUIDE_IMAGE_PATH", mock_path)
+        
         await handle_apple_tv_instruction(mock_message)
         
         mock_message.answer.assert_called_once()
         assert "Изображение временно недоступно" in mock_message.answer.call_args[0][0]
+        # answer_photo не должен быть вызван, так как файл не существует
+        mock_message.answer_photo.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_apple_tv_instruction_with_image(self, mock_message, tmp_path, monkeypatch):

@@ -77,12 +77,25 @@ async def handle_my_keys_btn(message: types.Message):
     
     with get_db_cursor() as cursor:
         # Получаем Outline ключи с информацией о стране
-        cursor.execute("""
-            SELECT k.access_url, k.expiry_at, k.protocol, s.country, k.traffic_limit_mb
-            FROM keys k
-            JOIN servers s ON k.server_id = s.id
-            WHERE k.user_id = ? AND k.expiry_at > ?
-        """, (user_id, now))
+        # ВАЖНО: Показываем только ключи, связанные с активной подпиской
+        # Если есть активная подписка, показываем только её ключи
+        # Если подписки нет, показываем все активные outline ключи
+        if subscription_info:
+            # Есть активная подписка - показываем только её outline ключи
+            cursor.execute("""
+                SELECT k.access_url, k.expiry_at, k.protocol, s.country, k.traffic_limit_mb
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.user_id = ? AND k.expiry_at > ? AND k.subscription_id = ?
+            """, (user_id, now, subscription_info['id']))
+        else:
+            # Нет активной подписки - показываем все активные outline ключи
+            cursor.execute("""
+                SELECT k.access_url, k.expiry_at, k.protocol, s.country, k.traffic_limit_mb
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.user_id = ? AND k.expiry_at > ?
+            """, (user_id, now))
         outline_keys = cursor.fetchall()
     
     # Добавляем Outline ключи

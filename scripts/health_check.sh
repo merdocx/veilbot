@@ -144,7 +144,7 @@ echo ""
 
 # Проверка процессов
 echo "--- Process Status ---"
-check_process_count "bot.py" 1 || overall_status=1
+check_process_count "bot.main" 1 || overall_status=1
 check_process_count "admin.main:app" 1 || overall_status=1
 echo ""
 

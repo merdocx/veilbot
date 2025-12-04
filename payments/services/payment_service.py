@@ -102,16 +102,22 @@ class PaymentService:
                 payment_metadata.update(metadata)
             
             # Создаем платеж в YooKassa
-            yookassa_payment_id, confirmation_url = await self.yookassa_service.create_payment(
-                amount=amount,
-                description=description,
-                email=email,
-                payment_id=payment_id,
-                metadata=payment_metadata
-            )
+            logger.info(f"Calling yookassa_service.create_payment for user {user_id}, payment_id={payment_id}")
+            try:
+                yookassa_payment_id, confirmation_url = await self.yookassa_service.create_payment(
+                    amount=amount,
+                    description=description,
+                    email=email,
+                    payment_id=payment_id,
+                    metadata=payment_metadata
+                )
+                logger.info(f"yookassa_service.create_payment returned: payment_id={yookassa_payment_id}, url={'present' if confirmation_url else 'None'}")
+            except Exception as e:
+                logger.error(f"Exception in yookassa_service.create_payment: {e}", exc_info=True)
+                return None, None
             
             if not yookassa_payment_id:
-                logger.error(f"Failed to create YooKassa payment for user {user_id}")
+                logger.error(f"Failed to create YooKassa payment for user {user_id}: yookassa_payment_id is None")
                 return None, None
             
             # Создаем запись в БД

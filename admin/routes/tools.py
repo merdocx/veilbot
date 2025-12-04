@@ -67,7 +67,10 @@ async def broadcast_send(
     message_text: str = Form(...),
     audience: str = Form(DEFAULT_AUDIENCE),
 ):
-    """Отправить рассылку пользователям"""
+    """Отправить рассылку пользователям.
+
+    Запускает рассылку в фоне, чтобы не блокировать HTTP-запрос и не упираться в таймауты nginx/браузера.
+    """
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/login", status_code=303)
     
@@ -90,41 +93,36 @@ async def broadcast_send(
         "BROADCAST_SEND",
         details=f"Message length: {len(message_text)}, audience={audience_value}",
     )
-    
+
+    # Запускаем рассылку в фоне, чтобы не блокировать HTTP-запрос
     try:
-        result = await send_broadcast(message_text.strip(), audience_value)
-        
-        if result["success"]:
-            return templates.TemplateResponse(
-                "tools/broadcast.html",
-                _broadcast_context(
-                    request,
-                    error=None,
-                    success=result["message"],
-                    message_text="",
-                    selected_audience=audience_value,
-                ),
-            )
-        else:
-            return templates.TemplateResponse(
-                "tools/broadcast.html",
-                _broadcast_context(
-                    request,
-                    error=result.get("error", "Неизвестная ошибка"),
-                    success=None,
-                    message_text=message_text,
-                    selected_audience=audience_value,
-                ),
-            )
+        import asyncio
+
+        asyncio.create_task(
+            send_broadcast(message_text=message_text.strip(), audience=audience_value)
+        )
     except Exception as e:
+        # Если даже создание фоновой задачи упало — показываем ошибку
         return templates.TemplateResponse(
             "tools/broadcast.html",
             _broadcast_context(
                 request,
-                error=f"Ошибка при отправке рассылки: {str(e)}",
+                error=f"Ошибка при запуске рассылки: {str(e)}",
                 success=None,
                 message_text=message_text,
                 selected_audience=audience_value,
             ),
         )
+
+    # Немедленно возвращаем ответ: рассылка запущена, отчёт придёт в Telegram
+    return templates.TemplateResponse(
+        "tools/broadcast.html",
+        _broadcast_context(
+            request,
+            error=None,
+            success="Рассылка запущена. Отчёт придёт администратору в Telegram, страницу можно закрыть.",
+            message_text="",
+            selected_audience=audience_value,
+        ),
+    )
 

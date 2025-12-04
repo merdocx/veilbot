@@ -2,6 +2,7 @@ import aiohttp
 import json
 import base64
 import logging
+import asyncio
 from typing import Tuple, Optional, Dict, Any
 from datetime import datetime, timezone
 import os
@@ -119,26 +120,41 @@ class YooKassaService:
             
             logger.info(f"Creating YooKassa payment: amount={amount}, description={description}, email={email}")
             
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.base_url}/payments",
-                    headers=headers,
-                    json=payment_data
-                ) as response:
-                    if response.status in (200, 201):
-                        data = await response.json()
-                        yookassa_payment_id = data.get("id")
-                        confirmation_url = data.get("confirmation", {}).get("confirmation_url")
-                        
-                        logger.info(f"YooKassa payment created successfully: {yookassa_payment_id}")
-                        return yookassa_payment_id, confirmation_url
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"Failed to create YooKassa payment: {response.status} - {error_text}")
-                        return None, None
+            # Создаем timeout для запроса (30 секунд)
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                try:
+                    logger.debug(f"Sending POST request to {self.base_url}/payments")
+                    async with session.post(
+                        f"{self.base_url}/payments",
+                        headers=headers,
+                        json=payment_data
+                    ) as response:
+                        logger.debug(f"Received response: status={response.status}")
+                        if response.status in (200, 201):
+                            data = await response.json()
+                            yookassa_payment_id = data.get("id")
+                            confirmation_url = data.get("confirmation", {}).get("confirmation_url")
+                            
+                            logger.info(f"YooKassa payment created successfully: {yookassa_payment_id}")
+                            return yookassa_payment_id, confirmation_url
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"Failed to create YooKassa payment: {response.status} - {error_text}")
+                            return None, None
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout while creating YooKassa payment after 30 seconds - possible network/firewall issue")
+                    return None, None
+                except aiohttp.ClientConnectorError as e:
+                    logger.error(f"Connection error while creating YooKassa payment: {e} - cannot reach api.yookassa.ru")
+                    return None, None
+                except aiohttp.ClientError as e:
+                    logger.error(f"Client error while creating YooKassa payment: {e}")
+                    return None, None
                         
         except Exception as e:
-            logger.error(f"Error creating YooKassa payment: {e}")
+            logger.error(f"Error creating YooKassa payment: {e}", exc_info=True)
             return None, None
     
     async def check_payment(self, payment_id: str) -> bool:

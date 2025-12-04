@@ -440,19 +440,25 @@ async def handle_email_for_subscription(message: types.Message):
     user_id = message.from_user.id
     email = message.text.strip()
     
+    logger.info(f"[SUBSCRIPTION] handle_email_for_subscription called: user_id={user_id}, email='{email}'")
+    
     if email == "🔙 Отмена":
         _user_states.pop(user_id, None)
         await message.answer("Главное меню:", reply_markup=get_main_menu(user_id))
         return
     
     state = _user_states.get(user_id, {})
+    logger.info(f"[SUBSCRIPTION] User state: {state}")
     tariff = state.get('tariff')
     payment_method = state.get('payment_method', 'yookassa')  # Получаем способ оплаты из состояния
     
     if not tariff:
+        logger.error(f"[SUBSCRIPTION] Tariff not found in state for user {user_id}, state: {state}")
         await message.answer("Ошибка: данные тарифа не найдены.", reply_markup=get_main_menu(user_id))
         _user_states.pop(user_id, None)
         return
+    
+    logger.info(f"[SUBSCRIPTION] Processing payment creation: user_id={user_id}, tariff_id={tariff.get('id')}, payment_method={payment_method}")
     
     # Валидация и очистка email (такая же, как при покупке ключа)
     try:
@@ -496,12 +502,18 @@ async def handle_email_for_subscription(message: types.Message):
     
     # Создаем платеж с метаданными для подписки
     try:
+        logger.info(f"[SUBSCRIPTION] Starting payment creation: user_id={user_id}, email={email}, tariff_id={tariff.get('id')}, payment_method={payment_method}")
+        
         from memory_optimizer import get_payment_service
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         from bot.core import get_bot_instance
         
+        logger.info(f"[SUBSCRIPTION] Getting payment service...")
         payment_service = get_payment_service()
+        logger.info(f"[SUBSCRIPTION] Payment service obtained: {payment_service is not None}")
+        
         if not payment_service:
+            logger.error(f"[SUBSCRIPTION] Payment service is None for user {user_id}")
             await message.answer(
                 "❌ Сервис платежей временно недоступен. Попробуйте позже.",
                 reply_markup=get_main_menu(user_id)
@@ -532,7 +544,10 @@ async def handle_email_for_subscription(message: types.Message):
             )
             
             if not invoice_id or not payment_url:
-                logger.error(f"Failed to create crypto payment for user {user_id}, email: {email}")
+                logger.error(
+                    f"Failed to create crypto payment for subscription: user_id={user_id}, "
+                    f"email={email}, tariff_id={tariff.get('id')}, amount_usd={tariff.get('price_crypto_usd')}"
+                )
                 await message.answer(
                     "❌ Ошибка при создании платежа. Попробуйте позже.",
                     reply_markup=get_main_menu(user_id)
@@ -572,25 +587,54 @@ async def handle_email_for_subscription(message: types.Message):
             )
         else:
             # Обычный платеж YooKassa
-            payment_id, confirmation_url = await payment_service.create_payment(
-                user_id=user_id,
-                tariff_id=tariff['id'],
-                amount=tariff['price_rub'] * 100,  # В копейках
-                email=email,
-                country=None,  # Для подписки страна не нужна
-                protocol='v2ray',
-                description=f"Подписка V2Ray: {tariff['name']}",
-                metadata={'key_type': 'subscription'}  # Сохраняем информацию о подписке
-            )
-            
-            if not payment_id or not confirmation_url:
-                logger.error(f"Failed to create payment for user {user_id}, email: {email}")
+            logger.info(f"[SUBSCRIPTION] Calling payment_service.create_payment for YooKassa")
+            try:
+                payment_id, confirmation_url = await payment_service.create_payment(
+                    user_id=user_id,
+                    tariff_id=tariff['id'],
+                    amount=tariff['price_rub'] * 100,  # В копейках
+                    email=email,
+                    country=None,  # Для подписки страна не нужна
+                    protocol='v2ray',
+                    description=f"Подписка V2Ray: {tariff['name']}",
+                    metadata={'key_type': 'subscription'}  # Сохраняем информацию о подписке
+                )
+                logger.info(f"[SUBSCRIPTION] payment_service.create_payment returned: payment_id={payment_id}, confirmation_url={'present' if confirmation_url else 'None'}")
+            except Exception as e:
+                logger.error(f"[SUBSCRIPTION] Exception in payment_service.create_payment: {e}", exc_info=True)
                 await message.answer(
-                    "❌ Ошибка при создании платежа. Попробуйте позже.",
+                    "❌ Произошла ошибка при создании платежа. Попробуйте позже.",
                     reply_markup=get_main_menu(user_id)
                 )
                 _user_states.pop(user_id, None)
                 return
+            
+            if not payment_id or not confirmation_url:
+                logger.error(
+                    f"Failed to create YooKassa payment for subscription: user_id={user_id}, "
+                    f"email={email}, tariff_id={tariff.get('id')}, amount={tariff.get('price_rub', 0) * 100}, "
+                    f"payment_id={payment_id}, confirmation_url={'present' if confirmation_url else 'None'}"
+                )
+                
+                # Проверяем, доступна ли крипто-оплата как альтернатива
+                if tariff.get('price_crypto_usd'):
+                    logger.info(f"[SUBSCRIPTION] YooKassa unavailable, offering crypto payment as alternative")
+                    await message.answer(
+                        "❌ Платежная система YooKassa временно недоступна.\n\n"
+                        "💡 Вы можете оплатить подписку криптовалютой (USDT).\n\n"
+                        "Попробуйте выбрать способ оплаты заново и выберите \"₿ Криптовалюта (USDT)\"",
+                        reply_markup=get_main_menu(user_id)
+                    )
+                else:
+                    await message.answer(
+                        "❌ Платежная система временно недоступна. Пожалуйста, попробуйте позже.\n\n"
+                        "Если проблема сохраняется, обратитесь в поддержку.",
+                        reply_markup=get_main_menu(user_id)
+                    )
+                _user_states.pop(user_id, None)
+                return
+            
+            logger.info(f"[SUBSCRIPTION] Payment created successfully, creating keyboard and sending message")
             
             keyboard = InlineKeyboardMarkup(row_width=1)
             keyboard.add(InlineKeyboardButton("💳 Оплатить", url=confirmation_url))
@@ -628,7 +672,12 @@ async def handle_email_for_subscription(message: types.Message):
         # Очищаем состояние - информация о подписке сохранена в метаданных платежа
         _user_states.pop(user_id, None)
     except Exception as e:
-        logger.error(f"Error creating payment for subscription: {e}", exc_info=True)
+        logger.error(
+            f"Error creating payment for subscription: user_id={user_id}, email={email}, "
+            f"tariff_id={tariff.get('id') if tariff else None}, payment_method={payment_method}, "
+            f"error={e}", 
+            exc_info=True
+        )
         await message.answer(
             "❌ Произошла ошибка при создании платежа. Попробуйте позже.",
             reply_markup=get_main_menu(user_id)
@@ -751,7 +800,15 @@ def register_subscription_handlers(dp: Dispatcher, user_states: Dict[int, Dict[s
     
     @dp.message_handler(lambda m: _user_states.get(m.from_user.id, {}).get("state") == "waiting_email_for_subscription")
     async def email_for_subscription_handler(message: types.Message):
-        await handle_email_for_subscription(message)
+        logger.info(f"[SUBSCRIPTION] email_for_subscription_handler called for user {message.from_user.id}, text: '{message.text}'")
+        try:
+            await handle_email_for_subscription(message)
+        except Exception as e:
+            logger.error(f"[SUBSCRIPTION] Error in email_for_subscription_handler: {e}", exc_info=True)
+            await message.answer(
+                "❌ Произошла ошибка при обработке запроса. Попробуйте позже.",
+                reply_markup=get_main_menu(message.from_user.id)
+            )
     
     @dp.callback_query_handler(lambda c: c.data.startswith("copy_subscription:"))
     async def copy_subscription_handler(callback_query: types.CallbackQuery):
