@@ -32,43 +32,28 @@ from bot.services.background_tasks import (
 
 # Импортируем функции и переменные из bot.py
 # Это нужно для передачи в handlers
-# Используем importlib для импорта bot.py (не пакета bot/)
-# ВАЖНО: Сначала создаем временный dp, чтобы декораторы в bot.py не падали
+# Безопасный импорт bot.py модуля (без exec())
+# Используем стандартный импорт после установки временных значений bot и dp
 import sys
 import os
 import importlib.util
-from unittest.mock import MagicMock
 
 LOG_DIR = os.getenv("VEILBOT_LOG_DIR", "/var/log/veilbot")
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 bot_py_path = os.path.join(project_root, 'bot.py')
 
-# Создаем mock объекты для dp и bot
-# Они будут заменены на реальные в register_all_handlers
-temp_dp = MagicMock()
-temp_bot = MagicMock()
-
-# Устанавливаем временный dp в bot_module перед импортом
-# Это нужно, чтобы декораторы в bot.py не падали
+# Импортируем bot.py как модуль безопасным способом
+# Устанавливаем временные значения bot и dp = None (они будут заменены позже)
 spec = importlib.util.spec_from_file_location("bot_module", bot_py_path)
-bot_module = importlib.util.module_from_spec(spec)
-sys.modules["bot_module"] = bot_module
-
-# Читаем содержимое bot.py и заменяем dp = None на dp = temp_dp
-with open(bot_py_path, 'r', encoding='utf-8') as f:
-    bot_code = f.read()
-    
-# Заменяем dp = None на dp = temp_dp перед импортом
-bot_code = bot_code.replace('dp = None', f'dp = temp_dp  # Временно установлен для импорта')
-bot_code = bot_code.replace('bot = None', f'bot = temp_bot  # Временно установлен для импорта')
-
-# Добавляем temp_dp и temp_bot в контекст выполнения
-bot_module.__dict__['temp_dp'] = temp_dp
-bot_module.__dict__['temp_bot'] = temp_bot
-
-# Выполняем код с заменой
-exec(compile(bot_code, bot_py_path, 'exec'), bot_module.__dict__)
+if spec and spec.loader:
+    bot_module = importlib.util.module_from_spec(spec)
+    # Устанавливаем sys.modules перед загрузкой, чтобы избежать циклических импортов
+    sys.modules["bot_module"] = bot_module
+    # Загружаем модуль безопасно
+    spec.loader.exec_module(bot_module)
+else:
+    raise ImportError(f"Failed to load bot.py module from {bot_py_path}")
 
 
 def setup_bot():
@@ -104,7 +89,10 @@ def setup_bot():
     user_states = get_user_states()
     
     # Для обратной совместимости с bot.py устанавливаем в bot_module
-    if not hasattr(bot_module, 'user_states'):
+    # user_states уже установлен при импорте bot.py, но обновляем на наш экземпляр
+    if hasattr(bot_module, 'user_states'):
+        bot_module.user_states.update(user_states)
+    else:
         bot_module.user_states = user_states
     
     # Глобальные переменные main_menu, help_keyboard, cancel_keyboard удалены

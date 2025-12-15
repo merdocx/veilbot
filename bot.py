@@ -25,6 +25,7 @@ from bot.services.key_creation import (
     wait_for_payment_with_protocol,
     wait_for_crypto_payment
 )
+from payments.models.enums import PaymentProvider, PaymentMethod
 from bot.services.key_management import (
     extend_existing_key,
     extend_existing_key_with_fallback,
@@ -270,7 +271,7 @@ async def create_payment_with_email_and_protocol(
     email: Optional[str] = None, 
     country: Optional[str] = None, 
     protocol: str = "outline", 
-    payment_method: str = "yookassa", 
+    payment_method: str = "platega", 
     for_renewal: bool = False
 ) -> None:
     """
@@ -289,7 +290,16 @@ async def create_payment_with_email_and_protocol(
         payment_method: Способ оплаты ('yookassa' или 'cryptobot')
         for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
     """
-    logging.debug(f"create_payment_with_email_and_protocol: user_id={user_id}, email={email}, tariff={tariff}, country={country}, protocol={protocol}, payment_method={payment_method}, for_renewal={for_renewal}")
+    logging.info(
+        "create_payment_with_email_and_protocol called: "
+        "user_id=%s, tariff_id=%s, country=%s, protocol=%s, payment_method=%s, for_renewal=%s",
+        user_id,
+        (tariff or {}).get("id") if isinstance(tariff, dict) else None,
+        country,
+        protocol,
+        payment_method,
+        for_renewal,
+    )
     
     # Если выбран CryptoBot, создаем криптоплатеж
     if payment_method == "cryptobot":
@@ -409,7 +419,29 @@ async def create_payment_with_email_and_protocol(
         try:
             # Используем lazy loading для legacy adapter
             from payments.adapters.legacy_adapter import create_payment_with_email_and_protocol_legacy
-            result = await create_payment_with_email_and_protocol_legacy(message, user_id, tariff, email, country, protocol)
+
+            provider = PaymentProvider.PLATEGA if payment_method == "platega" else PaymentProvider.YOOKASSA
+            method = PaymentMethod.CARD
+
+            logging.info(
+                "Payment provider mapping: user_id=%s, tariff_id=%s, payment_method=%s -> provider=%s, method=%s",
+                user_id,
+                (tariff or {}).get("id") if isinstance(tariff, dict) else None,
+                payment_method,
+                provider.value,
+                method.value,
+            )
+
+            result = await create_payment_with_email_and_protocol_legacy(
+                message,
+                user_id,
+                tariff,
+                email,
+                country,
+                protocol,
+                provider,
+                method,
+            )
             
             if result and result != (None, None):
                 # Новый модуль создал платеж

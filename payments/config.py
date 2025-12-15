@@ -19,6 +19,12 @@ class PaymentConfig:
     yookassa_return_url: str
     yookassa_test_mode: bool = False
     
+    # Platega настройки
+    platega_base_url: str = "https://app.platega.io"
+    platega_merchant_id: str = ""
+    platega_secret: str = ""
+    platega_callback_url: str = ""
+    
     # База данных
     database_path: str = "vpn.db"
     
@@ -61,6 +67,10 @@ class PaymentConfig:
             yookassa_api_key=env_or('YOOKASSA_API_KEY', getattr(settings, 'YOOKASSA_API_KEY', None), ''),
             yookassa_return_url=env_or('YOOKASSA_RETURN_URL', getattr(settings, 'YOOKASSA_RETURN_URL', None), ''),
             yookassa_test_mode=os.getenv('YOOKASSA_TEST_MODE', 'false').lower() == 'true',
+            platega_base_url=os.getenv('PLATEGA_BASE_URL', getattr(settings, 'PLATEGA_BASE_URL', 'https://app.platega.io')),
+            platega_merchant_id=env_or('PLATEGA_MERCHANT_ID', getattr(settings, 'PLATEGA_MERCHANT_ID', None), ''),
+            platega_secret=env_or('PLATEGA_SECRET', getattr(settings, 'PLATEGA_SECRET', None), ''),
+            platega_callback_url=os.getenv('PLATEGA_CALLBACK_URL', getattr(settings, 'PLATEGA_CALLBACK_URL', '')),
             database_path=os.getenv('DATABASE_PATH', getattr(settings, 'DATABASE_PATH', 'vpn.db')),
             log_level=os.getenv('PAYMENT_LOG_LEVEL', 'INFO'),
             default_currency=os.getenv('PAYMENT_DEFAULT_CURRENCY', 'RUB'),
@@ -74,15 +84,11 @@ class PaymentConfig:
     
     def validate(self) -> bool:
         """Валидация конфигурации"""
-        required_fields = [
-            'yookassa_shop_id',
-            'yookassa_api_key',
-            'yookassa_return_url'
-        ]
-        
-        for field in required_fields:
-            if not getattr(self, field):
-                raise ValueError(f"Missing required configuration: {field}")
+        has_yookassa = all(getattr(self, field) for field in ['yookassa_shop_id', 'yookassa_api_key', 'yookassa_return_url'])
+        has_platega = bool(self.platega_merchant_id and self.platega_secret)
+
+        if not (has_yookassa or has_platega):
+            raise ValueError("Missing payment configuration: provide YooKassa or Platega credentials")
         
         return True
     
@@ -93,6 +99,10 @@ class PaymentConfig:
             'yookassa_api_key': self.yookassa_api_key,
             'yookassa_return_url': self.yookassa_return_url,
             'yookassa_test_mode': self.yookassa_test_mode,
+            'platega_base_url': self.platega_base_url,
+            'platega_merchant_id': self.platega_merchant_id,
+            'platega_secret': self.platega_secret,
+            'platega_callback_url': self.platega_callback_url,
             'database_path': self.database_path,
             'log_level': self.log_level,
             'log_format': self.log_format,
@@ -113,11 +123,14 @@ class PaymentServiceFactory:
         self.config = config
         self._payment_service = None
         self._yookassa_service = None
+        self._platega_service = None
         self._payment_repo = None
     
     def create_yookassa_service(self):
         """Создание YooKassa сервиса"""
         if self._yookassa_service is None:
+            if not (self.config.yookassa_shop_id and self.config.yookassa_api_key and self.config.yookassa_return_url):
+                return None
             from .services.yookassa_service import YooKassaService
             
             self._yookassa_service = YooKassaService(
@@ -128,6 +141,26 @@ class PaymentServiceFactory:
             )
         
         return self._yookassa_service
+
+    def create_platega_service(self):
+        """Создание Platega сервиса"""
+        if self._platega_service is None:
+            if not (self.config.platega_merchant_id and self.config.platega_secret):
+                return None
+            from .services.platega_service import PlategaService
+
+            # Используем return_url YooKassa как базовый редирект, если не задан отдельный
+            from app.settings import settings as app_settings
+
+            self._platega_service = PlategaService(
+                merchant_id=self.config.platega_merchant_id,
+                api_secret=self.config.platega_secret,
+                base_url=self.config.platega_base_url,
+                callback_url=self.config.platega_callback_url or None,
+                return_url=getattr(app_settings, "YOOKASSA_RETURN_URL", None),
+                failed_url=getattr(app_settings, "YOOKASSA_RETURN_URL", None),
+            )
+        return self._platega_service
     
     def create_payment_repository(self):
         """Создание репозитория платежей"""
@@ -159,11 +192,13 @@ class PaymentServiceFactory:
             yookassa_service = self.create_yookassa_service()
             payment_repo = self.create_payment_repository()
             cryptobot_service = self.create_cryptobot_service()
+            platega_service = self.create_platega_service()
             
             self._payment_service = PaymentService(
                 payment_repo=payment_repo,
                 yookassa_service=yookassa_service,
-                cryptobot_service=cryptobot_service
+                cryptobot_service=cryptobot_service,
+                platega_service=platega_service,
             )
         
         return self._payment_service

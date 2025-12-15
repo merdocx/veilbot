@@ -121,7 +121,7 @@ async def test_handle_payment_method_after_country_to_tariff(temp_db, mock_messa
         "protocol": "outline",
     }
 
-    mock_message.text = "💳 Карта РФ / СБП"
+    mock_message.text = "💳 Карта РФ / Карта зарубеж / СБП"
 
     await handlers["handle_payment_method_after_country"](mock_message)
 

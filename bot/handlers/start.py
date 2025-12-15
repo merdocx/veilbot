@@ -90,7 +90,8 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
                 f"1. Откройте приложение V2Ray\n"
                 f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
                 f"3. Вставьте ссылку выше\n"
-                f"4. Все серверы будут добавлены автоматически"
+                f"4. Все серверы будут добавлены автоматически\n\n"
+                f"📄 [Публичная оферта](https://veil-bot.ru/static/oferta.html)"
             )
             await message.answer(
                 msg,
@@ -140,8 +141,11 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
         elif status == "error":
             logging.info("Free V2Ray subscription issuance failed for user %s", user_id)
         await message.answer(
-            "Нажмите «Получить доступ» для получения доступа",
+            "Нажмите «Получить доступ» для получения доступа\n\n"
+            "📄 [Публичная оферта](https://veil-bot.ru/static/oferta.html)",
             reply_markup=main_menu,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
         )
 
 def register_start_handler(dp: Dispatcher, user_states: Dict[int, Dict[str, Any]]) -> None:

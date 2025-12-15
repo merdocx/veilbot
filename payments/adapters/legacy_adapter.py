@@ -11,6 +11,7 @@ from typing import Optional, Tuple, Dict, Any
 from ..services.payment_service import PaymentService
 from ..services.yookassa_service import YooKassaService
 from ..repositories.payment_repository import PaymentRepository
+from ..models.enums import PaymentProvider, PaymentMethod
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,9 @@ class LegacyPaymentAdapter:
         tariff: Dict[str, Any],
         email: str,
         country: str,
-        protocol: str
+        protocol: str,
+        provider: PaymentProvider = PaymentProvider.YOOKASSA,
+        method: Optional[PaymentMethod] = None,
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         Адаптер для старой функции create_payment_with_email_and_protocol
@@ -47,6 +50,16 @@ class LegacyPaymentAdapter:
             Tuple[payment_id, confirmation_url] или (None, None) при ошибке
         """
         try:
+            logger.info(
+                "LegacyAdapter.create_payment_with_email_and_protocol: user_id=%s, tariff_id=%s, country=%s, "
+                "protocol=%s, provider=%s, method=%s",
+                user_id,
+                tariff.get("id") if isinstance(tariff, dict) else None,
+                country,
+                protocol,
+                provider.value if isinstance(provider, PaymentProvider) else provider,
+                method.value if isinstance(method, PaymentMethod) else method,
+            )
             # Если email не передан, создаем временный email
             if not email:
                 temp_email = f"user_{user_id}@veilbot.com"
@@ -64,7 +77,9 @@ class LegacyPaymentAdapter:
                 amount=amount,
                 email=email,
                 country=country,
-                protocol=protocol
+                protocol=protocol,
+                provider=provider,
+                method=method,
             )
             
             if payment_id and confirmation_url:
@@ -182,7 +197,9 @@ async def create_payment_with_email_and_protocol_legacy(
     tariff: Dict[str, Any],
     email: str,
     country: str,
-    protocol: str
+    protocol: str,
+    provider: PaymentProvider = PaymentProvider.YOOKASSA,
+    method: Optional[PaymentMethod] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Обертка для прямой замены старой функции
@@ -203,7 +220,7 @@ async def create_payment_with_email_and_protocol_legacy(
         adapter = LegacyPaymentAdapter(payment_service)
         
         result = await adapter.create_payment_with_email_and_protocol(
-            message, user_id, tariff, email, country, protocol
+            message, user_id, tariff, email, country, protocol, provider, method
         )
         
         # Если новый модуль вернул None (например, email не передан), 

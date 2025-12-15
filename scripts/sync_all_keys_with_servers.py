@@ -1191,137 +1191,137 @@ async def sync_all_keys_with_servers(
                           AND k.key_id IS NOT NULL AND k.key_id != ''
                     """)
                 outline_keys = cursor.fetchall()
-        
-        logger.info(f"    Найдено {len(outline_keys)} Outline ключей для синхронизации")
-        
-        # Группируем ключи по серверам
-        outline_keys_by_server: Dict[int, List[Tuple]] = {}
-        for key_row in outline_keys:
-            server_id_key = key_row[3]
-            if server_id_key not in outline_keys_by_server:
-                outline_keys_by_server[server_id_key] = []
-            outline_keys_by_server[server_id_key].append(key_row)
-        
-        # Получаем токены подписок для инвалидации кэша
-        outline_subscription_ids = {key[6] for key in outline_keys if key[6]}
-        outline_tokens_to_invalidate = set()
-        if outline_subscription_ids:
-            placeholders = ','.join('?' * len(outline_subscription_ids))
-            with get_db_cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT id, subscription_token
-                    FROM subscriptions
-                    WHERE id IN ({placeholders})
-                """, list(outline_subscription_ids))
-                for sub_id, token in cursor.fetchall():
-                    outline_tokens_to_invalidate.add(token)
-        
-        # Синхронизируем конфигурации
-        outline_updates: List[Tuple[str, int]] = []  # (new_access_url, key_id)
-        
-        async def process_outline_server_sync_configs(server_id_key: int, server_keys: List[Tuple]) -> List[Tuple[str, int]]:
-            """Обработать один Outline сервер: синхронизировать конфигурации ключей"""
-            async with server_semaphore:
-                server_updates = []
-                
-                # ОПТИМИЗАЦИЯ: Используем словарь для быстрого доступа
-                server_info = servers_by_id.get(server_id_key)
-                if not server_info:
-                    return []
-                
-                try:
-                    # ОПТИМИЗАЦИЯ: Используем пул клиентов
-                    protocol_client = await client_pool.get_client(server_info)
-                    if not protocol_client:
+            
+            logger.info(f"    Найдено {len(outline_keys)} Outline ключей для синхронизации")
+            
+            # Группируем ключи по серверам
+            outline_keys_by_server: Dict[int, List[Tuple]] = {}
+            for key_row in outline_keys:
+                server_id_key = key_row[3]
+                if server_id_key not in outline_keys_by_server:
+                    outline_keys_by_server[server_id_key] = []
+                outline_keys_by_server[server_id_key].append(key_row)
+            
+            # Получаем токены подписок для инвалидации кэша
+            outline_subscription_ids = {key[6] for key in outline_keys if key[6]}
+            outline_tokens_to_invalidate = set()
+            if outline_subscription_ids:
+                placeholders = ','.join('?' * len(outline_subscription_ids))
+                with get_db_cursor() as cursor:
+                    cursor.execute(f"""
+                        SELECT id, subscription_token
+                        FROM subscriptions
+                        WHERE id IN ({placeholders})
+                    """, list(outline_subscription_ids))
+                    for sub_id, token in cursor.fetchall():
+                        outline_tokens_to_invalidate.add(token)
+            
+            # Синхронизируем конфигурации
+            outline_updates: List[Tuple[str, int]] = []  # (new_access_url, key_id)
+            
+            async def process_outline_server_sync_configs(server_id_key: int, server_keys: List[Tuple]) -> List[Tuple[str, int]]:
+                """Обработать один Outline сервер: синхронизировать конфигурации ключей"""
+                async with server_semaphore:
+                    server_updates = []
+                    
+                    # ОПТИМИЗАЦИЯ: Используем словарь для быстрого доступа
+                    server_info = servers_by_id.get(server_id_key)
+                    if not server_info:
                         return []
                     
-                    # ОПТИМИЗАЦИЯ: Получаем все ключи один раз и кэшируем
-                    remote_keys_all = await client_pool.get_all_keys_cached(server_id_key, "outline", protocol_client)
-                    remote_keys_dict = {
-                        str(extract_outline_key_id(k)): k
-                        for k in remote_keys_all
-                        if extract_outline_key_id(k)
-                    }
-                    
-                    async def sync_single_outline_key(key_row: Tuple) -> Optional[Tuple[str, int]]:
-                        """Синхронизировать один Outline ключ"""
-                        async with api_semaphore:
-                            try:
-                                key_id_db, key_id, old_access_url, _, _, _, sub_id, _, _, _ = key_row
-                                
-                                # ОПТИМИЗАЦИЯ: Используем кэшированные ключи вместо запроса к серверу
-                                remote_key = remote_keys_dict.get(str(key_id))
-                                
-                                if not remote_key:
-                                    # Ключа нет на сервере - пропускаем (будет удален на другом этапе)
-                                    return None
-                                
-                                # Получаем access_url из ответа сервера
-                                new_access_url = remote_key.get("accessUrl") or remote_key.get("access_url") or ""
-                                
-                                # Сравниваем с текущим access_url
-                                if old_access_url != new_access_url and new_access_url:
-                                    return (new_access_url, key_id_db)
-                                return None
-                                
-                            except Exception as e:
-                                logger.warning(f"      Ошибка синхронизации Outline ключа #{key_row[0]}: {e}")
-                                return None
-                    
-                    # Параллельно синхронизируем ключи батчами (для БД операций)
-                    batch_size = 50
-                    for i in range(0, len(server_keys), batch_size):
-                        batch = server_keys[i:i + batch_size]
-                        sync_tasks = [sync_single_outline_key(key_row) for key_row in batch]
-                        batch_results = await asyncio.gather(*sync_tasks, return_exceptions=True)
+                    try:
+                        # ОПТИМИЗАЦИЯ: Используем пул клиентов
+                        protocol_client = await client_pool.get_client(server_info)
+                        if not protocol_client:
+                            return []
                         
-                        for result in batch_results:
-                            if isinstance(result, Exception):
-                                continue
-                            if result:
-                                server_updates.append(result)
-                
-                except Exception as e:
-                    stats["errors"] += 1
-                    error_msg = f"Ошибка синхронизации Outline конфигураций сервера #{server_id_key}: {e}"
-                    stats["errors_details"].append({
-                        "type": "outline_sync_configs",
-                        "server_id": server_id_key,
-                        "error": error_msg,
-                    })
-                    logger.error(f"    ✗ {error_msg}")
-                
-                return server_updates
-        
-        # ОПТИМИЗАЦИЯ: Параллельная обработка серверов (до 5 одновременно)
-        if outline_keys_by_server:
-            outline_sync_tasks = [
-                process_outline_server_sync_configs(server_id_key, server_keys)
-                for server_id_key, server_keys in outline_keys_by_server.items()
-            ]
-            outline_sync_results = await asyncio.gather(*outline_sync_tasks, return_exceptions=True)
+                        # ОПТИМИЗАЦИЯ: Получаем все ключи один раз и кэшируем
+                        remote_keys_all = await client_pool.get_all_keys_cached(server_id_key, "outline", protocol_client)
+                        remote_keys_dict = {
+                            str(extract_outline_key_id(k)): k
+                            for k in remote_keys_all
+                            if extract_outline_key_id(k)
+                        }
+                        
+                        async def sync_single_outline_key(key_row: Tuple) -> Optional[Tuple[str, int]]:
+                            """Синхронизировать один Outline ключ"""
+                            async with api_semaphore:
+                                try:
+                                    key_id_db, key_id, old_access_url, _, _, _, sub_id, _, _, _ = key_row
+                                    
+                                    # ОПТИМИЗАЦИЯ: Используем кэшированные ключи вместо запроса к серверу
+                                    remote_key = remote_keys_dict.get(str(key_id))
+                                    
+                                    if not remote_key:
+                                        # Ключа нет на сервере - пропускаем (будет удален на другом этапе)
+                                        return None
+                                    
+                                    # Получаем access_url из ответа сервера
+                                    new_access_url = remote_key.get("accessUrl") or remote_key.get("access_url") or ""
+                                    
+                                    # Сравниваем с текущим access_url
+                                    if old_access_url != new_access_url and new_access_url:
+                                        return (new_access_url, key_id_db)
+                                    return None
+                                    
+                                except Exception as e:
+                                    logger.warning(f"      Ошибка синхронизации Outline ключа #{key_row[0]}: {e}")
+                                    return None
+                        
+                        # Параллельно синхронизируем ключи батчами (для БД операций)
+                        batch_size = 50
+                        for i in range(0, len(server_keys), batch_size):
+                            batch = server_keys[i:i + batch_size]
+                            sync_tasks = [sync_single_outline_key(key_row) for key_row in batch]
+                            batch_results = await asyncio.gather(*sync_tasks, return_exceptions=True)
+                            
+                            for result in batch_results:
+                                if isinstance(result, Exception):
+                                    continue
+                                if result:
+                                    server_updates.append(result)
+                    
+                    except Exception as e:
+                        stats["errors"] += 1
+                        error_msg = f"Ошибка синхронизации Outline конфигураций сервера #{server_id_key}: {e}"
+                        stats["errors_details"].append({
+                            "type": "outline_sync_configs",
+                            "server_id": server_id_key,
+                            "error": error_msg,
+                        })
+                        logger.error(f"    ✗ {error_msg}")
+                    
+                    return server_updates
             
-            for result in outline_sync_results:
-                if isinstance(result, Exception):
-                    continue
-                if isinstance(result, list):
-                    outline_updates.extend(result)
-        
-        # Обновляем access_url в БД батчем
-        if outline_updates and not dry_run:
-            with get_db_cursor(commit=True) as cursor:
-                cursor.executemany("""
-                    UPDATE keys
-                    SET access_url = ?
-                    WHERE id = ?
-                """, outline_updates)
-                stats["outline_configs_updated"] = len(outline_updates)
-                logger.info(f"    Обновлено конфигураций: {len(outline_updates)}")
-        
-        # Инвалидируем кэш подписок
-        if not dry_run:
-            for token in outline_tokens_to_invalidate:
-                invalidate_subscription_cache(token)
+            # ОПТИМИЗАЦИЯ: Параллельная обработка серверов (до 5 одновременно)
+            if outline_keys_by_server:
+                outline_sync_tasks = [
+                    process_outline_server_sync_configs(server_id_key, server_keys)
+                    for server_id_key, server_keys in outline_keys_by_server.items()
+                ]
+                outline_sync_results = await asyncio.gather(*outline_sync_tasks, return_exceptions=True)
+                
+                for result in outline_sync_results:
+                    if isinstance(result, Exception):
+                        continue
+                    if isinstance(result, list):
+                        outline_updates.extend(result)
+            
+            # Обновляем access_url в БД батчем
+            if outline_updates and not dry_run:
+                with get_db_cursor(commit=True) as cursor:
+                    cursor.executemany("""
+                        UPDATE keys
+                        SET access_url = ?
+                        WHERE id = ?
+                    """, outline_updates)
+                    stats["outline_configs_updated"] = len(outline_updates)
+                    logger.info(f"    Обновлено конфигураций: {len(outline_updates)}")
+            
+            # Инвалидируем кэш подписок
+            if not dry_run:
+                for token in outline_tokens_to_invalidate:
+                    invalidate_subscription_cache(token)
         else:
             logger.info("  [4.4] Пропущено (sync_configs=False)")
     

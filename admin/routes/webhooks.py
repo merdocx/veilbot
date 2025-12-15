@@ -91,6 +91,70 @@ async def yookassa_webhook(request: Request):
         return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
 
 
+@router.post("/platega/webhook")
+async def platega_webhook(request: Request):
+    """Webhook endpoint для Platega"""
+    body = await request.body()
+    client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
+        request.client.host if request.client else ""
+    )
+    expected_secret = settings.PLATEGA_SECRET
+    if expected_secret and request.headers.get("X-Secret") != expected_secret:
+        logging.error("[PLATEGA_WEBHOOK] Invalid secret header")
+        return JSONResponse({"status": "error", "reason": "forbidden"}, status_code=403)
+    try:
+        data = json.loads(body)
+        event = data.get("status") or data.get("event") or ""
+        service = get_webhook_service()
+        processed = await service.handle_platega_webhook(data)
+
+        # Логирование best-effort
+        try:
+            with open_connection(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS webhook_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        provider TEXT,
+                        event TEXT,
+                        payload TEXT,
+                        result TEXT,
+                        status_code INTEGER,
+                        ip TEXT,
+                        created_at INTEGER
+                    )
+                    """
+                )
+                c.execute(
+                    "INSERT INTO webhook_logs(provider, event, payload, result, status_code, ip, created_at) VALUES(?,?,?,?,?,?, strftime('%s','now'))",
+                    ("platega", str(event), json.dumps(data, ensure_ascii=False), "ok" if processed else "error", 200 if processed else 400, client_ip),
+                )
+                conn.commit()
+        except Exception as le:
+            logging.error(f"[PLATEGA_WEBHOOK] Log persist failed: {le}")
+
+        if processed:
+            return JSONResponse({"status": "ok"})
+        return JSONResponse({"status": "error", "processed": False}, status_code=400)
+    except Exception as e:
+        logging.error(f"[PLATEGA_WEBHOOK] Error: {e}")
+        try:
+            with open_connection(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS webhook_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, event TEXT, payload TEXT, result TEXT, status_code INTEGER, ip TEXT, created_at INTEGER)"
+                )
+                c.execute(
+                    "INSERT INTO webhook_logs(provider, event, payload, result, status_code, ip, created_at) VALUES(?,?,?,?,?,?, strftime('%s','now'))",
+                    ("platega", "parse_error", body.decode(errors='ignore')[:2000], "error", 500, client_ip),
+                )
+                conn.commit()
+        except Exception:
+            pass
+        return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
+
+
 @router.post("/cryptobot/webhook")
 async def cryptobot_webhook(request: Request):
     """Webhook endpoint для CryptoBot"""

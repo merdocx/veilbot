@@ -51,6 +51,9 @@ def register_purchase_handlers(
         handle_invite_friend: Функция обработки приглашения друга
         get_tariff_by_name_and_price: Функция получения тарифа
     """
+    CARD_RU_LABEL = "💳 Карта РФ/СБП"
+    CARD_INTL_LABEL = "💳 Карта РФ / Карта зарубеж / СБП"
+    CARD_LABELS = (CARD_INTL_LABEL, CARD_RU_LABEL, "💳 Карта РФ / СБП")
     
     @dp.message_handler(lambda m: m.text == "Купить доступ")
     @rate_limit("buy")
@@ -224,9 +227,9 @@ def register_purchase_handlers(
                 await message.answer("Главное меню:", reply_markup=main_menu(user_id))
             return
         
-        if text == "💳 Карта РФ / СБП":
+        if text in CARD_LABELS:
             # Сохраняем способ оплаты и переходим к выбору тарифа
-            state["payment_method"] = "yookassa"
+            state["payment_method"] = "platega" if text == CARD_INTL_LABEL else "yookassa"
             state["state"] = "waiting_tariff"
             user_states[user_id] = state
             
@@ -244,7 +247,7 @@ def register_purchase_handlers(
             
             await message.answer(
                 msg,
-                reply_markup=get_tariff_menu(payment_method="yookassa", paid_only=paid_only),
+                reply_markup=get_tariff_menu(payment_method="platega", paid_only=paid_only),
                 parse_mode="Markdown"
             )
             return
@@ -315,9 +318,9 @@ def register_purchase_handlers(
             await message.answer("Выберите тариф:", reply_markup=get_tariff_menu(payment_method=payment_method))
             return
         
-        if text == "💳 Карта РФ / СБП":
+        if text in CARD_LABELS:
             # Сохраняем способ оплаты и переходим к запросу email
-            state["payment_method"] = "yookassa"
+            state["payment_method"] = "platega" if text == CARD_INTL_LABEL else "yookassa"
             user_states[user_id] = state
             user_states[user_id]["state"] = "waiting_email"
             
@@ -541,7 +544,7 @@ def register_purchase_handlers(
         state = user_states.get(user_id, {})
         country = state.get("country")
         protocol = state.get("protocol", "outline")
-        payment_method = state.get("payment_method")  # Получаем выбранный способ оплаты
+        payment_method = state.get("payment_method", "yookassa")  # Получаем выбранный способ оплаты
         
         # Parse tariff name and price from the label
         parts = label.split("—")

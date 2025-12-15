@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     YOOKASSA_API_KEY: str | None = Field(default=None)
     YOOKASSA_RETURN_URL: str | None = Field(default=None)
 
+    # Platega
+    PLATEGA_MERCHANT_ID: str | None = Field(default=None)
+    PLATEGA_SECRET: str | None = Field(default=None)
+    PLATEGA_BASE_URL: str = Field(default="https://app.platega.io")
+    PLATEGA_CALLBACK_URL: str | None = Field(default=None)
+
     # CryptoBot
     CRYPTOBOT_API_TOKEN: str | None = Field(default=None, description="CryptoBot API Token")
     CRYPTOBOT_API_URL: str = Field(default="https://pay.crypt.bot/api", description="CryptoBot API URL")
@@ -117,11 +123,16 @@ class Settings(BaseSettings):
         if not self.TELEGRAM_BOT_TOKEN:
             errors.append("TELEGRAM_BOT_TOKEN is required")
 
-        # YooKassa
-        if not self.YOOKASSA_SHOP_ID or not self.YOOKASSA_API_KEY:
-            errors.append("YOOKASSA_SHOP_ID and YOOKASSA_API_KEY are required")
-        if not self.YOOKASSA_RETURN_URL:
-            errors.append("YOOKASSA_RETURN_URL is required")
+        # Payment providers
+        has_yookassa = bool(self.YOOKASSA_SHOP_ID and self.YOOKASSA_API_KEY and self.YOOKASSA_RETURN_URL)
+        has_platega = bool(self.PLATEGA_MERCHANT_ID and self.PLATEGA_SECRET)
+
+        if not (has_yookassa or has_platega):
+            errors.append("Configure at least one payment provider (YooKassa or Platega)")
+        elif not has_yookassa:
+            warnings.append("YooKassa credentials missing; Platega-only mode")
+        elif not has_platega:
+            warnings.append("Platega credentials missing; YooKassa-only mode")
 
         # Admin
         if not self.ADMIN_PASSWORD_HASH:

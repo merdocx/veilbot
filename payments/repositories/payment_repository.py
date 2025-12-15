@@ -6,8 +6,8 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timezone
 
 from ..models.payment import Payment, PaymentStatus, PaymentFilter
+from ..models.enums import PaymentProvider
 import json
-import ast
 
 from app.infra.sqlite_utils import open_async_connection
 
@@ -117,16 +117,25 @@ class PaymentRepository:
                     return None
             
             # Безопасное преобразование metadata
+            # КРИТИЧНО: Используем только JSON для безопасности и производительности
+            # ast.literal_eval() удален - все данные должны быть в JSON формате
             def safe_metadata(value):
                 if value is None:
                     return {}
-                try:
-                    return json.loads(value)
-                except Exception:
+                if isinstance(value, dict):
+                    return value
+                if isinstance(value, str):
                     try:
-                        return ast.literal_eval(value)
-                    except Exception:
+                        return json.loads(value)
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        # Если не JSON, логируем предупреждение и возвращаем пустой dict
+                        logger.warning(f"Invalid JSON metadata format, returning empty dict: {value[:100] if len(value) > 100 else value}")
                         return {}
+                # Для других типов пытаемся преобразовать в dict
+                try:
+                    return dict(value) if hasattr(value, '__iter__') and not isinstance(value, str) else {}
+                except Exception:
+                    return {}
             
             # Безопасное преобразование статуса в enum
             def safe_status(value):
@@ -144,6 +153,16 @@ class PaymentRepository:
                     return PaymentStatus.PENDING
                 except Exception:
                     return PaymentStatus.PENDING
+
+            def safe_provider(value):
+                if value is None:
+                    return PaymentProvider.YOOKASSA
+                if isinstance(value, PaymentProvider):
+                    return value
+                try:
+                    return PaymentProvider(str(value))
+                except Exception:
+                    return PaymentProvider.YOOKASSA
             
             # Вариант 1: "перепутанные поля" (очень старый формат)
             # В старых платежах: user_id содержит payment_id, tariff_id содержит user_id, payment_id содержит tariff_id
@@ -162,7 +181,7 @@ class PaymentRepository:
                         status=safe_status(row[7] if len(row) > 7 and row[7] else 'pending'),
                         country=row[8] if len(row) > 8 else None,
                         protocol=row[9] if len(row) > 9 and row[9] else 'outline',
-                        provider=row[10] if len(row) > 10 and row[10] else 'yookassa',
+                        provider=safe_provider(row[10] if len(row) > 10 and row[10] else 'yookassa'),
                         method=row[11] if len(row) > 11 else None,
                         description=row[12] if len(row) > 12 else None,
                         created_at=safe_timestamp(row[13]) if len(row) > 13 else None,
@@ -194,7 +213,7 @@ class PaymentRepository:
                         created_at=safe_timestamp(row[9]) if len(row) > 9 else None,
                         country=row[10] if len(row) > 10 else None,
                         currency=row[11] if len(row) > 11 and row[11] else 'RUB',
-                        provider=row[12] if len(row) > 12 and row[12] else 'yookassa',
+                        provider=safe_provider(row[12] if len(row) > 12 and row[12] else 'yookassa'),
                         method=row[13] if len(row) > 13 else None,
                         description=row[14] if len(row) > 14 else None,
                         updated_at=safe_timestamp(row[15]) if len(row) > 15 else None,
@@ -214,7 +233,7 @@ class PaymentRepository:
                 status=safe_status(row[7] if row[7] else 'pending'),
                 country=row[8],
                 protocol=row[9] if row[9] else 'outline',
-                provider=row[10] if row[10] else 'yookassa',
+                provider=safe_provider(row[10] if row[10] else 'yookassa'),
                 method=row[11],
                 description=row[12],
                 created_at=safe_timestamp(row[13]),

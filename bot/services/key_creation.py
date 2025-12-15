@@ -1298,8 +1298,17 @@ async def wait_for_payment_with_protocol(
                             logging.info(f"Payment {payment_id} already completed, skipping key issuance")
                             return
                         
+                        # КРИТИЧНО: Атомарное обновление статуса только если он pending
+                        # Это предотвращает race conditions при параллельной обработке
                         if payment_status != "paid":
-                            cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (payment_id,))
+                            cursor.execute(
+                                "UPDATE payments SET status = 'paid' WHERE payment_id = ? AND status = 'pending'",
+                                (payment_id,)
+                            )
+                            if cursor.rowcount == 0:
+                                # Статус уже изменился другим процессом
+                                logging.info(f"Payment {payment_id} status already changed (not pending), skipping")
+                                return
                         
                         payment_user_id = payment_data[1]
                         email = payment_data[2]
@@ -1475,25 +1484,53 @@ async def wait_for_payment_with_protocol(
                         await create_new_key_flow_with_protocol(cursor, None, user_id, tariff, email, country, protocol, for_renewal=for_renewal)
                         
                         # После успешной выдачи/продления ключа помечаем платеж как закрытый
-                        # ИСПРАВЛЕНО: Используем payment_repo для атомарного обновления статуса
+                        # КРИТИЧНО: Используем атомарное обновление статуса для предотвращения race conditions
                         try:
                             from payments.repositories.payment_repository import PaymentRepository
                             from payments.models.payment import PaymentStatus
                             payment_repo = PaymentRepository()
                             payment = await payment_repo.get_by_payment_id(payment_id)
                             if payment:
-                                payment.mark_as_completed()
-                                await payment_repo.update(payment)
-                                logging.info(f"Payment {payment_id} marked as completed after key creation/renewal")
+                                # Используем атомарное обновление статуса
+                                # Обновляем только если статус еще PAID (защита от повторной обработки)
+                                if payment.status == PaymentStatus.PAID:
+                                    atomic_success = await payment_repo.try_update_status(
+                                        payment_id,
+                                        PaymentStatus.COMPLETED,
+                                        PaymentStatus.PAID
+                                    )
+                                    if atomic_success:
+                                        logging.info(f"Payment {payment_id} atomically marked as completed after key creation/renewal")
+                                    else:
+                                        # Статус уже изменился, проверяем текущее состояние
+                                        updated_payment = await payment_repo.get_by_payment_id(payment_id)
+                                        if updated_payment and updated_payment.status == PaymentStatus.COMPLETED:
+                                            logging.info(f"Payment {payment_id} already completed by another process")
+                                        else:
+                                            # Fallback: обновляем напрямую
+                                            payment.mark_as_completed()
+                                            await payment_repo.update(payment)
+                                            logging.info(f"Payment {payment_id} marked as completed (fallback)")
+                                elif payment.status == PaymentStatus.COMPLETED:
+                                    logging.info(f"Payment {payment_id} already completed")
+                                else:
+                                    logging.warning(f"Payment {payment_id} has unexpected status: {payment.status}")
                             else:
                                 # Fallback на старый способ, если payment_repo недоступен
-                                cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (payment_id,))
-                                logging.info(f"Payment {payment_id} marked as completed (fallback method)")
+                                # Используем транзакцию для атомарности
+                                cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ? AND status = 'paid'", (payment_id,))
+                                if cursor.rowcount > 0:
+                                    logging.info(f"Payment {payment_id} marked as completed (fallback method)")
+                                else:
+                                    logging.info(f"Payment {payment_id} not updated (status not 'paid' or not found)")
                         except Exception as e:
-                            logging.error(f"Error marking payment {payment_id} as completed: {e}")
-                            # Fallback на старый способ при ошибке
-                            cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ?", (payment_id,))
-                            logging.info(f"Payment {payment_id} marked as completed (fallback after error)")
+                            logging.error(f"Error marking payment {payment_id} as completed: {e}", exc_info=True)
+                            # Fallback на старый способ при ошибке (в той же транзакции)
+                            try:
+                                cursor.execute("UPDATE payments SET status = 'completed' WHERE payment_id = ? AND status = 'paid'", (payment_id,))
+                                logging.info(f"Payment {payment_id} marked as completed (fallback after error)")
+                            except Exception as fallback_error:
+                                logging.error(f"Fallback update also failed: {fallback_error}")
                     # --- Реферальный бонус ---
                     cursor.execute("SELECT referrer_id, bonus_issued FROM referrals WHERE referred_id = ?", (user_id,))
                     ref_row = cursor.fetchone()

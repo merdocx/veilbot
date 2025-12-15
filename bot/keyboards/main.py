@@ -158,8 +158,19 @@ def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> Repl
 def get_payment_method_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура выбора способа оплаты"""
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(KeyboardButton("💳 Карта РФ / СБП"))
+    keyboard.add(KeyboardButton("💳 Карта РФ/СБП"))
+    keyboard.add(KeyboardButton("💳 Карта РФ / Карта зарубеж / СБП"))
     keyboard.add(KeyboardButton("₿ Криптовалюта (USDT)"))
+    keyboard.add(KeyboardButton("🔙 Назад"))
+    return keyboard
+
+
+def get_platega_method_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура выбора способа оплаты внутри Platega"""
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(KeyboardButton("🇷🇺 Карта РФ (Platega)"))
+    keyboard.add(KeyboardButton("🌍 Карта зарубеж (Platega)"))
+    keyboard.add(KeyboardButton("📱 СБП (QR, Platega)"))
     keyboard.add(KeyboardButton("🔙 Назад"))
     return keyboard
 

@@ -1127,76 +1127,78 @@ async def notify_expiring_subscriptions() -> None:
         updates = []
         notifications_to_send = []
         
-        with get_db_cursor() as cursor:
-            now = int(time.time())
-            one_day = 86400
-            one_hour = 3600
-            ten_minutes = 600
+        now = int(time.time())
+        one_day = 86400
+        one_hour = 3600
+        ten_minutes = 600
+        
+        # Читаем подписки с повторными попытками, чтобы избежать падений при временных блокировках БД
+        def _load_subscriptions() -> List[Tuple]:
+            return repo.get_expiring_subscriptions(now)
+        subscriptions = retry_db_operation(_load_subscriptions, max_attempts=5, initial_delay=0.2)
+        
+        for sub_id, user_id, token, expiry, created_at, notified in subscriptions:
+            remaining_time = expiry - now
+            if created_at is None:
+                logging.warning("Skipping subscription %s - created_at is None", sub_id)
+                continue
             
-            subscriptions = repo.get_expiring_subscriptions(now)
+            original_duration = expiry - created_at
+            ten_percent_threshold = int(original_duration * 0.1)
+            message = None
+            new_notified = notified
             
-            for sub_id, user_id, token, expiry, created_at, notified in subscriptions:
-                remaining_time = expiry - now
-                if created_at is None:
-                    logging.warning("Skipping subscription %s - created_at is None", sub_id)
-                    continue
-                
-                original_duration = expiry - created_at
-                ten_percent_threshold = int(original_duration * 0.1)
-                message = None
-                new_notified = notified
-                
-                if (
-                    original_duration > one_day
-                    and one_hour < remaining_time <= one_day
-                    and (notified & 4) == 0
-                ):
-                    time_str = format_duration(remaining_time)
-                    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
-                    message = (
-                        f"⏳ Ваша подписка истечет через {time_str}\n\n"
-                        f"🔗 `{subscription_url}`\n\n"
-                        f"Продлите доступ:"
-                    )
-                    new_notified = notified | 4
-                elif (
-                    original_duration > one_hour
-                    and ten_minutes < remaining_time <= (one_hour + 60)
-                    and (notified & 2) == 0
-                ):
-                    time_str = format_duration(remaining_time)
-                    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
-                    message = (
-                        f"⏳ Ваша подписка истечет через {time_str}\n\n"
-                        f"🔗 `{subscription_url}`\n\n"
-                        f"Продлите доступ:"
-                    )
-                    new_notified = notified | 2
-                elif remaining_time > 0 and remaining_time <= ten_minutes and (notified & 8) == 0:
-                    time_str = format_duration(remaining_time)
-                    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
-                    message = (
-                        f"⏳ Ваша подписка истечет через {time_str}\n\n"
-                        f"🔗 `{subscription_url}`\n\n"
-                        f"Продлите доступ:"
-                    )
-                    new_notified = notified | 8
-                elif remaining_time > 0 and remaining_time <= ten_percent_threshold and (notified & 1) == 0:
-                    time_str = format_duration(remaining_time)
-                    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
-                    message = (
-                        f"⏳ Ваша подписка истечет через {time_str}\n\n"
-                        f"🔗 `{subscription_url}`\n\n"
-                        f"Продлите доступ:"
-                    )
-                    new_notified = notified | 1
-                
-                if message:
-                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                    keyboard = InlineKeyboardMarkup()
-                    keyboard.add(InlineKeyboardButton("🔁 Продлить подписку", callback_data="renew_subscription"))
-                    notifications_to_send.append((user_id, message, keyboard))
-                    updates.append((sub_id, new_notified))
+            if (
+                original_duration > one_day
+                and one_hour < remaining_time <= one_day
+                and (notified & 4) == 0
+            ):
+                time_str = format_duration(remaining_time)
+                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
+                message = (
+                    f"⏳ Ваша подписка истечет через {time_str}\n\n"
+                    f"🔗 `{subscription_url}`\n\n"
+                    f"Продлите доступ:"
+                )
+                new_notified = notified | 4
+            elif (
+                original_duration > one_hour
+                and ten_minutes < remaining_time <= (one_hour + 60)
+                and (notified & 2) == 0
+            ):
+                time_str = format_duration(remaining_time)
+                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
+                message = (
+                    f"⏳ Ваша подписка истечет через {time_str}\n\n"
+                    f"🔗 `{subscription_url}`\n\n"
+                    f"Продлите доступ:"
+                )
+                new_notified = notified | 2
+            elif remaining_time > 0 and remaining_time <= ten_minutes and (notified & 8) == 0:
+                time_str = format_duration(remaining_time)
+                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
+                message = (
+                    f"⏳ Ваша подписка истечет через {time_str}\n\n"
+                    f"🔗 `{subscription_url}`\n\n"
+                    f"Продлите доступ:"
+                )
+                new_notified = notified | 8
+            elif remaining_time > 0 and remaining_time <= ten_percent_threshold and (notified & 1) == 0:
+                time_str = format_duration(remaining_time)
+                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
+                message = (
+                    f"⏳ Ваша подписка истечет через {time_str}\n\n"
+                    f"🔗 `{subscription_url}`\n\n"
+                    f"Продлите доступ:"
+                )
+                new_notified = notified | 1
+            
+            if message:
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                keyboard = InlineKeyboardMarkup()
+                keyboard.add(InlineKeyboardButton("🔁 Продлить подписку", callback_data="renew_subscription"))
+                notifications_to_send.append((user_id, message, keyboard))
+                updates.append((sub_id, new_notified))
         
         # Отправка уведомлений
         for user_id, message, keyboard in notifications_to_send:
@@ -1215,8 +1217,10 @@ async def notify_expiring_subscriptions() -> None:
         
         # Обновление БД
         if updates:
-            for sub_id, notified in updates:
-                repo.update_subscription_notified(sub_id, notified)
+            def _apply_updates() -> None:
+                for sub_id, notified in updates:
+                    repo.update_subscription_notified(sub_id, notified)
+            retry_db_operation(_apply_updates, max_attempts=5, initial_delay=0.2)
             logging.info("Updated %s subscriptions with expiry notifications", len(updates))
     
     await _run_periodic(

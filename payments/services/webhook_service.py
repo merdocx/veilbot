@@ -49,6 +49,36 @@ class WebhookService:
             
             if status == "succeeded":
                 # Обрабатываем успешный платеж
+                # КРИТИЧНО: Используем атомарное обновление статуса для предотвращения race conditions
+                # Сначала пытаемся атомарно обновить статус с pending -> paid
+                from ..models.payment import PaymentStatus
+                
+                # Получаем текущий статус платежа
+                payment = await self.payment_repo.get_by_payment_id(payment_id)
+                if not payment:
+                    logger.error(f"Payment {payment_id} not found in database")
+                    return False
+                
+                # Используем атомарное обновление для предотвращения параллельной обработки
+                # Обновляем статус только если он еще pending
+                if payment.status == PaymentStatus.PENDING:
+                    # Атомарно обновляем статус
+                    atomic_success = await self.payment_repo.try_update_status(
+                        payment_id, 
+                        PaymentStatus.PAID, 
+                        PaymentStatus.PENDING
+                    )
+                    if not atomic_success:
+                        # Статус уже изменился другим процессом
+                        logger.info(f"Payment {payment_id} already processed by another process")
+                        # Проверяем, был ли платеж успешно обработан
+                        updated_payment = await self.payment_repo.get_by_payment_id(payment_id)
+                        if updated_payment and updated_payment.status == PaymentStatus.COMPLETED:
+                            logger.info(f"Payment {payment_id} already completed, skipping")
+                            return True
+                        return False
+                
+                # Теперь обрабатываем платеж
                 success = await self.payment_service.process_payment_success(payment_id)
                 if success:
                     logger.info(f"Payment {payment_id} processed successfully via webhook")
@@ -114,17 +144,34 @@ class WebhookService:
         """
         Проверка подписи webhook от YooKassa
         
+        YooKassa использует IP-whitelist для HTTP уведомлений.
+        Дополнительно можно проверить подпись, если она передается в заголовках.
+        
         Args:
-            body: Тело запроса
-            signature: Подпись из заголовка
+            body: Тело запроса (не используется для IP-based проверки)
+            signature: Подпись из заголовка (опционально)
             
         Returns:
-            True если подпись верна
+            True если подпись верна или проверка IP прошла успешно
         """
         try:
-            # В реальной реализации здесь должна быть проверка подписи
-            # Пока что возвращаем True для совместимости
-            logger.info("YooKassa signature verification (placeholder)")
+            # YooKassa HTTP уведомления защищены через IP whitelist
+            # Проверка IP выполняется в process_webhook_request через SecurityHelper
+            # Если передана подпись в заголовке, можно дополнительно проверить её
+            
+            if signature and self.webhook_secret:
+                # Проверка HMAC подписи если используется custom secret
+                import hmac
+                import hashlib
+                expected_signature = hmac.new(
+                    self.webhook_secret.encode('utf-8'),
+                    body,
+                    hashlib.sha256
+                ).hexdigest()
+                return hmac.compare_digest(signature, expected_signature)
+            
+            # Если подпись не передана, полагаемся на IP проверку
+            # (которая выполняется в process_webhook_request)
             return True
             
         except Exception as e:
@@ -167,6 +214,70 @@ class WebhookService:
             
         except Exception as e:
             logger.error(f"Error processing PayPal webhook: {e}")
+            return False
+    
+    async def handle_platega_webhook(self, data: Dict[str, Any]) -> bool:
+        """
+        Обработка webhook от Platega
+        """
+        try:
+            if not data:
+                logger.error("Empty Platega webhook payload")
+                return False
+
+            if not self.payment_service.platega_service:
+                logger.error("Platega service not configured, cannot process webhook")
+                return False
+
+            tx_id, status = await self.payment_service.platega_service.parse_webhook(data)
+            if not tx_id:
+                logger.error("No transactionId in Platega webhook")
+                return False
+
+            payment = await self.payment_repo.get_by_payment_id(tx_id)
+            if not payment:
+                logger.error(f"Payment {tx_id} not found for Platega webhook")
+                return False
+
+            paid = self.payment_service.platega_service.is_paid_status(status)
+            if paid:
+                # Атомарно переводим в PAID, если еще pending
+                if payment.status == PaymentStatus.PENDING:
+                    await self.payment_repo.try_update_status(
+                        tx_id, PaymentStatus.PAID, PaymentStatus.PENDING
+                    )
+
+                success = await self.payment_service.process_payment_success(tx_id)
+                if success:
+                    # Запускаем обработку ключей/подписок по аналогии с YooKassa
+                    if (
+                        payment.metadata
+                        and payment.metadata.get("key_type") == "subscription"
+                        and payment.protocol == "v2ray"
+                    ):
+                        subscription_service = SubscriptionPurchaseService()
+                        ok, error_msg = await subscription_service.process_subscription_purchase(tx_id)
+                        if not ok:
+                            logger.error(
+                                f"Failed to process subscription for payment {tx_id} via Platega webhook: {error_msg}"
+                            )
+                    else:
+                        try:
+                            await self.payment_service.process_paid_payments_without_keys()
+                        except Exception as e:
+                            logger.error(f"Error creating key for payment {tx_id} via Platega webhook: {e}")
+                    return True
+
+            # Обработка неуспешных статусов
+            if status and str(status).lower() in {"failed", "canceled", "cancelled", "expired"}:
+                await self.payment_repo.update_status(tx_id, PaymentStatus.FAILED)
+                logger.info(f"Payment {tx_id} marked as failed via Platega webhook, status={status}")
+                return True
+
+            logger.info(f"Platega webhook processed without status change for {tx_id}, status={status}")
+            return True
+        except Exception as e:
+            logger.error(f"Error processing Platega webhook: {e}", exc_info=True)
             return False
     
     async def process_webhook_request(self, request: Request, provider: str) -> Dict[str, Any]:
@@ -215,6 +326,8 @@ class WebhookService:
             # Обрабатываем в зависимости от провайдера
             if provider.lower() == "yookassa":
                 success = await self.handle_yookassa_webhook(data)
+            elif provider.lower() == "platega":
+                success = await self.handle_platega_webhook(data)
             elif provider.lower() == "stripe":
                 success = await self.handle_stripe_webhook(data)
             elif provider.lower() == "paypal":

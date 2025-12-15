@@ -191,7 +191,8 @@ async def handle_get_access(message: types.Message):
             
             msg += (
                 f"\n🔄 Автоматическое обновление при добавлении новых серверов\n\n"
-                f"Выберите способ оплаты:"
+                f"Выберите способ оплаты:\n\n"
+                f"📄 [Публичная оферта](https://veil-bot.ru/static/oferta.html)"
             )
             
             # Показываем меню выбора способа оплаты (как в обычном flow)
@@ -282,7 +283,7 @@ async def handle_tariff_selection_for_subscription(message: types.Message):
     tariff_name = parts[0].strip()
     price_part = parts[1].strip()
     
-    # Получаем способ оплаты из состояния (по умолчанию yookassa)
+    # Получаем способ оплаты из состояния (по умолчанию Platega)
     state = _user_states.get(user_id, {})
     payment_method = state.get('payment_method', 'yookassa')
     
@@ -410,7 +411,29 @@ async def handle_tariff_selection_for_subscription(message: types.Message):
             )
     else:
         # Для платного тарифа - создаем платеж
-        # Сначала запрашиваем email (сохраняем способ оплаты из состояния)
+        # Если выбран Platega, сначала спрашиваем тип оплаты внутри Platega
+        if payment_method == "platega":
+            from bot.keyboards import get_platega_method_keyboard
+
+            _user_states[user_id] = {
+                'state': 'waiting_platega_method_for_subscription',
+                'protocol': 'v2ray',
+                'key_type': 'subscription',
+                'tariff': tariff,
+                'payment_method': payment_method,
+            }
+
+            await message.answer(
+                "💳 *Выберите способ оплаты Platega:*\n\n"
+                "🇷🇺 Карта РФ (Platega)\n"
+                "🌍 Карта зарубеж (Platega)\n"
+                "📱 СБП (QR, Platega)",
+                reply_markup=get_platega_method_keyboard(),
+                parse_mode="Markdown",
+            )
+            return
+
+        # YooKassa / CryptoBot — сразу запрашиваем email
         _user_states[user_id] = {
             'state': 'waiting_email_for_subscription',
             'protocol': 'v2ray',
@@ -451,6 +474,7 @@ async def handle_email_for_subscription(message: types.Message):
     logger.info(f"[SUBSCRIPTION] User state: {state}")
     tariff = state.get('tariff')
     payment_method = state.get('payment_method', 'yookassa')  # Получаем способ оплаты из состояния
+    platega_method = state.get('platega_payment_method')
     
     if not tariff:
         logger.error(f"[SUBSCRIPTION] Tariff not found in state for user {user_id}, state: {state}")
@@ -586,9 +610,20 @@ async def handle_email_for_subscription(message: types.Message):
                 )
             )
         else:
-            # Обычный платеж YooKassa
-            logger.info(f"[SUBSCRIPTION] Calling payment_service.create_payment for YooKassa")
+            # Обычный карточный платеж (YooKassa или Platega)
+            logger.info(
+                f"[SUBSCRIPTION] Calling payment_service.create_payment for cards, payment_method={payment_method}"
+            )
             try:
+                from payments.models.enums import PaymentProvider, PaymentMethod
+
+                provider = PaymentProvider.PLATEGA if payment_method == "platega" else PaymentProvider.YOOKASSA
+                method = PaymentMethod.CARD
+
+                metadata = {'key_type': 'subscription'}
+                if provider == PaymentProvider.PLATEGA and platega_method:
+                    metadata['platega_payment_method'] = platega_method
+
                 payment_id, confirmation_url = await payment_service.create_payment(
                     user_id=user_id,
                     tariff_id=tariff['id'],
@@ -597,9 +632,13 @@ async def handle_email_for_subscription(message: types.Message):
                     country=None,  # Для подписки страна не нужна
                     protocol='v2ray',
                     description=f"Подписка V2Ray: {tariff['name']}",
-                    metadata={'key_type': 'subscription'}  # Сохраняем информацию о подписке
+                    metadata=metadata,  # Сохраняем информацию о подписке и Platega-методе
+                    provider=provider,
+                    method=method,
                 )
-                logger.info(f"[SUBSCRIPTION] payment_service.create_payment returned: payment_id={payment_id}, confirmation_url={'present' if confirmation_url else 'None'}")
+                logger.info(
+                    f"[SUBSCRIPTION] payment_service.create_payment returned: payment_id={payment_id}, confirmation_url={'present' if confirmation_url else 'None'}"
+                )
             except Exception as e:
                 logger.error(f"[SUBSCRIPTION] Exception in payment_service.create_payment: {e}", exc_info=True)
                 await message.answer(
@@ -611,26 +650,33 @@ async def handle_email_for_subscription(message: types.Message):
             
             if not payment_id or not confirmation_url:
                 logger.error(
-                    f"Failed to create YooKassa payment for subscription: user_id={user_id}, "
+                    f"Failed to create card payment for subscription: user_id={user_id}, "
                     f"email={email}, tariff_id={tariff.get('id')}, amount={tariff.get('price_rub', 0) * 100}, "
-                    f"payment_id={payment_id}, confirmation_url={'present' if confirmation_url else 'None'}"
+                    f"payment_method={payment_method}, payment_id={payment_id}, "
+                    f"confirmation_url={'present' if confirmation_url else 'None'}"
                 )
-                
-                # Проверяем, доступна ли крипто-оплата как альтернатива
-                if tariff.get('price_crypto_usd'):
-                    logger.info(f"[SUBSCRIPTION] YooKassa unavailable, offering crypto payment as alternative")
-                    await message.answer(
-                        "❌ Платежная система YooKassa временно недоступна.\n\n"
-                        "💡 Вы можете оплатить подписку криптовалютой (USDT).\n\n"
-                        "Попробуйте выбрать способ оплаты заново и выберите \"₿ Криптовалюта (USDT)\"",
-                        reply_markup=get_main_menu(user_id)
+
+                # Сообщения об ошибке зависят от конкретной платежной системы
+                if payment_method == "platega":
+                    error_text = (
+                        "❌ Платежная система Platega временно недоступна или вернула ошибку.\n\n"
+                        "Пожалуйста, попробуйте позже или выберите другой способ оплаты."
                     )
                 else:
-                    await message.answer(
-                        "❌ Платежная система временно недоступна. Пожалуйста, попробуйте позже.\n\n"
-                        "Если проблема сохраняется, обратитесь в поддержку.",
-                        reply_markup=get_main_menu(user_id)
+                    # По умолчанию считаем, что это YooKassa
+                    error_text = (
+                        "❌ Платежная система YooKassa временно недоступна или вернула ошибку.\n\n"
+                        "Пожалуйста, попробуйте позже или выберите другой способ оплаты."
                     )
+
+                # Для случаев, когда есть крипто-альтернатива, даём отдельную подсказку
+                if tariff.get('price_crypto_usd'):
+                    error_text += (
+                        "\n\n💡 Вы можете оплатить подписку криптовалютой (USDT).\n"
+                        "Выберите способ оплаты заново и нажмите «₿ Криптовалюта (USDT)»."
+                    )
+
+                await message.answer(error_text, reply_markup=get_main_menu(user_id))
                 _user_states.pop(user_id, None)
                 return
             
@@ -697,9 +743,15 @@ async def handle_payment_method_for_subscription(message: types.Message):
         await message.answer("Главное меню:", reply_markup=get_main_menu(user_id))
         return
     
-    if text == "💳 Карта РФ / СБП":
+    # Маппинг кнопок на способы оплаты:
+    # - "💳 Карта РФ/СБП" и старая версия "💳 Карта РФ / СБП" → YooKassa
+    # - "💳 Карта РФ / Карта зарубеж / СБП" → Platega
+    ru_card_labels = ("💳 Карта РФ/СБП", "💳 Карта РФ / СБП")
+    intl_card_label = "💳 Карта РФ / Карта зарубеж / СБП"
+    
+    if text in ru_card_labels or text == intl_card_label:
         # Сохраняем способ оплаты и переходим к выбору тарифа
-        state["payment_method"] = "yookassa"
+        state["payment_method"] = "platega" if text == intl_card_label else "yookassa"
         state["state"] = "waiting_tariff_for_subscription"
         _user_states[user_id] = state
         
@@ -708,9 +760,10 @@ async def handle_payment_method_for_subscription(message: types.Message):
         msg += "📦 Выберите тариф:"
         
         from bot.keyboards import get_tariff_menu
+        payment_method = state["payment_method"]
         await message.answer(
             msg,
-            reply_markup=get_tariff_menu(payment_method="yookassa", paid_only=False),
+            reply_markup=get_tariff_menu(payment_method=payment_method, paid_only=False),
             parse_mode="Markdown"
         )
         return
@@ -774,7 +827,7 @@ def register_subscription_handlers(dp: Dispatcher, user_states: Dict[int, Dict[s
     async def get_access_handler(message: types.Message):
         await handle_get_access(message)
     
-    @dp.message_handler(lambda m: _user_states.get(m.from_user.id, {}).get("state") == "waiting_payment_method_for_subscription" and m.text in ["💳 Карта РФ / СБП", "₿ Криптовалюта (USDT)", "🔙 Назад"])
+    @dp.message_handler(lambda m: _user_states.get(m.from_user.id, {}).get("state") == "waiting_payment_method_for_subscription" and m.text in ["💳 Карта РФ/СБП", "💳 Карта РФ / Карта зарубеж / СБП", "💳 Карта РФ / СБП", "₿ Криптовалюта (USDT)", "🔙 Назад"])
     async def payment_method_for_subscription_handler(message: types.Message):
         await handle_payment_method_for_subscription(message)
     
@@ -798,6 +851,47 @@ def register_subscription_handlers(dp: Dispatcher, user_states: Dict[int, Dict[s
         )
         await message.answer(msg, reply_markup=get_payment_method_keyboard(), parse_mode="Markdown")
     
+    @dp.message_handler(lambda m: _user_states.get(m.from_user.id, {}).get("state") == "waiting_platega_method_for_subscription")
+    async def platega_method_for_subscription_handler(message: types.Message):
+        """Выбор конкретного способа оплаты внутри Platega (подписка)"""
+        user_id = message.from_user.id
+        text = message.text.strip()
+        state = _user_states.get(user_id, {})
+
+        if text == "🔙 Назад":
+            # Возвращаемся к выбору тарифа
+            state["state"] = "waiting_tariff_for_subscription"
+            _user_states[user_id] = state
+            from bot.keyboards import get_tariff_menu
+            await message.answer(
+                "📦 Выберите тариф для подписки:",
+                reply_markup=get_tariff_menu(payment_method="platega", paid_only=False),
+            )
+            return
+
+        # Маппинг текста кнопок на paymentMethodInt Platega
+        if text == "🇷🇺 Карта РФ (Platega)":
+            platega_method = 10  # Карты (RUB)
+        elif text == "🌍 Карта зарубеж (Platega)":
+            platega_method = 12  # Международный эквайринг
+        elif text == "📱 СБП (QR, Platega)":
+            platega_method = 2   # СБП QR
+        else:
+            await message.answer(
+                "Пожалуйста, выберите способ оплаты из списка:",
+                reply_markup=get_platega_method_keyboard(),
+            )
+            return
+
+        state["platega_payment_method"] = platega_method
+        state["state"] = "waiting_email_for_subscription"
+        _user_states[user_id] = state
+
+        await message.answer(
+            "📧 Введите ваш email для подписки:",
+            reply_markup=get_cancel_keyboard(),
+        )
+
     @dp.message_handler(lambda m: _user_states.get(m.from_user.id, {}).get("state") == "waiting_email_for_subscription")
     async def email_for_subscription_handler(message: types.Message):
         logger.info(f"[SUBSCRIPTION] email_for_subscription_handler called for user {message.from_user.id}, text: '{message.text}'")

@@ -106,28 +106,29 @@ class PaymentMigration:
     def parse_metadata(self, metadata_str: str) -> Dict[str, Any]:
         """Парсинг метаданных без выполнения кода.
 
-        Порядок: JSON -> literal_eval (безопасный) -> raw string.
+        КРИТИЧНО: Используем только JSON для безопасности.
+        Для обратной совместимости при миграции старых данных оставляем fallback.
+        
+        Порядок: JSON -> fallback на raw string.
         """
         if not metadata_str:
             return {}
 
-        # Сначала пробуем JSON
+        # Сначала пробуем JSON (предпочтительный формат)
         try:
             import json
-            return json.loads(metadata_str)
-        except Exception:
+            parsed = json.loads(metadata_str)
+            if isinstance(parsed, dict):
+                return parsed
+            # Если не dict, оборачиваем
+            return {"value": parsed}
+        except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
-        # Затем безопасный literal_eval
-        try:
-            import ast
-            value = ast.literal_eval(metadata_str)
-            if isinstance(value, dict):
-                return value
-            return {"value": value}
-        except Exception:
-            # Возвращаем как строку
-            return {"raw_metadata": metadata_str}
+        # Для старых данных, которые могут быть не в JSON формате,
+        # логируем предупреждение и сохраняем как raw_metadata
+        logger.warning(f"Metadata is not in JSON format during migration, saving as raw_metadata: {metadata_str[:100] if len(metadata_str) > 100 else metadata_str}")
+        return {"raw_metadata": metadata_str}
     
     def convert_timestamp(self, timestamp: int) -> datetime:
         """Конвертация временной метки"""

@@ -4,10 +4,11 @@ from typing import Optional, Tuple, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 
 from ..models.payment import Payment, PaymentStatus, PaymentCreate, PaymentFilter
-from ..models.enums import PaymentProvider, PaymentCurrency
+from ..models.enums import PaymentProvider, PaymentCurrency, PaymentMethod
 from ..repositories.payment_repository import PaymentRepository
 from ..services.yookassa_service import YooKassaService
 from ..services.cryptobot_service import CryptoBotService
+from ..services.platega_service import PlategaService
 from ..utils.validators import PaymentValidators
 from app.repositories.server_repository import ServerRepository
 from app.repositories.key_repository import KeyRepository
@@ -39,12 +40,14 @@ class PaymentService:
     def __init__(
         self, 
         payment_repo: PaymentRepository,
-        yookassa_service: YooKassaService,
-        cryptobot_service: Optional[CryptoBotService] = None
+        yookassa_service: Optional[YooKassaService],
+        cryptobot_service: Optional[CryptoBotService] = None,
+        platega_service: Optional[PlategaService] = None,
     ):
         self.payment_repo = payment_repo
         self.yookassa_service = yookassa_service
         self.cryptobot_service = cryptobot_service
+        self.platega_service = platega_service
     
     async def create_payment(
         self,
@@ -55,7 +58,9 @@ class PaymentService:
         country: Optional[str] = None,
         protocol: str = "outline",
         description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        provider: PaymentProvider = PaymentProvider.YOOKASSA,
+        method: Optional[PaymentMethod] = None,
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         Создание платежа с полной логикой
@@ -100,43 +105,88 @@ class PaymentService:
             }
             if metadata:
                 payment_metadata.update(metadata)
+
+            provider_payment_id: Optional[str] = None
+            confirmation_url: Optional[str] = None
+
+            logger.info(
+                "PaymentService.create_payment: user_id=%s, tariff_id=%s, amount=%s, provider=%s, method=%s, "
+                "country=%s, protocol=%s",
+                user_id,
+                tariff_id,
+                amount,
+                provider.value if isinstance(provider, PaymentProvider) else provider,
+                method.value if isinstance(method, PaymentMethod) else method,
+                country,
+                protocol,
+            )
+
+            if provider == PaymentProvider.PLATEGA:
+                if not self.platega_service:
+                    logger.error("Platega service is not configured")
+                    return None, None
+                logger.info(f"Calling platega_service.create_payment for user {user_id}, payment_id={payment_id}")
+                try:
+                    provider_payment_id, confirmation_url = await self.platega_service.create_payment(
+                        amount=amount,
+                        description=description,
+                        email=email,
+                        payment_id=payment_id,
+                        metadata=payment_metadata,
+                    )
+                    logger.info(
+                        "platega_service.create_payment returned: payment_id=%s, url=%s",
+                        provider_payment_id,
+                        "present" if confirmation_url else "None",
+                    )
+                except Exception as e:
+                    logger.error(f"Exception in platega_service.create_payment: {e}", exc_info=True)
+                    return None, None
+            else:
+                if not self.yookassa_service:
+                    logger.error("YooKassa service is not configured")
+                    return None, None
+                logger.info(f"Calling yookassa_service.create_payment for user {user_id}, payment_id={payment_id}")
+                try:
+                    provider_payment_id, confirmation_url = await self.yookassa_service.create_payment(
+                        amount=amount,
+                        description=description,
+                        email=email,
+                        payment_id=payment_id,
+                        metadata=payment_metadata
+                    )
+                    logger.info(
+                        "yookassa_service.create_payment returned: payment_id=%s, url=%s",
+                        provider_payment_id,
+                        "present" if confirmation_url else "None",
+                    )
+                except Exception as e:
+                    logger.error(f"Exception in yookassa_service.create_payment: {e}", exc_info=True)
+                    return None, None
             
-            # Создаем платеж в YooKassa
-            logger.info(f"Calling yookassa_service.create_payment for user {user_id}, payment_id={payment_id}")
-            try:
-                yookassa_payment_id, confirmation_url = await self.yookassa_service.create_payment(
-                    amount=amount,
-                    description=description,
-                    email=email,
-                    payment_id=payment_id,
-                    metadata=payment_metadata
-                )
-                logger.info(f"yookassa_service.create_payment returned: payment_id={yookassa_payment_id}, url={'present' if confirmation_url else 'None'}")
-            except Exception as e:
-                logger.error(f"Exception in yookassa_service.create_payment: {e}", exc_info=True)
+            if not provider_payment_id:
+                logger.error(f"Failed to create payment for user {user_id}: provider_payment_id is None")
                 return None, None
-            
-            if not yookassa_payment_id:
-                logger.error(f"Failed to create YooKassa payment for user {user_id}: yookassa_payment_id is None")
-                return None, None
-            
+
             # Создаем запись в БД
             payment = Payment(
-                payment_id=yookassa_payment_id,
+                payment_id=provider_payment_id,
                 user_id=user_id,
                 tariff_id=tariff_id,
                 amount=amount,
                 email=email,
                 country=country,
                 protocol=protocol,
+                provider=provider,
+                method=method,
                 description=description,
                 metadata=payment_metadata
             )
             
             await self.payment_repo.create(payment)
             
-            logger.info(f"Payment created successfully: {yookassa_payment_id} for user {user_id}")
-            return yookassa_payment_id, confirmation_url
+            logger.info(f"Payment created successfully: {provider_payment_id} for user {user_id}")
+            return provider_payment_id, confirmation_url
             
         except Exception as e:
             logger.error(f"Error creating payment: {e}")
@@ -277,22 +327,50 @@ class PaymentService:
                 logger.error(f"Payment not found: {payment_id}")
                 return False
             
-            # Проверяем статус в YooKassa только для новых платежей
-            # Старые платежи могут не существовать в YooKassa
+            # Проверяем статус в зависимости от провайдера.
+            # Для Platega webhook уже является источником истины (CONFIRMED),
+            # поэтому дополнительный запрос check_payment можно пропустить.
             try:
-                is_paid = await self.yookassa_service.check_payment(payment_id)
-                if not is_paid:
-                    logger.warning(f"Payment {payment_id} not paid in YooKassa")
-                    return False
+                is_paid = False
+                if payment.provider == PaymentProvider.PLATEGA:
+                    logger.info(f"Skipping remote status check for Platega payment {payment_id} (using webhook status)")
+                    is_paid = True
+                else:
+                    if not self.yookassa_service:
+                        logger.error("YooKassa service not configured for payment success check")
+                        return False
+                    is_paid = await self.yookassa_service.check_payment(payment_id)
+                    if not is_paid:
+                        logger.warning(f"Payment {payment_id} not paid in YooKassa")
+                        return False
             except Exception as e:
-                # Если платеж не найден в YooKassa, считаем его оплаченным
-                # (это может быть старый платеж)
-                logger.debug(f"Payment {payment_id} not found in YooKassa, assuming paid: {e}")
+                # Если провайдер вернул ошибку/не найден, для наших старых платежей
+                # считаем их оплаченными и полагаемся на БД/вебхуки.
+                logger.debug(f"Payment {payment_id} not found in provider, assuming paid: {e}")
                 is_paid = True
             
-            # Обновляем статус в БД
-            payment.mark_as_paid()
-            await self.payment_repo.update(payment)
+            # Обновляем статус в БД атомарно
+            # Используем try_update_status для предотвращения race conditions
+            from ..models.payment import PaymentStatus
+            if payment.status == PaymentStatus.PENDING:
+                atomic_success = await self.payment_repo.try_update_status(
+                    payment_id,
+                    PaymentStatus.PAID,
+                    PaymentStatus.PENDING
+                )
+                if not atomic_success:
+                    # Статус уже изменился, проверяем текущее состояние
+                    updated_payment = await self.payment_repo.get_by_payment_id(payment_id)
+                    if updated_payment and updated_payment.status == PaymentStatus.PAID:
+                        logger.info(f"Payment {payment_id} already marked as paid")
+                        payment = updated_payment
+                    else:
+                        logger.warning(f"Payment {payment_id} status changed unexpectedly")
+                        return False
+            else:
+                # Если статус уже не pending, просто обновляем (fallback)
+                payment.mark_as_paid()
+                await self.payment_repo.update(payment)
             
             logger.info(f"Payment {payment_id} marked as paid successfully")
             return True
@@ -319,12 +397,23 @@ class PaymentService:
             True если платеж оплачен, False при таймауте
         """
         try:
+            payment = await self.payment_repo.get_by_payment_id(payment_id)
+            provider = payment.provider if payment else PaymentProvider.YOOKASSA
             max_checks = (timeout_minutes * 60) // check_interval_seconds
             
             for _ in range(max_checks):
                 try:
-                    # Проверяем статус в YooKassa
-                    is_paid = await self.yookassa_service.check_payment(payment_id)
+                    # Проверяем статус в зависимости от провайдера
+                    if provider == PaymentProvider.PLATEGA:
+                        if not self.platega_service:
+                            logger.error("Platega service not configured for wait_for_payment")
+                            return False
+                        is_paid = await self.platega_service.check_payment(payment_id)
+                    else:
+                        if not self.yookassa_service:
+                            logger.error("YooKassa service not configured for wait_for_payment")
+                            return False
+                        is_paid = await self.yookassa_service.check_payment(payment_id)
                     if is_paid:
                         # Обрабатываем успешный платеж
                         success = await self.process_payment_success(payment_id)
@@ -371,9 +460,17 @@ class PaymentService:
             
             for payment in pending_payments:
                 try:
-                    # Проверяем статус в YooKassa только для новых платежей
-                    # Старые платежи могут не существовать в YooKassa
-                    is_paid = await self.yookassa_service.check_payment(payment.payment_id)
+                    # Проверяем статус в зависимости от провайдера
+                    if payment.provider == PaymentProvider.PLATEGA:
+                        if not self.platega_service:
+                            logger.error("Platega service not configured for pending check")
+                            continue
+                        is_paid = await self.platega_service.check_payment(payment.payment_id)
+                    else:
+                        if not self.yookassa_service:
+                            logger.error("YooKassa service not configured for pending check")
+                            continue
+                        is_paid = await self.yookassa_service.check_payment(payment.payment_id)
                     if is_paid:
                         # Обрабатываем успешный платеж
                         success = await self.process_payment_success(payment.payment_id)

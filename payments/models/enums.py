@@ -16,6 +16,7 @@ class PaymentStatus(str, Enum):
 class PaymentProvider(str, Enum):
     """Платежные провайдеры"""
     YOOKASSA = "yookassa"
+    PLATEGA = "platega"
     CRYPTOBOT = "cryptobot"
     STRIPE = "stripe"  # Для будущего расширения
     PAYPAL = "paypal"  # Для будущего расширения
