@@ -13,6 +13,12 @@ from bot.keyboards import (
     get_payment_method_keyboard,
     get_platega_method_keyboard,
 )
+from bot.payment_messages import (
+    PAYMENT_SERVICE_UNAVAILABLE,
+    PLATEGA_UNAVAILABLE,
+    YOOKASSA_UNAVAILABLE,
+    CRYPTO_NOT_AVAILABLE_FOR_TARIFF,
+)
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService
 from app.repositories.subscription_repository import SubscriptionRepository
@@ -544,8 +550,8 @@ async def handle_email_for_subscription(message: types.Message):
         if not payment_service:
             logger.error(f"[SUBSCRIPTION] Payment service is None for user {user_id}")
             await message.answer(
-                "❌ Сервис платежей временно недоступен. Попробуйте позже.",
-                reply_markup=get_main_menu(user_id)
+                PAYMENT_SERVICE_UNAVAILABLE,
+                reply_markup=get_main_menu(user_id),
             )
             _user_states.pop(user_id, None)
             return
@@ -555,8 +561,8 @@ async def handle_email_for_subscription(message: types.Message):
             # Криптоплатеж
             if not tariff.get('price_crypto_usd'):
                 await message.answer(
-                    "❌ Крипто-оплата недоступна для этого тарифа. Пожалуйста, выберите другой способ оплаты.",
-                    reply_markup=get_main_menu(user_id)
+                    CRYPTO_NOT_AVAILABLE_FOR_TARIFF,
+                    reply_markup=get_main_menu(user_id),
                 )
                 _user_states.pop(user_id, None)
                 return
@@ -578,8 +584,8 @@ async def handle_email_for_subscription(message: types.Message):
                     f"email={email}, tariff_id={tariff.get('id')}, amount_usd={tariff.get('price_crypto_usd')}"
                 )
                 await message.answer(
-                    "❌ Ошибка при создании платежа. Попробуйте позже.",
-                    reply_markup=get_main_menu(user_id)
+                    PAYMENT_SERVICE_UNAVAILABLE,
+                    reply_markup=get_main_menu(user_id),
                 )
                 _user_states.pop(user_id, None)
                 return
@@ -645,10 +651,13 @@ async def handle_email_for_subscription(message: types.Message):
                     f"[SUBSCRIPTION] payment_service.create_payment returned: payment_id={payment_id}, confirmation_url={'present' if confirmation_url else 'None'}"
                 )
             except Exception as e:
-                logger.error(f"[SUBSCRIPTION] Exception in payment_service.create_payment: {e}", exc_info=True)
+                logger.error(
+                    f"[SUBSCRIPTION] Exception in payment_service.create_payment: {e}",
+                    exc_info=True,
+                )
                 await message.answer(
-                    "❌ Произошла ошибка при создании платежа. Попробуйте позже.",
-                    reply_markup=get_main_menu(user_id)
+                    PAYMENT_SERVICE_UNAVAILABLE,
+                    reply_markup=get_main_menu(user_id),
                 )
                 _user_states.pop(user_id, None)
                 return
@@ -663,16 +672,10 @@ async def handle_email_for_subscription(message: types.Message):
 
                 # Сообщения об ошибке зависят от конкретной платежной системы
                 if payment_method == "platega":
-                    error_text = (
-                        "❌ Платежная система Platega временно недоступна или вернула ошибку.\n\n"
-                        "Пожалуйста, попробуйте позже или выберите другой способ оплаты."
-                    )
+                    error_text = PLATEGA_UNAVAILABLE
                 else:
                     # По умолчанию считаем, что это YooKassa
-                    error_text = (
-                        "❌ Платежная система YooKassa временно недоступна или вернула ошибку.\n\n"
-                        "Пожалуйста, попробуйте позже или выберите другой способ оплаты."
-                    )
+                    error_text = YOOKASSA_UNAVAILABLE
 
                 # Для случаев, когда есть крипто-альтернатива, даём отдельную подсказку
                 if tariff.get('price_crypto_usd'):

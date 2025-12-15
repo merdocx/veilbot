@@ -1248,7 +1248,12 @@ async def wait_for_payment_with_protocol(
             if not payment_service:
                 logging.error("Payment service is not available")
                 if message:
-                    await message.answer("Платежная система временно недоступна. Обратитесь в поддержку.", reply_markup=main_menu)
+                    from bot.payment_messages import PAYMENT_SERVICE_UNAVAILABLE
+
+                    await message.answer(
+                        PAYMENT_SERVICE_UNAVAILABLE,
+                        reply_markup=main_menu,
+                    )
                 return
             
             # Проверяем статус платежа в БД ПЕРЕД ожиданием

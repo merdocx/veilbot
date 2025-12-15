@@ -9,9 +9,18 @@ from config import PROTOCOLS, ADMIN_ID, FREE_V2RAY_TARIFF_ID
 from app.infra.sqlite_utils import get_db_cursor
 from validators import input_validator, ValidationError
 from bot.keyboards import (
-    get_main_menu, get_cancel_keyboard, get_protocol_selection_menu,
-    get_tariff_menu, get_payment_method_keyboard, get_country_menu,
-    get_countries, get_countries_by_protocol
+    get_main_menu,
+    get_cancel_keyboard,
+    get_protocol_selection_menu,
+    get_tariff_menu,
+    get_payment_method_keyboard,
+    get_country_menu,
+    get_countries,
+    get_countries_by_protocol,
+)
+from bot.payment_messages import (
+    CRYPTO_TARIFFS_UNAVAILABLE,
+    CRYPTO_NOT_AVAILABLE_FOR_TARIFF,
 )
 from bot_rate_limiter import rate_limit
 from bot_error_handler import BotErrorHandler
@@ -260,9 +269,8 @@ def register_purchase_handlers(
                 
                 if count == 0:
                     await message.answer(
-                        "❌ К сожалению, в данный момент нет тарифов с оплатой криптовалютой.\n\n"
-                        "Пожалуйста, выберите другой способ оплаты или обратитесь в поддержку.",
-                        reply_markup=get_payment_method_keyboard()
+                        CRYPTO_TARIFFS_UNAVAILABLE,
+                        reply_markup=get_payment_method_keyboard(),
                     )
                     return
             
@@ -287,9 +295,8 @@ def register_purchase_handlers(
             # Проверяем, есть ли тарифы в меню (кроме кнопки "Назад")
             if len(tariff_menu.keyboard) <= 1:  # Только кнопка "Назад"
                 await message.answer(
-                    "❌ К сожалению, в данный момент нет доступных тарифов с оплатой криптовалютой.\n\n"
-                    "Пожалуйста, выберите другой способ оплаты.",
-                    reply_markup=get_payment_method_keyboard()
+                    CRYPTO_TARIFFS_UNAVAILABLE,
+                    reply_markup=get_payment_method_keyboard(),
                 )
                 return
             
@@ -341,8 +348,8 @@ def register_purchase_handlers(
             tariff = state.get("tariff", {})
             if not tariff.get('price_crypto_usd'):
                 await message.answer(
-                    "❌ Крипто-оплата недоступна для этого тарифа. Выберите другой способ оплаты.",
-                    reply_markup=get_payment_method_keyboard()
+                    CRYPTO_NOT_AVAILABLE_FOR_TARIFF,
+                    reply_markup=get_payment_method_keyboard(),
                 )
                 return
             
