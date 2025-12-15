@@ -36,6 +36,7 @@
                     <th>Длительность</th>
                     <th>Цена</th>
                     <th>Трафик</th>
+                    <th>Оплата</th>
                     <th>Действия</th>
                 </tr>
             </thead>
@@ -75,6 +76,32 @@
                         {% else %}
                             <div class="cell-primary">Безлимит</div>
                         {% endif %}
+                    </td>
+                    <td>
+                        {# t: (id, name, duration_sec, price_rub, traffic_limit_mb, price_crypto_usd, enable_yookassa, enable_platega, enable_cryptobot) #}
+                        {% set price_rub = t[3] %}
+                        {% set price_crypto = t[5] if t|length > 5 else None %}
+                        {% set enable_yookassa = t[6] if t|length > 6 else 1 %}
+                        {% set enable_platega = t[7] if t|length > 7 else 1 %}
+                        {% set enable_cryptobot = t[8] if t|length > 8 else 1 %}
+                        <div class="tariff-price">
+                            {% if price_rub == 0 %}
+                                <span class="tariff-price__line">Бесплатный тариф (оплаты нет)</span>
+                            {% else %}
+                                {% if enable_yookassa %}
+                                    <span class="tariff-price__line">💳 YooKassa</span>
+                                {% endif %}
+                                {% if enable_platega %}
+                                    <span class="tariff-price__line">💳 Platega</span>
+                                {% endif %}
+                                {% if enable_cryptobot and price_crypto and price_crypto > 0 %}
+                                    <span class="tariff-price__line">₿ Crypto (USDT)</span>
+                                {% endif %}
+                                {% if (not enable_yookassa and not enable_platega and (not enable_cryptobot or not price_crypto or price_crypto <= 0)) %}
+                                    <span class="tariff-price__line">Оплата отключена</span>
+                                {% endif %}
+                            {% endif %}
+                        </div>
                     </td>
                     <td>
                         <div class="action-buttons">
@@ -133,6 +160,30 @@
                     <label for="price_crypto_usd" class="form-label">Цена в криптовалюте (USD):</label>
                     <input type="number" id="price_crypto_usd" name="price_crypto_usd" step="0.01" min="0" class="form-control">
                     <small class="form-hint">Оставьте пустым, если крипто-оплата недоступна для этого тарифа</small>
+                </div>
+            </div>
+
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label">Доступные способы оплаты</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="add_enable_yookassa" name="enable_yookassa" value="1" checked>
+                        <label class="form-check-label" for="add_enable_yookassa">
+                            Разрешить оплату через YooKassa (карта РФ / СБП)
+                        </label>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="add_enable_platega" name="enable_platega" value="1" checked>
+                        <label class="form-check-label" for="add_enable_platega">
+                            Разрешить оплату через Platega (карта РФ / карта зарубеж / СБП)
+                        </label>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="add_enable_cryptobot" name="enable_cryptobot" value="1" checked>
+                        <label class="form-check-label" for="add_enable_cryptobot">
+                            Разрешить оплату криптовалютой (CryptoBot / USDT)
+                        </label>
+                    </div>
                 </div>
             </div>
             

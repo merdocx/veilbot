@@ -36,7 +36,13 @@ def _init_db(tmp_path):
         CREATE TABLE tariffs (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
-            traffic_limit_mb INTEGER DEFAULT 0
+            traffic_limit_mb INTEGER DEFAULT 0,
+            duration_sec INTEGER DEFAULT 0,
+            price_rub INTEGER DEFAULT 0,
+            price_crypto_usd REAL DEFAULT NULL,
+            enable_yookassa INTEGER DEFAULT 1,
+            enable_platega INTEGER DEFAULT 1,
+            enable_cryptobot INTEGER DEFAULT 1
         )
         """
     )

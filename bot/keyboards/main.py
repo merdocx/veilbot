@@ -101,37 +101,55 @@ def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> Repl
         return cached
     
     with get_db_cursor() as cursor:
+        base_sql = """
+            SELECT 
+                id,
+                name,
+                price_rub,
+                duration_sec,
+                price_crypto_usd,
+                enable_yookassa,
+                enable_platega,
+                enable_cryptobot
+            FROM tariffs
+        """
         if paid_only:
-            cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE price_rub > 0 ORDER BY price_rub ASC")
-        else:
-            cursor.execute("SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs ORDER BY price_rub ASC")
+            base_sql += " WHERE price_rub > 0"
+        base_sql += " ORDER BY price_rub ASC"
+        cursor.execute(base_sql)
         tariffs = cursor.fetchall()
 
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
     has_available_tariffs = False
     
-    for tariff_id, name, price, duration, price_crypto in tariffs:
+    for tariff_id, name, price, duration, price_crypto, enable_yookassa, enable_platega, enable_cryptobot in tariffs:
         if tariff_id == FREE_V2RAY_TARIFF_ID:
             continue
         if price > 0:
-            # Если выбран способ оплаты, показываем соответствующую цену
+            # Если выбран способ оплаты, показываем только тарифы, где он разрешен
             if payment_method == "cryptobot":
-                # Для криптовалюты показываем только тарифы с крипто-ценой
-                if price_crypto:
+                # Для криптовалюты показываем только тарифы с крипто-ценой и включенным флагом
+                if enable_cryptobot and price_crypto:
                     label = f"{name} — ${price_crypto:.2f}"
                     menu.add(KeyboardButton(label))
                     has_available_tariffs = True
-                # Если нет крипто-цены, просто не показываем тариф
+                # Если нет крипто-цены или флаг отключен, тариф не показываем
             elif payment_method == "yookassa":
-                label = f"{name} — {price}₽"
-                menu.add(KeyboardButton(label))
-                has_available_tariffs = True
+                if enable_yookassa:
+                    label = f"{name} — {price}₽"
+                    menu.add(KeyboardButton(label))
+                    has_available_tariffs = True
+            elif payment_method == "platega":
+                if enable_platega:
+                    label = f"{name} — {price}₽"
+                    menu.add(KeyboardButton(label))
+                    has_available_tariffs = True
             else:
-                # Если способ оплаты не выбран, показываем обе цены
+                # Если способ оплаты не выбран, показываем обе цены (для отладочных/общих сценариев)
                 if price_crypto:
                     label = f"{name} — {price}₽ / ${price_crypto:.2f}"
                 else:
-                    label = f"{name} — {price}₽"
+                    label = f"{name}₽"
                 menu.add(KeyboardButton(label))
                 has_available_tariffs = True
         else:

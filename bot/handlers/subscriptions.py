@@ -18,6 +18,7 @@ from bot.payment_messages import (
     PLATEGA_UNAVAILABLE,
     YOOKASSA_UNAVAILABLE,
     CRYPTO_NOT_AVAILABLE_FOR_TARIFF,
+    CRYPTO_TARIFFS_UNAVAILABLE,
 )
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService
@@ -772,7 +773,7 @@ async def handle_payment_method_for_subscription(message: types.Message):
         await message.answer(
             msg,
             reply_markup=get_tariff_menu(payment_method=payment_method, paid_only=False),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
     
@@ -784,9 +785,8 @@ async def handle_payment_method_for_subscription(message: types.Message):
             
             if count == 0:
                 await message.answer(
-                    "❌ К сожалению, в данный момент нет тарифов с оплатой криптовалютой.\n\n"
-                    "Пожалуйста, выберите другой способ оплаты.",
-                    reply_markup=get_payment_method_keyboard()
+                    CRYPTO_TARIFFS_UNAVAILABLE,
+                    reply_markup=get_payment_method_keyboard(),
                 )
                 return
         
@@ -805,16 +805,15 @@ async def handle_payment_method_for_subscription(message: types.Message):
         # Проверяем, есть ли тарифы в меню (кроме кнопки "Назад")
         if len(tariff_menu.keyboard) <= 1:  # Только кнопка "Назад"
             await message.answer(
-                "❌ К сожалению, в данный момент нет доступных тарифов с оплатой криптовалютой.\n\n"
-                "Пожалуйста, выберите другой способ оплаты.",
-                reply_markup=get_payment_method_keyboard()
+                CRYPTO_TARIFFS_UNAVAILABLE,
+                reply_markup=get_payment_method_keyboard(),
             )
             return
         
         await message.answer(
             msg,
             reply_markup=tariff_menu,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
 

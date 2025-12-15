@@ -521,6 +521,53 @@ def migrate_add_crypto_pricing():
     finally:
         conn.close()
 
+
+def migrate_add_payment_method_flags_to_tariffs():
+    """Добавление флагов включения способов оплаты для тарифов"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("PRAGMA table_info(tariffs)")
+        cols = {row[1] for row in cursor.fetchall()}
+
+        fields = [
+            ("enable_yookassa", "INTEGER", "1"),
+            ("enable_platega", "INTEGER", "1"),
+            ("enable_cryptobot", "INTEGER", "1"),
+        ]
+
+        added = 0
+        for name, decl, default in fields:
+            if name not in cols:
+                try:
+                    cursor.execute(f"ALTER TABLE tariffs ADD COLUMN {name} {decl} NOT NULL DEFAULT {default}")
+                    added += 1
+                except sqlite3.OperationalError:
+                    # Колонка уже существует
+                    pass
+
+        # Инициализируем значения для существующих тарифов:
+        # - enable_cryptobot выключаем там, где нет crypto-цены
+        try:
+            cursor.execute(
+                """
+                UPDATE tariffs
+                SET enable_cryptobot = 0
+                WHERE price_crypto_usd IS NULL OR price_crypto_usd <= 0
+                """
+            )
+        except sqlite3.OperationalError:
+            # Если колонки ещё нет или структура иная — просто пропускаем
+            pass
+
+        conn.commit()
+        logging.info(f"Добавлены/обновлены флаги способов оплаты в tariffs (добавлено полей: {added})")
+    except Exception as e:
+        logging.error(f"Ошибка при добавлении флагов способов оплаты в tariffs: {e}", exc_info=True)
+        conn.rollback()
+    finally:
+        conn.close()
+
 def migrate_add_crypto_payment_fields():
     """Добавление полей для криптоплатежей в payments"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1214,6 +1261,7 @@ def _run_all_migrations():
     migrate_create_users_table()
     migrate_backfill_users()
     migrate_add_crypto_pricing()
+    migrate_add_payment_method_flags_to_tariffs()
     migrate_add_crypto_payment_fields()
     migrate_add_client_config_to_v2ray_keys()
     migrate_add_notified_to_v2ray_keys()

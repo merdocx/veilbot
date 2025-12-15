@@ -46,7 +46,10 @@ async def add_tariff(
     traffic_limit_mb: int = Form(0),
     price_rub: int = Form(...),
     price_crypto_usd: float = Form(None),
-    csrf_token: str = Form(...)
+    enable_yookassa: int = Form(1),
+    enable_platega: int = Form(1),
+    enable_cryptobot: int = Form(1),
+    csrf_token: str = Form(...),
 ):
     """Добавление нового тарифа"""
     if not request.session.get("admin_logged_in"):
@@ -66,13 +69,21 @@ async def add_tariff(
         # Валидация входных данных
         price_crypto = float(price_crypto_usd) if price_crypto_usd and price_crypto_usd != "" else None
         tariff_data = TariffForm(name=name, duration_sec=duration_sec, price_rub=price_rub)
-        
+
+        # Нормализуем флаги оплаты: 0/1
+        ey = 1 if enable_yookassa else 0
+        ep = 1 if enable_platega else 0
+        ec = 1 if enable_cryptobot else 0
+
         TariffRepository(DATABASE_PATH).add_tariff(
             tariff_data.name,
             tariff_data.duration_sec,
             tariff_data.price_rub,
             traffic_limit_mb=traffic_limit_mb,
-            price_crypto_usd=price_crypto
+            price_crypto_usd=price_crypto,
+            enable_yookassa=ey,
+            enable_platega=ep,
+            enable_cryptobot=ec,
         )
         
         # Инвалидируем кэш меню бота
@@ -152,7 +163,10 @@ async def edit_tariff_page(request: Request, tariff_id: int):
             "duration_sec": tariff[2],
             "price_rub": tariff[3],
             "traffic_limit_mb": tariff[4] if len(tariff) > 4 else 0,
-            "price_crypto_usd": tariff[5] if len(tariff) > 5 else None
+            "price_crypto_usd": tariff[5] if len(tariff) > 5 else None,
+            "enable_yookassa": tariff[6] if len(tariff) > 6 else 1,
+            "enable_platega": tariff[7] if len(tariff) > 7 else 1,
+            "enable_cryptobot": tariff[8] if len(tariff) > 8 else 1,
         }
     })
 
@@ -165,14 +179,32 @@ async def edit_tariff(
     duration_sec: int = Form(...),
     traffic_limit_mb: int = Form(0),
     price_rub: int = Form(...),
-    price_crypto_usd: float = Form(None)
+    price_crypto_usd: float = Form(None),
+    enable_yookassa: int = Form(1),
+    enable_platega: int = Form(1),
+    enable_cryptobot: int = Form(1),
 ):
     """Обновление тарифа"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
     price_crypto = float(price_crypto_usd) if price_crypto_usd and price_crypto_usd != "" else None
-    TariffRepository(DATABASE_PATH).update_tariff(tariff_id, name, duration_sec, price_rub, traffic_limit_mb=traffic_limit_mb, price_crypto_usd=price_crypto)
+
+    ey = 1 if enable_yookassa else 0
+    ep = 1 if enable_platega else 0
+    ec = 1 if enable_cryptobot else 0
+
+    TariffRepository(DATABASE_PATH).update_tariff(
+        tariff_id,
+        name,
+        duration_sec,
+        price_rub,
+        traffic_limit_mb=traffic_limit_mb,
+        price_crypto_usd=price_crypto,
+        enable_yookassa=ey,
+        enable_platega=ep,
+        enable_cryptobot=ec,
+    )
     
     # Инвалидируем кэш меню бота
     try:

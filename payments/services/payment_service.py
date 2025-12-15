@@ -9,6 +9,7 @@ from ..repositories.payment_repository import PaymentRepository
 from ..services.yookassa_service import YooKassaService
 from ..services.cryptobot_service import CryptoBotService
 from ..services.platega_service import PlategaService
+from app.repositories.tariff_repository import TariffRepository
 from ..utils.validators import PaymentValidators
 from app.repositories.server_repository import ServerRepository
 from app.repositories.key_repository import KeyRepository
@@ -48,6 +49,7 @@ class PaymentService:
         self.yookassa_service = yookassa_service
         self.cryptobot_service = cryptobot_service
         self.platega_service = platega_service
+        self.tariff_repo = TariffRepository()
     
     async def create_payment(
         self,
@@ -120,6 +122,28 @@ class PaymentService:
                 country,
                 protocol,
             )
+
+            # Проверяем, что для тарифа разрешён выбранный платёжный провайдер
+            try:
+                tariff = self.tariff_repo.get_tariff(tariff_id)
+            except Exception as e:
+                logger.error(f"Failed to load tariff {tariff_id} for payment: {e}", exc_info=True)
+                return None, None
+
+            if not tariff:
+                logger.error(f"Tariff {tariff_id} not found when creating payment")
+                return None, None
+
+            # tariff: (id, name, duration_sec, price_rub, traffic_limit_mb, price_crypto_usd, enable_yookassa, enable_platega, enable_cryptobot)
+            enable_yookassa = bool(tariff[6]) if len(tariff) > 6 else True
+            enable_platega = bool(tariff[7]) if len(tariff) > 7 else True
+
+            if provider == PaymentProvider.PLATEGA and not enable_platega:
+                logger.warning(f"Platega is disabled for tariff {tariff_id}, cannot create payment")
+                return None, None
+            if provider == PaymentProvider.YOOKASSA and not enable_yookassa:
+                logger.warning(f"YooKassa is disabled for tariff {tariff_id}, cannot create payment")
+                return None, None
 
             if provider == PaymentProvider.PLATEGA:
                 if not self.platega_service:
@@ -225,6 +249,22 @@ class PaymentService:
         try:
             if not self.cryptobot_service:
                 logger.error("CryptoBot service is not available")
+                return None, None
+
+            # Проверяем, что для тарифа разрешена оплата криптовалютой
+            try:
+                tariff = self.tariff_repo.get_tariff(tariff_id)
+            except Exception as e:
+                logger.error(f"Failed to load tariff {tariff_id} for crypto payment: {e}", exc_info=True)
+                return None, None
+
+            if not tariff:
+                logger.error(f"Tariff {tariff_id} not found when creating crypto payment")
+                return None, None
+
+            enable_cryptobot = bool(tariff[8]) if len(tariff) > 8 else True
+            if not enable_cryptobot:
+                logger.warning(f"CryptoBot is disabled for tariff {tariff_id}, cannot create crypto payment")
                 return None, None
             
             # Валидация входных данных

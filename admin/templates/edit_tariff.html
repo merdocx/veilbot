@@ -46,6 +46,36 @@
                 </div>
             </div>
 
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label">Доступные способы оплаты</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="enable_yookassa" name="enable_yookassa" value="1"
+                               {% if tariff.enable_yookassa %}checked{% endif %}>
+                        <label class="form-check-label" for="enable_yookassa">
+                            Разрешить оплату через YooKassa (карта РФ / СБП)
+                        </label>
+                        <small class="form-hint d-block">Требуется цена в рублях &gt; 0</small>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="enable_platega" name="enable_platega" value="1"
+                               {% if tariff.enable_platega %}checked{% endif %}>
+                        <label class="form-check-label" for="enable_platega">
+                            Разрешить оплату через Platega (карта РФ / карта зарубеж / СБП)
+                        </label>
+                        <small class="form-hint d-block">Требуется цена в рублях &gt; 0</small>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="enable_cryptobot" name="enable_cryptobot" value="1"
+                               {% if tariff.enable_cryptobot %}checked{% endif %}>
+                        <label class="form-check-label" for="enable_cryptobot">
+                            Разрешить оплату криптовалютой (CryptoBot / USDT)
+                        </label>
+                        <small class="form-hint d-block">Требуется указать цену в USD (price_crypto_usd)</small>
+                    </div>
+                </div>
+            </div>
+
             <div class="justify-end">
                 <a href="/tariffs" class="btn">
                     <span class="material-icons icon-small">cancel</span>
