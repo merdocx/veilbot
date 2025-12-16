@@ -205,24 +205,8 @@ async def create_new_key_flow_with_protocol(
     main_menu = get_main_menu()
     
     now = int(time.time())
-    traffic_limit_mb = 0
-    if isinstance(tariff, dict):
-        raw_limit = tariff.get('traffic_limit_mb')
-        if raw_limit is None and tariff.get('id') is not None:
-            try:
-                cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff['id'],))
-                row = cursor.fetchone()
-                if row is not None:
-                    raw_limit = row[0]
-            except Exception as e:  # noqa: BLE001
-                logging.warning("Failed to fetch traffic_limit_mb for tariff %s: %s", tariff.get('id'), e)
-        try:
-            traffic_limit_mb = int(raw_limit or 0)
-        except (TypeError, ValueError):
-            traffic_limit_mb = 0
-        if traffic_limit_mb == 0:
-            logging.warning("[TRAFFIC LIMIT] Tariff %s provided zero traffic_limit_mb", tariff.get('id'))
-        tariff['traffic_limit_mb'] = traffic_limit_mb
+    # ВАЖНО: traffic_limit_mb больше не используется на уровне ключей
+    # Вся информация о трафике берется из подписки
     GRACE_PERIOD = 86400  # 24 часа в секундах
     grace_threshold = now - GRACE_PERIOD
     
@@ -230,12 +214,11 @@ async def create_new_key_flow_with_protocol(
     if protocol == "outline":
         _execute_with_limit_fallback(
             cursor,
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, "
-            "COALESCE(k.traffic_limit_mb, 0) "
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email "
             "FROM keys k JOIN servers s ON k.server_id = s.id "
             "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
             "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, 0 AS traffic_limit_mb "
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email "
             "FROM keys k JOIN servers s ON k.server_id = s.id "
             "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
             "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
@@ -262,7 +245,6 @@ async def create_new_key_flow_with_protocol(
                     'email': existing_key[7] or email,
                     'protocol': protocol,
                     'type': 'outline',
-                    'traffic_limit_mb': existing_key[8] if len(existing_key) > 8 else traffic_limit_mb,
                 }
                 
                 # Вызываем функцию смены страны с продлением
@@ -343,8 +325,7 @@ async def create_new_key_flow_with_protocol(
     else:  # v2ray
         cursor.execute(
             "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
-            "k.tariff_id, k.email, COALESCE(k.traffic_limit_mb, 0), COALESCE(k.traffic_usage_bytes, 0), "
-            "k.traffic_over_limit_at, COALESCE(k.traffic_over_limit_notified, 0) "
+            "k.tariff_id, k.email, COALESCE(k.traffic_usage_bytes, 0) "
             "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
             "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
             "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
@@ -372,10 +353,7 @@ async def create_new_key_flow_with_protocol(
                     'email': existing_key[8] or email,
                     'protocol': protocol,
                     'type': 'v2ray',
-                    'traffic_limit_mb': existing_key[9] if len(existing_key) > 9 else 0,
-                    'traffic_usage_bytes': existing_key[10] if len(existing_key) > 10 else 0,
-                    'traffic_over_limit_at': existing_key[11] if len(existing_key) > 11 else None,
-                    'traffic_over_limit_notified': existing_key[12] if len(existing_key) > 12 else 0,
+                    'traffic_usage_bytes': existing_key[9] if len(existing_key) > 9 else 0,
                 }
                 
                 # Вызываем функцию смены страны с продлением
@@ -549,10 +527,7 @@ async def create_new_key_flow_with_protocol(
                 'email': opposite_key[8],
                 'protocol': 'v2ray',
                 'type': 'v2ray',
-                'traffic_limit_mb': opposite_key[9] if len(opposite_key) > 9 else 0,
-                'traffic_usage_bytes': opposite_key[10] if len(opposite_key) > 10 else 0,
-                'traffic_over_limit_at': opposite_key[11] if len(opposite_key) > 11 else None,
-                'traffic_over_limit_notified': opposite_key[12] if len(opposite_key) > 12 else 0,
+                'traffic_usage_bytes': opposite_key[9] if len(opposite_key) > 9 else 0,
             }
             
             # Вызываем функцию смены протокола
@@ -574,7 +549,7 @@ async def create_new_key_flow_with_protocol(
         _execute_with_limit_fallback(
             cursor,
             "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id LEFT JOIN subscriptions sub ON k.subscription_id = sub.id WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, 0 AS traffic_limit_mb "
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email "
             "FROM keys k JOIN servers s ON k.server_id = s.id "
             "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
             "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
@@ -743,6 +718,8 @@ async def create_new_key_flow_with_protocol(
         expiry = now + tariff['duration_sec']
         
         if protocol == 'outline':
+            # ВАЖНО: traffic_limit_mb и expiry_at не устанавливаются на уровне ключа
+            # Вся информация берется из подписки
             _insert_with_schema(
                 cursor,
                 "keys",
@@ -750,8 +727,6 @@ async def create_new_key_flow_with_protocol(
                     "server_id": server[0],
                     "user_id": user_id,
                     "access_url": user_data['accessUrl'],
-                    "expiry_at": expiry,
-                    "traffic_limit_mb": traffic_limit_mb,
                     "notified": 0,
                     "key_id": user_data['id'],
                     "created_at": now,
@@ -837,46 +812,20 @@ async def create_new_key_flow_with_protocol(
                 
                 # Сохраняем ключ с конфигурацией в БД
                 # Выполняем в том же контексте с отключенными foreign keys
+                # ВАЖНО: traffic_limit_mb и expiry_at не устанавливаются на уровне ключа
+                # Вся информация берется из подписки
                 values_map = {
                     "server_id": server[0],
                     "user_id": user_id,
                     "v2ray_uuid": user_data['uuid'],
                     "email": email or f"user_{user_id}@veilbot.com",
                     "created_at": now,
-                    "expiry_at": expiry,
                     "tariff_id": tariff['id'],
                     "client_config": config,
-                    "traffic_limit_mb": traffic_limit_mb,
                     "traffic_usage_bytes": 0,
-                    "traffic_over_limit_at": None,
-                    "traffic_over_limit_notified": 0,
                 }
                 _insert_with_schema(cursor, "v2ray_keys", values_map)
                 new_key_id = cursor.lastrowid
-                if (traffic_limit_mb or 0) <= 0 and tariff.get('id'):
-                    try:
-                        cursor.execute(
-                            """
-                            UPDATE v2ray_keys
-                            SET traffic_limit_mb = COALESCE(
-                                (SELECT traffic_limit_mb FROM tariffs WHERE id = ?),
-                                0
-                            )
-                            WHERE id = ?
-                            """,
-                            (tariff['id'], new_key_id),
-                        )
-                        cursor.execute(
-                            """
-                            SELECT traffic_limit_mb FROM v2ray_keys WHERE id = ?
-                            """,
-                            (new_key_id,),
-                        )
-                        row_limit = cursor.fetchone()
-                        if row_limit and (row_limit[0] or 0) > 0:
-                            traffic_limit_mb = row_limit[0]
-                    except Exception as e:  # noqa: BLE001
-                        logging.warning("Failed to backfill traffic_limit_mb for new v2ray key %s: %s", new_key_id, e)
             
             # Логирование создания V2Ray ключа
             try:

@@ -255,19 +255,18 @@ class SubscriptionService:
         tariff_name: Optional[str] = None
         traffic_limit_bytes: Optional[int] = None
         traffic_usage_bytes: int = 0
-        subscription_limit_mb: Optional[int] = None
-        tariff_limit_mb: Optional[int] = None
 
         # Вычисляем использованный трафик динамически, суммируя трафик всех ключей подписки
         traffic_usage_bytes = self.repository.get_subscription_traffic_sum(subscription_id)
 
+        # Берём эффективный лимит через репозиторий, чтобы логика совпадала с админкой
+        traffic_limit_bytes = self.repository.get_subscription_traffic_limit(subscription_id)
+
         with get_db_cursor(commit=True) as cursor:
+            # Тариф сейчас нужен только для отображения имени тарифа в метаданных
             cursor.execute(
                 """
-                SELECT 
-                    s.traffic_limit_mb,
-                    t.name,
-                    COALESCE(t.traffic_limit_mb, 0)
+                SELECT t.name
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
                 WHERE s.id = ?
@@ -276,18 +275,7 @@ class SubscriptionService:
             )
             limits_row = cursor.fetchone()
             if limits_row:
-                subscription_limit_mb = limits_row[0]
-                tariff_name = limits_row[1]
-                tariff_limit_mb = limits_row[2]
-
-            effective_limit_mb = None
-            if subscription_limit_mb and subscription_limit_mb > 0:
-                effective_limit_mb = subscription_limit_mb
-            elif tariff_limit_mb and tariff_limit_mb > 0:
-                effective_limit_mb = tariff_limit_mb
-
-            if effective_limit_mb:
-                traffic_limit_bytes = int(effective_limit_mb) * 1024 * 1024
+                tariff_name = limits_row[0]
 
             if traffic_limit_bytes and traffic_usage_bytes > traffic_limit_bytes:
                 cursor.execute(

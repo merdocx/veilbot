@@ -236,15 +236,20 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     }
     protocol_info = protocol_meta.get(protocol, {"label": protocol or "—", "icon": "help_outline", "class": "protocol-badge--neutral"})
 
-    raw_limit_value = get(limit_idx, 0)
-    try:
-        traffic_limit_mb = int(raw_limit_value)
-    except (TypeError, ValueError):
-        traffic_limit_mb = 0
+    # ВАЖНО: Вся информация о трафике берется из подписки, не из ключа
+    subscription_id = get(subscription_id_idx)
+    traffic_limit_mb = 0
     traffic_limit_bytes = None
-    if traffic_limit_mb:
-        traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
-
+    
+    if subscription_id:
+        from app.repositories.subscription_repository import SubscriptionRepository
+        from app.settings import settings
+        sub_repo = SubscriptionRepository(settings.DATABASE_PATH)
+        traffic_limit_bytes = sub_repo.get_subscription_traffic_limit(subscription_id)
+        if traffic_limit_bytes and traffic_limit_bytes > 0:
+            traffic_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
+    
+    # Использование трафика ключа (для отображения, но лимит берется из подписки)
     traffic_usage_bytes_db = get(usage_idx, None)
     if traffic_usage_bytes_db is not None:
         try:
@@ -256,30 +261,31 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
             if parsed_usage["bytes"] is not None:
                 traffic_info.update(parsed_usage)
 
-    over_limit_at = get(over_limit_idx)
-    notified_value = get(notified_idx)
-    over_limit_notified = bool(notified_value) if notified_value is not None else False
+    # ВАЖНО: over_limit_at и over_limit_notified больше не используются на уровне ключей
+    # Все проверки лимитов выполняются на уровне подписки
+    over_limit_at = None
+    over_limit_notified = False
 
     usage_percent = None
-    over_limit_deadline = over_limit_at + 86400 if over_limit_at else None
+    over_limit_deadline = None
 
     over_limit = False
     over_limit_display = None
     over_limit_state = None
     if traffic_info["bytes"] is not None and traffic_limit_bytes:
         usage_percent = _clamp(traffic_info["bytes"] / traffic_limit_bytes, 0.0, 1.0)
-        over_limit = traffic_info["bytes"] > traffic_limit_bytes
-        if over_limit and over_limit_deadline:
-            deadline_info = _format_expiry_remaining(over_limit_deadline, now_ts)
-            over_limit_display = deadline_info["label"]
-            over_limit_state = deadline_info["state"]
+        # Для определения превышения лимита нужно суммировать трафик всех ключей подписки
+        # Здесь просто показываем использование текущего ключа
+        if subscription_id:
+            sub_repo = SubscriptionRepository(settings.DATABASE_PATH)
+            subscription_traffic_sum = sub_repo.get_subscription_traffic_sum(subscription_id)
+            if subscription_traffic_sum is not None:
+                over_limit = subscription_traffic_sum > traffic_limit_bytes
 
     expiry_remaining = _format_expiry_remaining(expiry_at, now_ts)
 
     # Формируем ID с протоколом для отображения (чтобы различать ключи с одинаковым ID из разных таблиц)
     display_id = f"{key_id}_{protocol}" if protocol else str(key_id)
-
-    subscription_id = get(subscription_id_idx)
     
     return {
         "id": display_id,

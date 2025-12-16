@@ -718,7 +718,8 @@ class SubscriptionRepository:
         """Получить лимит трафика подписки (в байтах)
         Логика:
         - Если traffic_limit_mb установлен (не NULL), используется он (0 = безлимит)
-        - Если traffic_limit_mb NULL, используется лимит из тарифа"""
+        - Если traffic_limit_mb NULL, используется лимит из тарифа
+        - Если и там 0/NULL, пробуем взять единый лимит из ключей подписки (fallback)"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             # Сначала проверяем индивидуальный лимит подписки
@@ -742,6 +743,21 @@ class SubscriptionRepository:
             result = c.fetchone()
             if result and result[0]:
                 return int(result[0]) * 1024 * 1024  # Конвертация МБ в байты
+
+            # Fallback: если ни подписка, ни тариф не задали лимит, пробуем взять его из ключей.
+            # Это покрывает старые данные, где лимит выставлялся только на уровне ключей.
+            c.execute("""
+                SELECT DISTINCT traffic_limit_mb
+                FROM v2ray_keys
+                WHERE subscription_id = ?
+                  AND traffic_limit_mb IS NOT NULL
+                  AND traffic_limit_mb > 0
+            """, (subscription_id,))
+            key_limits = {int(row[0]) for row in c.fetchall() if row and row[0] is not None}
+            if len(key_limits) == 1:
+                # Все ключи подписки используют одинаковый положительный лимит — считаем его лимитом подписки
+                return next(iter(key_limits)) * 1024 * 1024
+
             return 0
     
     def update_subscription_traffic(self, subscription_id: int, usage_bytes: int) -> None:

@@ -74,40 +74,80 @@ def _format_timestamp(ts: int | None) -> str:
         return "—"
 
 
+def _format_duration_components(total_seconds: int) -> Dict[str, int]:
+    """
+    Разбивает интервал в секундах на компоненты:
+    годы, месяцы (30 дней), дни, часы, минуты.
+    Логика синхронизирована со страницей ключей (keys.py).
+    """
+    seconds = abs(int(total_seconds))
+    units = {
+        "years": 365 * 24 * 3600,
+        "months": 30 * 24 * 3600,
+        "days": 24 * 3600,
+        "hours": 3600,
+        "minutes": 60,
+    }
+    result: Dict[str, int] = {
+        "years": 0,
+        "months": 0,
+        "days": 0,
+        "hours": 0,
+        "minutes": 0,
+    }
+    for name, unit_seconds in units.items():
+        count, seconds = divmod(seconds, unit_seconds)
+        result[name] = int(count)
+    return result
+
+
 def _format_expiry_remaining(expires_at: int | None, now_ts: int) -> dict:
-    """Форматировать оставшееся время до истечения"""
+    """
+    Форматировать оставшееся время до истечения подписки.
+    
+    Использует ту же схему, что и страница ключей:
+    годы, месяцы, дни, часы и минуты (максимум 3 компонента).
+    """
     if not expires_at:
         return {"label": "—", "state": "unknown"}
-    
-    delta = expires_at - now_ts
-    
+
+    delta = int(expires_at - now_ts)
+    components = _format_duration_components(delta)
+
+    parts: list[str] = []
+    labels = {
+        "years": "г",
+        "months": "мес",
+        "days": "д",
+        "hours": "ч",
+        "minutes": "мин",
+    }
+
+    for key, suffix in labels.items():
+        value = components.get(key, 0)
+        if value:
+            parts.append(f"{value} {suffix}")
+
+    if not parts:
+        parts.append("< 1 мин")
+
+    label = " ".join(parts[:3])
+
     if delta > 0:
-        days = delta // 86400
-        hours = (delta % 86400) // 3600
-        minutes = (delta % 3600) // 60
-        
-        parts = []
-        if days > 0:
-            parts.append(f"{days} д")
-        if hours > 0:
-            parts.append(f"{hours} ч")
-        if minutes > 0 and days == 0:
-            parts.append(f"{minutes} мин")
-        
-        label = " ".join(parts[:2]) if parts else "< 1 мин"
-        return {"label": f"Через {label}", "state": "active"}
-    else:
-        days_ago = abs(delta) // 86400
-        hours_ago = (abs(delta) % 86400) // 3600
-        
-        parts = []
-        if days_ago > 0:
-            parts.append(f"{days_ago} д")
-        if hours_ago > 0:
-            parts.append(f"{hours_ago} ч")
-        
-        label = " ".join(parts[:2]) if parts else "< 1 ч"
-        return {"label": f"Истёк {label} назад", "state": "expired"}
+        return {
+            "label": f"Через {label}",
+            "state": "upcoming",
+        }
+    if delta < 0:
+        return {
+            "label": f"Просрочен {label} назад",
+            "state": "expired",
+        }
+
+    return {
+        "label": "Истекает прямо сейчас",
+        "state": "now",
+    }
 
 
 def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
@@ -227,20 +267,29 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             # Вычисляем трафик подписки
             traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
             traffic_limit_bytes = subscription_repo.get_subscription_traffic_limit(sub_id)
-            
+
             traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
             traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
-            
+
+            # Переводим эффективный лимит в МБ для отображения/редактирования
+            effective_limit_mb = None
+            if traffic_limit_bytes and traffic_limit_bytes > 0:
+                try:
+                    effective_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
+                except (TypeError, ValueError, OverflowError):
+                    effective_limit_mb = None
+
             usage_percent = None
             over_limit = False
             if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
                 usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
                 over_limit = traffic_usage_bytes > traffic_limit_bytes
-            
+
             traffic_info = {
                 "display": traffic_display,
                 "limit_display": traffic_limit_display,
-                "limit_mb": traffic_limit_mb if (traffic_limit_mb is not None and traffic_limit_mb > 0) else None,
+                # В UI всегда показываем эффективный лимит (с учётом тарифа), как на странице ключей
+                "limit_mb": effective_limit_mb,
                 "usage_percent": usage_percent,
                 "over_limit": over_limit,
             }
@@ -267,7 +316,8 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 "keys_count": keys_count or 0,
                 "subscription_keys": keys_info,
                 "traffic": traffic_info,
-                "traffic_limit_mb": traffic_limit_mb if (traffic_limit_mb is not None and traffic_limit_mb > 0) else None,
+                # Для совместимости оставляем поле, но заполняем эффективным лимитом (с учётом тарифа)
+                "traffic_limit_mb": effective_limit_mb,
             })
         
         pages = (total + limit - 1) // limit if total > 0 else 1
@@ -433,6 +483,14 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                 
                 traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
                 traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
+
+                # Переводим эффективный лимит в МБ для отображения/редактирования
+                effective_limit_mb = None
+                if traffic_limit_bytes and traffic_limit_bytes > 0:
+                    try:
+                        effective_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
+                    except (TypeError, ValueError, OverflowError):
+                        effective_limit_mb = None
                 
                 usage_percent = None
                 over_limit = False
@@ -448,7 +506,8 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                 traffic_info = {
                     "display": traffic_display,
                     "limit_display": traffic_limit_display,
-                    "limit_mb": traffic_limit_mb if (traffic_limit_mb is not None and traffic_limit_mb > 0) else None,
+                    # В UI всегда показываем эффективный лимит (с учётом тарифа), как на странице ключей
+                    "limit_mb": effective_limit_mb,
                     "usage_percent": usage_percent,
                     "over_limit": over_limit,
                 }
@@ -476,7 +535,8 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                     "status": "Активна" if (is_active and not is_expired) else "Истекла",
                     "status_class": "status-active" if (is_active and not is_expired) else "status-expired",
                     "traffic": traffic_info,
-                    "traffic_limit_mb": traffic_limit_mb if (traffic_limit_mb is not None and traffic_limit_mb > 0) else None,
+                    # Для совместимости оставляем поле, но заполняем эффективным лимитом
+                    "traffic_limit_mb": effective_limit_mb,
                 }
                 
                 logger.info(f"Returning subscription data: traffic_limit_mb = {subscription_data.get('traffic_limit_mb')}, traffic.limit_mb = {traffic_info.get('limit_mb')}")

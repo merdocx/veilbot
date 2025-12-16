@@ -71,7 +71,7 @@ class KeyRepository:
                 SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, 
                        COALESCE(sub.expires_at, 0) as expiry_at,
                        IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol,
-                       COALESCE(k.traffic_limit_mb, 0), '' as api_url, '' as api_key,
+                       0, '' as api_url, '' as api_key,
                        0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified,
                        k.subscription_id
                 FROM keys k
@@ -84,7 +84,7 @@ class KeyRepository:
                        COALESCE(k.client_config, '') as access_url,
                        k.created_at, COALESCE(sub.expires_at, 0) as expiry_at,
                        IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
-                       COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
+                       0, IFNULL(s.api_url,''), IFNULL(s.api_key,''),
                        COALESCE(k.traffic_usage_bytes, 0), NULL AS traffic_over_limit_at,
                        0 AS traffic_over_limit_notified, k.subscription_id
                 FROM v2ray_keys k
@@ -156,6 +156,7 @@ class KeyRepository:
         
         ПРИМЕЧАНИЕ: После миграции expiry_at удален из таблиц ключей.
         Для обновления срока нужно обновить подписку через SubscriptionRepository.extend_subscription()
+        ВАЖНО: traffic_limit_mb не используется на уровне ключей, вся информация берется из подписки
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -171,13 +172,8 @@ class KeyRepository:
             sub_repo = SubscriptionRepository(self.db_path)
             sub_repo.extend_subscription(subscription_id, new_expiry_ts)
             
-            # Обновляем traffic_limit_mb если нужно
-            if traffic_limit_mb is not None:
-                c.execute(
-                    "UPDATE keys SET traffic_limit_mb = ? WHERE id = ?",
-                    (traffic_limit_mb, key_pk),
-                )
-                conn.commit()
+            # ВАЖНО: traffic_limit_mb не обновляется на уровне ключа
+            # Вся информация о трафике берется из подписки
 
     def update_v2ray_key_expiry(self, key_pk: int, new_expiry_ts: int, traffic_limit_mb: int | None = None) -> None:
         """
@@ -185,6 +181,7 @@ class KeyRepository:
         
         ПРИМЕЧАНИЕ: После миграции expiry_at удален из таблиц ключей.
         Для обновления срока нужно обновить подписку через SubscriptionRepository.extend_subscription()
+        ВАЖНО: traffic_limit_mb не используется на уровне ключей, вся информация берется из подписки
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -200,13 +197,8 @@ class KeyRepository:
             sub_repo = SubscriptionRepository(self.db_path)
             sub_repo.extend_subscription(subscription_id, new_expiry_ts)
             
-            # Обновляем traffic_limit_mb если нужно
-            if traffic_limit_mb is not None:
-                c.execute(
-                    "UPDATE v2ray_keys SET traffic_limit_mb = ? WHERE id = ?",
-                    (traffic_limit_mb, key_pk),
-                )
-                conn.commit()
+            # ВАЖНО: traffic_limit_mb не обновляется на уровне ключа
+            # Вся информация о трафике берется из подписки
 
     # Insert methods
     def insert_outline_key(
@@ -425,7 +417,7 @@ class KeyRepository:
                     "SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, "
                     "COALESCE(sub.expires_at, 0) as expiry_at, "
                     "IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol, "
-                    "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, '' as api_url, '' as api_key, "
+                    "0 AS traffic_limit_mb, '' as api_url, '' as api_key, "
                     "0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified, "
                     "k.subscription_id "
                     "FROM keys k "
@@ -469,7 +461,7 @@ class KeyRepository:
                     "COALESCE(k.client_config, '') as access_url, "
                     "k.created_at, COALESCE(sub.expires_at, 0) as expiry_at, "
                     "IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol, "
-                    "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "
+                    "0 AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "
                     "COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes, NULL AS traffic_over_limit_at, "
                     "0 AS traffic_over_limit_notified, k.subscription_id "
                     "FROM v2ray_keys k "

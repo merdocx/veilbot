@@ -135,7 +135,12 @@
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--actions">
                         <div class="action-buttons">
-                            <button class="btn btn-icon" data-action="edit-subscription" data-subscription-id="{{ subscription.id }}" data-expiry="{{ subscription.expires_at_iso }}" data-traffic-limit="{{ subscription.traffic_limit_mb if subscription.traffic_limit_mb else '' }}" title="Редактировать">
+                            <button class="btn btn-icon"
+                                    data-action="edit-subscription"
+                                    data-subscription-id="{{ subscription.id }}"
+                                    data-expiry="{{ subscription.expires_at_iso }}"
+                                    data-traffic-limit="{% if subscription.traffic and subscription.traffic['limit_mb'] is not none %}{{ subscription.traffic['limit_mb'] }}{% else %}{% endif %}"
+                                    title="Редактировать">
                                 <span class="material-icons icon-small">edit</span>
                             </button>
                             <a href="/subscriptions/delete/{{ subscription.id }}" class="btn btn-icon btn-danger" data-action="delete-subscription" data-subscription-id="{{ subscription.id }}" title="Удалить">

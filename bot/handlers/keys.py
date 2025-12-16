@@ -52,11 +52,12 @@ async def handle_my_keys_btn(message: types.Message):
             subscription_id, token, expires_at, tariff_id, sub_limit_mb = subscription
             
             # Получаем количество серверов в подписке
+            # ВАЖНО: expiry_at берется из подписки, не из ключей
             cursor.execute("""
                 SELECT COUNT(DISTINCT server_id)
                 FROM v2ray_keys
-                WHERE subscription_id = ? AND expiry_at > ?
-            """, (subscription_id, now))
+                WHERE subscription_id = ?
+            """, (subscription_id,))
             server_count = cursor.fetchone()[0] or 0
             
             # Эффективный лимит:
@@ -89,10 +90,11 @@ async def handle_my_keys_btn(message: types.Message):
         # ВАЖНО: Показываем только ключи, связанные с активной подпиской
         # Если есть активная подписка, показываем только её ключи
         # Если подписки нет, показываем все активные outline ключи
+        # ВАЖНО: Вся информация о трафике и времени берется из подписки, не из ключа
         if subscription_info:
             # Есть активная подписка - показываем только её outline ключи
             cursor.execute("""
-                SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, k.protocol, s.country, k.traffic_limit_mb
+                SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, k.protocol, s.country, k.subscription_id
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
                 JOIN subscriptions sub ON k.subscription_id = sub.id
@@ -101,7 +103,7 @@ async def handle_my_keys_btn(message: types.Message):
         else:
             # Нет активной подписки - показываем все активные outline ключи
             cursor.execute("""
-                SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, k.protocol, s.country, k.traffic_limit_mb
+                SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, k.protocol, s.country, k.subscription_id
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
                 LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
@@ -110,15 +112,14 @@ async def handle_my_keys_btn(message: types.Message):
         outline_keys = cursor.fetchall()
     
     # Добавляем Outline ключи
-    for access_url, exp, protocol, country, limit_mb in outline_keys:
+    for access_url, exp, protocol, country, sub_id in outline_keys:
         all_keys.append({
             'type': 'outline',
             'config': access_url,
             'expiry': exp,
             'protocol': protocol or 'outline',
             'country': country,
-            'traffic_limit_mb': limit_mb or 0,
-            'traffic_usage_bytes': None,
+            'subscription_id': sub_id,
         })
 
     # Формируем сообщение
@@ -174,19 +175,23 @@ async def handle_my_keys_btn(message: types.Message):
         time_str = format_duration(remaining_seconds)
         
         protocol_info = PROTOCOLS[key['protocol']]
-        limit_mb = key.get('traffic_limit_mb') or 0
-        usage_bytes = key.get('traffic_usage_bytes')
+        
+        # Вся информация о трафике берется из подписки
         remaining_line = "📊 Осталось трафика: без ограничений"
-        if limit_mb and limit_mb > 0:
-            limit_bytes = int(limit_mb * 1024 * 1024)
-            usage = int(usage_bytes or 0)
-            remaining_bytes = max(limit_bytes - usage, 0)
-            remaining_line = (
-                f"📊 Осталось трафика: {_format_bytes_short(remaining_bytes)} из "
-                f"{_format_bytes_short(limit_bytes)}"
-            )
-        elif usage_bytes:
-            remaining_line = f"📊 Израсходовано: {_format_bytes_short(usage_bytes)}"
+        subscription_id = key.get('subscription_id')
+        if subscription_id:
+            repo = SubscriptionRepository()
+            traffic_usage_bytes = repo.get_subscription_traffic_sum(subscription_id)
+            traffic_limit_bytes = repo.get_subscription_traffic_limit(subscription_id)
+            
+            if traffic_limit_bytes and traffic_limit_bytes > 0:
+                remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
+                remaining_line = (
+                    f"📊 Осталось трафика: {_format_bytes_short(remaining_bytes)} из "
+                    f"{_format_bytes_short(traffic_limit_bytes)}"
+                )
+            elif traffic_usage_bytes:
+                remaining_line = f"📊 Израсходовано: {_format_bytes_short(traffic_usage_bytes)}"
         
         # Получаем ссылки на приложения в зависимости от протокола
         if key['protocol'] == 'outline':
