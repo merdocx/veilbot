@@ -230,13 +230,15 @@ async def create_new_key_flow_with_protocol(
     if protocol == "outline":
         _execute_with_limit_fallback(
             cursor,
-            "SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, "
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, "
             "COALESCE(k.traffic_limit_mb, 0) "
             "FROM keys k JOIN servers s ON k.server_id = s.id "
-            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
-            "SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, 0 AS traffic_limit_mb "
+            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
+            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, 0 AS traffic_limit_mb "
             "FROM keys k JOIN servers s ON k.server_id = s.id "
-            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
+            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
             (user_id, grace_threshold),
         )
         existing_key = cursor.fetchone()
@@ -340,11 +342,12 @@ async def create_new_key_flow_with_protocol(
                     # Продолжаем выполнение для создания нового ключа
     else:  # v2ray
         cursor.execute(
-            "SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
             "k.tariff_id, k.email, COALESCE(k.traffic_limit_mb, 0), COALESCE(k.traffic_usage_bytes, 0), "
             "k.traffic_over_limit_at, COALESCE(k.traffic_over_limit_notified, 0) "
             "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
-            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
+            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
             (user_id, grace_threshold),
         )
         existing_key = cursor.fetchone()
@@ -514,16 +517,18 @@ async def create_new_key_flow_with_protocol(
         # Проверяем, есть ли V2Ray ключ
         _execute_with_limit_fallback(
             cursor,
-            "SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
             "k.tariff_id, k.email, COALESCE(k.traffic_limit_mb, 0), COALESCE(k.traffic_usage_bytes, 0), "
             "k.traffic_over_limit_at, COALESCE(k.traffic_over_limit_notified, 0) "
             "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
-            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
-            "SELECT k.id, k.expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
+            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
+            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
             "k.tariff_id, k.email, 0 AS traffic_limit_mb, 0 AS traffic_usage_bytes, "
             "NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified "
             "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
-            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
+            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
             (user_id, grace_threshold),
         )
         opposite_key = cursor.fetchone()
@@ -568,10 +573,11 @@ async def create_new_key_flow_with_protocol(
         # Проверяем, есть ли Outline ключ
         _execute_with_limit_fallback(
             cursor,
-            "SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
-            "SELECT k.id, k.expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, 0 AS traffic_limit_mb "
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id LEFT JOIN subscriptions sub ON k.subscription_id = sub.id WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email, 0 AS traffic_limit_mb "
             "FROM keys k JOIN servers s ON k.server_id = s.id "
-            "WHERE k.user_id = ? AND k.expiry_at > ? ORDER BY k.expiry_at DESC LIMIT 1",
+            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
+            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
             (user_id, grace_threshold),
         )
         opposite_key = cursor.fetchone()
@@ -1104,7 +1110,7 @@ async def process_referral_bonus(
         
         # Активной подписки нет - используем текущую логику продления ключа
         cursor.execute(
-            "SELECT id, expiry_at FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", 
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at FROM keys k LEFT JOIN subscriptions sub ON k.subscription_id = sub.id WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1", 
             (referrer_id, now)
         )
         key = cursor.fetchone()

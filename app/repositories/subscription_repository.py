@@ -94,15 +94,27 @@ class SubscriptionRepository:
             )
             conn.commit()
 
-    def extend_subscription(self, subscription_id: int, new_expires_at: int) -> None:
-        """Продлить подписку"""
+    def extend_subscription(self, subscription_id: int, new_expires_at: int, tariff_id: Optional[int] = None) -> None:
+        """Продлить подписку
+        
+        Args:
+            subscription_id: ID подписки
+            new_expires_at: Новый срок действия (timestamp)
+            tariff_id: Опционально - обновить tariff_id подписки
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             now = int(time.time())
-            c.execute(
-                "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0 WHERE id = ?",
-                (new_expires_at, now, subscription_id),
-            )
+            if tariff_id is not None:
+                c.execute(
+                    "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0, tariff_id = ? WHERE id = ?",
+                    (new_expires_at, now, tariff_id, subscription_id),
+                )
+            else:
+                c.execute(
+                    "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0 WHERE id = ?",
+                    (new_expires_at, now, subscription_id),
+                )
             conn.commit()
 
     def get_expired_subscriptions(self, grace_threshold: int) -> List[Tuple]:
@@ -185,7 +197,7 @@ class SubscriptionRepository:
         """Получить все активные ключи подписки
         
         Примечание: Лимиты трафика и времени контролируются на уровне подписки,
-        а не отдельных ключей. Поэтому проверка лимита на уровне ключа не выполняется.
+        а не отдельных ключей. Срок действия берется из subscriptions.expires_at.
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -194,9 +206,10 @@ class SubscriptionRepository:
                 SELECT k.v2ray_uuid, k.client_config, s.domain, s.api_url, s.api_key, s.country, s.name as server_name
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
+                JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.subscription_id = ? 
                   AND k.user_id = ?
-                  AND k.expiry_at > ?
+                  AND sub.expires_at > ?
                   AND s.active = 1
                 ORDER BY s.country, s.name
                 """,
@@ -248,8 +261,9 @@ class SubscriptionRepository:
                 SELECT k.id, k.v2ray_uuid, k.server_id, s.api_url, s.api_key
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
+                JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.subscription_id = ?
-                  AND k.expiry_at > ?
+                  AND sub.expires_at > ?
                 """,
                 (subscription_id, int(time.time())),
             )
@@ -369,14 +383,26 @@ class SubscriptionRepository:
             )
             await conn.commit()
 
-    async def extend_subscription_async(self, subscription_id: int, new_expires_at: int) -> None:
-        """Продлить подписку (асинхронная версия)"""
+    async def extend_subscription_async(self, subscription_id: int, new_expires_at: int, tariff_id: Optional[int] = None) -> None:
+        """Продлить подписку (асинхронная версия)
+        
+        Args:
+            subscription_id: ID подписки
+            new_expires_at: Новый срок действия (timestamp)
+            tariff_id: Опционально - обновить tariff_id подписки
+        """
         async with open_async_connection(self.db_path) as conn:
             now = int(time.time())
-            await conn.execute(
-                "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0 WHERE id = ?",
-                (new_expires_at, now, subscription_id),
-            )
+            if tariff_id is not None:
+                await conn.execute(
+                    "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0, tariff_id = ? WHERE id = ?",
+                    (new_expires_at, now, tariff_id, subscription_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0 WHERE id = ?",
+                    (new_expires_at, now, subscription_id),
+                )
             await conn.commit()
 
     async def get_expired_subscriptions_async(self, grace_threshold: int) -> List[Tuple]:
@@ -437,9 +463,10 @@ class SubscriptionRepository:
                 SELECT k.v2ray_uuid, k.client_config, s.domain, s.api_url, s.api_key, s.country, s.name as server_name
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
+                JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.subscription_id = ? 
                   AND k.user_id = ?
-                  AND k.expiry_at > ?
+                  AND sub.expires_at > ?
                   AND s.active = 1
                 ORDER BY s.country, s.name
                 """,
@@ -613,13 +640,14 @@ class SubscriptionRepository:
                         vk.v2ray_uuid AS identifier,
                         vk.email,
                         vk.created_at,
-                        vk.expiry_at,
+                        COALESCE(sub.expires_at, 0) as expiry_at,
                         s.name AS server_name,
                         s.country,
                         vk.traffic_limit_mb,
                         vk.traffic_usage_bytes
                     FROM v2ray_keys vk
                     JOIN servers s ON vk.server_id = s.id
+                    LEFT JOIN subscriptions sub ON vk.subscription_id = sub.id
                     WHERE vk.subscription_id = ?
                     
                     UNION ALL
@@ -630,13 +658,14 @@ class SubscriptionRepository:
                         k.key_id AS identifier,
                         k.email,
                         k.created_at,
-                        k.expiry_at,
+                        COALESCE(sub.expires_at, 0) as expiry_at,
                         s.name AS server_name,
                         s.country,
                         k.traffic_limit_mb,
                         0 AS traffic_usage_bytes
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                     WHERE k.subscription_id = ? AND k.protocol = 'outline'
                 )
                 ORDER BY server_name, country, protocol
@@ -839,20 +868,24 @@ class SubscriptionRepository:
             return c.fetchall()
     
     def update_subscription_keys_expiry(self, subscription_id: int, new_expires_at: int) -> int:
-        """Обновить срок действия всех ключей подписки"""
+        """
+        Обновить срок действия всех ключей подписки.
+        
+        ПРИМЕЧАНИЕ: После миграции expiry_at удален из таблиц keys и v2ray_keys.
+        Срок действия ключей теперь берется из subscriptions.expires_at через JOIN.
+        Этот метод оставлен для обратной совместимости, но не выполняет никаких действий.
+        
+        Returns:
+            Количество ключей в подписке (для обратной совместимости)
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute(
-                """
-                UPDATE v2ray_keys 
-                SET expiry_at = ? 
-                WHERE subscription_id = ?
-                """,
-                (new_expires_at, subscription_id),
-            )
-            updated_count = c.rowcount
-            conn.commit()
-            return updated_count
+            # Подсчитываем количество ключей в подписке
+            c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?", (subscription_id,))
+            v2ray_count = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(*) FROM keys WHERE subscription_id = ?", (subscription_id,))
+            outline_count = c.fetchone()[0] or 0
+            return v2ray_count + outline_count
     
     def update_subscription_keys_traffic_limit(self, subscription_id: int, traffic_limit_mb: int) -> int:
         """Обновить лимит трафика всех ключей подписки (в МБ)

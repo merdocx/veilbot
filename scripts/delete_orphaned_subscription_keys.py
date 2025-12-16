@@ -42,12 +42,13 @@ async def delete_orphaned_subscription_keys(dry_run: bool = False) -> Dict[str, 
     with get_db_cursor() as cursor:
         cursor.execute("""
             SELECT vk.id, vk.subscription_id, vk.server_id, vk.v2ray_uuid, 
-                   vk.user_id, vk.email, vk.expiry_at,
+                   vk.user_id, vk.email, COALESCE(sub.expires_at, 0) as expiry_at,
                    s.name as server_name, s.api_url, s.api_key, s.domain
             FROM v2ray_keys vk
             JOIN servers s ON vk.server_id = s.id
+            LEFT JOIN subscriptions sub ON vk.subscription_id = sub.id
             WHERE vk.subscription_id IS NOT NULL
-            AND vk.expiry_at > ?
+            AND COALESCE(sub.expires_at, 0) > ?
             AND NOT EXISTS (
                 SELECT 1 FROM subscriptions s2 
                 WHERE s2.id = vk.subscription_id
@@ -143,13 +144,14 @@ async def delete_orphaned_subscription_keys(dry_run: bool = False) -> Dict[str, 
     with get_db_cursor() as cursor:
         cursor.execute("""
             SELECT k.id, k.subscription_id, k.server_id, k.key_id,
-                   k.user_id, k.email, k.expiry_at,
+                   k.user_id, k.email, COALESCE(sub.expires_at, 0) as expiry_at,
                    s.name as server_name, s.api_url, s.cert_sha256
             FROM keys k
             JOIN servers s ON k.server_id = s.id
+            LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
             WHERE k.subscription_id IS NOT NULL
             AND k.protocol = 'outline'
-            AND k.expiry_at > ?
+            AND COALESCE(sub.expires_at, 0) > ?
             AND NOT EXISTS (
                 SELECT 1 FROM subscriptions s2 
                 WHERE s2.id = k.subscription_id

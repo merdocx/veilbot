@@ -18,13 +18,15 @@ class UserRepository:
                 FROM payments
                 WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
                 UNION ALL
-                SELECT email, 2 AS priority, expiry_at AS sort_date
-                FROM keys
-                WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                SELECT k.email, 2 AS priority, COALESCE(sub.expires_at, k.created_at) AS sort_date
+                FROM keys k
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com'
                 UNION ALL
-                SELECT email, 3 AS priority, expiry_at AS sort_date
-                FROM v2ray_keys
-                WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                SELECT k.email, 3 AS priority, COALESCE(sub.expires_at, k.created_at) AS sort_date
+                FROM v2ray_keys k
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com'
             ) ORDER BY priority ASC, sort_date DESC LIMIT 1
         """, (user_id, user_id, user_id))
         row = cursor.fetchone()

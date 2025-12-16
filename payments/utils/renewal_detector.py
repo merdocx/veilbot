@@ -36,7 +36,11 @@ def is_renewal_payment(
         if protocol == 'outline':
             # Проверяем наличие активного Outline ключа
             cursor.execute(
-                "SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1",
+                """
+                SELECT 1 FROM keys k
+                JOIN subscriptions s ON k.subscription_id = s.id
+                WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
+                """,
                 (user_id, grace_threshold)
             )
             has_key = cursor.fetchone() is not None
@@ -47,7 +51,9 @@ def is_renewal_payment(
         elif protocol == 'v2ray':
             # Проверяем наличие активного V2Ray ключа
             cursor.execute(
-                "SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1",
+                "SELECT 1 FROM v2ray_keys k "
+                "JOIN subscriptions s ON k.subscription_id = s.id "
+                "WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1",
                 (user_id, grace_threshold)
             )
             has_key = cursor.fetchone() is not None
@@ -91,7 +97,9 @@ async def is_renewal_payment_async(
         if protocol == 'outline':
             # Проверяем наличие активного Outline ключа
             async with conn.execute(
-                "SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1",
+                "SELECT 1 FROM keys k "
+                "JOIN subscriptions s ON k.subscription_id = s.id "
+                "WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1",
                 (user_id, grace_threshold)
             ) as cursor:
                 row = await cursor.fetchone()
@@ -103,7 +111,11 @@ async def is_renewal_payment_async(
         elif protocol == 'v2ray':
             # Проверяем наличие активного V2Ray ключа
             async with conn.execute(
-                "SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1",
+                """
+                SELECT 1 FROM v2ray_keys k
+                JOIN subscriptions s ON k.subscription_id = s.id
+                WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
+                """,
                 (user_id, grace_threshold)
             ) as cursor:
                 row = await cursor.fetchone()

@@ -109,7 +109,8 @@ async def auto_delete_expired_keys() -> None:
                 SELECT k.id, k.key_id, s.api_url, s.cert_sha256
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.expiry_at <= ?
+                JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE sub.expires_at <= ?
                 """,
                 (grace_threshold,),
             )
@@ -125,7 +126,13 @@ async def auto_delete_expired_keys() -> None:
                         logging.warning("Failed to delete Outline key %s from server", key_id_outline)
 
             with safe_foreign_keys_off(cursor):
-                cursor.execute("DELETE FROM keys WHERE expiry_at <= ?", (grace_threshold,))
+                cursor.execute("""
+                    DELETE FROM keys WHERE id IN (
+                        SELECT k.id FROM keys k
+                        JOIN subscriptions sub ON k.subscription_id = sub.id
+                        WHERE sub.expires_at <= ?
+                    )
+                """, (grace_threshold,))
                 outline_deleted = cursor.rowcount
 
             cursor.execute(
@@ -133,7 +140,8 @@ async def auto_delete_expired_keys() -> None:
                 SELECT k.id, k.v2ray_uuid, s.api_url, s.api_key
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.expiry_at <= ?
+                JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE sub.expires_at <= ?
                 """,
                 (grace_threshold,),
             )
@@ -154,7 +162,13 @@ async def auto_delete_expired_keys() -> None:
 
             try:
                 with safe_foreign_keys_off(cursor):
-                    cursor.execute("DELETE FROM v2ray_keys WHERE expiry_at <= ?", (grace_threshold,))
+                    cursor.execute("""
+                        DELETE FROM v2ray_keys WHERE id IN (
+                            SELECT k.id FROM v2ray_keys k
+                            JOIN subscriptions sub ON k.subscription_id = sub.id
+                            WHERE sub.expires_at <= ?
+                        )
+                    """, (grace_threshold,))
                     v2ray_deleted = cursor.rowcount
             except Exception as exc:  # noqa: BLE001
                 logging.warning("Error deleting expired V2Ray keys: %s", exc)
@@ -213,7 +227,11 @@ async def check_key_availability() -> None:
             total_capacity = cursor.fetchone()[0] or 0
 
             now = int(time.time())
-            cursor.execute("SELECT COUNT(*) FROM keys WHERE expiry_at > ?", (now,))
+            cursor.execute("""
+                SELECT COUNT(*) FROM keys k
+                JOIN subscriptions s ON k.subscription_id = s.id
+                WHERE s.expires_at > ?
+            """, (now,))
             active_keys = cursor.fetchone()[0] or 0
 
             free_keys = total_capacity - active_keys
@@ -290,9 +308,13 @@ async def process_pending_paid_payments() -> None:
                     FROM payments p
                     WHERE p.status="paid" AND p.revoked = 0
                     AND p.user_id NOT IN (
-                        SELECT user_id FROM keys WHERE expiry_at > ?
+                        SELECT k.user_id FROM keys k
+                        JOIN subscriptions s ON k.subscription_id = s.id
+                        WHERE s.expires_at > ?
                         UNION
-                        SELECT user_id FROM v2ray_keys WHERE expiry_at > ?
+                        SELECT k.user_id FROM v2ray_keys k
+                        JOIN subscriptions s ON k.subscription_id = s.id
+                        WHERE s.expires_at > ?
                         UNION
                         SELECT user_id FROM subscriptions WHERE expires_at > ? AND is_active = 1
                     )
@@ -906,7 +928,8 @@ async def monitor_subscription_traffic_limits() -> None:
                         IFNULL(s.api_key, '') AS api_key
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
-                    WHERE k.expiry_at > ?
+                    JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE sub.expires_at > ?
                       AND s.protocol = 'v2ray'
                       AND s.api_url IS NOT NULL
                       AND s.api_key IS NOT NULL

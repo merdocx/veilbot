@@ -36,7 +36,6 @@ def init_db():
         server_id INTEGER,
         user_id INTEGER,
         access_url TEXT,
-        expiry_at INTEGER,
         traffic_limit_mb INTEGER,
         notified INTEGER DEFAULT 0,
         key_id TEXT,
@@ -44,6 +43,7 @@ def init_db():
         email TEXT,
         tariff_id INTEGER,
         protocol TEXT DEFAULT 'outline',
+        subscription_id INTEGER,
         FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
     )""")
 
@@ -344,13 +344,15 @@ def migrate_add_common_indexes():
     try:
         # keys indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_expiry_at ON keys(expiry_at)")
+        # Индекс на expiry_at удален, так как поле больше не существует в таблице keys
+    # cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_expiry_at ON keys(expiry_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_server_id ON keys(server_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_tariff_id ON keys(tariff_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_email ON keys(email) WHERE email IS NOT NULL")
         # v2ray_keys indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
+        # Индекс на expiry_at удален, так как поле больше не существует в таблице v2ray_keys
+        # cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_tariff_id ON v2ray_keys(tariff_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_created_at ON v2ray_keys(created_at)")
@@ -369,16 +371,16 @@ def migrate_add_common_indexes():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_email ON payments(email) WHERE email IS NOT NULL")
         
         # Композитные индексы для частых комбинаций запросов
-        # Индексы для запросов по user_id и expiry_at (очень частый паттерн)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_user_expiry ON keys(user_id, expiry_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_expiry ON v2ray_keys(user_id, expiry_at)")
+        # Индексы для запросов по user_id и expiry_at удалены, так как expiry_at больше не существует
+        # cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_user_expiry ON keys(user_id, expiry_at)")
+        # cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_expiry ON v2ray_keys(user_id, expiry_at)")
         
         # Индекс для запросов по user_id и status в payments
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status)")
         
-        # Индекс для запросов по server_id и expiry_at (для фоновых задач)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_server_expiry ON keys(server_id, expiry_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_expiry ON v2ray_keys(server_id, expiry_at)")
+        # Индексы для запросов по server_id и expiry_at удалены, так как expiry_at больше не существует
+        # cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_server_expiry ON keys(server_id, expiry_at)")
+        # cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_expiry ON v2ray_keys(server_id, expiry_at)")
         
         conn.commit()
         logging.info("Созданы индексы для основных таблиц (если отсутствовали)")
@@ -456,11 +458,15 @@ def migrate_backfill_users():
     try:
         # Get all unique user_ids
         cursor.execute("""
-            SELECT DISTINCT user_id, MIN(created_at) as earliest, MAX(COALESCE(expiry_at, created_at)) as latest
+            SELECT DISTINCT user_id, MIN(created_at) as earliest, MAX(COALESCE(sub.expires_at, created_at)) as latest
             FROM (
-                SELECT user_id, created_at, expiry_at FROM keys
+                SELECT k.user_id, k.created_at, sub.expires_at 
+                FROM keys k
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                 UNION ALL
-                SELECT user_id, created_at, expiry_at FROM v2ray_keys
+                SELECT k.user_id, k.created_at, sub.expires_at 
+                FROM v2ray_keys k
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
             )
             GROUP BY user_id
         """)
@@ -783,8 +789,8 @@ def migrate_add_server_cascade_to_keys():
             "CREATE INDEX IF NOT EXISTS idx_keys_email_created ON keys(email, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_keys_tariff_id ON keys(tariff_id)",
             "CREATE INDEX IF NOT EXISTS idx_keys_email ON keys(email) WHERE email IS NOT NULL",
-            "CREATE INDEX IF NOT EXISTS idx_keys_user_expiry ON keys(user_id, expiry_at)",
-            "CREATE INDEX IF NOT EXISTS idx_keys_server_expiry ON keys(server_id, expiry_at)",
+            # "CREATE INDEX IF NOT EXISTS idx_keys_user_expiry ON keys(user_id, expiry_at)",  # Удалено, поле expiry_at больше не существует
+            # "CREATE INDEX IF NOT EXISTS idx_keys_server_expiry ON keys(server_id, expiry_at)",  # Удалено, поле expiry_at больше не существует
         ]
         for stmt in index_statements:
             cursor.execute(stmt)
@@ -961,14 +967,14 @@ def migrate_remove_traffic_limit_fields_from_v2ray_keys():
             )
         """)
         
-        # Копируем данные (исключаем удаляемые поля)
+        # Копируем данные (исключаем удаляемые поля, включая expiry_at)
         cursor.execute("""
             INSERT INTO v2ray_keys_new (
-                id, server_id, user_id, v2ray_uuid, email, level, created_at, expiry_at,
+                id, server_id, user_id, v2ray_uuid, email, level, created_at,
                 tariff_id, client_config, notified, traffic_limit_mb, traffic_usage_bytes, subscription_id
             )
             SELECT 
-                id, server_id, user_id, v2ray_uuid, email, level, created_at, expiry_at,
+                id, server_id, user_id, v2ray_uuid, email, level, created_at,
                 tariff_id, client_config, notified, traffic_limit_mb, traffic_usage_bytes, subscription_id
             FROM v2ray_keys
         """)
@@ -983,7 +989,8 @@ def migrate_remove_traffic_limit_fields_from_v2ray_keys():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_subscription_id ON v2ray_keys(subscription_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
+        # Индекс на expiry_at удален, так как поле больше не существует в таблице v2ray_keys
+        # cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)")
         
         conn.commit()
         logging.info("Поля traffic_over_limit_at и traffic_over_limit_notified успешно удалены из v2ray_keys")
@@ -1138,8 +1145,8 @@ def migrate_fix_v2ray_keys_foreign_keys():
             "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email ON v2ray_keys(email) WHERE email IS NOT NULL",
             "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_email_created ON v2ray_keys(email, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_tariff_id ON v2ray_keys(tariff_id)",
-            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_expiry ON v2ray_keys(user_id, expiry_at)",
-            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_expiry ON v2ray_keys(server_id, expiry_at)",
+            # "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_expiry ON v2ray_keys(user_id, expiry_at)",  # Удалено, поле expiry_at больше не существует
+            # "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_expiry ON v2ray_keys(server_id, expiry_at)",  # Удалено, поле expiry_at больше не существует
             "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_subscription_id ON v2ray_keys(subscription_id)",
         ]
         for stmt in index_statements:

@@ -193,21 +193,42 @@ def extend_existing_key(
                 tariff_limit_mb = int(row[0])
         except Exception as e:  # noqa: BLE001
             logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff_id}: {e}")
-    # Если ключ истёк, продляем от текущего времени, иначе от старого expiry_at
+    # Получаем subscription_id для обновления подписки
+    cursor.execute("SELECT subscription_id FROM keys WHERE id = ?", (existing_key[0],))
+    sub_row = cursor.fetchone()
+    if not sub_row or not sub_row[0]:
+        raise ValueError(f"Key {existing_key[0]} does not have subscription_id")
+    
+    subscription_id = sub_row[0]
+    
+    # Получаем текущий срок подписки
+    cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (subscription_id,))
+    sub_expires_row = cursor.fetchone()
+    if not sub_expires_row:
+        raise ValueError(f"Subscription {subscription_id} not found")
+    
+    current_expires = sub_expires_row[0]
+    
+    # Если ключ истёк, продляем от текущего времени, иначе от текущего срока подписки
     if existing_key[1] <= now:
         new_expiry = now + duration
         logging.info(f"Extending expired key {existing_key[0]}: was expired at {existing_key[1]}, new expiry: {new_expiry}")
     else:
-        new_expiry = existing_key[1] + duration
+        new_expiry = max(current_expires, existing_key[1]) + duration
     
+    # Обновляем подписку
+    from app.repositories.subscription_repository import SubscriptionRepository
+    from app.settings import settings
+    sub_repo = SubscriptionRepository(settings.DATABASE_PATH)
+    sub_repo.extend_subscription(subscription_id, new_expiry)
+    
+    # Обновляем email и tariff_id если нужно
     if email and tariff_id:
-        cursor.execute("UPDATE keys SET expiry_at = ?, email = ?, tariff_id = ? WHERE id = ?", (new_expiry, email, tariff_id, existing_key[0]))
+        cursor.execute("UPDATE keys SET email = ?, tariff_id = ? WHERE id = ?", (email, tariff_id, existing_key[0]))
     elif email:
-        cursor.execute("UPDATE keys SET expiry_at = ?, email = ? WHERE id = ?", (new_expiry, email, existing_key[0]))
+        cursor.execute("UPDATE keys SET email = ? WHERE id = ?", (email, existing_key[0]))
     elif tariff_id:
-        cursor.execute("UPDATE keys SET expiry_at = ?, tariff_id = ? WHERE id = ?", (new_expiry, tariff_id, existing_key[0]))
-    else:
-        cursor.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry, existing_key[0]))
+        cursor.execute("UPDATE keys SET tariff_id = ? WHERE id = ?", (tariff_id, existing_key[0]))
 
 
 async def extend_existing_key_with_fallback(
@@ -1819,9 +1840,17 @@ async def reissue_specific_key(
             
             # Проверяем емкость сервера
             if protocol == 'outline':
-                cursor.execute("SELECT COUNT(*) FROM keys WHERE server_id = ? AND expiry_at > ?", (server_id, now))
+                cursor.execute("""
+                    SELECT COUNT(*) FROM keys k
+                    JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.server_id = ? AND sub.expires_at > ?
+                """, (server_id, now))
             elif protocol == 'v2ray':
-                cursor.execute("SELECT COUNT(*) FROM v2ray_keys WHERE server_id = ? AND expiry_at > ?", (server_id, now))
+                cursor.execute("""
+                    SELECT COUNT(*) FROM v2ray_keys k
+                    JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.server_id = ? AND sub.expires_at > ?
+                """, (server_id, now))
             
             current_keys = cursor.fetchone()[0]
             if current_keys < max_keys:
@@ -1853,9 +1882,17 @@ async def reissue_specific_key(
                 return
             
             if protocol == 'outline':
-                cursor.execute("SELECT COUNT(*) FROM keys WHERE server_id = ? AND expiry_at > ?", (old_server_id, now))
+                cursor.execute("""
+                    SELECT COUNT(*) FROM keys k
+                    JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.server_id = ? AND sub.expires_at > ?
+                """, (old_server_id, now))
             elif protocol == 'v2ray':
-                cursor.execute("SELECT COUNT(*) FROM v2ray_keys WHERE server_id = ? AND expiry_at > ?", (old_server_id, now))
+                cursor.execute("""
+                    SELECT COUNT(*) FROM v2ray_keys k
+                    JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.server_id = ? AND sub.expires_at > ?
+                """, (old_server_id, now))
             
             current_keys = cursor.fetchone()[0]
             

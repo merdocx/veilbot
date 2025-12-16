@@ -219,11 +219,12 @@ async def handle_free_tariff(
     now = int(time.time())
     # Проверяем наличие активного ключа и его тип
     cursor.execute("""
-        SELECT k.id, k.expiry_at, t.price_rub
+        SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
         FROM keys k
         JOIN tariffs t ON k.tariff_id = t.id
-        WHERE k.user_id = ? AND k.expiry_at > ?
-        ORDER BY k.expiry_at DESC LIMIT 1
+        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+        WHERE k.user_id = ? AND sub.expires_at > ?
+        ORDER BY sub.expires_at DESC LIMIT 1
     """, (user_id, now))
     existing_key = cursor.fetchone()
     
@@ -282,38 +283,42 @@ async def handle_free_tariff_with_protocol(
     if protocol == "outline":
         if country:
             cursor.execute("""
-                SELECT k.id, k.expiry_at, t.price_rub
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
                 FROM keys k
                 JOIN tariffs t ON k.tariff_id = t.id
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ? AND s.country = ?
-                ORDER BY k.expiry_at DESC LIMIT 1
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ? AND s.country = ?
+                ORDER BY sub.expires_at DESC LIMIT 1
             """, (user_id, now, country))
         else:
             cursor.execute("""
-                SELECT k.id, k.expiry_at, t.price_rub
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
                 FROM keys k
                 JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
-                ORDER BY k.expiry_at DESC LIMIT 1
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ?
+                ORDER BY sub.expires_at DESC LIMIT 1
             """, (user_id, now))
     else:  # v2ray
         if country:
             cursor.execute("""
-                SELECT k.id, k.expiry_at, t.price_rub
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
                 FROM v2ray_keys k
                 JOIN tariffs t ON k.tariff_id = t.id
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ? AND s.country = ?
-                ORDER BY k.expiry_at DESC LIMIT 1
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ? AND s.country = ?
+                ORDER BY sub.expires_at DESC LIMIT 1
             """, (user_id, now, country))
         else:
             cursor.execute("""
-                SELECT k.id, k.expiry_at, t.price_rub
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
                 FROM v2ray_keys k
                 JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
-                ORDER BY k.expiry_at DESC LIMIT 1
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ?
+                ORDER BY sub.expires_at DESC LIMIT 1
             """, (user_id, now))
     
     existing_key = cursor.fetchone()

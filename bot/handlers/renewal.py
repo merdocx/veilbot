@@ -36,21 +36,23 @@ def register_renewal_handlers(
         with get_db_cursor() as cursor:
             # Проверяем Outline ключи
             cursor.execute("""
-                SELECT k.id, k.expiry_at, s.protocol, s.country
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, s.protocol, s.country
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
-                ORDER BY k.expiry_at DESC LIMIT 1
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ?
+                ORDER BY sub.expires_at DESC LIMIT 1
             """, (user_id, now))
             outline_key = cursor.fetchone()
             
             # Проверяем V2Ray ключи
             cursor.execute("""
-                SELECT k.id, k.expiry_at, s.protocol, s.country
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, s.protocol, s.country
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
-                ORDER BY k.expiry_at DESC LIMIT 1
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ?
+                ORDER BY sub.expires_at DESC LIMIT 1
             """, (user_id, now))
             v2ray_key = cursor.fetchone()
             

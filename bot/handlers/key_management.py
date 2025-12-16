@@ -260,22 +260,24 @@ def register_key_management_handlers(
         with get_db_cursor() as cursor:
             # Получаем все активные ключи пользователя
             cursor.execute("""
-                SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
-                ORDER BY k.expiry_at DESC
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ?
+                ORDER BY sub.expires_at DESC
             """, (user_id, now))
             outline_keys = cursor.fetchall()
             
             cursor.execute("""
-                SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                        'v2ray' as key_type, s.domain, s.v2ray_path, k.traffic_limit_mb,
                        k.traffic_usage_bytes, k.traffic_over_limit_at, k.traffic_over_limit_notified
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
-                ORDER BY k.expiry_at DESC
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ?
+                ORDER BY sub.expires_at DESC
             """, (user_id, now))
             v2ray_keys = cursor.fetchall()
             
@@ -339,21 +341,23 @@ def register_key_management_handlers(
                 
                 # Получаем Outline ключи
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
-                    WHERE k.user_id = ? AND k.expiry_at > ?
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.user_id = ? AND sub.expires_at > ?
                 """, (user_id, now))
                 outline_keys = cursor.fetchall()
                 
                 # Получаем V2Ray ключи
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                            s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
                            k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
-                    WHERE k.user_id = ? AND k.expiry_at > ?
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.user_id = ? AND sub.expires_at > ?
                 """, (user_id, now))
                 v2ray_keys = cursor.fetchall()
                 
@@ -423,23 +427,25 @@ def register_key_management_handlers(
             with get_db_cursor() as cursor:
                 # Получаем все активные ключи пользователя
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type, k.traffic_limit_mb
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
-                    WHERE k.user_id = ? AND k.expiry_at > ?
-                    ORDER BY k.expiry_at DESC
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.user_id = ? AND sub.expires_at > ?
+                    ORDER BY sub.expires_at DESC
                 """, (user_id, now))
                 outline_keys = cursor.fetchall()
                 logging.debug(f"Найдено {len(outline_keys)} Outline ключей")
                 
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                            'v2ray' as key_type, s.domain, s.v2ray_path, k.traffic_limit_mb,
                            k.traffic_usage_bytes, k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
-                    WHERE k.user_id = ? AND k.expiry_at > ?
-                    ORDER BY k.expiry_at DESC
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.user_id = ? AND sub.expires_at > ?
+                    ORDER BY sub.expires_at DESC
                 """, (user_id, now))
                 v2ray_keys = cursor.fetchall()
                 logging.debug(f"Найдено {len(v2ray_keys)} V2Ray ключей")
@@ -517,18 +523,20 @@ def register_key_management_handlers(
         with get_db_cursor() as cursor:
             if key_type == "outline":
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                            s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
                            k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             
@@ -601,18 +609,20 @@ def register_key_management_handlers(
         with get_db_cursor() as cursor:
             if key_type == "outline":
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                            s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
                            k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             
@@ -684,18 +694,20 @@ def register_key_management_handlers(
         with get_db_cursor() as cursor:
             if key_type == "outline":
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
                     FROM keys k
                     JOIN servers s ON k.server_id = s.id
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             else:  # v2ray
                 cursor.execute("""
-                    SELECT k.id, k.expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                            s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
                            k.traffic_over_limit_at, k.traffic_over_limit_notified
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                     WHERE k.id = ? AND k.user_id = ?
                 """, (key_id, user_id))
             

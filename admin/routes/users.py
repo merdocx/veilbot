@@ -215,25 +215,46 @@ async def extend_key(
         with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             # Проверяем Outline ключ
-            c.execute("SELECT user_id, expiry_at FROM keys WHERE id = ?", (key_id,))
+            # Получаем subscription_id для обновления подписки
+            c.execute("SELECT user_id, subscription_id FROM keys WHERE id = ?", (key_id,))
             row = c.fetchone()
             if row:
                 user_id = row[0]
-                old_expiry = row[1] or now_ts
-                new_expiry = max(now_ts, old_expiry) + extend_sec
-                c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry, key_id))
+                subscription_id = row[1]
+                if subscription_id:
+                    # Получаем текущий срок подписки
+                    c.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (subscription_id,))
+                    sub_row = c.fetchone()
+                    old_expiry = sub_row[0] if sub_row and sub_row[0] else now_ts
+                    new_expiry = max(now_ts, old_expiry) + extend_sec
+                    # Обновляем подписку
+                    from app.repositories.subscription_repository import SubscriptionRepository
+                    sub_repo = SubscriptionRepository(DB_PATH)
+                    sub_repo.extend_subscription(subscription_id, new_expiry)
+                else:
+                    raise ValueError(f"Key {key_id} does not have subscription_id")
                 conn.commit()
                 log_admin_action(request, "EXTEND_KEY", f"Outline Key ID: {key_id}, Days: {days}")
                 return JSONResponse({"success": True, "new_expiry": new_expiry})
             else:
                 # Проверяем V2Ray ключ
-                c.execute("SELECT user_id, expiry_at FROM v2ray_keys WHERE id = ?", (key_id,))
+                c.execute("SELECT user_id, subscription_id FROM v2ray_keys WHERE id = ?", (key_id,))
                 row = c.fetchone()
                 if row:
                     user_id = row[0]
-                    old_expiry = row[1] or now_ts
-                    new_expiry = max(now_ts, old_expiry) + extend_sec
-                    c.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (new_expiry, key_id))
+                    subscription_id = row[1]
+                    if subscription_id:
+                        # Получаем текущий срок подписки
+                        c.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (subscription_id,))
+                        sub_row = c.fetchone()
+                        old_expiry = sub_row[0] if sub_row and sub_row[0] else now_ts
+                        new_expiry = max(now_ts, old_expiry) + extend_sec
+                        # Обновляем подписку
+                        from app.repositories.subscription_repository import SubscriptionRepository
+                        sub_repo = SubscriptionRepository(DB_PATH)
+                        sub_repo.extend_subscription(subscription_id, new_expiry)
+                    else:
+                        raise ValueError(f"V2Ray key {key_id} does not have subscription_id")
                     conn.commit()
                     log_admin_action(request, "EXTEND_KEY", f"V2Ray Key ID: {key_id}, Days: {days}")
                     return JSONResponse({"success": True, "new_expiry": new_expiry})
@@ -267,10 +288,23 @@ async def update_key_expiry(request: Request, key_id: int):
         with open_connection(DB_PATH) as conn:
             c = conn.cursor()
             # Пытаемся обновить в таблице keys
-            c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (expiry_timestamp, key_id))
-            if c.rowcount == 0:
-                # Пытаемся обновить в таблице v2ray_keys
-                c.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (expiry_timestamp, key_id))
+            # Получаем subscription_id и обновляем подписку
+            c.execute("SELECT subscription_id FROM keys WHERE id = ?", (key_id,))
+            row = c.fetchone()
+            if row and row[0]:
+                from app.repositories.subscription_repository import SubscriptionRepository
+                sub_repo = SubscriptionRepository(DB_PATH)
+                sub_repo.extend_subscription(row[0], expiry_timestamp)
+            else:
+                # Пытаемся в таблице v2ray_keys
+                c.execute("SELECT subscription_id FROM v2ray_keys WHERE id = ?", (key_id,))
+                row = c.fetchone()
+                if row and row[0]:
+                    from app.repositories.subscription_repository import SubscriptionRepository
+                    sub_repo = SubscriptionRepository(DB_PATH)
+                    sub_repo.extend_subscription(row[0], expiry_timestamp)
+                else:
+                    raise ValueError(f"Key {key_id} not found or has no subscription_id")
             conn.commit()
         
         log_admin_action(request, "UPDATE_KEY_EXPIRY", f"Key ID: {key_id}, Expiry: {expiry_timestamp}")

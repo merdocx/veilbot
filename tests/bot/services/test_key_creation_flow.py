@@ -20,13 +20,40 @@ async def test_create_new_outline_key_inserts_record(temp_db, mock_message, monk
     """Создание нового Outline ключа вставляет запись и отправляет сообщение пользователю."""
     cursor = temp_db.cursor()
 
+    # Минимальная схема для подписок и поля traffic_limit_mb в тарифах
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            subscription_token TEXT,
+            created_at INTEGER,
+            expires_at INTEGER,
+            tariff_id INTEGER,
+            is_active INTEGER DEFAULT 1,
+            last_updated_at INTEGER,
+            notified INTEGER DEFAULT 0,
+            traffic_usage_bytes INTEGER DEFAULT 0,
+            traffic_over_limit_at INTEGER,
+            traffic_over_limit_notified INTEGER DEFAULT 0,
+            purchase_notification_sent INTEGER DEFAULT 0,
+            traffic_limit_mb INTEGER DEFAULT 0
+        )
+        """
+    )
+    # Расширяем таблицу tariffs, если нужно
+    cursor.execute("PRAGMA table_info(tariffs)")
+    tariff_columns = [row[1] for row in cursor.fetchall()]
+    if "traffic_limit_mb" not in tariff_columns:
+        cursor.execute("ALTER TABLE tariffs ADD COLUMN traffic_limit_mb INTEGER DEFAULT 0")
+
     # Подготовка данных
     cursor.execute(
         """
-        INSERT INTO tariffs (id, name, price_rub, duration_sec)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO tariffs (id, name, price_rub, duration_sec, traffic_limit_mb)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (1, "Тест", 100.0, 3600),
+        (1, "Тест", 100.0, 3600, 0),
     )
     cursor.execute(
         """

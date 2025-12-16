@@ -327,8 +327,9 @@ async def handle_migrate_to_subscription(message: types.Message) -> None:
         with get_db_cursor() as cursor:
             # Проверяем Outline ключи
             cursor.execute("""
-                SELECT COUNT(*) FROM keys 
-                WHERE user_id = ? AND expiry_at > ?
+                SELECT COUNT(*) FROM keys k
+                JOIN subscriptions s ON k.subscription_id = s.id
+                WHERE k.user_id = ? AND s.expires_at > ?
             """, (user_id, now))
             outline_count = cursor.fetchone()[0]
             

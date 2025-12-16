@@ -755,9 +755,13 @@ class PaymentRepository:
                         -- Для обычных платежей: исключаем если есть активные ключи или подписки
                         (NOT (p.metadata LIKE '%subscription%' AND p.protocol = 'v2ray')
                          AND p.user_id NOT IN (
-                             SELECT user_id FROM keys WHERE expiry_at > ?
+                             SELECT k.user_id FROM keys k
+                             JOIN subscriptions s ON k.subscription_id = s.id
+                             WHERE s.expires_at > ?
                              UNION
-                             SELECT user_id FROM v2ray_keys WHERE expiry_at > ?
+                             SELECT k.user_id FROM v2ray_keys k
+                             JOIN subscriptions s ON k.subscription_id = s.id
+                             WHERE s.expires_at > ?
                              UNION
                              SELECT user_id FROM subscriptions WHERE expires_at > ? AND is_active = 1
                          ))

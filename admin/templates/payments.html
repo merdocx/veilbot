@@ -93,9 +93,8 @@
                     <th>ID</th>
                     <th>Провайдер</th>
                     <th>Тариф</th>
-                    <th>Email</th>
+                    <th>Пользователь</th>
                     <th>Сумма</th>
-                    <th>User</th>
                     <th>Создан</th>
                     <th>Статус</th>
                     <th>Действия</th>
@@ -118,17 +117,17 @@
                         <div class="cell-primary">#{{ p.tariff_id or '—' }}</div>
                     </td>
                     <td>
-                        {% if p.email %}
-                            <div class="cell-primary" title="{{ p.email }}">{{ p.email }}</div>
+                        {% if p.user_id %}
+                            <div class="cell-primary">TG: {{ p.user_id }}</div>
                         {% else %}
                             <div class="cell-primary text-muted">—</div>
+                        {% endif %}
+                        {% if p.email %}
+                            <div class="cell-secondary text-muted" title="{{ p.email }}">{{ p.email }}</div>
                         {% endif %}
                     </td>
                     <td>
                         <div class="cell-primary">{{ p.amount|rub }}</div>
-                    </td>
-                    <td>
-                        <div class="cell-primary">{{ p.user_id or '—' }}</div>
                     </td>
                     <td>
                         <div class="cell-primary">{{ (p.created_at.timestamp() if p.created_at else 0) | timestamp }}</div>

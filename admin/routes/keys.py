@@ -339,9 +339,17 @@ def _compute_key_stats(db_path: str, now_ts: int) -> Dict[str, int]:
         v2ray_total = c.fetchone()[0]
         total = int(outline_total) + int(v2ray_total)
 
-        c.execute("SELECT COUNT(*) FROM keys WHERE expiry_at > ?", (now_ts,))
+        c.execute("""
+            SELECT COUNT(*) FROM keys k
+            JOIN subscriptions s ON k.subscription_id = s.id
+            WHERE s.expires_at > ?
+        """, (now_ts,))
         outline_active = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE expiry_at > ?", (now_ts,))
+        c.execute("""
+            SELECT COUNT(*) FROM v2ray_keys k
+            JOIN subscriptions s ON k.subscription_id = s.id
+            WHERE s.expires_at > ?
+        """, (now_ts,))
         v2ray_active = c.fetchone()[0]
         active = int(outline_active) + int(v2ray_active)
 
@@ -381,6 +389,8 @@ def _compute_filtered_key_stats(
         c = conn.cursor()
         
         def apply_common_conditions(base_sql: str, params: list, is_outline: bool = True) -> tuple[str, list]:
+            # Всегда добавляем JOIN с subscriptions для получения expires_at
+            base_sql += " LEFT JOIN subscriptions sub ON k.subscription_id = sub.id"
             # Добавляем JOIN для поиска по server_name и tariff_name
             # JOIN нужен только если есть search_query или если нужны данные из servers/tariffs
             needs_join = search_query is not None
@@ -427,22 +437,22 @@ def _compute_filtered_key_stats(
         
         # Считаем активные и истекшие Outline ключи
         if protocol in (None, '', 'outline'):
-            # Активные: expiry_at > now_ts AND expiry_at IS NOT NULL
+            # Активные: expires_at из подписки > now_ts
             sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
             if "WHERE" in sql:
-                sql += " AND k.expiry_at > ? AND k.expiry_at IS NOT NULL"
+                sql += " AND sub.expires_at > ? AND sub.expires_at IS NOT NULL"
             else:
-                sql += " WHERE k.expiry_at > ? AND k.expiry_at IS NOT NULL"
+                sql += " WHERE sub.expires_at > ? AND sub.expires_at IS NOT NULL"
             params.append(now_ts)
             c.execute(sql, params)
             outline_active = c.fetchone()[0] or 0
             
-            # Истекшие: expiry_at <= now_ts OR expiry_at IS NULL
+            # Истекшие: expires_at из подписки <= now_ts OR NULL
             sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
             if "WHERE" in sql:
-                sql += " AND (k.expiry_at <= ? OR k.expiry_at IS NULL)"
+                sql += " AND (sub.expires_at <= ? OR sub.expires_at IS NULL)"
             else:
-                sql += " WHERE (k.expiry_at <= ? OR k.expiry_at IS NULL)"
+                sql += " WHERE (sub.expires_at <= ? OR sub.expires_at IS NULL)"
             params.append(now_ts)
             c.execute(sql, params)
             outline_expired = c.fetchone()[0] or 0
@@ -454,22 +464,22 @@ def _compute_filtered_key_stats(
         
         # Считаем активные и истекшие V2Ray ключи
         if protocol in (None, '', 'v2ray'):
-            # Активные: expiry_at > now_ts AND expiry_at IS NOT NULL
+            # Активные: expires_at из подписки > now_ts
             sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
             if "WHERE" in sql:
-                sql += " AND k.expiry_at > ? AND k.expiry_at IS NOT NULL"
+                sql += " AND sub.expires_at > ? AND sub.expires_at IS NOT NULL"
             else:
-                sql += " WHERE k.expiry_at > ? AND k.expiry_at IS NOT NULL"
+                sql += " WHERE sub.expires_at > ? AND sub.expires_at IS NOT NULL"
             params.append(now_ts)
             c.execute(sql, params)
             v2ray_active = c.fetchone()[0] or 0
             
-            # Истекшие: expiry_at <= now_ts OR expiry_at IS NULL
+            # Истекшие: expires_at из подписки <= now_ts OR NULL
             sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
             if "WHERE" in sql:
-                sql += " AND (k.expiry_at <= ? OR k.expiry_at IS NULL)"
+                sql += " AND (sub.expires_at <= ? OR sub.expires_at IS NULL)"
             else:
-                sql += " WHERE (k.expiry_at <= ? OR k.expiry_at IS NULL)"
+                sql += " WHERE (sub.expires_at <= ? OR sub.expires_at IS NULL)"
             params.append(now_ts)
             c.execute(sql, params)
             v2ray_expired = c.fetchone()[0] or 0
@@ -667,7 +677,8 @@ def _load_key_view_model(key_repo: KeyRepository, key_id: int | str, now_ts: int
                 c = conn.cursor()
                 if protocol_hint == 'outline':
                     c.execute("""
-                        SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, k.expiry_at,
+                        SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, 
+                               COALESCE(sub.expires_at, 0) as expiry_at,
                                IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol,
                                COALESCE(k.traffic_limit_mb, 0), '' as api_url, '' as api_key,
                                0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified,
@@ -675,13 +686,14 @@ def _load_key_view_model(key_repo: KeyRepository, key_id: int | str, now_ts: int
                         FROM keys k
                         LEFT JOIN servers s ON k.server_id = s.id
                         LEFT JOIN tariffs t ON k.tariff_id = t.id
+                        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                         WHERE k.id = ?
                     """, (numeric_id,))
                 elif protocol_hint == 'v2ray':
                     c.execute("""
                         SELECT k.id || '_v2ray' as id, k.v2ray_uuid as key_id,
                                COALESCE(k.client_config, '') as access_url,
-                               k.created_at, k.expiry_at,
+                               k.created_at, COALESCE(sub.expires_at, 0) as expiry_at,
                                IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
                                COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
                                COALESCE(k.traffic_usage_bytes, 0), NULL AS traffic_over_limit_at,
@@ -689,6 +701,7 @@ def _load_key_view_model(key_repo: KeyRepository, key_id: int | str, now_ts: int
                         FROM v2ray_keys k
                         LEFT JOIN servers s ON k.server_id = s.id
                         LEFT JOIN tariffs t ON k.tariff_id = t.id
+                        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                         WHERE k.id = ?
                     """, (numeric_id,))
                 else:

@@ -248,11 +248,15 @@ class BusinessLogicValidator:
                 
                 if protocol == 'outline':
                     cursor.execute("""
-                        SELECT expiry_at FROM keys WHERE key_id = ?
+                        SELECT COALESCE(sub.expires_at, 0) as expiry_at FROM keys k
+                        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                        WHERE k.key_id = ?
                     """, (key_id,))
                 else:
                     cursor.execute("""
-                        SELECT expiry_at FROM v2ray_keys WHERE v2ray_uuid = ?
+                        SELECT COALESCE(sub.expires_at, 0) as expiry_at FROM v2ray_keys k
+                        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                        WHERE k.v2ray_uuid = ?
                     """, (key_id,))
                 
                 result = cursor.fetchone()
@@ -285,11 +289,13 @@ class BusinessLogicValidator:
                 # Подсчитываем активные ключи
                 now = int(datetime.now().timestamp())
                 cursor.execute("""
-                    SELECT COUNT(*) FROM keys 
-                    WHERE server_id = ? AND expiry_at > ?
+                    SELECT COUNT(*) FROM keys k
+                    JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.server_id = ? AND sub.expires_at > ?
                     UNION ALL
-                    SELECT COUNT(*) FROM v2ray_keys 
-                    WHERE server_id = ? AND expiry_at > ?
+                    SELECT COUNT(*) FROM v2ray_keys k
+                    JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.server_id = ? AND sub.expires_at > ?
                 """, (server_id, now, server_id, now))
                 
                 results = cursor.fetchall()

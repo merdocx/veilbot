@@ -549,16 +549,17 @@ class SubscriptionPurchaseService:
                     f"{existing_expires_at} -> {new_expires_at} (+{tariff['duration_sec']}s)"
                 )
                 
-                # Шаг 1: Обновляем подписку (срок и лимит трафика)
-                await self.subscription_repo.extend_subscription_async(subscription_id, new_expires_at)
+                # Шаг 1: Обновляем подписку (срок, tariff_id и лимит трафика)
+                # ВАЖНО: Обновляем tariff_id подписки на тариф из платежа
+                await self.subscription_repo.extend_subscription_async(subscription_id, new_expires_at, tariff['id'])
                 
                 # Обновляем лимит трафика подписки из тарифа
+                # ВАЖНО: Обновляем всегда, даже если лимит = 0 (безлимит), чтобы корректно применить новый тариф
                 traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
-                if traffic_limit_mb > 0:
-                    await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, traffic_limit_mb)
-                    logger.info(
-                        f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {traffic_limit_mb} MB"
-                    )
+                await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, traffic_limit_mb)
+                logger.info(
+                    f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {traffic_limit_mb} MB"
+                )
                 
                 # Шаг 2: Продлеваем все ключи подписки
                 # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
@@ -684,10 +685,11 @@ class SubscriptionPurchaseService:
                     async with open_async_connection(self.db_path) as conn:
                         async with conn.execute(
                             """
-                            SELECT k.access_url, k.expiry_at, s.country
+                            SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, s.country
                             FROM keys k
                             JOIN servers s ON k.server_id = s.id
-                            WHERE k.subscription_id = ? AND k.protocol = 'outline' AND k.expiry_at > ?
+                            JOIN subscriptions sub ON k.subscription_id = sub.id
+                            WHERE k.subscription_id = ? AND k.protocol = 'outline' AND sub.expires_at > ?
                             ORDER BY s.country, k.created_at
                             """,
                             (subscription_id, now)
@@ -893,10 +895,11 @@ class SubscriptionPurchaseService:
                 async with open_async_connection(self.db_path) as conn:
                     async with conn.execute(
                         """
-                        SELECT k.access_url, k.expiry_at, s.country
+                        SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, s.country
                         FROM keys k
                         JOIN servers s ON k.server_id = s.id
-                        WHERE k.subscription_id = ? AND k.protocol = 'outline' AND k.expiry_at > ?
+                        JOIN subscriptions sub ON k.subscription_id = sub.id
+                        WHERE k.subscription_id = ? AND k.protocol = 'outline' AND sub.expires_at > ?
                         ORDER BY s.country, k.created_at
                         """,
                         (subscription_id, now)
@@ -1442,10 +1445,11 @@ class SubscriptionPurchaseService:
                 async with open_async_connection(self.db_path) as conn:
                     async with conn.execute(
                         """
-                        SELECT k.access_url, k.expiry_at, s.country
+                        SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, s.country
                         FROM keys k
                         JOIN servers s ON k.server_id = s.id
-                        WHERE k.subscription_id = ? AND k.protocol = 'outline' AND k.expiry_at > ?
+                        JOIN subscriptions sub ON k.subscription_id = sub.id
+                        WHERE k.subscription_id = ? AND k.protocol = 'outline' AND sub.expires_at > ?
                         ORDER BY s.country, k.created_at
                         """,
                         (subscription_id, now)

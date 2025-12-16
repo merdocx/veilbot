@@ -17,10 +17,13 @@ class KeyRepository:
             c = conn.cursor()
             c.execute(
                 """
-                SELECT k.id, k.key_id, k.access_url, k.created_at, k.expiry_at, s.name, k.email, t.name as tariff_name
+                SELECT k.id, k.key_id, k.access_url, k.created_at, 
+                       COALESCE(sub.expires_at, 0) as expiry_at, 
+                       s.name, k.email, t.name as tariff_name
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                 """
             )
             return c.fetchall()
@@ -32,11 +35,13 @@ class KeyRepository:
                 """
                 SELECT k.id, k.v2ray_uuid as key_id,
                        s.domain, COALESCE(s.v2ray_path, '/v2ray'),
-                       k.created_at, k.expiry_at, s.name, k.email, t.name as tariff_name,
+                       k.created_at, COALESCE(sub.expires_at, 0) as expiry_at, 
+                       s.name, k.email, t.name as tariff_name,
                        s.api_url, s.api_key
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                 """
             )
             return c.fetchall()
@@ -56,12 +61,15 @@ class KeyRepository:
             return c.fetchone()
 
     def get_key_unified_by_id(self, key_pk: int) -> Tuple | None:
-        """Return a unified key row (outline or v2ray) for the given primary key."""
+        """Return a unified key row (outline or v2ray) for the given primary key.
+        expiry_at берется из subscriptions.expires_at через JOIN.
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
-                SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, k.expiry_at,
+                SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, 
+                       COALESCE(sub.expires_at, 0) as expiry_at,
                        IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol,
                        COALESCE(k.traffic_limit_mb, 0), '' as api_url, '' as api_key,
                        0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified,
@@ -69,11 +77,12 @@ class KeyRepository:
                 FROM keys k
                 LEFT JOIN servers s ON k.server_id = s.id
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.id = ?
                 UNION ALL
                 SELECT k.id || '_v2ray' as id, k.v2ray_uuid as key_id,
                        COALESCE(k.client_config, '') as access_url,
-                       k.created_at, k.expiry_at,
+                       k.created_at, COALESCE(sub.expires_at, 0) as expiry_at,
                        IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
                        COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
                        COALESCE(k.traffic_usage_bytes, 0), NULL AS traffic_over_limit_at,
@@ -81,6 +90,7 @@ class KeyRepository:
                 FROM v2ray_keys k
                 LEFT JOIN servers s ON k.server_id = s.id
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.id = ?
                 LIMIT 1
                 """,
@@ -105,15 +115,27 @@ class KeyRepository:
             conn.commit()
 
     def get_expired_outline_keys(self, now_ts: int) -> List[Tuple]:
+        """Получить истекшие Outline ключи (срок берется из subscriptions)"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT id, key_id, server_id FROM keys WHERE expiry_at <= ?", (now_ts,))
+            c.execute("""
+                SELECT k.id, k.key_id, k.server_id 
+                FROM keys k
+                JOIN subscriptions s ON k.subscription_id = s.id
+                WHERE s.expires_at <= ?
+            """, (now_ts,))
             return c.fetchall()
 
     def get_expired_v2ray_keys(self, now_ts: int) -> List[Tuple]:
+        """Получить истекшие V2Ray ключи (срок берется из subscriptions)"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT id, v2ray_uuid, server_id FROM v2ray_keys WHERE expiry_at <= ?", (now_ts,))
+            c.execute("""
+                SELECT k.id, k.v2ray_uuid, k.server_id 
+                FROM v2ray_keys k
+                JOIN subscriptions s ON k.subscription_id = s.id
+                WHERE s.expires_at <= ?
+            """, (now_ts,))
             return c.fetchall()
 
     def outline_key_exists(self, key_pk: int) -> bool:
@@ -129,28 +151,62 @@ class KeyRepository:
             return c.fetchone() is not None
 
     def update_outline_key_expiry(self, key_pk: int, new_expiry_ts: int, traffic_limit_mb: int | None = None) -> None:
+        """
+        Обновить срок действия Outline ключа.
+        
+        ПРИМЕЧАНИЕ: После миграции expiry_at удален из таблиц ключей.
+        Для обновления срока нужно обновить подписку через SubscriptionRepository.extend_subscription()
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            if traffic_limit_mb is None:
-                c.execute("UPDATE keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_pk))
-            else:
+            # Получаем subscription_id ключа
+            c.execute("SELECT subscription_id FROM keys WHERE id = ?", (key_pk,))
+            result = c.fetchone()
+            if not result or not result[0]:
+                raise ValueError(f"Outline key {key_pk} does not have subscription_id")
+            
+            subscription_id = result[0]
+            # Обновляем подписку
+            from app.repositories.subscription_repository import SubscriptionRepository
+            sub_repo = SubscriptionRepository(self.db_path)
+            sub_repo.extend_subscription(subscription_id, new_expiry_ts)
+            
+            # Обновляем traffic_limit_mb если нужно
+            if traffic_limit_mb is not None:
                 c.execute(
-                    "UPDATE keys SET expiry_at = ?, traffic_limit_mb = ? WHERE id = ?",
-                    (new_expiry_ts, traffic_limit_mb, key_pk),
+                    "UPDATE keys SET traffic_limit_mb = ? WHERE id = ?",
+                    (traffic_limit_mb, key_pk),
                 )
-            conn.commit()
+                conn.commit()
 
     def update_v2ray_key_expiry(self, key_pk: int, new_expiry_ts: int, traffic_limit_mb: int | None = None) -> None:
+        """
+        Обновить срок действия V2Ray ключа.
+        
+        ПРИМЕЧАНИЕ: После миграции expiry_at удален из таблиц ключей.
+        Для обновления срока нужно обновить подписку через SubscriptionRepository.extend_subscription()
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            if traffic_limit_mb is None:
-                c.execute("UPDATE v2ray_keys SET expiry_at = ? WHERE id = ?", (new_expiry_ts, key_pk))
-            else:
+            # Получаем subscription_id ключа
+            c.execute("SELECT subscription_id FROM v2ray_keys WHERE id = ?", (key_pk,))
+            result = c.fetchone()
+            if not result or not result[0]:
+                raise ValueError(f"V2Ray key {key_pk} does not have subscription_id")
+            
+            subscription_id = result[0]
+            # Обновляем подписку
+            from app.repositories.subscription_repository import SubscriptionRepository
+            sub_repo = SubscriptionRepository(self.db_path)
+            sub_repo.extend_subscription(subscription_id, new_expiry_ts)
+            
+            # Обновляем traffic_limit_mb если нужно
+            if traffic_limit_mb is not None:
                 c.execute(
-                    "UPDATE v2ray_keys SET expiry_at = ?, traffic_limit_mb = ? WHERE id = ?",
-                    (new_expiry_ts, traffic_limit_mb, key_pk),
+                    "UPDATE v2ray_keys SET traffic_limit_mb = ? WHERE id = ?",
+                    (traffic_limit_mb, key_pk),
                 )
-            conn.commit()
+                conn.commit()
 
     # Insert methods
     def insert_outline_key(
@@ -158,7 +214,7 @@ class KeyRepository:
         server_id: int,
         user_id: int,
         access_url: str,
-        expiry_at: int,
+        expiry_at: int,  # Оставлен для обратной совместимости, но не используется (берется из subscription)
         key_id: str,
         email: str | None,
         tariff_id: int | None,
@@ -166,29 +222,35 @@ class KeyRepository:
         traffic_limit_mb: int = 0,
         protocol: str = "outline",
         created_at: int | None = None,
+        subscription_id: int | None = None,
     ) -> int:
+        """
+        Вставка Outline ключа.
+        expiry_at параметр оставлен для обратной совместимости, но не сохраняется в БД.
+        Срок действия ключа определяется подпиской (subscription_id).
+        """
         created_ts = created_at if created_at is not None else int(time.time())
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
                 INSERT INTO keys (
-                    server_id, user_id, access_url, expiry_at, traffic_limit_mb,
-                    notified, key_id, created_at, email, tariff_id, protocol
+                    server_id, user_id, access_url, traffic_limit_mb,
+                    notified, key_id, created_at, email, tariff_id, protocol, subscription_id
                 )
-                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     server_id,
                     user_id,
                     access_url,
-                    expiry_at,
                     traffic_limit_mb,
                     key_id,
                     created_ts,
                     email,
                     tariff_id,
                     protocol,
+                    subscription_id,
                 ),
             )
             conn.commit()
@@ -201,7 +263,7 @@ class KeyRepository:
         v2ray_uuid: str,
         email: str | None,
         created_at: int,
-        expiry_at: int,
+        expiry_at: int,  # Оставлен для обратной совместимости, но не используется (берется из subscription)
         tariff_id: int | None,
         *,
         client_config: str | None = None,
@@ -209,16 +271,22 @@ class KeyRepository:
         traffic_usage_bytes: int = 0,
         traffic_over_limit_at: int | None = None,
         traffic_over_limit_notified: int = 0,
+        subscription_id: int | None = None,
     ) -> int:
+        """
+        Вставка V2Ray ключа.
+        expiry_at параметр оставлен для обратной совместимости, но не сохраняется в БД.
+        Срок действия ключа определяется подпиской (subscription_id).
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             # ИСПРАВЛЕНИЕ: Колонки traffic_over_limit_at и traffic_over_limit_notified удалены из таблицы v2ray_keys
-            # Используем только существующие колонки
+            # expiry_at также удален - срок берется из subscriptions
             c.execute(
                 """
                 INSERT INTO v2ray_keys (
-                    server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config,
-                    traffic_limit_mb, traffic_usage_bytes
+                    server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config,
+                    traffic_limit_mb, traffic_usage_bytes, subscription_id
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -228,11 +296,11 @@ class KeyRepository:
                     v2ray_uuid,
                     email,
                     created_at,
-                    expiry_at,
                     tariff_id,
                     client_config,
                     traffic_limit_mb,
                     traffic_usage_bytes,
+                    subscription_id,
                 ),
             )
             conn.commit()
@@ -354,12 +422,16 @@ class KeyRepository:
 
             def add_outline():
                 sql = (
-                    "SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, k.expiry_at, "
+                    "SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, "
+                    "COALESCE(sub.expires_at, 0) as expiry_at, "
                     "IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol, "
                     "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, '' as api_url, '' as api_key, "
                     "0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified, "
                     "k.subscription_id "
-                    "FROM keys k LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
+                    "FROM keys k "
+                    "LEFT JOIN servers s ON k.server_id=s.id "
+                    "LEFT JOIN tariffs t ON k.tariff_id=t.id "
+                    "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id"
                 )
                 where = []
                 if user_id is not None:
@@ -395,11 +467,15 @@ class KeyRepository:
                 sql = (
                     "SELECT k.id || '_v2ray' as id, k.v2ray_uuid as key_id, "
                     "COALESCE(k.client_config, '') as access_url, "
-                    "k.created_at, k.expiry_at, IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol, "
+                    "k.created_at, COALESCE(sub.expires_at, 0) as expiry_at, "
+                    "IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol, "
                     "COALESCE(k.traffic_limit_mb, 0) AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "
                     "COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes, NULL AS traffic_over_limit_at, "
                     "0 AS traffic_over_limit_notified, k.subscription_id "
-                    "FROM v2ray_keys k LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
+                    "FROM v2ray_keys k "
+                    "LEFT JOIN servers s ON k.server_id=s.id "
+                    "LEFT JOIN tariffs t ON k.tariff_id=t.id "
+                    "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id"
                 )
                 where = []
                 if user_id is not None:

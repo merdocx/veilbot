@@ -47,8 +47,12 @@ async def dashboard(request: Request):
             # Объединяем все COUNT запросы в один
             c.execute("""
                 SELECT 
-                    (SELECT COUNT(*) FROM keys WHERE expiry_at > ?) as active_outline,
-                    (SELECT COUNT(*) FROM v2ray_keys WHERE expiry_at > ?) as active_v2ray,
+                    (SELECT COUNT(*) FROM keys k
+                     JOIN subscriptions s ON k.subscription_id = s.id
+                     WHERE s.expires_at > ?) as active_outline,
+                    (SELECT COUNT(*) FROM v2ray_keys k
+                     JOIN subscriptions s ON k.subscription_id = s.id
+                     WHERE s.expires_at > ?) as active_v2ray,
                     (SELECT COUNT(*) FROM tariffs) as tariff_count,
                     (SELECT COUNT(*) FROM servers) as server_count,
                     (SELECT COUNT(*) FROM users) as started_users

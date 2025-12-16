@@ -32,17 +32,20 @@ def get_user_tariff_and_expiry(user_id: int) -> Optional[Tuple[int, int]]:
         
         # Outline ключи
         cursor.execute("""
-            SELECT k.tariff_id, k.expiry_at
+            SELECT k.tariff_id, COALESCE(sub.expires_at, 0) as expiry_at
             FROM keys k
-            WHERE k.user_id = ? AND k.expiry_at > ?
+            LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+            WHERE k.user_id = ? AND sub.expires_at > ?
         """, (user_id, now))
         outline_keys = cursor.fetchall()
         
-        # V2Ray отдельные ключи (не подписки)
+        # V2Ray отдельные ключи (не подписки) - после миграции их не должно быть, но оставляем для совместимости
         cursor.execute("""
-            SELECT k.tariff_id, k.expiry_at
+            SELECT k.tariff_id, COALESCE(sub.expires_at, 0) as expiry_at
             FROM v2ray_keys k
-            WHERE k.user_id = ? AND k.expiry_at > ? AND k.subscription_id IS NULL
+            LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+            WHERE k.user_id = ? AND (sub.expires_at > ? OR (sub.expires_at IS NULL AND k.subscription_id IS NULL))
+            AND k.subscription_id IS NULL
         """, (user_id, now))
         v2ray_keys = cursor.fetchall()
         

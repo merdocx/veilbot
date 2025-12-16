@@ -733,10 +733,18 @@ class PaymentService:
             now_ts = int(datetime.now(timezone.utc).timestamp())
             with open_connection(app_settings.DATABASE_PATH) as conn:
                 c = conn.cursor()
-                c.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now_ts))
+                c.execute("""
+                    SELECT 1 FROM keys k
+                    JOIN subscriptions s ON k.subscription_id = s.id
+                    WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
+                """, (payment.user_id, now_ts))
                 if c.fetchone():
                     return True
-                c.execute("SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now_ts))
+                c.execute("""
+                    SELECT 1 FROM v2ray_keys k
+                    JOIN subscriptions s ON k.subscription_id = s.id
+                    WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
+                """, (payment.user_id, now_ts))
                 if c.fetchone():
                     return True
 

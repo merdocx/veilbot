@@ -440,9 +440,17 @@ async def payment_delete(request: Request, pid: str, csrf_token: str = Form(...)
             with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 now = int(datetime.now(timezone.utc).timestamp())
-                c.execute("SELECT 1 FROM keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now))
+                c.execute("""
+                    SELECT 1 FROM keys k
+                    JOIN subscriptions s ON k.subscription_id = s.id
+                    WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
+                """, (payment.user_id, now))
                 has_outline_key = c.fetchone() is not None
-                c.execute("SELECT 1 FROM v2ray_keys WHERE user_id = ? AND expiry_at > ? LIMIT 1", (payment.user_id, now))
+                c.execute("""
+                    SELECT 1 FROM v2ray_keys k
+                    JOIN subscriptions s ON k.subscription_id = s.id
+                    WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
+                """, (payment.user_id, now))
                 has_v2ray_key = c.fetchone() is not None
                 
                 if has_outline_key or has_v2ray_key:

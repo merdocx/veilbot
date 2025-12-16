@@ -133,11 +133,40 @@ class TestKeyManagement:
         expiry_at = now + 86400  # Истекает через 24 часа
         duration = 2592000  # Продлеваем на 30 дней
         
-        # Создаем ключ
+        # Минимальная схема для подписок и subscription_id в keys
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url)
-            VALUES (?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test"))
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                subscription_token TEXT,
+                created_at INTEGER,
+                expires_at INTEGER,
+                tariff_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                last_updated_at INTEGER,
+                notified INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0,
+                traffic_over_limit_at INTEGER,
+                traffic_over_limit_notified INTEGER DEFAULT 0,
+                purchase_notification_sent INTEGER DEFAULT 0,
+                traffic_limit_mb INTEGER DEFAULT 0
+            )
+        """)
+        mock_cursor.execute("PRAGMA table_info(keys)")
+        key_columns = [row[1] for row in mock_cursor.fetchall()]
+        if "subscription_id" not in key_columns:
+            mock_cursor.execute("ALTER TABLE keys ADD COLUMN subscription_id INTEGER")
+        
+        # Создаем подписку и связанный ключ
+        mock_cursor.execute("""
+            INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        """, (1, 12345, "token-1", now, expiry_at + duration, None))
+        
+        mock_cursor.execute("""
+            INSERT INTO keys (id, user_id, expiry_at, access_url, subscription_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (1, 12345, expiry_at, "ss://test", 1))
         mock_cursor.connection.commit()
         
         # Получаем ключ
@@ -162,11 +191,40 @@ class TestKeyManagement:
         expiry_at = now - 86400  # Истек 24 часа назад
         duration = 2592000  # Продлеваем на 30 дней
         
-        # Создаем истекший ключ
+        # Минимальная схема для подписок и subscription_id в keys
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url)
-            VALUES (?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test"))
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                subscription_token TEXT,
+                created_at INTEGER,
+                expires_at INTEGER,
+                tariff_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                last_updated_at INTEGER,
+                notified INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0,
+                traffic_over_limit_at INTEGER,
+                traffic_over_limit_notified INTEGER DEFAULT 0,
+                purchase_notification_sent INTEGER DEFAULT 0,
+                traffic_limit_mb INTEGER DEFAULT 0
+            )
+        """)
+        mock_cursor.execute("PRAGMA table_info(keys)")
+        key_columns = [row[1] for row in mock_cursor.fetchall()]
+        if "subscription_id" not in key_columns:
+            mock_cursor.execute("ALTER TABLE keys ADD COLUMN subscription_id INTEGER")
+        
+        mock_cursor.execute("""
+            INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        """, (1, 12345, "token-1", now - 200000, now + duration, None))
+        
+        # Создаем истекший ключ, привязанный к подписке
+        mock_cursor.execute("""
+            INSERT INTO keys (id, user_id, expiry_at, access_url, subscription_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (1, 12345, expiry_at, "ss://test", 1))
         mock_cursor.connection.commit()
         
         # Получаем ключ
@@ -194,11 +252,40 @@ class TestKeyManagement:
         duration = 2592000
         email = "test@example.com"
         
-        # Создаем ключ
+        # Минимальная схема для подписок и subscription_id в keys
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url, email)
-            VALUES (?, ?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test", "old@example.com"))
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                subscription_token TEXT,
+                created_at INTEGER,
+                expires_at INTEGER,
+                tariff_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                last_updated_at INTEGER,
+                notified INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0,
+                traffic_over_limit_at INTEGER,
+                traffic_over_limit_notified INTEGER DEFAULT 0,
+                purchase_notification_sent INTEGER DEFAULT 0,
+                traffic_limit_mb INTEGER DEFAULT 0
+            )
+        """)
+        mock_cursor.execute("PRAGMA table_info(keys)")
+        key_columns = [row[1] for row in mock_cursor.fetchall()]
+        if "subscription_id" not in key_columns:
+            mock_cursor.execute("ALTER TABLE keys ADD COLUMN subscription_id INTEGER")
+        
+        mock_cursor.execute("""
+            INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        """, (1, 12345, "token-1", now, expiry_at + duration, None))
+        
+        # Создаем ключ, привязанный к подписке
+        mock_cursor.execute("""
+            INSERT INTO keys (id, user_id, expiry_at, access_url, email, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (1, 12345, expiry_at, "ss://test", "old@example.com", 1))
         mock_cursor.connection.commit()
         
         # Получаем ключ
@@ -221,11 +308,40 @@ class TestKeyManagement:
         duration = 2592000
         tariff_id = 5
         
-        # Создаем ключ
+        # Минимальная схема для подписок и subscription_id в keys
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url, tariff_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test", 1))
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                subscription_token TEXT,
+                created_at INTEGER,
+                expires_at INTEGER,
+                tariff_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                last_updated_at INTEGER,
+                notified INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0,
+                traffic_over_limit_at INTEGER,
+                traffic_over_limit_notified INTEGER DEFAULT 0,
+                purchase_notification_sent INTEGER DEFAULT 0,
+                traffic_limit_mb INTEGER DEFAULT 0
+            )
+        """)
+        mock_cursor.execute("PRAGMA table_info(keys)")
+        key_columns = [row[1] for row in mock_cursor.fetchall()]
+        if "subscription_id" not in key_columns:
+            mock_cursor.execute("ALTER TABLE keys ADD COLUMN subscription_id INTEGER")
+        
+        mock_cursor.execute("""
+            INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        """, (1, 12345, "token-1", now, expiry_at + duration, None))
+        
+        # Создаем ключ, привязанный к подписке
+        mock_cursor.execute("""
+            INSERT INTO keys (id, user_id, expiry_at, access_url, tariff_id, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (1, 12345, expiry_at, "ss://test", 1, 1))
         mock_cursor.connection.commit()
         
         # Получаем ключ
@@ -249,11 +365,40 @@ class TestKeyManagement:
         email = "new@example.com"
         tariff_id = 5
         
-        # Создаем ключ
+        # Минимальная схема для подписок и subscription_id в keys
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url, email, tariff_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test", "old@example.com", 1))
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                subscription_token TEXT,
+                created_at INTEGER,
+                expires_at INTEGER,
+                tariff_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                last_updated_at INTEGER,
+                notified INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0,
+                traffic_over_limit_at INTEGER,
+                traffic_over_limit_notified INTEGER DEFAULT 0,
+                purchase_notification_sent INTEGER DEFAULT 0,
+                traffic_limit_mb INTEGER DEFAULT 0
+            )
+        """)
+        mock_cursor.execute("PRAGMA table_info(keys)")
+        key_columns = [row[1] for row in mock_cursor.fetchall()]
+        if "subscription_id" not in key_columns:
+            mock_cursor.execute("ALTER TABLE keys ADD COLUMN subscription_id INTEGER")
+        
+        mock_cursor.execute("""
+            INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        """, (1, 12345, "token-1", now, expiry_at + duration, None))
+        
+        # Создаем ключ, привязанный к подписке
+        mock_cursor.execute("""
+            INSERT INTO keys (id, user_id, expiry_at, access_url, email, tariff_id, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (1, 12345, expiry_at, "ss://test", "old@example.com", 1, 1))
         mock_cursor.connection.commit()
         
         # Получаем ключ

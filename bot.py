@@ -185,7 +185,13 @@ async def create_new_key_flow(
     grace_threshold = now - GRACE_PERIOD
     
     # Проверяем наличие активного или недавно истекшего ключа (в пределах grace period)
-    cursor.execute("SELECT id, expiry_at, access_url FROM keys WHERE user_id = ? AND expiry_at > ? ORDER BY expiry_at DESC LIMIT 1", (user_id, grace_threshold))
+    cursor.execute("""
+        SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url 
+        FROM keys k
+        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+        WHERE k.user_id = ? AND sub.expires_at > ? 
+        ORDER BY sub.expires_at DESC LIMIT 1
+    """, (user_id, grace_threshold))
     existing_key = cursor.fetchone()
     if existing_key:
         # Используем функцию из key_management.py
@@ -578,7 +584,11 @@ def select_available_server(
     else:
         servers = cursor.execute("SELECT id, api_url, cert_sha256, max_keys FROM servers WHERE active = 1 AND available_for_purchase = 1").fetchall()
     for s_id, api_url, cert_sha256, max_keys in servers:
-        cursor.execute("SELECT COUNT(*) FROM keys WHERE server_id = ? AND expiry_at > ?", (s_id, now))
+        cursor.execute("""
+            SELECT COUNT(*) FROM keys k
+            JOIN subscriptions sub ON k.subscription_id = sub.id
+            WHERE k.server_id = ? AND sub.expires_at > ?
+        """, (s_id, now))
         active_keys = cursor.fetchone()[0]
         if active_keys < max_keys:
             return {"id": s_id, "api_url": api_url, "cert_sha256": cert_sha256}

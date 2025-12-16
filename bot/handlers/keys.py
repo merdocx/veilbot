@@ -40,7 +40,7 @@ async def handle_my_keys_btn(message: types.Message):
     subscription_info = None
     with get_db_cursor() as cursor:
         cursor.execute("""
-            SELECT id, subscription_token, expires_at, tariff_id
+            SELECT id, subscription_token, expires_at, tariff_id, traffic_limit_mb
             FROM subscriptions
             WHERE user_id = ? AND is_active = 1 AND expires_at > ?
             ORDER BY created_at DESC
@@ -49,7 +49,7 @@ async def handle_my_keys_btn(message: types.Message):
         subscription = cursor.fetchone()
         
         if subscription:
-            subscription_id, token, expires_at, tariff_id = subscription
+            subscription_id, token, expires_at, tariff_id, sub_limit_mb = subscription
             
             # Получаем количество серверов в подписке
             cursor.execute("""
@@ -59,13 +59,22 @@ async def handle_my_keys_btn(message: types.Message):
             """, (subscription_id, now))
             server_count = cursor.fetchone()[0] or 0
             
-            # Получаем информацию о тарифе
-            traffic_limit = "без ограничений"
-            if tariff_id:
+            # Эффективный лимит:
+            # 1) если в подписке задан traffic_limit_mb (включая 0 как "безлимит"), используем его
+            # 2) иначе берём лимит из тарифа
+            effective_limit_mb: Optional[int] = None
+            if sub_limit_mb is not None:
+                effective_limit_mb = int(sub_limit_mb or 0)
+            elif tariff_id:
                 cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff_id,))
                 tariff_row = cursor.fetchone()
-                if tariff_row and tariff_row[0] and tariff_row[0] > 0:
-                    traffic_limit = f"{tariff_row[0]} ГБ"
+                if tariff_row and tariff_row[0] is not None:
+                    effective_limit_mb = int(tariff_row[0] or 0)
+            
+            if effective_limit_mb and effective_limit_mb > 0:
+                traffic_limit = f"{effective_limit_mb} ГБ"
+            else:
+                traffic_limit = "без ограничений"
             
             subscription_info = {
                 'id': subscription_id,
@@ -83,18 +92,20 @@ async def handle_my_keys_btn(message: types.Message):
         if subscription_info:
             # Есть активная подписка - показываем только её outline ключи
             cursor.execute("""
-                SELECT k.access_url, k.expiry_at, k.protocol, s.country, k.traffic_limit_mb
+                SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, k.protocol, s.country, k.traffic_limit_mb
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ? AND k.subscription_id = ?
+                JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND sub.expires_at > ? AND k.subscription_id = ?
             """, (user_id, now, subscription_info['id']))
         else:
             # Нет активной подписки - показываем все активные outline ключи
             cursor.execute("""
-                SELECT k.access_url, k.expiry_at, k.protocol, s.country, k.traffic_limit_mb
+                SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, k.protocol, s.country, k.traffic_limit_mb
                 FROM keys k
                 JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND k.expiry_at > ?
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.user_id = ? AND (sub.expires_at > ? OR sub.expires_at IS NULL)
             """, (user_id, now))
         outline_keys = cursor.fetchall()
     

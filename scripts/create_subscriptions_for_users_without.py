@@ -57,15 +57,19 @@ def pick_user_key(cursor: sqlite3.Cursor, user_id: int) -> Optional[KeyInfo]:
     cursor.execute(
         """
         WITH union_keys AS (
-            SELECT 'v2ray' AS source, tariff_id, expiry_at, created_at
-            FROM v2ray_keys WHERE user_id = ?
+            SELECT 'v2ray' AS source, k.tariff_id, COALESCE(sub.expires_at, 0) as expiry_at, k.created_at
+            FROM v2ray_keys k
+            LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+            WHERE k.user_id = ?
             UNION ALL
-            SELECT 'outline' AS source, tariff_id, expiry_at, created_at
-            FROM keys WHERE user_id = ?
+            SELECT 'outline' AS source, k.tariff_id, COALESCE(sub.expires_at, 0) as expiry_at, k.created_at
+            FROM keys k
+            LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+            WHERE k.user_id = ?
         )
         SELECT source, tariff_id, expiry_at, created_at
         FROM union_keys
-        WHERE expiry_at IS NOT NULL
+        WHERE expiry_at IS NOT NULL AND expiry_at > 0
         ORDER BY expiry_at DESC
         LIMIT 1
         """,
