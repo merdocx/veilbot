@@ -355,10 +355,6 @@ const updateKeyRow = (key) => {
         statusIcon.classList.add(key.status_class);
     }
 
-    const editButton = row.querySelector('[data-action="edit-key"]');
-    if (editButton) {
-        editButton.dataset.expiry = key.expiry_iso || '';
-    }
 
     const trafficCell = row.querySelector('.traffic-cell');
     if (trafficCell && key.traffic) {

@@ -150,9 +150,6 @@
                     </td>
                     <td class="keys-table__cell keys-table__cell--actions">
                         <div class="action-buttons">
-                            <button class="btn btn-icon" data-action="edit-key" data-key-id="{{ key.id }}" data-expiry="{{ key.expiry_iso }}" data-limit="{{ key.traffic.limit_mb if key.traffic and key.traffic.limit_mb is not none else '' }}" title="Редактировать">
-                                <span class="material-icons icon-small">edit</span>
-                            </button>
                             <a href="/keys/delete/{{ key.id }}" class="btn btn-icon btn-danger" data-action="delete-key" data-key-id="{{ key.id }}" title="Удалить">
                                 <span class="material-icons icon-small">delete</span>
                             </a>
@@ -193,25 +190,6 @@
     {% endif %}
 </div>
 {% endif %}
-
-{% call modal("edit-key-modal", "Редактировать срок действия") %}
-    <form id="editForm" method="post" class="form" data-form="edit-key">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        <div class="form-field">
-            <label for="new_expiry" class="form-label">Новая дата истечения</label>
-            <input type="datetime-local" id="new_expiry" name="new_expiry" required class="form-input">
-        </div>
-        <div class="form-field">
-            <label for="traffic_limit_mb" class="form-label">Лимит трафика (МБ)</label>
-            <input type="number" id="traffic_limit_mb" name="traffic_limit_mb" min="0" step="1" class="form-input" placeholder="Например, 3072">
-            <div class="form-hint">0 или пусто — без лимита.</div>
-        </div>
-        <div class="form-actions">
-            <button type="button" class="btn" data-modal-close>Отмена</button>
-            <button type="submit" class="btn btn-primary">Сохранить</button>
-        </div>
-    </form>
-{% endcall %}
 {% endblock %}
 
 {% block extra_scripts %}

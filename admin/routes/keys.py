@@ -539,32 +539,6 @@ def _append_default_traffic(row: tuple[Any, ...] | list[Any]) -> list[Any]:
     return extended
 
 
-async def _update_key_expiry_internal(
-    request: Request,
-    key_id: int,
-    new_expiry: int,
-    key_repo: KeyRepository,
-    traffic_limit_mb: int | None = None,
-) -> Dict[str, Any]:
-    outline_key = key_repo.get_outline_key_brief(key_id)
-    if outline_key:
-        key_repo.update_outline_key_expiry(key_id, new_expiry, traffic_limit_mb)
-        details = f"Outline key {key_id}, new expiry: {new_expiry}"
-        if traffic_limit_mb is not None:
-            details += f", traffic_limit_mb: {traffic_limit_mb}"
-        log_admin_action(request, "EDIT_KEY", details)
-        return {"protocol": "outline"}
-
-    v2ray_key = key_repo.get_v2ray_key_brief(key_id)
-    if v2ray_key:
-        key_repo.update_v2ray_key_expiry(key_id, new_expiry, traffic_limit_mb)
-        details = f"V2Ray key {key_id}, new expiry: {new_expiry}"
-        if traffic_limit_mb is not None:
-            details += f", traffic_limit_mb: {traffic_limit_mb}"
-        log_admin_action(request, "EDIT_KEY", details)
-        return {"protocol": "v2ray"}
-
-    raise ValueError("Key not found")
 
 
 async def _delete_key_internal(request: Request, key_id: int | str, key_repo: KeyRepository) -> Dict[str, Any]:
@@ -1099,40 +1073,6 @@ async def keys_page(
     })
 
 
-@router.get("/keys/edit/{key_id}")
-async def keys_edit_page(request: Request, key_id: str):
-    if not request.session.get("admin_logged_in"):
-        return RedirectResponse("/login", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
-
-    # Парсим ID если он в формате "206_outline" или "206_v2ray"
-    if '_' in key_id:
-        parts = key_id.split('_')
-        numeric_id = int(parts[0])
-    else:
-        numeric_id = int(key_id)
-
-    key_repo = KeyRepository(DB_PATH)
-    now_ts = int(time.time())
-    try:
-        key_view = _load_key_view_model(key_repo, numeric_id, now_ts)
-    except Exception as error:
-        logging.error(f"[ADMIN][KEYS] Failed to load key {key_id}: {error}", exc_info=True)
-        key_view = None
-
-    if not key_view:
-        log_admin_action(request, "KEY_EDIT_NOT_FOUND", f"Tried to open edit page for missing key {key_id}")
-        return RedirectResponse("/keys", status_code=status.HTTP_303_SEE_OTHER)
-
-    return templates.TemplateResponse(
-        "keys_edit.html",
-        {
-            "request": request,
-            "key": key_view,
-            "csrf_token": get_csrf_token(request),
-        },
-    )
-
-
 @router.get("/api/keys/{key_id}/traffic")
 async def get_key_traffic_api(request: Request, key_id: int):
     """API endpoint для ленивой загрузки трафика ключа"""
@@ -1159,76 +1099,6 @@ async def get_key_traffic_api(request: Request, key_id: int):
     except Exception as e:
         logging.error(f"Error getting traffic for key {key_id}: {e}", exc_info=True)
         return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@router.post("/keys/edit/{key_id}")
-async def edit_key_route(request: Request, key_id: str):
-    # Парсим ID если он в формате "206_outline" или "206_v2ray"
-    if '_' in key_id:
-        parts = key_id.split('_')
-        numeric_id = int(parts[0])
-    else:
-        numeric_id = int(key_id)
-    """Редактирование срока действия ключа"""
-    if not request.session.get("admin_logged_in"):
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    
-    form = await request.form()
-    new_expiry_str = form.get("new_expiry")
-    traffic_limit_str = form.get("traffic_limit_mb")
- 
-    if not new_expiry_str:
-        if _is_json_request(request):
-            return JSONResponse({"error": "new_expiry is required"}, status_code=400)
-        return RedirectResponse(url="/keys", status_code=303)
- 
-    try:
-        # Парсим datetime-local format (YYYY-MM-DDTHH:mm) в timestamp
-        dt = datetime.strptime(new_expiry_str, "%Y-%m-%dT%H:%M")
-        new_expiry = int(dt.timestamp())
-
-        new_limit: int | None = None
-        if traffic_limit_str is not None:
-            trimmed = traffic_limit_str.strip()
-            if trimmed == "":
-                new_limit = 0
-            else:
-                try:
-                    new_limit = int(trimmed)
-                except ValueError:
-                    if _is_json_request(request):
-                        return JSONResponse({"error": "traffic_limit_mb must be an integer"}, status_code=400)
-                    return RedirectResponse(url="/keys", status_code=303)
-                if new_limit < 0:
-                    if _is_json_request(request):
-                        return JSONResponse({"error": "traffic_limit_mb must be >= 0"}, status_code=400)
-                    return RedirectResponse(url="/keys", status_code=303)
- 
-        key_repo = KeyRepository(DB_PATH)
-        try:
-            await _update_key_expiry_internal(request, numeric_id, new_expiry, key_repo, new_limit)
-        except ValueError:
-            if _is_json_request(request):
-                return JSONResponse({"error": "Key not found"}, status_code=404)
-            return RedirectResponse(url="/keys", status_code=303)
- 
-        if _is_json_request(request):
-            now_ts = int(time.time())
-            key_view = _load_key_view_model(key_repo, key_id, now_ts)
-            stats = _compute_key_stats(DB_PATH, now_ts)
-            return JSONResponse({
-                "message": "Параметры ключа обновлены",
-                "key": key_view,
-                "stats": stats,
-            })
- 
-        return RedirectResponse(url="/keys", status_code=303)
-
-    except Exception as e:
-        logging.error(f"Error editing key {key_id}: {e}")
-        if _is_json_request(request):
-            return JSONResponse({"error": str(e)}, status_code=500)
-        return RedirectResponse(url="/keys", status_code=303)
 
 
 @router.get("/keys/delete/{key_id}")

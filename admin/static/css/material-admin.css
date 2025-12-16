@@ -849,7 +849,7 @@ body {
 
 #tariffs-table th:nth-child(2),
 #tariffs-table td:nth-child(2) {
-    width: 28%;
+    width: 18%;
 }
 
 #tariffs-table th:nth-child(3),
@@ -869,7 +869,7 @@ body {
 
 #tariffs-table th:nth-child(6),
 #tariffs-table td:nth-child(6) {
-    width: 11%;
+    width: 21%;
 }
 
 .tariff-price {

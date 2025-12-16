@@ -555,6 +555,32 @@ class SubscriptionService:
         now = int(time.time())
         expires_at = now + duration_sec
 
+        # Проверка на бесплатный тариф и защита от повторной выдачи
+        is_free_tariff = False
+        with get_db_cursor() as cursor:
+            cursor.execute(
+                "SELECT price_rub FROM tariffs WHERE id = ?",
+                (tariff_id,)
+            )
+            tariff_row = cursor.fetchone()
+            if tariff_row and tariff_row[0] == 0:
+                is_free_tariff = True
+                # Это бесплатный тариф - проверяем, получал ли пользователь уже бесплатную подписку
+                from bot.services.free_tariff import check_free_tariff_limit_by_protocol_and_country
+                from config import FREE_V2RAY_COUNTRY
+                
+                if check_free_tariff_limit_by_protocol_and_country(
+                    cursor,
+                    user_id,
+                    protocol="v2ray",
+                    country=FREE_V2RAY_COUNTRY,
+                    enforce_global=True,
+                ):
+                    logger.warning(
+                        f"User {user_id} attempted to create duplicate free subscription (tariff_id={tariff_id})"
+                    )
+                    return None
+
         # Проверка наличия активной подписки
         existing = await self.repository.get_active_subscription_async(user_id)
         if existing:
@@ -921,6 +947,22 @@ class SubscriptionService:
                 f"Created subscription {subscription_id} for user {user_id}: "
                 f"{created_keys} keys created, {len(failed_servers)} failed"
             )
+
+            # Если это бесплатный тариф, записываем использование
+            if is_free_tariff:
+                try:
+                    from bot.services.free_tariff import record_free_key_usage
+                    from config import FREE_V2RAY_COUNTRY
+                    with get_db_cursor(commit=True) as cursor:
+                        record_free_key_usage(
+                            cursor,
+                            user_id=user_id,
+                            protocol="v2ray",
+                            country=FREE_V2RAY_COUNTRY,
+                        )
+                    logger.info(f"Recorded free key usage for user {user_id} (subscription {subscription_id})")
+                except Exception as e:
+                    logger.warning(f"Failed to record free key usage for user {user_id}: {e}")
 
             return {
                 'id': subscription_id,

@@ -14,58 +14,6 @@
         });
     const updateProgressBars = common.updateProgressBars || (() => {});
 
-    const state = {
-        modal: null,
-        editForm: null,
-        expiryInput: null,
-        trafficLimitInput: null,
-        currentKeyId: null,
-    };
-
-    const closeModal = () => {
-        if (!state.modal) {
-            return;
-        }
-        state.modal.classList.remove('vb-modal--open');
-        state.modal.setAttribute('aria-hidden', 'true');
-        document.body.classList.remove('vb-modal-open');
-        const backdrop = state.modal.querySelector('.vb-modal__backdrop');
-        if (backdrop) {
-            backdrop.removeAttribute('aria-hidden');
-        }
-        if (state.editForm) {
-            state.editForm.reset();
-        }
-    };
-
-    const openModal = (trigger) => {
-        if (!state.modal || !state.editForm || !state.expiryInput) {
-            return;
-        }
-        const keyId = trigger.dataset.keyId;
-        if (!keyId) {
-            return;
-        }
-        const expiryValue = trigger.dataset.expiry || '';
-        const limitValue = trigger.dataset.limit ?? '';
-
-        state.currentKeyId = keyId;
-        state.editForm.dataset.keyId = keyId;
-        state.editForm.action = `/keys/edit/${keyId}`;
-        state.expiryInput.value = expiryValue;
-        if (state.trafficLimitInput) {
-            state.trafficLimitInput.value = limitValue !== undefined ? limitValue : '';
-        }
-
-        state.modal.classList.add('vb-modal--open');
-        state.modal.setAttribute('aria-hidden', 'false');
-        document.body.classList.add('vb-modal-open');
-
-        const firstFocusable = state.modal.querySelector('[data-modal-focus], input, button, select, textarea');
-        if (firstFocusable && typeof firstFocusable.focus === 'function') {
-            firstFocusable.focus();
-        }
-    };
 
     const copyToClipboard = async (value) => {
         const text = value || '';
@@ -120,14 +68,6 @@
         });
     };
 
-    const resetFormLoadingState = (form) => {
-        const submitBtn = form.querySelector('button[type="submit"]');
-        if (submitBtn) {
-            submitBtn.disabled = false;
-        }
-        form.classList.remove('is-loading');
-    };
-
     const applyKeyUpdate = (key) => {
         if (!key) return;
         const row = document.querySelector(`.keys-table__row[data-key-id="${key.id}"]`);
@@ -161,14 +101,6 @@
             statusIcon.classList.add(key.status_class);
         }
 
-        const editButton = row.querySelector('[data-action="edit-key"]');
-        if (editButton) {
-            editButton.dataset.expiry = key.expiry_iso || '';
-            const limitMb = key.traffic && key.traffic.limit_mb != null
-                ? String(key.traffic.limit_mb)
-                : '';
-            editButton.dataset.limit = limitMb;
-        }
 
         const trafficCell = row.querySelector('.traffic-cell');
         if (trafficCell && key.traffic) {
@@ -230,47 +162,6 @@
         }
     };
 
-    const handleEditSubmit = async (event) => {
-        event.preventDefault();
-        const form = event.currentTarget;
-        const submitBtn = form.querySelector('button[type="submit"]');
-        if (submitBtn) {
-            submitBtn.disabled = true;
-        }
-        form.classList.add('is-loading');
-
-        const formData = new FormData(form);
-
-        try {
-            const response = await fetch(form.action, {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                },
-                body: formData,
-            });
-
-            const data = await response.json();
-            if (!response.ok) {
-                throw new Error(data.error || 'Не удалось обновить ключ');
-            }
-
-            if (data.key) {
-                applyKeyUpdate(data.key);
-            }
-            if (data.stats) {
-                updateStats(data.stats);
-            }
-
-            notify(data.message || 'Параметры ключа обновлены', 'success');
-            closeModal();
-        } catch (error) {
-            handleError(error, 'Обновление ключа');
-        } finally {
-            resetFormLoadingState(form);
-        }
-    };
 
     const handleDeleteKey = async (trigger) => {
         const keyId = trigger.dataset.keyId;
@@ -329,55 +220,13 @@
             return;
         }
 
-        if (action === 'edit-key') {
-            event.preventDefault();
-            openModal(trigger);
-            return;
-        }
-
         if (action === 'delete-key') {
             event.preventDefault();
             handleDeleteKey(trigger);
         }
     };
 
-    const bindModalHandlers = () => {
-        if (!state.modal) {
-            return;
-        }
-        const backdrop = state.modal.querySelector('.vb-modal__backdrop');
-        if (backdrop) {
-            backdrop.addEventListener('click', closeModal);
-        }
-
-        state.modal.querySelectorAll('[data-modal-close]').forEach((button) => {
-            button.addEventListener('click', (event) => {
-                event.preventDefault();
-                closeModal();
-            });
-        });
-
-        document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape' && state.modal && state.modal.classList.contains('vb-modal--open')) {
-                closeModal();
-            }
-        });
-    };
-
     const init = () => {
-        state.modal = document.getElementById('edit-key-modal');
-        state.editForm = document.getElementById('editForm');
-        state.expiryInput = document.getElementById('new_expiry');
-        state.trafficLimitInput = document.getElementById('traffic_limit_mb');
-
-        if (state.modal) {
-            state.modal.setAttribute('aria-hidden', 'true');
-            bindModalHandlers();
-        }
-
-        if (state.editForm) {
-            state.editForm.addEventListener('submit', handleEditSubmit);
-        }
 
         const table = document.getElementById('keys-table');
         if (table) {

@@ -381,6 +381,24 @@ async def handle_tariff_selection_for_subscription(message: types.Message):
     
     # Если бесплатный тариф - создаем подписку сразу
     if tariff['price_rub'] == 0:
+        # Проверяем, получал ли пользователь уже бесплатную подписку
+        from bot.services.free_tariff import check_free_tariff_limit_by_protocol_and_country
+        from config import FREE_V2RAY_COUNTRY
+        
+        with get_db_cursor() as cursor:
+            if check_free_tariff_limit_by_protocol_and_country(
+                cursor,
+                user_id,
+                protocol="v2ray",
+                country=FREE_V2RAY_COUNTRY,
+                enforce_global=True,
+            ):
+                await message.answer(
+                    "❌ Вы уже получали бесплатную подписку ранее. Бесплатная подписка выдается только один раз.",
+                    reply_markup=get_main_menu(user_id)
+                )
+                return
+        
         try:
             service = SubscriptionService()
             subscription_data = await service.create_subscription(
