@@ -58,6 +58,38 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
         )
     """)
     
+    # Таблица tariffs
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tariffs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            price_rub REAL,
+            duration_sec INTEGER,
+            price_crypto_usd REAL,
+            traffic_limit_mb INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Таблица subscriptions (упрощённая, но совместимая со схемой приложения)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            subscription_token TEXT,
+            created_at INTEGER,
+            expires_at INTEGER,
+            tariff_id INTEGER,
+            is_active INTEGER DEFAULT 1,
+            last_updated_at INTEGER,
+            notified INTEGER DEFAULT 0,
+            traffic_usage_bytes INTEGER DEFAULT 0,
+            traffic_over_limit_at INTEGER,
+            traffic_over_limit_notified INTEGER DEFAULT 0,
+            purchase_notification_sent INTEGER DEFAULT 0,
+            traffic_limit_mb INTEGER DEFAULT 0
+        )
+    """)
+    
     # Таблица keys
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS keys (
@@ -71,9 +103,15 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             email TEXT,
             tariff_id INTEGER,
             protocol TEXT,
+            traffic_limit_mb INTEGER DEFAULT 0,
+            traffic_usage_bytes INTEGER DEFAULT 0,
+            traffic_over_limit_at INTEGER,
+            traffic_over_limit_notified INTEGER DEFAULT 0,
+            subscription_id INTEGER,
             FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(user_id),
-            FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
+            FOREIGN KEY (tariff_id) REFERENCES tariffs(id),
+            FOREIGN KEY (subscription_id) REFERENCES subscriptions(id)
         )
     """)
     
@@ -88,20 +126,15 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             created_at INTEGER,
             email TEXT,
             tariff_id INTEGER,
+            traffic_limit_mb INTEGER DEFAULT 0,
+            traffic_usage_bytes INTEGER DEFAULT 0,
+            traffic_over_limit_at INTEGER,
+            traffic_over_limit_notified INTEGER DEFAULT 0,
+            subscription_id INTEGER,
             FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(user_id),
-            FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
-        )
-    """)
-    
-    # Таблица tariffs
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS tariffs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            price_rub REAL,
-            duration_sec INTEGER,
-            price_crypto_usd REAL
+            FOREIGN KEY (tariff_id) REFERENCES tariffs(id),
+            FOREIGN KEY (subscription_id) REFERENCES subscriptions(id)
         )
     """)
     
