@@ -236,18 +236,30 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     }
     protocol_info = protocol_meta.get(protocol, {"label": protocol or "—", "icon": "help_outline", "class": "protocol-badge--neutral"})
 
-    # ВАЖНО: Вся информация о трафике берется из подписки, не из ключа
+    # ВАЖНО:
+    #  - Для подписочных ключей лимит трафика берется с уровня подписки
+    #  - Для несубписочных (legacy) ключей используем per-key traffic_limit_mb из строки
     subscription_id = get(subscription_id_idx)
     traffic_limit_mb = 0
-    traffic_limit_bytes = None
+    traffic_limit_bytes: Optional[float] = None
     
     if subscription_id:
+        # Подписка: лимит хранится на уровне подписки
         from app.repositories.subscription_repository import SubscriptionRepository
         from app.settings import settings
         sub_repo = SubscriptionRepository(settings.DATABASE_PATH)
         traffic_limit_bytes = sub_repo.get_subscription_traffic_limit(subscription_id)
         if traffic_limit_bytes and traffic_limit_bytes > 0:
             traffic_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
+    else:
+        # Legacy-режим без подписки: используем лимит из traffic_limit_mb колонки
+        raw_limit_mb = get(limit_idx, 0) or 0
+        try:
+            traffic_limit_mb = int(raw_limit_mb)
+        except (TypeError, ValueError):
+            traffic_limit_mb = 0
+        if traffic_limit_mb > 0:
+            traffic_limit_bytes = float(traffic_limit_mb) * 1024 * 1024
     
     # Использование трафика ключа (для отображения, но лимит берется из подписки)
     traffic_usage_bytes_db = get(usage_idx, None)

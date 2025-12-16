@@ -456,6 +456,12 @@ async def edit_subscription_route(request: Request, subscription_id: int):
             log_action_msg
         )
         
+        # Пользовательское сообщение с учетом новой логики лимитов трафика:
+        # лимит трафика управляется на уровне подписки, поэтому не упоминаем количество ключей.
+        user_message = "Подписка успешно обновлена."
+        if traffic_limit_present and new_limit is not None:
+            user_message += f" Новый лимит трафика: {new_limit} МБ."
+        
         if _is_json_request(request):
             try:
                 # Возвращаем обновленные данные подписки для обновления UI
@@ -465,7 +471,7 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                 if not subscription_updated:
                     logger.error(f"Subscription {subscription_id} not found after update")
                     return JSONResponse({
-                        "message": f"Подписка обновлена. Обновлено ключей: {updated_keys}",
+                        "message": user_message,
                         "subscription_id": subscription_id,
                         "error": "Subscription data not found",
                     })
@@ -542,7 +548,7 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                 logger.info(f"Returning subscription data: traffic_limit_mb = {subscription_data.get('traffic_limit_mb')}, traffic.limit_mb = {traffic_info.get('limit_mb')}")
                 
                 return JSONResponse({
-                    "message": f"Подписка обновлена. Обновлено ключей: {updated_keys}",
+                    "message": user_message,
                     "subscription_id": subscription_id,
                     "subscription": subscription_data,
                 })
@@ -550,7 +556,7 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                 logger.error(f"Error building subscription response: {e}", exc_info=True)
                 # Возвращаем хотя бы базовый ответ
                 return JSONResponse({
-                    "message": f"Подписка обновлена. Обновлено ключей: {updated_keys}",
+                    "message": user_message,
                     "subscription_id": subscription_id,
                     "error": f"Error building response: {str(e)}",
                 })
