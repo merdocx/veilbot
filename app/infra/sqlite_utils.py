@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+import asyncio
 import logging
 from contextlib import asynccontextmanager, contextmanager
-from typing import Optional, Callable, TypeVar, Any
+from typing import Optional, Callable, TypeVar, Any, Coroutine, Dict
 
 import aiosqlite
 
@@ -113,6 +114,8 @@ def retry_db_operation(
     initial_delay: float = 0.1,
     backoff_multiplier: float = 2.0,
     db_path: Optional[str] = None,
+    operation_name: Optional[str] = None,
+    operation_context: Optional[Dict[str, Any]] = None,
 ) -> T:
     """
     Выполняет операцию с БД с автоматическим retry при ошибке "database is locked".
@@ -123,6 +126,8 @@ def retry_db_operation(
         initial_delay: Начальная задержка перед повторной попыткой в секундах (по умолчанию 0.1)
         backoff_multiplier: Множитель для экспоненциального backoff (по умолчанию 2.0)
         db_path: Путь к БД (передается в operation, если нужно)
+        operation_name: Название операции для логирования (например, "update_user")
+        operation_context: Дополнительный контекст для логирования (например, {"user_id": 123})
     
     Returns:
         Результат выполнения operation
@@ -133,6 +138,11 @@ def retry_db_operation(
     """
     last_exception = None
     delay = initial_delay
+    context_str = ""
+    if operation_context:
+        context_str = f" Context: {operation_context}"
+    
+    op_name = operation_name or "db_operation"
     
     for attempt in range(1, max_attempts + 1):
         try:
@@ -143,25 +153,114 @@ def retry_db_operation(
                 last_exception = e
                 if attempt < max_attempts:
                     logger.warning(
-                        f"[DB RETRY] Attempt {attempt}/{max_attempts} failed: database is locked. "
+                        f"[DB RETRY] {op_name}: Attempt {attempt}/{max_attempts} failed: database is locked.{context_str} "
                         f"Retrying in {delay:.2f}s..."
                     )
                     time.sleep(delay)
                     delay *= backoff_multiplier
                 else:
                     logger.error(
-                        f"[DB RETRY] All {max_attempts} attempts failed: database is locked"
+                        f"[DB RETRY] {op_name}: All {max_attempts} attempts failed: database is locked.{context_str}"
                     )
             else:
-                # Другие OperationalError не обрабатываем
+                # Другие OperationalError не обрабатываем, но логируем с контекстом
+                logger.error(
+                    f"[DB ERROR] {op_name}: OperationalError (not retrying): {e}.{context_str}",
+                    exc_info=True
+                )
                 raise
         except Exception as e:
-            # Другие исключения не обрабатываем
+            # Другие исключения логируем с контекстом и пробрасываем дальше
+            logger.error(
+                f"[DB ERROR] {op_name}: Unexpected error: {type(e).__name__}: {e}.{context_str}",
+                exc_info=True
+            )
             raise
     
     # Если дошли сюда, все попытки исчерпаны
     if last_exception:
+        logger.error(
+            f"[DB RETRY] {op_name}: All retry attempts exhausted.{context_str}",
+            exc_info=True
+        )
         raise last_exception
-    raise RuntimeError("Unexpected error in retry_db_operation")
+    raise RuntimeError(f"Unexpected error in retry_db_operation for {op_name}")
+
+
+async def retry_async_db_operation(
+    operation: Callable[[], Coroutine[Any, Any, T]],
+    max_attempts: int = 3,
+    initial_delay: float = 0.1,
+    backoff_multiplier: float = 2.0,
+    operation_name: Optional[str] = None,
+    operation_context: Optional[Dict[str, Any]] = None,
+) -> T:
+    """
+    Выполняет async операцию с БД с автоматическим retry при ошибке "database is locked".
+    
+    Args:
+        operation: Async функция (корутина), которая выполняет операцию с БД
+        max_attempts: Максимальное количество попыток (по умолчанию 3)
+        initial_delay: Начальная задержка перед повторной попыткой в секундах (по умолчанию 0.1)
+        backoff_multiplier: Множитель для экспоненциального backoff (по умолчанию 2.0)
+        operation_name: Название операции для логирования (например, "update_payment_status")
+        operation_context: Дополнительный контекст для логирования (например, {"payment_id": "123"})
+    
+    Returns:
+        Результат выполнения operation
+    
+    Raises:
+        aiosqlite.OperationalError: Если все попытки исчерпаны
+        Любое другое исключение, которое не является "database is locked"
+    """
+    last_exception = None
+    delay = initial_delay
+    context_str = ""
+    if operation_context:
+        context_str = f" Context: {operation_context}"
+    
+    op_name = operation_name or "async_db_operation"
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await operation()
+        except (sqlite3.OperationalError, aiosqlite.OperationalError) as e:
+            error_msg = str(e).lower()
+            if "database is locked" in error_msg or "database is locked" in str(e):
+                last_exception = e
+                if attempt < max_attempts:
+                    logger.warning(
+                        f"[DB RETRY] {op_name}: Attempt {attempt}/{max_attempts} failed: database is locked.{context_str} "
+                        f"Retrying in {delay:.2f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    delay *= backoff_multiplier
+                else:
+                    logger.error(
+                        f"[DB RETRY] {op_name}: All {max_attempts} attempts failed: database is locked.{context_str}"
+                    )
+            else:
+                # Другие OperationalError не обрабатываем, но логируем с контекстом
+                logger.error(
+                    f"[DB ERROR] {op_name}: OperationalError (not retrying): {e}.{context_str}",
+                    exc_info=True
+                )
+                raise
+        except Exception as e:
+            # Другие исключения логируем с контекстом и пробрасываем дальше
+            logger.error(
+                f"[DB ERROR] {op_name}: Unexpected error: {type(e).__name__}: {e}.{context_str}",
+                exc_info=True
+            )
+            raise
+    
+    # Если дошли сюда, все попытки исчерпаны
+    if last_exception:
+        logger.error(
+            f"[DB RETRY] {op_name}: All retry attempts exhausted.{context_str}",
+            exc_info=True
+        )
+        raise last_exception
+    raise RuntimeError(f"Unexpected error in retry_async_db_operation for {op_name}")
 
 

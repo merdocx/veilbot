@@ -138,7 +138,11 @@ class Settings(BaseSettings):
         if not self.ADMIN_PASSWORD_HASH:
             warnings.append("ADMIN_PASSWORD_HASH not set - admin panel may not work")
         if not self.SECRET_KEY:
-            warnings.append("SECRET_KEY not set - using ephemeral (insecure)")
+            warnings.append(
+                "SECRET_KEY not set - sessions will be invalidated on server restart. "
+                "Set SECRET_KEY in .env for production. "
+                "Generate with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+            )
 
         return {"errors": errors, "warnings": warnings, "is_valid": len(errors) == 0}
 

@@ -41,7 +41,7 @@ def _init_log_dir() -> str:
 
 # Setup logging
 LOG_DIR = _init_log_dir()
-app = FastAPI(title="VeilBot Admin", version="2.3.8")
+app = FastAPI(title="VeilBot Admin", version="2.3.9")
 
 # Logging setup
 setup_logging("INFO")
@@ -69,6 +69,15 @@ for err in startup_validation["errors"]:
     logging.error(f"Config error: {err}")
 for warn in startup_validation["warnings"]:
     logging.warning(f"Config warning: {warn}")
+
+# КРИТИЧНО: Предупреждение о SECRET_KEY
+if not settings.SECRET_KEY:
+    logging.warning(
+        "⚠️  SECRET_KEY not set! A random key will be generated on each restart. "
+        "This will invalidate all user sessions on server restart. "
+        "For production, set SECRET_KEY in .env file. "
+        "Generate with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+    )
 
 # Rate limiting
 limiter = Limiter(key_func=get_remote_address)
@@ -105,12 +114,12 @@ async def add_security_headers(request: Request, call_next):
         "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
         "Referrer-Policy": "strict-origin-when-cross-origin",
         "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
-        # Улучшенный CSP с nonce для inline скриптов
-        # ВАЖНО: Для полного удаления unsafe-inline нужно вынести все inline скрипты в отдельные файлы
-        # или использовать nonce в шаблонах: <script nonce="{{ csp_nonce }}">...</script>
+        # Улучшенный CSP: удален 'unsafe-inline' из script-src для защиты от XSS
+        # Все скрипты вынесены в отдельные файлы, nonce доступен для будущего использования
+        # Для style-src 'unsafe-inline' оставлен, так как inline стили менее критичны для безопасности
         "Content-Security-Policy": (
             "default-src 'self'; "
-            f"script-src 'self' 'nonce-{csp_nonce}' 'unsafe-inline' cdnjs.cloudflare.com; "
+            f"script-src 'self' 'nonce-{csp_nonce}' cdnjs.cloudflare.com; "
             "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
             "font-src fonts.gstatic.com; "
             "img-src 'self' data:;"
@@ -121,7 +130,15 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 # Session middleware with secure configuration
+# КРИТИЧНО: Используем SECRET_KEY из настроек, если не задан - генерируем случайный
+# (но это не рекомендуется для production - сессии будут инвалидироваться при перезапуске)
 SECRET_KEY = settings.SECRET_KEY or secrets.token_urlsafe(32)
+if not settings.SECRET_KEY:
+    # Дополнительное логирование для явности (если не было предупреждения выше)
+    logging.warning(
+        f"Using randomly generated SECRET_KEY (will change on restart). "
+        f"Set SECRET_KEY in .env to avoid session invalidation."
+    )
 app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
@@ -237,13 +254,114 @@ app.add_exception_handler(Exception, global_exception_handler)
 
 @app.get("/healthz", tags=["health"])
 async def health_check():
+    """
+    Расширенный health check endpoint для проверки всех критичных сервисов.
+    
+    Проверяет:
+    - База данных (основная проверка)
+    - Доступность VPN серверов (Outline, V2Ray) - опционально
+    - Метрики производительности (response time)
+    """
+    import time
+    import aiohttp
+    from app.repositories.server_repository import ServerRepository
+    
+    start_time = time.time()
+    health_status = {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "checks": {},
+        "metrics": {}
+    }
+    overall_healthy = True
+    
+    # Проверка БД (критично)
     try:
+        db_start = time.time()
         with open_connection(settings.DATABASE_PATH) as conn:
             conn.execute("SELECT 1")
-        return JSONResponse({"status": "ok"})
-    except Exception as exc:  # pragma: no cover - диагностический маршрут
-        logging.exception("Health check failed: %s", exc)
-        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=503)
+        db_time = (time.time() - db_start) * 1000  # в миллисекундах
+        health_status["checks"]["database"] = {
+            "status": "ok",
+            "response_time_ms": round(db_time, 2)
+        }
+    except Exception as exc:
+        logging.exception("Database health check failed: %s", exc)
+        health_status["checks"]["database"] = {
+            "status": "error",
+            "error": str(exc)
+        }
+        overall_healthy = False
+    
+    # Проверка VPN серверов (опционально, не блокируем health check если они недоступны)
+    try:
+        server_repo = ServerRepository()
+        servers = server_repo.list_servers()
+        active_servers = [s for s in servers if s[5] == 1]  # active = 1
+        
+        servers_status = {
+            "total": len(servers),
+            "active": len(active_servers),
+            "checked": 0,
+            "available": 0,
+            "unavailable": 0
+        }
+        
+        # Проверяем только первые 3 активных сервера для быстроты (timeout 5 секунд)
+        servers_to_check = active_servers[:3]
+        
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            for server in servers_to_check:
+                server_id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, available_for_purchase = server
+                protocol = (protocol or "outline").lower()
+                
+                try:
+                    check_start = time.time()
+                    if protocol == "v2ray" and api_url:
+                        # Проверяем V2Ray API
+                        async with session.get(f"{api_url}/", ssl=False) as resp:
+                            if resp.status == 200:
+                                servers_status["available"] += 1
+                            else:
+                                servers_status["unavailable"] += 1
+                    elif protocol == "outline" and api_url:
+                        # Проверяем Outline API
+                        async with session.get(f"{api_url}/access-keys", ssl=False) as resp:
+                            if resp.status == 200:
+                                servers_status["available"] += 1
+                            else:
+                                servers_status["unavailable"] += 1
+                    else:
+                        servers_status["unavailable"] += 1
+                    servers_status["checked"] += 1
+                except Exception as e:
+                    servers_status["unavailable"] += 1
+                    servers_status["checked"] += 1
+                    logging.debug(f"Server {name} (ID: {server_id}) health check failed: {e}")
+        
+        health_status["checks"]["vpn_servers"] = servers_status
+        
+    except Exception as exc:
+        logging.warning("VPN servers health check failed (non-critical): %s", exc)
+        health_status["checks"]["vpn_servers"] = {
+            "status": "error",
+            "error": str(exc),
+            "note": "Non-critical check"
+        }
+    
+    # Метрики производительности
+    total_time = (time.time() - start_time) * 1000
+    health_status["metrics"] = {
+        "total_response_time_ms": round(total_time, 2),
+        "database_response_time_ms": health_status["checks"].get("database", {}).get("response_time_ms", 0)
+    }
+    
+    # Определяем финальный статус
+    if not overall_healthy:
+        health_status["status"] = "error"
+        return JSONResponse(health_status, status_code=503)
+    
+    return JSONResponse(health_status)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 

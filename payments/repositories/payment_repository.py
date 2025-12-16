@@ -9,7 +9,7 @@ from ..models.payment import Payment, PaymentStatus, PaymentFilter
 from ..models.enums import PaymentProvider
 import json
 
-from app.infra.sqlite_utils import open_async_connection
+from app.infra.sqlite_utils import open_async_connection, retry_async_db_operation
 
 logger = logging.getLogger(__name__)
 
@@ -466,6 +466,7 @@ class PaymentRepository:
         
         Используется для предотвращения параллельной обработки одного платежа.
         Если статус уже изменился, обновление не произойдет.
+        Использует retry механизм для обработки ошибок "database is locked".
         
         Args:
             payment_id: ID платежа
@@ -475,7 +476,7 @@ class PaymentRepository:
         Returns:
             True если статус успешно обновлен, False если текущий статус не соответствует ожидаемому
         """
-        try:
+        async def _update_operation():
             async with open_async_connection(self.db_path) as conn:
                 cursor = await conn.execute(
                     "UPDATE payments SET status = ?, updated_at = ? WHERE payment_id = ? AND status = ?",
@@ -489,9 +490,21 @@ class PaymentRepository:
                 else:
                     logger.debug(f"Payment status update skipped: {payment_id} (current status != {expected_status.value})")
                 return success
-                
+        
+        try:
+            return await retry_async_db_operation(
+                _update_operation,
+                max_attempts=3,
+                initial_delay=0.1,
+                operation_name="try_update_payment_status",
+                operation_context={"payment_id": payment_id, "from_status": expected_status.value, "to_status": new_status.value}
+            )
         except Exception as e:
-            logger.error(f"Error atomically updating payment status: {e}")
+            logger.error(
+                f"Error atomically updating payment status after retries: {e}. "
+                f"Payment ID: {payment_id}, From: {expected_status.value}, To: {new_status.value}",
+                exc_info=True
+            )
             return False
     
     async def try_acquire_processing_lock(self, payment_id: str, lock_key: str = '_processing_subscription') -> bool:
