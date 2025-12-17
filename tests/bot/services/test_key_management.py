@@ -134,27 +134,34 @@ class TestKeyManagement:
         duration = 2592000  # Продлеваем на 30 дней
         
         # Создаем подписку и связанный ключ
+        # ВАЖНО: expiry_at удалено из keys, срок действия берется из subscriptions
+        # Для теста используем expiry_at из ключа как начальное значение для подписки
         mock_cursor.execute("""
             INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
             VALUES (?, ?, ?, ?, ?, ?, 1)
-        """, (1, 12345, "token-1", now, expiry_at + duration, None))
+        """, (1, 12345, "token-1", now, expiry_at, None))
         
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url, subscription_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test", 1))
+            INSERT INTO keys (id, user_id, access_url, subscription_id)
+            VALUES (?, ?, ?, ?)
+        """, (1, 12345, "ss://test", 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ
-        mock_cursor.execute("SELECT id, expiry_at FROM keys WHERE id = ?", (1,))
-        existing_key = mock_cursor.fetchone()
+        # Получаем ключ (теперь без expiry_at, но функция все еще ожидает его в tuple)
+        # Для обратной совместимости передаем expiry_at как второй элемент
+        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        key_row = mock_cursor.fetchone()
+        # Получаем expiry_at из подписки для передачи в функцию
+        mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
+        sub_expiry = mock_cursor.fetchone()[0]
+        existing_key = (key_row[0], sub_expiry)  # (id, expiry_at)
         
         # Продлеваем
         extend_existing_key(mock_cursor, existing_key, duration)
         mock_cursor.connection.commit()
         
-        # Проверяем новое время истечения
-        mock_cursor.execute("SELECT expiry_at FROM keys WHERE id = ?", (1,))
+        # ВАЖНО: Проверяем новое время истечения в подписке, а не в ключе
+        mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
         new_expiry = mock_cursor.fetchone()[0]
         
         expected_expiry = expiry_at + duration
@@ -167,28 +174,34 @@ class TestKeyManagement:
         expiry_at = now - 86400  # Истек 24 часа назад
         duration = 2592000  # Продлеваем на 30 дней
         
+        # ВАЖНО: expiry_at удалено из keys, срок действия берется из subscriptions
+        # Создаем подписку с истекшим сроком
         mock_cursor.execute("""
             INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
             VALUES (?, ?, ?, ?, ?, ?, 1)
-        """, (1, 12345, "token-1", now - 200000, now + duration, None))
+        """, (1, 12345, "token-1", now - 200000, expiry_at, None))
         
-        # Создаем истекший ключ, привязанный к подписке
+        # Создаем ключ, привязанный к подписке
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url, subscription_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test", 1))
+            INSERT INTO keys (id, user_id, access_url, subscription_id)
+            VALUES (?, ?, ?, ?)
+        """, (1, 12345, "ss://test", 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ
-        mock_cursor.execute("SELECT id, expiry_at FROM keys WHERE id = ?", (1,))
-        existing_key = mock_cursor.fetchone()
+        # Получаем ключ (теперь без expiry_at, но функция все еще ожидает его в tuple)
+        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        key_row = mock_cursor.fetchone()
+        # Получаем expiry_at из подписки для передачи в функцию
+        mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
+        sub_expiry = mock_cursor.fetchone()[0]
+        existing_key = (key_row[0], sub_expiry)  # (id, expiry_at)
         
         # Продлеваем
         extend_existing_key(mock_cursor, existing_key, duration)
         mock_cursor.connection.commit()
         
-        # Проверяем новое время истечения (должно быть от текущего времени)
-        mock_cursor.execute("SELECT expiry_at FROM keys WHERE id = ?", (1,))
+        # ВАЖНО: Проверяем новое время истечения в подписке (должно быть от текущего времени)
+        mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
         new_expiry = mock_cursor.fetchone()[0]
         
         expected_min = now + duration - 10  # Минимум (с допуском на время выполнения)
