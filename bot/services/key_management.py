@@ -211,19 +211,50 @@ def extend_existing_key(
         else:
             raise
     
-    # Логика продления совместима с существующими тестами:
-    # - Если ключ истёк, продлеваем от текущего времени
-    # - Если не истёк, продлеваем от текущего expiry_at ключа
-    if existing_key[1] <= now:
-        new_expiry = now + duration
-        logging.info(
-            "Extending expired key %s: was expired at %s, new expiry: %s",
-            existing_key[0],
-            existing_key[1],
-            new_expiry,
-        )
+    # Логика продления:
+    # - Если есть подписка, используем срок подписки (current_expires)
+    # - Если подписки нет, используем срок ключа (existing_key[1])
+    # - Если срок истёк, продлеваем от текущего времени
+    # - Если не истёк, продлеваем от текущего срока
+    
+    if current_expires is not None:
+        # Используем срок подписки, а не ключа
+        if current_expires <= now:
+            new_expiry = now + duration
+            logging.info(
+                "Extending expired subscription %s (key %s): was expired at %s, new expiry: %s",
+                subscription_id,
+                existing_key[0],
+                current_expires,
+                new_expiry,
+            )
+        else:
+            new_expiry = current_expires + duration
+            logging.info(
+                "Extending active subscription %s (key %s): current expires at %s, new expiry: %s",
+                subscription_id,
+                existing_key[0],
+                current_expires,
+                new_expiry,
+            )
     else:
-        new_expiry = existing_key[1] + duration
+        # Fallback на срок ключа, если подписки нет (старая логика для совместимости)
+        if existing_key[1] <= now:
+            new_expiry = now + duration
+            logging.info(
+                "Extending expired key %s (no subscription): was expired at %s, new expiry: %s",
+                existing_key[0],
+                existing_key[1],
+                new_expiry,
+            )
+        else:
+            new_expiry = existing_key[1] + duration
+            logging.info(
+                "Extending active key %s (no subscription): current expires at %s, new expiry: %s",
+                existing_key[0],
+                existing_key[1],
+                new_expiry,
+            )
     
     # Обновляем подписку, если таблица есть
     try:

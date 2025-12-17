@@ -123,8 +123,25 @@ def create_subscription_for_user(
     if not expires_at:
         raise RuntimeError(f"User {user_id} has key without expiry_at")
 
+    # ВАЛИДАЦИЯ: Проверяем, что дата истечения разумная
+    MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
+    MAX_DURATION = 365 * 24 * 3600  # 1 год - максимальная разумная длительность для одного тарифа
+    
+    # Если дата слишком далеко в будущем, используем now + duration_sec
+    if expires_at > MAX_REASONABLE_EXPIRY:
+        print(f"WARNING: User {user_id} has key with unreasonable expiry date: {expires_at}. Using now + duration instead.")
+        expires_at = now + duration_sec
+    
+    # Если длительность подписки (expires_at - created_at) слишком большая, используем now + duration_sec
     approx_created = (expires_at - duration_sec) if duration_sec > 0 else now
     if approx_created <= 0 or approx_created > now:
+        approx_created = now
+    
+    # Проверяем, что длительность не превышает разумный максимум
+    actual_duration = expires_at - approx_created
+    if actual_duration > MAX_DURATION:
+        print(f"WARNING: User {user_id} subscription duration too long: {actual_duration}s. Using now + duration instead.")
+        expires_at = now + duration_sec
         approx_created = now
 
     subscription_token = str(uuid.uuid4())

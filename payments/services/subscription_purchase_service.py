@@ -303,6 +303,13 @@ class SubscriptionPurchaseService:
             # Создаем новую подписку
             expires_at = now + tariff['duration_sec']
             
+            # Валидация даты истечения
+            MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
+            if expires_at > MAX_REASONABLE_EXPIRY:
+                error_msg = f"Calculated expiry date is too far in future: {expires_at}"
+                logger.error(f"[SUBSCRIPTION] {error_msg}")
+                return False, error_msg
+            
             # Генерируем уникальный токен
             subscription_token = None
             for _ in range(10):
@@ -542,7 +549,26 @@ class SubscriptionPurchaseService:
                 new_expires_at = existing_expires_at  # Используем существующий срок
             else:
                 # Продление: увеличиваем срок действия
+                # ВАЖНО: Валидация существующей даты истечения
+                MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
+                if existing_expires_at > MAX_REASONABLE_EXPIRY:
+                    logger.warning(
+                        f"[SUBSCRIPTION] Subscription {subscription_id} has unreasonable expiry date: "
+                        f"{existing_expires_at} (more than 10 years in future). "
+                        f"Resetting to now + duration."
+                    )
+                    # Исправляем на разумную дату: используем текущее время + длительность тарифа
+                    existing_expires_at = now + tariff['duration_sec']
+                
                 new_expires_at = existing_expires_at + tariff['duration_sec']
+                
+                # Дополнительная валидация новой даты
+                if new_expires_at > MAX_REASONABLE_EXPIRY:
+                    logger.error(
+                        f"[SUBSCRIPTION] Calculated expiry date is too far in future for subscription {subscription_id}: "
+                        f"{new_expires_at}. Using now + duration instead."
+                    )
+                    new_expires_at = now + tariff['duration_sec']
                 
                 logger.info(
                     f"[SUBSCRIPTION] Extending subscription {subscription_id} for user {payment.user_id}: "
