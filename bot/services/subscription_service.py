@@ -596,28 +596,13 @@ class SubscriptionService:
             # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
             # Это гарантирует, что при продлении подписки все ключи будут активны
             with get_db_cursor(commit=True) as cursor:
-                # Продлеваем V2Ray ключи
-                cursor.execute(
-                    """
-                    UPDATE v2ray_keys 
-                    SET expiry_at = ? 
-                    WHERE subscription_id = ?
-                    """,
-                    (new_expires_at, existing_id)
-                )
-                v2ray_keys_extended = cursor.rowcount
-                
-                # Продлеваем Outline ключи
-                cursor.execute(
-                    """
-                    UPDATE keys 
-                    SET expiry_at = ? 
-                    WHERE subscription_id = ?
-                    """,
-                    (new_expires_at, existing_id)
-                )
-                outline_keys_extended = cursor.rowcount
-                
+                # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
+                # Подписка уже обновлена выше в коде (new_expires_at), ключи автоматически используют срок из подписки
+                # Подсчитываем количество ключей для логирования
+                cursor.execute("SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?", (existing_id,))
+                v2ray_keys_extended = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) FROM keys WHERE subscription_id = ? AND protocol = 'outline'", (existing_id,))
+                outline_keys_extended = cursor.fetchone()[0] or 0
                 keys_extended = v2ray_keys_extended + outline_keys_extended
                 logger.info(
                     f"Extended {v2ray_keys_extended} V2Ray keys and {outline_keys_extended} Outline keys "
@@ -733,18 +718,18 @@ class SubscriptionService:
                             with get_db_cursor(commit=True) as cursor:
                                 cursor.connection.execute("PRAGMA foreign_keys = OFF")
                                 try:
+                                    # ВАЖНО: expiry_at удалено из keys - срок действия берется из subscriptions
+                                    # ВАЖНО: traffic_limit_mb не устанавливается для ключей с subscription_id - лимит берется из подписки
                                     cursor.execute(
                                         """
                                         INSERT INTO keys 
-                                        (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
-                                        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                                        (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
+                                        VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
                                         """,
                                         (
                                             server_id,
                                             user_id,
                                             access_url,
-                                            new_expires_at,
-                                            0,  # traffic_limit_mb
                                             outline_key_id,
                                             now,
                                             key_email,

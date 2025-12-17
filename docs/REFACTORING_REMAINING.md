@@ -82,3 +82,4 @@ JOIN subscriptions sub ON k.subscription_id = sub.id
 WHERE sub.expires_at > ? OR sub.expires_at <= ?
 ```
 
+

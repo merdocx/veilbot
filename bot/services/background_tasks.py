@@ -472,14 +472,16 @@ async def process_pending_paid_payments() -> None:
                         traffic_limit_mb = int(tariff.get("traffic_limit_mb") or 0)
                     except (TypeError, ValueError):
                         traffic_limit_mb = 0
+                    # ВАЖНО: expiry_at удалено из таблицы keys - срок действия берется из subscriptions
+                    # Этот код создает standalone ключи (без subscription_id), что не соответствует новой архитектуре
+                    # TODO: Переделать на создание через SubscriptionService
                     cursor.execute(
-                        "INSERT INTO keys (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
-                        "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                        "INSERT INTO keys (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol) "
+                        "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
                         (
                             server_dict["id"],
                             user_id,
                             key["accessUrl"],
-                            expiry,
                             traffic_limit_mb,
                             key["id"],
                             now,

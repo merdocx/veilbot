@@ -565,28 +565,11 @@ class SubscriptionPurchaseService:
                 # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
                 # Это гарантирует, что при продлении подписки все ключи будут активны
                 async with open_async_connection(self.db_path) as conn:
-                    # Продлеваем V2Ray ключи и обновляем лимит трафика
-                    cursor = await conn.execute(
-                        """
-                        UPDATE v2ray_keys 
-                        SET expiry_at = ?, traffic_limit_mb = ?
-                        WHERE subscription_id = ?
-                        """,
-                        (new_expires_at, traffic_limit_mb, subscription_id)
-                    )
-                    v2ray_keys_extended = cursor.rowcount
-                    
-                    # Продлеваем Outline ключи и обновляем лимит трафика
-                    cursor = await conn.execute(
-                        """
-                        UPDATE keys 
-                        SET expiry_at = ?, traffic_limit_mb = ?
-                        WHERE subscription_id = ?
-                        """,
-                        (new_expires_at, traffic_limit_mb, subscription_id)
-                    )
-                    outline_keys_extended = cursor.rowcount
-                    keys_extended = v2ray_keys_extended + outline_keys_extended
+                    # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
+                    # ВАЖНО: traffic_limit_mb не обновляется в ключах - лимит управляется через подписку (subscriptions.traffic_limit_mb)
+                    # Подписка уже обновлена выше в коде (new_expires_at и traffic_limit_mb), ключи автоматически используют данные из подписки
+                    # Не нужно обновлять ключи - они используют данные из подписки
+                    keys_extended = 0
                     await conn.commit()
                 
                 logger.info(
@@ -1217,11 +1200,13 @@ class SubscriptionPurchaseService:
                         async with open_async_connection(self.db_path) as conn:
                             await conn.execute("PRAGMA foreign_keys = OFF")
                             try:
+                                # ВАЖНО: expiry_at удалено из v2ray_keys - срок действия берется из subscriptions
+                                # ВАЖНО: traffic_limit_mb не устанавливается - лимит берется из подписки
                                 cursor = await conn.execute(
                                     """
                                     INSERT INTO v2ray_keys 
-                                    (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id, traffic_limit_mb)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                     """,
                                     (
                                         server_id,
@@ -1229,11 +1214,9 @@ class SubscriptionPurchaseService:
                                         v2ray_uuid,
                                         key_email,
                                         now,
-                                        expires_at,
                                         tariff['id'],
                                         client_config,
                                         subscription_id,
-                                        traffic_limit_mb,
                                     ),
                                 )
                                 await conn.commit()
@@ -1297,17 +1280,17 @@ class SubscriptionPurchaseService:
                         await conn.execute("PRAGMA foreign_keys = OFF")
                         try:
                             cursor = await conn.execute(
+                                # ВАЖНО: expiry_at удалено из keys - срок действия берется из subscriptions
+                                # ВАЖНО: traffic_limit_mb не устанавливается для ключей с subscription_id - лимит берется из подписки
                                 """
                                 INSERT INTO keys 
-                                (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
-                                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                                (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
+                                VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     server_id,
                                     payment.user_id,
                                     access_url,
-                                    expires_at,
-                                    traffic_limit_mb,
                                     outline_key_id,
                                     now,
                                     key_email,

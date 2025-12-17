@@ -95,3 +95,4 @@ SELECT COALESCE(sub.expires_at, 0) as expiry_at
 3. Запустить миграцию БД
 4. Протестировать систему
 
+

@@ -229,11 +229,13 @@ async def create_new_key_flow(
     if not key:
         await message.answer("Ошибка при создании ключа.", reply_markup=get_main_menu(user_id))
         return
-    expiry = now + tariff['duration_sec']
+    # ВАЖНО: expiry_at удалено из таблицы keys - срок действия берется из subscriptions
+    # Этот код создает standalone ключи (без subscription_id), что не соответствует новой архитектуре
+    # TODO: Переделать на создание через SubscriptionService
     cursor.execute(
-        "INSERT INTO keys (server_id, user_id, access_url, expiry_at, key_id, created_at, email, tariff_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (server['id'], user_id, key["accessUrl"], expiry, key["id"], now, email, tariff['id'])
+        "INSERT INTO keys (server_id, user_id, access_url, key_id, created_at, email, tariff_id, protocol) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'outline')",
+        (server['id'], user_id, key["accessUrl"], key["id"], now, email, tariff['id'])
     )
     
     # Если это бесплатный тариф, записываем использование

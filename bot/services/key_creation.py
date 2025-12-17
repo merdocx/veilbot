@@ -1018,28 +1018,13 @@ async def process_referral_bonus(
             # Продлеваем подписку
             subscription_repo.extend_subscription(subscription_id, new_expires_at)
             
-            # Продлеваем все ключи подписки
-            # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
-            cursor.execute(
-                """
-                UPDATE v2ray_keys 
-                SET expiry_at = ? 
-                WHERE subscription_id = ?
-                """,
-                (new_expires_at, subscription_id)
-            )
-            v2ray_keys_extended = cursor.rowcount
-            
-            # Продлеваем Outline ключи подписки
-            cursor.execute(
-                """
-                UPDATE keys 
-                SET expiry_at = ? 
-                WHERE subscription_id = ?
-                """,
-                (new_expires_at, subscription_id)
-            )
-            outline_keys_extended = cursor.rowcount
+            # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
+            # Подписка уже обновлена выше в коде (new_expires_at), ключи автоматически используют срок из подписки
+            # Подсчитываем количество ключей для логирования
+            cursor.execute("SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?", (subscription_id,))
+            v2ray_keys_extended = cursor.fetchone()[0] or 0
+            cursor.execute("SELECT COUNT(*) FROM keys WHERE subscription_id = ? AND protocol = 'outline'", (subscription_id,))
+            outline_keys_extended = cursor.fetchone()[0] or 0
             keys_extended = v2ray_keys_extended + outline_keys_extended
             
             # Отправляем уведомление

@@ -441,12 +441,21 @@ async def issue_free_v2ray_subscription_on_start(message: types.Message) -> Dict
                     tariff=tariff,
                     subscription_id=subscription_data["id"],
                 )
+                # Проверяем статус результата, не только исключения
+                if outline_result and outline_result.get("status") not in ("issued", "already_issued"):
+                    error_status = outline_result.get("status", "unknown")
+                    logging.warning(
+                        "Failed to auto-issue Outline key for user %s: status=%s",
+                        user_id,
+                        error_status,
+                    )
             except Exception as outline_exc:  # noqa: BLE001
                 logging.exception(
                     "Failed to auto-issue Outline key for user %s: %s",
                     user_id,
                     outline_exc,
                 )
+                outline_result = {"status": "error", "error": str(outline_exc)}
             
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to create free V2Ray subscription for user %s: %s", user_id, exc)
@@ -550,6 +559,7 @@ async def _issue_outline_key_for_start(
         access_url = user_data["accessUrl"]
         outline_key_id = user_data["id"]
 
+        # ВАЖНО: expiry_at удалено из таблицы keys - срок действия берется из subscriptions
         with safe_foreign_keys_off(cursor):
             cursor.execute(
                 """
@@ -557,7 +567,6 @@ async def _issue_outline_key_for_start(
                     server_id,
                     user_id,
                     access_url,
-                    expiry_at,
                     traffic_limit_mb,
                     notified,
                     key_id,
@@ -567,13 +576,12 @@ async def _issue_outline_key_for_start(
                     protocol,
                     subscription_id
                 )
-                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'outline', ?)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'outline', ?)
                 """,
                 (
                     server_id,
                     user_id,
                     access_url,
-                    expiry_at,
                     traffic_limit_mb,
                     outline_key_id,
                     now,
