@@ -569,12 +569,10 @@ class SubscriptionPurchaseService:
                     # ВАЖНО: traffic_limit_mb не обновляется в ключах - лимит управляется через подписку (subscriptions.traffic_limit_mb)
                     # Подписка уже обновлена выше в коде (new_expires_at и traffic_limit_mb), ключи автоматически используют данные из подписки
                     # Не нужно обновлять ключи - они используют данные из подписки
-                    keys_extended = 0
                     await conn.commit()
                 
                 logger.info(
-                    f"[SUBSCRIPTION] Extended {v2ray_keys_extended} V2Ray keys and {outline_keys_extended} Outline keys "
-                    f"for subscription {subscription_id}"
+                    f"[SUBSCRIPTION] Extended subscription {subscription_id} - keys automatically use updated subscription data"
                 )
                 
                 # Шаг 2.5: Сбрасываем трафик всех ключей подписки при продлении
