@@ -465,13 +465,18 @@ async def issue_free_v2ray_subscription_on_start(message: types.Message) -> Dict
     if subscription_data:
         try:
             bot = get_bot_instance()
-            created_keys = subscription_data.get("created_keys", 0)
+            created_v2ray_keys = subscription_data.get("created_keys", 0)
             failed_servers = subscription_data.get("failed_servers", [])
+            
+            # Проверяем, был ли создан Outline ключ
+            outline_created = outline_result and outline_result.get("status") == "issued"
+            
             admin_message = (
-                "🎁 *Выдана бесплатная V2Ray подписка*\n"
+                "🎁 *Выдана бесплатная подписка*\n"
                 f"Пользователь: `{user_id}`\n"
                 f"Тариф: *{tariff['name']}*\n"
-                f"Создано ключей: *{created_keys}*"
+                f"Создано V2Ray ключей: *{created_v2ray_keys}*\n"
+                f"Создано Outline ключей: *{1 if outline_created else 0}*"
             )
             if failed_servers:
                 admin_message += f"\nНе удалось создать на серверах: {failed_servers}"
