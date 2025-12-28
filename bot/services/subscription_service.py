@@ -586,7 +586,33 @@ class SubscriptionService:
         if existing:
             # Продлеваем существующую подписку
             existing_id = existing[0]
+            existing_created_at = existing[3]
             existing_expires_at = existing[4]
+            
+            # ВАЖНО: Проверяем, не была ли подписка создана очень недавно (менее 5 минут)
+            # и соответствует ли срок действия подписки ожидаемому (created_at + duration)
+            # Если срок действия = created_at + duration, значит это только что созданная подписка
+            # и её не нужно продлевать, а нужно просто вернуть существующую подписку
+            VERY_RECENT_THRESHOLD = 300  # 5 минут
+            subscription_age = now - existing_created_at if existing_created_at else 0
+            expected_expires_at = existing_created_at + duration_sec
+            is_very_recent = subscription_age < VERY_RECENT_THRESHOLD
+            expires_at_matches_expected = abs(existing_expires_at - expected_expires_at) < 3600  # Разница менее часа
+            
+            if is_very_recent and expires_at_matches_expected:
+                # Подписка только что создана - не продлеваем, возвращаем существующую
+                logger.info(
+                    f"[SUBSCRIPTION] Subscription {existing_id} was just created ({subscription_age}s ago) "
+                    f"for user {user_id}, expires_at matches expected. "
+                    f"Not extending, returning existing subscription."
+                )
+                # Возвращаем существующую подписку без продления
+                return {
+                    'id': existing_id,
+                    'subscription_token': existing[2],
+                    'expires_at': existing_expires_at,
+                }
+            
             # ПРИБАВЛЯЕМ срок к текущей дате истечения, а не берем максимум
             # Это гарантирует, что пользователь получит полный оплаченный срок
             new_expires_at = existing_expires_at + duration_sec

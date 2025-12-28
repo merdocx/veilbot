@@ -20,6 +20,8 @@ from app.repositories.subscription_repository import SubscriptionRepository
 from bot.services.subscription_service import invalidate_subscription_cache
 from app.infra.sqlite_utils import get_db_cursor
 from app.infra.foreign_keys import safe_foreign_keys_off
+from app.utils.user_deletion_guard import check_user_can_be_deleted
+from app.settings import settings
 from vpn_protocols import V2RayProtocol
 from outline import delete_key as outline_delete_key
 
@@ -37,6 +39,13 @@ async def delete_all_user_data(user_id: int) -> Dict[str, int]:
     Returns:
         Словарь с количеством удаленных записей
     """
+    # Проверяем, можно ли удалить пользователя
+    can_delete, reasons = check_user_can_be_deleted(user_id, settings.DATABASE_PATH)
+    if not can_delete:
+        error_msg = f"Нельзя удалить пользователя {user_id}: {'; '.join(reasons)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    
     results = {
         'subscriptions': 0,
         'subscription_keys_v2ray': 0,
@@ -208,13 +217,23 @@ async def delete_all_user_data(user_id: int) -> Dict[str, int]:
             deleted_count = cursor.rowcount
             logger.info(f"✓ Удалено {deleted_count} Outline ключей из БД")
     
-    # 4. Удаление всех платежей пользователя
+    # 4. Удаление всех платежей пользователя (только те, которые не в статусе paid/completed)
+    # КРИТИЧНО: Платежи со статусом 'paid' или 'completed' не могут быть удалены
     logger.info(f"Удаление всех платежей пользователя {user_id}...")
+    
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+            SELECT COUNT(*) FROM payments 
+            WHERE user_id = ? AND status IN ('paid', 'completed')
+        """, (user_id,))
+        protected_payments = cursor.fetchone()[0]
+        if protected_payments > 0:
+            logger.warning(f"⚠️  Пропущено защищенных платежей (paid/completed): {protected_payments}")
     
     with get_db_cursor(commit=True) as cursor:
         with safe_foreign_keys_off(cursor):
             cursor.execute(
-                "DELETE FROM payments WHERE user_id = ?",
+                "DELETE FROM payments WHERE user_id = ? AND status NOT IN ('paid', 'completed')",
                 (user_id,),
             )
             results['payments'] = cursor.rowcount

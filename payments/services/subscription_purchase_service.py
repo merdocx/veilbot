@@ -190,6 +190,32 @@ class SubscriptionPurchaseService:
                 is_recent_subscription = subscription_age < RECENT_SUBSCRIPTION_THRESHOLD
                 purchase_notification_not_sent = not purchase_notification_sent
                 
+                # ВАЖНО: Проверяем, не была ли подписка создана очень недавно (менее 5 минут)
+                # и соответствует ли срок действия подписки ожидаемому (created_at + duration)
+                # Если срок действия = created_at + duration, значит это только что созданная подписка
+                # и её не нужно продлевать, а нужно просто отправить уведомление о покупке
+                VERY_RECENT_THRESHOLD = 300  # 5 минут
+                expected_expires_at = created_at + tariff['duration_sec']
+                is_very_recent = subscription_age < VERY_RECENT_THRESHOLD
+                expires_at_matches_expected = abs(existing_expires_at - expected_expires_at) < 3600  # Разница менее часа
+                
+                # Если подписка создана очень недавно и срок соответствует ожидаемому (только что создана),
+                # то это покупка, а не продление
+                if is_very_recent and expires_at_matches_expected and purchase_notification_not_sent:
+                    logger.info(
+                        f"[SUBSCRIPTION] User {payment.user_id} has very recent subscription {subscription_id} "
+                        f"(created {subscription_age}s ago, expires_at={existing_expires_at}, "
+                        f"expected={expected_expires_at}, purchase_notification_sent={purchase_notification_sent}). "
+                        f"This is a PURCHASE (subscription just created, not a renewal)."
+                    )
+                    
+                    # Используем существующую подписку, но отправляем уведомление о покупке
+                    # НЕ продлеваем подписку, так как она уже создана с правильным сроком
+                    existing_subscription = existing_subscription_row
+                    return await self._send_purchase_notification_for_existing_subscription(
+                        payment, tariff, existing_subscription, now
+                    )
+                
                 # Проверяем, не является ли это retry того же платежа
                 # Если подписка была создана недавно и уведомление не отправлено, 
                 # но это может быть retry обработки того же платежа
@@ -291,8 +317,32 @@ class SubscriptionPurchaseService:
                     existing_subscription_row = await cursor.fetchone()
             
             if existing_subscription_row:
-                # Подписка уже существует - продлеваем её
+                # Подписка уже существует
                 subscription_id = existing_subscription_row[0]
+                existing_created_at = existing_subscription_row[3]
+                existing_expires_at = existing_subscription_row[4]
+                
+                # ВАЖНО: Проверяем, не была ли подписка создана очень недавно (менее 5 минут)
+                # и соответствует ли срок действия подписки ожидаемому (created_at + duration)
+                VERY_RECENT_THRESHOLD = 300  # 5 минут
+                subscription_age = now - existing_created_at if existing_created_at else 0
+                expected_expires_at = existing_created_at + tariff['duration_sec']
+                is_very_recent = subscription_age < VERY_RECENT_THRESHOLD
+                expires_at_matches_expected = abs(existing_expires_at - expected_expires_at) < 3600  # Разница менее часа
+                
+                # Если подписка создана очень недавно и срок соответствует ожидаемому - это покупка, не продление
+                if is_very_recent and expires_at_matches_expected:
+                    logger.info(
+                        f"[SUBSCRIPTION] Subscription {subscription_id} was just created ({subscription_age}s ago) "
+                        f"for user {payment.user_id}, expires_at matches expected. "
+                        f"This is a PURCHASE, not a renewal. Sending purchase notification."
+                    )
+                    existing_subscription = existing_subscription_row
+                    return await self._send_purchase_notification_for_existing_subscription(
+                        payment, tariff, existing_subscription, now
+                    )
+                
+                # Продлеваем существующую подписку
                 logger.info(
                     f"[SUBSCRIPTION] Subscription {subscription_id} already exists for user {payment.user_id}. "
                     f"Extending as renewal."
@@ -1042,8 +1092,22 @@ class SubscriptionPurchaseService:
             if existing_subscription_row:
                 # Подписка уже существует - возможно, создана другим процессом
                 subscription_id = existing_subscription_row[0]
+                existing_created_at = existing_subscription_row[3]
+                existing_expires_at = existing_subscription_row[4]
+                
+                # ВАЖНО: Проверяем, не была ли подписка создана очень недавно (менее 5 минут)
+                # и соответствует ли срок действия подписки ожидаемому (created_at + duration)
+                # Если срок действия = created_at + duration, значит это только что созданная подписка
+                # и её не нужно продлевать, а нужно просто отправить уведомление о покупке
+                VERY_RECENT_THRESHOLD = 300  # 5 минут
+                subscription_age = now - existing_created_at if existing_created_at else 0
+                expected_expires_at = existing_created_at + tariff['duration_sec']
+                is_very_recent = subscription_age < VERY_RECENT_THRESHOLD
+                expires_at_matches_expected = abs(existing_expires_at - expected_expires_at) < 3600  # Разница менее часа
+                
                 logger.warning(
                     f"[SUBSCRIPTION] Subscription {subscription_id} already exists for user {payment.user_id}. "
+                    f"Age: {subscription_age}s, expires_at={existing_expires_at}, expected={expected_expires_at}. "
                     f"This might be a duplicate. Checking if notification was sent..."
                 )
                 
@@ -1054,21 +1118,34 @@ class SubscriptionPurchaseService:
                         (subscription_id,)
                     ) as check_cursor:
                         notif_row = await check_cursor.fetchone()
-                        if notif_row and notif_row[0]:
-                            # Уведомление уже отправлено - это дублирование, просто помечаем платеж как completed
-                            logger.info(f"[SUBSCRIPTION] Notification already sent for subscription {subscription_id}, marking payment as completed")
-                            try:
-                                update_success = await self.payment_repo.try_update_status(
-                                    payment.payment_id,
-                                    PaymentStatus.COMPLETED,
-                                    PaymentStatus.PAID
-                                )
-                                if not update_success:
-                                    payment.mark_as_completed()
-                                    await self.payment_repo.update(payment)
-                            except Exception as e:
-                                logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
-                            return True, None
+                        purchase_notification_sent = notif_row[0] if notif_row else 0
+                
+                # Если подписка создана очень недавно и срок соответствует ожидаемому - это покупка, не продление
+                if is_very_recent and expires_at_matches_expected and not purchase_notification_sent:
+                    logger.info(
+                        f"[SUBSCRIPTION] Subscription {subscription_id} was just created ({subscription_age}s ago), "
+                        f"expires_at matches expected. This is a PURCHASE, not a renewal. Sending purchase notification."
+                    )
+                    existing_subscription = existing_subscription_row
+                    return await self._send_purchase_notification_for_existing_subscription(
+                        payment, tariff, existing_subscription, now
+                    )
+                
+                if purchase_notification_sent:
+                    # Уведомление уже отправлено - это дублирование, просто помечаем платеж как completed
+                    logger.info(f"[SUBSCRIPTION] Notification already sent for subscription {subscription_id}, marking payment as completed")
+                    try:
+                        update_success = await self.payment_repo.try_update_status(
+                            payment.payment_id,
+                            PaymentStatus.COMPLETED,
+                            PaymentStatus.PAID
+                        )
+                        if not update_success:
+                            payment.mark_as_completed()
+                            await self.payment_repo.update(payment)
+                    except Exception as e:
+                        logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
+                    return True, None
                 
                 # Если уведомление не отправлено - отправляем уведомление о покупке для существующей подписки
                 logger.info(

@@ -432,43 +432,46 @@ async def payment_delete(request: Request, pid: str, csrf_token: str = Form(...)
             return JSONResponse({"success": False, "error": "Платеж не найден"}, status_code=404)
         
         # Проверяем, можно ли удалить платеж
-        # Не удаляем платежи со статусом completed или paid, если есть связанные активные ключи
+        from app.utils.user_deletion_guard import check_payment_can_be_deleted
+        
         payment_status = str(getattr(payment.status, 'value', payment.status) if hasattr(payment.status, 'value') else payment.status)
         
-        # Для платежей со статусом 'completed' или 'paid' проверяем наличие активных ключей
-        if payment_status in ('completed', 'paid'):
-            with open_connection(DB_PATH) as conn:
-                c = conn.cursor()
-                now = int(datetime.now(timezone.utc).timestamp())
-                c.execute("""
-                    SELECT 1 FROM keys k
-                    JOIN subscriptions s ON k.subscription_id = s.id
-                    WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
-                """, (payment.user_id, now))
-                has_outline_key = c.fetchone() is not None
-                c.execute("""
-                    SELECT 1 FROM v2ray_keys k
-                    JOIN subscriptions s ON k.subscription_id = s.id
-                    WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
-                """, (payment.user_id, now))
-                has_v2ray_key = c.fetchone() is not None
-                
-                if has_outline_key or has_v2ray_key:
-                    log_admin_action(request, "PAYMENT_DELETE_BLOCKED", f"Payment ID: {pid}, Status: {payment_status}, Reason: Has active keys")
-                    return JSONResponse({
-                        "success": False, 
-                        "error": f"Нельзя удалить платеж со статусом '{payment_status}', у пользователя есть активные ключи"
-                    }, status_code=400)
+        # Используем функцию проверки для защиты от удаления успешных платежей
+        can_delete, reason = check_payment_can_be_deleted(payment.payment_id, DB_PATH)
+        if not can_delete:
+            log_admin_action(request, "PAYMENT_DELETE_BLOCKED", f"Payment ID: {pid}, Status: {payment_status}, Reason: {reason}")
+            return JSONResponse({
+                "success": False, 
+                "error": reason or f"Нельзя удалить платеж со статусом '{payment_status}'"
+            }, status_code=400)
         
         # Удаляем платеж
         # Используем payment.id (числовой id) для удаления
+        # КРИТИЧНО: repo.delete() уже проверяет статус и не позволит удалить paid/completed
         if payment.id:
-            deleted = await repo.delete(payment.id)
+            try:
+                deleted = await repo.delete(payment.id)
+            except ValueError as e:
+                # Защита сработала - платеж нельзя удалить
+                log_admin_action(request, "PAYMENT_DELETE_BLOCKED", f"Payment ID: {pid}, Reason: {str(e)}")
+                return JSONResponse({
+                    "success": False, 
+                    "error": str(e)
+                }, status_code=400)
         else:
             # Если нет числового id, удаляем напрямую через SQL по payment_id
+            # КРИТИЧНО: Проверяем статус перед удалением
+            if payment_status in ('completed', 'paid'):
+                error_msg = f"Нельзя удалить платеж со статусом '{payment_status}'. Успешные платежи не могут быть удалены."
+                log_admin_action(request, "PAYMENT_DELETE_BLOCKED", f"Payment ID: {pid}, Status: {payment_status}")
+                return JSONResponse({
+                    "success": False, 
+                    "error": error_msg
+                }, status_code=400)
+            
             with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
-                c.execute("DELETE FROM payments WHERE payment_id = ?", (pid,))
+                c.execute("DELETE FROM payments WHERE payment_id = ? AND status NOT IN ('paid', 'completed')", (pid,))
                 conn.commit()
                 deleted = c.rowcount > 0
         

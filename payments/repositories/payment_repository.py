@@ -642,8 +642,30 @@ class PaymentRepository:
             return False
     
     async def delete(self, payment_id: int) -> bool:
-        """Удаление платежа"""
+        """
+        Удаление платежа
+        
+        КРИТИЧНО: Платежи со статусом 'paid' или 'completed' НИКОГДА не могут быть удалены.
+        """
         try:
+            # Сначала получаем платеж, чтобы проверить его статус
+            payment = await self.get_by_id(payment_id)
+            if not payment:
+                logger.warning(f"Payment {payment_id} not found for deletion")
+                return False
+            
+            # КРИТИЧНО: Проверяем статус - платежи со статусом 'paid' или 'completed' нельзя удалять
+            payment_status = str(getattr(payment.status, 'value', payment.status) if hasattr(payment.status, 'value') else payment.status)
+            if payment_status in ('completed', 'paid'):
+                amount_rub = payment.amount / 100 if payment.amount else 0
+                error_msg = (
+                    f"Cannot delete payment {payment_id} with status '{payment_status}' "
+                    f"(amount: {amount_rub:.2f} RUB). Successful payments cannot be deleted."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Если статус позволяет, удаляем
             async with open_async_connection(self.db_path) as conn:
                 cursor = await conn.execute(
                     "DELETE FROM payments WHERE id = ?", 
@@ -653,9 +675,12 @@ class PaymentRepository:
                 
                 success = cursor.rowcount > 0
                 if success:
-                    logger.info(f"Payment deleted: {payment_id}")
+                    logger.info(f"Payment deleted: {payment_id} (status: {payment_status})")
                 return success
                 
+        except ValueError:
+            # Перебрасываем ValueError (защита от удаления)
+            raise
         except Exception as e:
             logger.error(f"Error deleting payment: {e}")
             return False

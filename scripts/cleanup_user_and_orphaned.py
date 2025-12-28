@@ -50,6 +50,16 @@ async def cleanup_user_data_with_free_key_flag(user_id: int) -> Dict[str, int]:
     Удалить все подписки, платежи и ключи пользователя,
     но сохранить флаг о том, что ему ранее был выдан бесплатный ключ
     """
+    from app.utils.user_deletion_guard import check_user_can_be_deleted
+    from app.settings import settings
+    
+    # Проверяем, можно ли удалить пользователя
+    can_delete, reasons = check_user_can_be_deleted(user_id, settings.DATABASE_PATH)
+    if not can_delete:
+        error_msg = f"Нельзя удалить пользователя {user_id}: {'; '.join(reasons)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    
     results = {
         'subscriptions': 0,
         'subscription_keys_v2ray': 0,
@@ -257,13 +267,23 @@ async def cleanup_user_data_with_free_key_flag(user_id: int) -> Dict[str, int]:
             deleted_count = cursor.rowcount
             logger.info(f"✓ Удалено {deleted_count} Outline ключей из БД")
     
-    # 4. Удаление всех платежей пользователя
+    # 4. Удаление всех платежей пользователя (только те, которые не в статусе paid/completed)
+    # КРИТИЧНО: Платежи со статусом 'paid' или 'completed' не могут быть удалены
     logger.info(f"Удаление всех платежей пользователя {user_id}...")
+    
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+            SELECT COUNT(*) FROM payments 
+            WHERE user_id = ? AND status IN ('paid', 'completed')
+        """, (user_id,))
+        protected_payments = cursor.fetchone()[0]
+        if protected_payments > 0:
+            logger.warning(f"⚠️  Пропущено защищенных платежей (paid/completed): {protected_payments}")
     
     with get_db_cursor(commit=True) as cursor:
         with safe_foreign_keys_off(cursor):
             cursor.execute(
-                "DELETE FROM payments WHERE user_id = ?",
+                "DELETE FROM payments WHERE user_id = ? AND status NOT IN ('paid', 'completed')",
                 (user_id,),
             )
             results['payments'] = cursor.rowcount

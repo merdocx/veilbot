@@ -14,10 +14,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import DATABASE_PATH
 from app.infra.foreign_keys import safe_foreign_keys_off
+from app.utils.user_deletion_guard import check_user_can_be_deleted
 
 
 def cleanup_user_with_free_key_flag(user_id: int):
     """Удаляет подписки, платежи и ключи пользователя, оставляя флаг о бесплатном ключе"""
+    # Проверяем, можно ли удалить пользователя
+    can_delete, reasons = check_user_can_be_deleted(user_id, DATABASE_PATH)
+    if not can_delete:
+        print(f"❌ Невозможно удалить данные пользователя {user_id}:")
+        for reason in reasons:
+            print(f"   - {reason}")
+        raise ValueError(f"Нельзя удалить пользователя {user_id}: {'; '.join(reasons)}")
+    
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     
@@ -33,8 +42,21 @@ def cleanup_user_with_free_key_flag(user_id: int):
             subscriptions_deleted = cursor.rowcount
             print(f"   ✓ Удалено подписок: {subscriptions_deleted}")
             
-            # 2. Удаляем платежи
-            cursor.execute("DELETE FROM payments WHERE user_id = ?", (user_id,))
+            # 2. Удаляем платежи (только те, которые не в статусе paid/completed)
+            # КРИТИЧНО: Платежи со статусом 'paid' или 'completed' не могут быть удалены
+            cursor.execute("""
+                SELECT COUNT(*) FROM payments 
+                WHERE user_id = ? AND status IN ('paid', 'completed')
+            """, (user_id,))
+            protected_payments = cursor.fetchone()[0]
+            
+            if protected_payments > 0:
+                print(f"   ⚠️  Пропущено защищенных платежей (paid/completed): {protected_payments}")
+            
+            cursor.execute("""
+                DELETE FROM payments 
+                WHERE user_id = ? AND status NOT IN ('paid', 'completed')
+            """, (user_id,))
             payments_deleted = cursor.rowcount
             print(f"   ✓ Удалено платежей: {payments_deleted}")
             
