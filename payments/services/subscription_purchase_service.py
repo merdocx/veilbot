@@ -412,9 +412,9 @@ class SubscriptionPurchaseService:
             if not is_vip:
                 MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
                 if expires_at > MAX_REASONABLE_EXPIRY:
-                error_msg = f"Calculated expiry date is too far in future: {expires_at}"
-                logger.error(f"[SUBSCRIPTION] {error_msg}")
-                return False, error_msg
+                    error_msg = f"Calculated expiry date is too far in future: {expires_at}"
+                    logger.error(f"[SUBSCRIPTION] {error_msg}")
+                    return False, error_msg
             
             # Генерируем уникальный токен
             subscription_token = None
