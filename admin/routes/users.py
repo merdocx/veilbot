@@ -67,10 +67,13 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
+    # Нормализуем параметр поиска - пустые строки должны быть None
+    query_normalized = q.strip() if (q and isinstance(q, str) and q.strip()) else None
+    
     repo = UserRepository(DB_PATH)
     offset = (max(page, 1) - 1) * limit
-    total = repo.count_users(query=q)
-    rows = repo.list_users(query=q, limit=limit, offset=offset)
+    total = repo.count_users(query=query_normalized)
+    rows = repo.list_users(query=query_normalized, limit=limit, offset=offset)
     user_list = []
     for row in rows:
         uid = row[0]
@@ -106,7 +109,7 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
         "active_users": active_users,
         "referral_count": referral_count,
         "pages": pages,
-        "q": q or "",
+        "q": query_normalized or "",
         "csrf_token": get_csrf_token(request),
     })
 

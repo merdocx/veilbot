@@ -627,13 +627,184 @@
             }
         }
 
-        if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
-            window.VeilBotCommon.initTableSearch({
-                tableSelector: '#subscriptions-table',
-            });
-        } else {
-            console.warn('[VeilBot][subscriptions] initTableSearch недоступен');
-        }
+        // Серверный поиск вместо клиентского (live-поиск без перезагрузки страницы)
+        // Инициализируем поиск с небольшой задержкой, чтобы common.js успел загрузиться
+        setTimeout(() => {
+            const searchForm = document.getElementById('search-form');
+            const searchInput = document.getElementById('global-search');
+            const resetSearchBtn = document.getElementById('reset-search-btn');
+        
+            if (searchForm && searchInput) {
+                // Убеждаемся, что клиентский поиск не активен для этого элемента
+                searchInput.setAttribute('data-server-search', '1');
+                searchInput.setAttribute('data-auto-search', '1');
+                
+                let searchTimeout = null;
+
+                const applySearchResponse = async (response) => {
+                    if (!response.ok) {
+                        throw new Error(`Search request failed with status ${response.status}`);
+                    }
+                    const html = await response.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+
+                    const newStats = doc.querySelector('.stats-grid');
+                    const newTableBody = doc.querySelector('#subscriptions-table tbody');
+                    const newPagination = doc.querySelector('.pagination');
+
+                    const currentStats = document.querySelector('.stats-grid');
+                    const currentTableBody = document.querySelector('#subscriptions-table tbody');
+                    const currentPagination = document.querySelector('.pagination');
+
+                    if (newStats && currentStats) {
+                        currentStats.replaceWith(newStats);
+                    }
+                    if (newTableBody && currentTableBody) {
+                        currentTableBody.replaceWith(newTableBody);
+                    }
+                    if (newPagination) {
+                        if (currentPagination) {
+                            currentPagination.replaceWith(newPagination);
+                        } else {
+                            const tableWrapper = document.querySelector('.table-scroll');
+                            if (tableWrapper && tableWrapper.parentElement) {
+                                tableWrapper.parentElement.appendChild(newPagination);
+                            }
+                        }
+                    } else if (currentPagination) {
+                        currentPagination.remove();
+                    }
+                    
+                    // Переинициализируем обработчики после обновления таблицы
+                    init();
+                };
+                
+                const performSearch = () => {
+                    const currentSearchInput = document.getElementById('global-search');
+                    const searchValue = currentSearchInput ? currentSearchInput.value.trim() : '';
+                    
+                    const pageInput = searchForm.querySelector('input[name="page"]');
+                    if (pageInput) {
+                        pageInput.value = '1';
+                    }
+                    
+                    if (currentSearchInput && currentSearchInput.form === searchForm) {
+                        if (!currentSearchInput.getAttribute('name')) {
+                            currentSearchInput.setAttribute('name', 'q');
+                        }
+                    }
+                    
+                    const params = new URLSearchParams();
+                    if (searchValue) {
+                        params.set('q', searchValue);
+                    }
+                    params.set('page', '1');
+                    
+                    const url = `/subscriptions?${params.toString()}`;
+
+                    fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'Accept': 'text/html',
+                        },
+                    })
+                        .then((response) => applySearchResponse(response))
+                        .catch((error) => {
+                            console.error('[VeilBot][subscriptions] live search failed, falling back to full reload', error);
+                            window.location.href = url;
+                        });
+                };
+                
+                const handleSearchInput = (event) => {
+                    event.stopImmediatePropagation();
+                    event.stopPropagation();
+                    
+                    const searchValue = event.target.value;
+                    
+                    const url = new URL(window.location.href);
+                    if (searchValue && searchValue.trim()) {
+                        url.searchParams.set('q', searchValue.trim());
+                    } else {
+                        url.searchParams.delete('q');
+                    }
+                    url.searchParams.set('page', '1');
+                    window.history.pushState({}, '', url.toString());
+                    
+                    if (searchTimeout) {
+                        clearTimeout(searchTimeout);
+                    }
+                    searchTimeout = setTimeout(performSearch, 500);
+                };
+                
+                const handleSearchKeydown = (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        event.stopImmediatePropagation();
+                        if (searchTimeout) {
+                            clearTimeout(searchTimeout);
+                        }
+                        performSearch();
+                    }
+                };
+                
+                const handleSearchSubmit = (event) => {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    if (searchTimeout) {
+                        clearTimeout(searchTimeout);
+                    }
+                    performSearch();
+                };
+                
+                const newInput = searchInput.cloneNode(true);
+                const currentValue = searchInput.value;
+                const currentName = searchInput.getAttribute('name');
+                searchInput.parentNode.replaceChild(newInput, searchInput);
+                const freshSearchInput = document.getElementById('global-search');
+                
+                freshSearchInput.value = currentValue;
+                
+                if (currentName && !freshSearchInput.getAttribute('name')) {
+                    freshSearchInput.setAttribute('name', currentName);
+                }
+                
+                freshSearchInput.setAttribute('data-server-search', '1');
+                freshSearchInput.setAttribute('data-auto-search', '1');
+                
+                freshSearchInput.addEventListener('input', handleSearchInput, { capture: true, passive: false });
+                freshSearchInput.addEventListener('keydown', handleSearchKeydown, { capture: true, passive: false });
+                searchForm.addEventListener('submit', handleSearchSubmit, { capture: true, passive: false });
+                
+                const handleResetSearchUpdated = (event) => {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    
+                    freshSearchInput.value = '';
+                    
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete('q');
+                    url.searchParams.set('page', '1');
+                    window.history.pushState({}, '', url.toString());
+                    
+                    if (searchTimeout) {
+                        clearTimeout(searchTimeout);
+                    }
+                    const pageInput = searchForm.querySelector('input[name="page"]');
+                    if (pageInput) {
+                        pageInput.value = '1';
+                    }
+                    performSearch();
+                };
+                
+                if (resetSearchBtn) {
+                    resetSearchBtn.addEventListener('click', handleResetSearchUpdated, { capture: true, passive: false });
+                }
+                
+                console.log('[VeilBot][subscriptions] Live search initialized');
+            }
+        }, 100);
 
         updateProgressBars();
     };

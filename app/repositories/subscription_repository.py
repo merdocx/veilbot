@@ -571,12 +571,12 @@ class SubscriptionRepository:
                 # Восстанавливаем foreign keys
                 await conn.execute("PRAGMA foreign_keys=ON")
 
-    def list_subscriptions(self, limit: int = 50, offset: int = 0) -> List[Tuple]:
-        """Получить список всех подписок с информацией о ключах"""
+    def list_subscriptions(self, query: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Tuple]:
+        """Получить список всех подписок с информацией о ключах и поиском"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute(
-                """
+            
+            base_sql = """
                 SELECT 
                     s.id,
                     s.user_id,
@@ -603,18 +603,47 @@ class SubscriptionRepository:
                     WHERE protocol = 'outline'
                     GROUP BY subscription_id
                 ) ok ON ok.subscription_id = s.id
-                ORDER BY s.created_at DESC
-                LIMIT ? OFFSET ?
-                """,
-                (limit, offset),
-            )
+            """
+            
+            params = []
+            if query:
+                search_pattern = f"%{query}%"
+                where_clause = """
+                    WHERE CAST(s.id AS TEXT) LIKE ?
+                       OR CAST(s.user_id AS TEXT) LIKE ?
+                       OR s.subscription_token LIKE ?
+                       OR IFNULL(t.name, '') LIKE ?
+                """
+                params = [search_pattern, search_pattern, search_pattern, search_pattern]
+                sql = base_sql + where_clause + " ORDER BY s.created_at DESC LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            else:
+                sql = base_sql + " ORDER BY s.created_at DESC LIMIT ? OFFSET ?"
+                params = [limit, offset]
+            
+            c.execute(sql, params)
             return c.fetchall()
 
-    def count_subscriptions(self) -> int:
-        """Получить общее количество всех подписок"""
+    def count_subscriptions(self, query: Optional[str] = None) -> int:
+        """Получить общее количество всех подписок с учетом поиска"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM subscriptions")
+            if query:
+                search_pattern = f"%{query}%"
+                c.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM subscriptions s
+                    LEFT JOIN tariffs t ON s.tariff_id = t.id
+                    WHERE CAST(s.id AS TEXT) LIKE ?
+                       OR CAST(s.user_id AS TEXT) LIKE ?
+                       OR s.subscription_token LIKE ?
+                       OR IFNULL(t.name, '') LIKE ?
+                    """,
+                    (search_pattern, search_pattern, search_pattern, search_pattern),
+                )
+            else:
+                c.execute("SELECT COUNT(*) FROM subscriptions")
             return c.fetchone()[0]
 
     def get_subscription_by_id(self, subscription_id: int) -> Optional[Tuple]:

@@ -169,7 +169,7 @@ def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
 
 
 @router.get("/subscriptions")
-async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
+async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q: str | None = None):
     """Страница списка подписок"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
@@ -177,10 +177,13 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
     try:
         log_admin_action(request, "SUBSCRIPTIONS_PAGE_ACCESS")
         
+        # Нормализуем параметр поиска - пустые строки должны быть None
+        query_normalized = q.strip() if (q and isinstance(q, str) and q.strip()) else None
+        
         subscription_repo = SubscriptionRepository(DB_PATH)
         user_repo = UserRepository(DB_PATH)
         server_repo = ServerRepository(DB_PATH)
-        total = subscription_repo.count_subscriptions()
+        total = subscription_repo.count_subscriptions(query=query_normalized)
         
         # Получаем список активных серверов для выпадающего списка
         all_servers = server_repo.list_servers()
@@ -195,7 +198,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 })
         
         offset = (page - 1) * limit
-        rows = subscription_repo.list_subscriptions(limit=limit, offset=offset)
+        rows = subscription_repo.list_subscriptions(query=query_normalized, limit=limit, offset=offset)
         
         now_ts = int(time.time())
         
@@ -353,6 +356,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             "expired_count": expired_count,
             "active_servers": active_servers,
             "pages": pages,
+            "q": query_normalized or "",
             "csrf_token": get_csrf_token(request),
         })
     except Exception as e:
