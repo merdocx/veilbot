@@ -18,8 +18,9 @@ const initVipHandlers = () => {
         if (!e.target || !e.target.classList.contains('vip-checkbox')) {
             return;
         }
-            const userId = e.target.dataset.userId;
-            const isChecked = e.target.checked;
+        
+        const userId = e.target.dataset.userId;
+        const isChecked = e.target.checked;
             
             if (!userId) {
                 console.error('[VeilBot][users] No user ID found');
