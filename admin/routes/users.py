@@ -107,6 +107,7 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
         "referral_count": referral_count,
         "pages": pages,
         "q": q or "",
+        "csrf_token": get_csrf_token(request),
     })
 
 
