@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-01-06
+
+### Исправлено
+- ✅ **Расширен поиск на странице users**:
+  - Поиск теперь работает по всем полям: user_id, username, first_name, last_name, email и referral_count
+  - Email ищется в таблицах keys, v2ray_keys и payments (как на странице subscriptions)
+  - Обновлен placeholder в шаблоне для отражения всех доступных полей поиска
+
 ## [2.4.2] - 2026-01-06
 
 ### Исправлено
