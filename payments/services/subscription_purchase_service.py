@@ -394,11 +394,24 @@ class SubscriptionPurchaseService:
                 logger.error(f"[SUBSCRIPTION] {error_msg}")
                 return False, error_msg
             
-            expires_at = now + duration_sec
+            # Проверяем VIP статус пользователя
+            from app.repositories.user_repository import UserRepository
+            user_repo = UserRepository(self.db_path)
+            is_vip = user_repo.is_user_vip(payment.user_id)
             
-            # Валидация даты истечения
-            MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
-            if expires_at > MAX_REASONABLE_EXPIRY:
+            # Константы для VIP подписок
+            VIP_EXPIRES_AT = 4102434000  # 01.01.2100 00:00 UTC
+            
+            if is_vip:
+                expires_at = VIP_EXPIRES_AT
+                logger.info(f"[SUBSCRIPTION] Creating VIP subscription renewal for user {payment.user_id}, expires_at={expires_at}")
+            else:
+                expires_at = now + duration_sec
+            
+            # Валидация даты истечения (только для не-VIP)
+            if not is_vip:
+                MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
+                if expires_at > MAX_REASONABLE_EXPIRY:
                 error_msg = f"Calculated expiry date is too far in future: {expires_at}"
                 logger.error(f"[SUBSCRIPTION] {error_msg}")
                 return False, error_msg
@@ -1267,7 +1280,7 @@ class SubscriptionPurchaseService:
                         )
                     else:
                         # Создаем новую подписку
-                        traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+                        # traffic_limit_mb уже установлен выше (из тарифа или VIP)
                         cursor = await conn.execute(
                             """
                             INSERT INTO subscriptions (user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified, traffic_limit_mb)

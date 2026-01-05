@@ -214,15 +214,24 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             created_at = created_at if created_at is not None else 0
             expires_at = expires_at if expires_at is not None else 0
             
-            # Получаем email пользователя
+            # Получаем email пользователя и VIP статус
             user_email = ""
+            is_vip = False
             with open_connection(DB_PATH) as conn:
                 cursor = conn.cursor()
                 user_email = UserRepository._resolve_user_email(cursor, user_id)
+                cursor.execute("SELECT COALESCE(is_vip, 0) FROM users WHERE user_id = ?", (user_id,))
+                vip_row = cursor.fetchone()
+                is_vip = bool(vip_row[0] if vip_row else 0)
             
             # Формируем информацию об истечении
-            expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
-            is_expired = expires_at > 0 and expires_at <= now_ts
+            # Для VIP подписок показываем "Безлимит"
+            if is_vip:
+                expiry_info = {"label": "Безлимит", "state": "unlimited"}
+                is_expired = False  # VIP подписки не истекают
+            else:
+                expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
+                is_expired = expires_at > 0 and expires_at <= now_ts
             lifetime_total = max(expires_at - created_at, 0) if expires_at > 0 and created_at > 0 else 0
             elapsed = max(now_ts - created_at, 0) if created_at > 0 else 0
             lifetime_progress = 0.0
@@ -264,25 +273,35 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 })
             
             # Вычисляем трафик подписки
-            traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
-            traffic_limit_bytes = subscription_repo.get_subscription_traffic_limit(sub_id)
+            # Для VIP подписок показываем "Безлимит"
+            if is_vip:
+                traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
+                traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
+                traffic_limit_display = "Безлимит"
+                traffic_limit_bytes = 0  # 0 = безлимит
+                effective_limit_mb = 0
+                usage_percent = None
+                over_limit = False
+            else:
+                traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
+                traffic_limit_bytes = subscription_repo.get_subscription_traffic_limit(sub_id)
 
-            traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
-            traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
+                traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
+                traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
 
-            # Переводим эффективный лимит в МБ для отображения/редактирования
-            effective_limit_mb = None
-            if traffic_limit_bytes and traffic_limit_bytes > 0:
-                try:
-                    effective_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
-                except (TypeError, ValueError, OverflowError):
-                    effective_limit_mb = None
+                # Переводим эффективный лимит в МБ для отображения/редактирования
+                effective_limit_mb = None
+                if traffic_limit_bytes and traffic_limit_bytes > 0:
+                    try:
+                        effective_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
+                    except (TypeError, ValueError, OverflowError):
+                        effective_limit_mb = None
 
-            usage_percent = None
-            over_limit = False
-            if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
-                usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
-                over_limit = traffic_usage_bytes > traffic_limit_bytes
+                usage_percent = None
+                over_limit = False
+                if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
+                    usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
+                    over_limit = traffic_usage_bytes > traffic_limit_bytes
 
             traffic_info = {
                 "display": traffic_display,
@@ -297,6 +316,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 "id": sub_id,
                 "user_id": user_id,
                 "user_email": user_email or "—",
+                "is_vip": is_vip,
                 "token": (token[:16] + "..." if len(token) > 16 else token) if token else "—",
                 "token_full": token or "",
                 "created_at": _format_timestamp(created_at) if created_at > 0 else "—",
@@ -310,8 +330,8 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 "tariff_id": tariff_id,
                 "tariff_name": tariff_name or "—",
                 "is_active": bool(is_active),
-                "status": "Активна" if (is_active and not is_expired) else "Истекла",
-                "status_class": "status-active" if (is_active and not is_expired) else "status-expired",
+                "status": "Активна" if (is_active and not is_expired) else ("Деактивирована" if not is_active else "Истекла"),
+                "status_class": "status-active" if (is_active and not is_expired) else ("status-inactive" if not is_active else "status-expired"),
                 "keys_count": keys_count or 0,
                 "subscription_keys": keys_info,
                 "traffic": traffic_info,

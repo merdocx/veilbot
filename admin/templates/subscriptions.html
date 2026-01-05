@@ -73,7 +73,12 @@
                         <span class="text-muted">#{{ subscription.id }}</span>
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--user">
-                        <div class="cell-primary">TG: {{ subscription.user_id }}</div>
+                        <div class="cell-primary">
+                            {% if subscription.is_vip %}
+                            <span class="material-icons icon-small" style="color: #FFD700; vertical-align: middle;" title="VIP пользователь">star</span>
+                            {% endif %}
+                            TG: {{ subscription.user_id }}
+                        </div>
                         {% if subscription.user_email and subscription.user_email != "—" %}
                         <div class="cell-secondary text-muted">{{ subscription.user_email }}</div>
                         {% endif %}

@@ -72,7 +72,10 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
     total = repo.count_users(query=q)
     rows = repo.list_users(query=q, limit=limit, offset=offset)
     user_list = []
-    for uid, ref_cnt in rows:
+    for row in rows:
+        uid = row[0]
+        ref_cnt = row[1] if len(row) > 1 else 0
+        is_vip = bool(row[2] if len(row) > 2 else 0)
         ref_cnt = ref_cnt or 0
         overview = repo.get_user_overview(uid)
         last_activity = overview.get("last_activity") or None
@@ -84,6 +87,7 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
             "referral_count": ref_cnt,
             "last_activity": last_activity,
             "is_active": _is_user_active(uid, overview),
+            "is_vip": is_vip,
         })
     
     # Дополнительная статистика
@@ -103,6 +107,7 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
         "referral_count": referral_count,
         "pages": pages,
         "q": q or "",
+        "csrf_token": get_csrf_token(request),
     })
 
 
@@ -337,4 +342,79 @@ async def update_key_expiry(request: Request, key_id: int):
         return JSONResponse({"success": True})
     except Exception as e:
         log_admin_action(request, "UPDATE_KEY_EXPIRY_ERROR", f"Key ID: {key_id}, Error: {str(e)}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/users/{user_id}/toggle-vip")
+async def toggle_user_vip(request: Request, user_id: int, csrf_token: str = Form(...)):
+    """Переключение VIP статуса пользователя"""
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Not authorized"}, status_code=403)
+    
+    # Проверка CSRF
+    from ..dependencies.csrf import validate_csrf_token
+    if not validate_csrf_token(request, csrf_token):
+        return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
+    
+    try:
+        repo = UserRepository(DB_PATH)
+        current_vip_status = repo.is_user_vip(user_id)
+        new_vip_status = not current_vip_status
+        
+        # Устанавливаем VIP статус
+        repo.set_user_vip_status(user_id, new_vip_status)
+        
+        # Если установлен VIP, обновляем все активные подписки пользователя
+        if new_vip_status:
+            from app.repositories.subscription_repository import SubscriptionRepository
+            import time
+            sub_repo = SubscriptionRepository(DB_PATH)
+            now = int(time.time())
+            VIP_EXPIRES_AT = 4102434000  # 01.01.2100 00:00 UTC
+            VIP_TRAFFIC_LIMIT_MB = 0  # 0 = безлимит
+            
+            # Получаем все активные подписки пользователя
+            with open_connection(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT id FROM subscriptions
+                    WHERE user_id = ? AND is_active = 1
+                """, (user_id,))
+                subscription_ids = [row[0] for row in c.fetchall()]
+            
+            # Обновляем каждую подписку
+            for sub_id in subscription_ids:
+                sub_repo.extend_subscription(sub_id, VIP_EXPIRES_AT)
+                # Обновляем traffic_limit_mb
+                with open_connection(DB_PATH) as conn:
+                    c = conn.cursor()
+                    c.execute("""
+                        UPDATE subscriptions
+                        SET traffic_limit_mb = ?
+                        WHERE id = ?
+                    """, (VIP_TRAFFIC_LIMIT_MB, sub_id))
+                    conn.commit()
+            
+            # Отправляем уведомление пользователю
+            bot = get_bot()
+            if bot:
+                try:
+                    await safe_send_message(
+                        bot,
+                        user_id,
+                        "🎉 Поздравляем! Вам присвоен VIP статус.\n"
+                        "Ваши подписки теперь безлимитные по сроку действия и трафику!"
+                    )
+                except Exception as e:
+                    # Логируем ошибку, но не прерываем выполнение
+                    import logging
+                    logging.error(f"Ошибка отправки уведомления VIP пользователю {user_id}: {e}")
+        
+        log_admin_action(request, "TOGGLE_VIP", f"User ID: {user_id}, VIP: {new_vip_status}")
+        return JSONResponse({"success": True, "is_vip": new_vip_status})
+    
+    except Exception as e:
+        import logging
+        logging.error(f"Ошибка переключения VIP статуса для пользователя {user_id}: {e}", exc_info=True)
+        log_admin_action(request, "TOGGLE_VIP_ERROR", f"User ID: {user_id}, Error: {str(e)}")
         return JSONResponse({"error": str(e)}, status_code=500)

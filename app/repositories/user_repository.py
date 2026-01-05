@@ -58,7 +58,8 @@ class UserRepository:
                 like = f"%{query.strip()}%"
                 sql = (
                     "SELECT u.user_id, "
-                    "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count "
+                    "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count, "
+                    "       COALESCE(u.is_vip, 0) as is_vip "
                     "FROM users u "
                     "WHERE CAST(u.user_id AS TEXT) LIKE ? "
                     "ORDER BY u.user_id LIMIT ? OFFSET ?"
@@ -67,7 +68,8 @@ class UserRepository:
             else:
                 sql = (
                     "SELECT u.user_id, "
-                    "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count "
+                    "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count, "
+                    "       COALESCE(u.is_vip, 0) as is_vip "
                     "FROM users u "
                     "ORDER BY u.user_id LIMIT ? OFFSET ?"
                 )
@@ -162,5 +164,63 @@ class UserRepository:
                     }
                 )
             return results
+
+    def get_user(self, user_id: int) -> Optional[dict]:
+        """Получить информацию о пользователе, включая VIP статус"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT user_id, username, first_name, last_name, 
+                       created_at, last_active_at, blocked, 
+                       COALESCE(is_vip, 0) as is_vip
+                FROM users
+                WHERE user_id = ?
+            """, (user_id,))
+            row = c.fetchone()
+            if not row:
+                return None
+            return {
+                "user_id": row[0],
+                "username": row[1],
+                "first_name": row[2],
+                "last_name": row[3],
+                "created_at": row[4],
+                "last_active_at": row[5],
+                "blocked": bool(row[6]),
+                "is_vip": bool(row[7]),
+            }
+
+    def is_user_vip(self, user_id: int) -> bool:
+        """Проверить, является ли пользователь VIP"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT COALESCE(is_vip, 0) FROM users WHERE user_id = ?
+            """, (user_id,))
+            row = c.fetchone()
+            return bool(row[0] if row else 0)
+
+    def set_user_vip_status(self, user_id: int, is_vip: bool) -> None:
+        """Установить VIP статус пользователя"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE users 
+                SET is_vip = ?
+                WHERE user_id = ?
+            """, (1 if is_vip else 0, user_id))
+            conn.commit()
+
+    def get_vip_users(self) -> List[Tuple[int, int]]:
+        """Получить список всех VIP пользователей (user_id, is_vip)"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT user_id, COALESCE(is_vip, 0) as is_vip
+                FROM users
+                WHERE COALESCE(is_vip, 0) = 1
+                ORDER BY user_id
+            """)
+            return c.fetchall()
 
 

@@ -247,7 +247,13 @@ class SubscriptionService:
             logger.warning(f"Subscription {subscription_id} is not active")
             return None
 
-        if expires_at <= now:
+        # Проверяем VIP статус пользователя
+        from app.repositories.user_repository import UserRepository
+        user_repo = UserRepository()
+        is_vip = user_repo.is_user_vip(user_id)
+        
+        # Для VIP подписок пропускаем проверку срока действия
+        if not is_vip and expires_at <= now:
             logger.warning(f"Subscription {subscription_id} has expired")
             return None
         
@@ -256,11 +262,13 @@ class SubscriptionService:
         traffic_limit_bytes: Optional[int] = None
         traffic_usage_bytes: int = 0
 
-        # Вычисляем использованный трафик динамически, суммируя трафик всех ключей подписки
-        traffic_usage_bytes = self.repository.get_subscription_traffic_sum(subscription_id)
+        # Для VIP подписок пропускаем проверку трафика
+        if not is_vip:
+            # Вычисляем использованный трафик динамически, суммируя трафик всех ключей подписки
+            traffic_usage_bytes = self.repository.get_subscription_traffic_sum(subscription_id)
 
-        # Берём эффективный лимит через репозиторий, чтобы логика совпадала с админкой
-        traffic_limit_bytes = self.repository.get_subscription_traffic_limit(subscription_id)
+            # Берём эффективный лимит через репозиторий, чтобы логика совпадала с админкой
+            traffic_limit_bytes = self.repository.get_subscription_traffic_limit(subscription_id)
 
         with get_db_cursor(commit=True) as cursor:
             # Тариф сейчас нужен только для отображения имени тарифа в метаданных
@@ -277,7 +285,8 @@ class SubscriptionService:
             if limits_row:
                 tariff_name = limits_row[0]
 
-            if traffic_limit_bytes and traffic_usage_bytes > traffic_limit_bytes:
+            # Для VIP подписок пропускаем проверку превышения лимита трафика
+            if not is_vip and traffic_limit_bytes and traffic_usage_bytes > traffic_limit_bytes:
                 cursor.execute(
                     """
                     SELECT traffic_over_limit_at
@@ -562,7 +571,22 @@ class SubscriptionService:
             )
             return None
         
-        expires_at = now + duration_sec
+        # Проверяем VIP статус пользователя
+        from app.repositories.user_repository import UserRepository
+        user_repo = UserRepository()
+        is_vip = user_repo.is_user_vip(user_id)
+        
+        # Константы для VIP подписок
+        VIP_EXPIRES_AT = 4102434000  # 01.01.2100 00:00 UTC
+        VIP_TRAFFIC_LIMIT_MB = 0  # 0 = безлимит
+        
+        if is_vip:
+            expires_at = VIP_EXPIRES_AT
+            traffic_limit_mb = VIP_TRAFFIC_LIMIT_MB
+            logger.info(f"[SUBSCRIPTION] Creating VIP subscription for user {user_id}, expires_at={expires_at}")
+        else:
+            expires_at = now + duration_sec
+            traffic_limit_mb = None  # Будет установлен из тарифа
         
         # ВАЛИДАЦИЯ: Проверяем только базовую валидность (не слишком далеко в будущем)
         # НЕ проверяем соответствие created_at + duration_sec, так как подписка может быть продлена
@@ -632,7 +656,16 @@ class SubscriptionService:
                     'expires_at': existing_expires_at,
                 }
             
+            # Проверяем VIP статус пользователя
+            from app.repositories.user_repository import UserRepository
+            user_repo = UserRepository()
+            is_vip = user_repo.is_user_vip(user_id)
+            
+            # Константы для VIP подписок
+            VIP_EXPIRES_AT = 4102434000  # 01.01.2100 00:00 UTC
+            
             # ВАЖНО: Не изменяем срок подписки, если он был установлен вручную через админку
+            # или если пользователь VIP (безлимитная подписка)
             # Признак ручной установки: expires_at очень далеко в будущем (например, 01.01.2100)
             MANUAL_EXPIRY_THRESHOLD = 4102434000  # 01.01.2100 - признак ручной установки
             ONE_YEAR_IN_SECONDS = 365 * 24 * 3600
@@ -641,10 +674,10 @@ class SubscriptionService:
                 (existing_expires_at > now and (existing_expires_at - now) > (5 * ONE_YEAR_IN_SECONDS))
             )
             
-            if is_manually_set:
-                # Срок был установлен вручную - не изменяем его при продлении
+            if is_vip or is_manually_set:
+                # VIP подписка или срок был установлен вручную - не изменяем его при продлении
                 logger.info(
-                    f"[SUBSCRIPTION] Subscription {existing_id} has manually set expiry date: "
+                    f"[SUBSCRIPTION] Subscription {existing_id} has {'VIP' if is_vip else 'manually set'} expiry date: "
                     f"{existing_expires_at}. Not extending, keeping original expiry."
                 )
                 new_expires_at = existing_expires_at
@@ -867,6 +900,7 @@ class SubscriptionService:
                 subscription_token=subscription_token,
                 expires_at=expires_at,
                 tariff_id=tariff_id,
+                traffic_limit_mb=traffic_limit_mb,
             )
 
             # Создание ключей на всех активных V2Ray серверах

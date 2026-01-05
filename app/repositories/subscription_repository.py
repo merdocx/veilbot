@@ -120,30 +120,39 @@ class SubscriptionRepository:
             conn.commit()
 
     def get_expired_subscriptions(self, grace_threshold: int) -> List[Tuple]:
-        """Получить истекшие подписки (для grace period) - включая деактивированные"""
+        """Получить истекшие подписки (для grace period) - включая деактивированные
+        Исключает VIP подписки
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             # Ищем все подписки, которые истекли более 24 часов назад
             # Включаем деактивированные, так как они тоже должны быть удалены
+            # Исключаем VIP подписки
             c.execute(
                 """
-                SELECT id, user_id, subscription_token
-                FROM subscriptions
-                WHERE expires_at <= ? AND expires_at > 0
+                SELECT s.id, s.user_id, s.subscription_token
+                FROM subscriptions s
+                LEFT JOIN users u ON s.user_id = u.user_id
+                WHERE s.expires_at <= ? AND s.expires_at > 0
+                  AND COALESCE(u.is_vip, 0) = 0
                 """,
                 (grace_threshold,),
             )
             return c.fetchall()
 
     def get_expiring_subscriptions(self, now: int) -> List[Tuple]:
-        """Получить активные подписки для проверки уведомлений"""
+        """Получить активные подписки для проверки уведомлений
+        Исключает VIP подписки
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
-                SELECT id, user_id, subscription_token, expires_at, created_at, COALESCE(notified, 0) as notified
-                FROM subscriptions
-                WHERE expires_at > ? AND is_active = 1
+                SELECT s.id, s.user_id, s.subscription_token, s.expires_at, s.created_at, COALESCE(s.notified, 0) as notified
+                FROM subscriptions s
+                LEFT JOIN users u ON s.user_id = u.user_id
+                WHERE s.expires_at > ? AND s.is_active = 1
+                  AND COALESCE(u.is_vip, 0) = 0
                 """,
                 (now,),
             )
@@ -429,13 +438,17 @@ class SubscriptionRepository:
             await conn.commit()
 
     async def get_expired_subscriptions_async(self, grace_threshold: int) -> List[Tuple]:
-        """Получить истекшие подписки (для grace period) (асинхронная версия)"""
+        """Получить истекшие подписки (для grace period) (асинхронная версия)
+        Исключает VIP подписки
+        """
         async with open_async_connection(self.db_path) as conn:
             async with conn.execute(
                 """
-                SELECT id, user_id, subscription_token
-                FROM subscriptions
-                WHERE expires_at <= ? AND is_active = 1
+                SELECT s.id, s.user_id, s.subscription_token
+                FROM subscriptions s
+                LEFT JOIN users u ON s.user_id = u.user_id
+                WHERE s.expires_at <= ? AND s.is_active = 1
+                  AND COALESCE(u.is_vip, 0) = 0
                 """,
                 (grace_threshold,),
             ) as cursor:
@@ -443,13 +456,17 @@ class SubscriptionRepository:
                 return rows
 
     async def get_expiring_subscriptions_async(self, now: int) -> List[Tuple]:
-        """Получить активные подписки для проверки уведомлений (асинхронная версия)"""
+        """Получить активные подписки для проверки уведомлений (асинхронная версия)
+        Исключает VIP подписки
+        """
         async with open_async_connection(self.db_path) as conn:
             async with conn.execute(
                 """
-                SELECT id, user_id, subscription_token, expires_at, created_at, COALESCE(notified, 0) as notified
-                FROM subscriptions
-                WHERE expires_at > ? AND is_active = 1
+                SELECT s.id, s.user_id, s.subscription_token, s.expires_at, s.created_at, COALESCE(s.notified, 0) as notified
+                FROM subscriptions s
+                LEFT JOIN users u ON s.user_id = u.user_id
+                WHERE s.expires_at > ? AND s.is_active = 1
+                  AND COALESCE(u.is_vip, 0) = 0
                 """,
                 (now,),
             ) as cursor:
@@ -555,7 +572,7 @@ class SubscriptionRepository:
                 await conn.execute("PRAGMA foreign_keys=ON")
 
     def list_subscriptions(self, limit: int = 50, offset: int = 0) -> List[Tuple]:
-        """Получить список всех активных подписок с информацией о ключах"""
+        """Получить список всех подписок с информацией о ключах"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
@@ -586,7 +603,6 @@ class SubscriptionRepository:
                     WHERE protocol = 'outline'
                     GROUP BY subscription_id
                 ) ok ON ok.subscription_id = s.id
-                WHERE s.is_active = 1
                 ORDER BY s.created_at DESC
                 LIMIT ? OFFSET ?
                 """,
@@ -595,10 +611,10 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def count_subscriptions(self) -> int:
-        """Получить общее количество активных подписок"""
+        """Получить общее количество всех подписок"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = 1")
+            c.execute("SELECT COUNT(*) FROM subscriptions")
             return c.fetchone()[0]
 
     def get_subscription_by_id(self, subscription_id: int) -> Optional[Tuple]:
@@ -885,6 +901,7 @@ class SubscriptionRepository:
         - Если traffic_limit_mb установлен (не NULL), используется он (0 = безлимит)
         - Если traffic_limit_mb NULL, используется лимит из тарифа
         Возвращает только подписки с лимитом > 0 (безлимитные не включаются)
+        Исключает VIP подписки
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -901,9 +918,11 @@ class SubscriptionRepository:
                     t.name AS tariff_name
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN users u ON s.user_id = u.user_id
                 WHERE s.is_active = 1
                   AND s.expires_at > ?
                   AND (COALESCE(s.traffic_limit_mb, t.traffic_limit_mb, 0) > 0)
+                  AND COALESCE(u.is_vip, 0) = 0
             """, (now,))
             return c.fetchall()
     

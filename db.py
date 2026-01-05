@@ -1028,6 +1028,36 @@ def migrate_remove_traffic_snapshot_tables():
         conn.close()
 
 
+def migrate_add_is_vip_to_users():
+    """Добавление колонки is_vip в таблицу users для VIP пользователей"""
+    import logging
+    logging.info("Миграция: добавление колонки is_vip в users")
+    
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    cursor = conn.cursor()
+    
+    try:
+        # Проверяем, существует ли колонка is_vip
+        cursor.execute("PRAGMA table_info(users)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        if 'is_vip' in columns:
+            logging.info("Колонка is_vip уже существует в users, пропускаем миграцию")
+            return
+        
+        # Добавляем колонку is_vip
+        cursor.execute("ALTER TABLE users ADD COLUMN is_vip INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Колонка is_vip успешно добавлена в users")
+        
+    except Exception as e:
+        logging.error(f"Ошибка миграции добавления колонки is_vip: {e}", exc_info=True)
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def migrate_remove_unlimited_column():
     """Удаление колонки unlimited из таблицы subscriptions"""
     import logging
@@ -1383,6 +1413,7 @@ def _run_all_migrations():
     migrate_fix_v2ray_keys_foreign_keys()  # Исправляем foreign keys после всех миграций, изменяющих структуру v2ray_keys
     migrate_remove_traffic_snapshot_tables()
     migrate_remove_unlimited_column()
+    migrate_add_is_vip_to_users()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

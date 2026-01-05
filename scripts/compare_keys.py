@@ -76,7 +76,7 @@ def load_db_keys(server: ServerInfo) -> List[Dict[str, Any]]:
         if server.protocol == "outline":
             cursor.execute(
                 """
-                SELECT id, user_id, email, key_id, access_url, expiry_at
+                SELECT id, user_id, email, key_id, access_url
                 FROM keys
                 WHERE server_id = ?
                 """,
@@ -85,7 +85,7 @@ def load_db_keys(server: ServerInfo) -> List[Dict[str, Any]]:
         elif server.protocol == "v2ray":
             cursor.execute(
                 """
-                SELECT id, user_id, email, v2ray_uuid, level, created_at, expiry_at
+                SELECT id, user_id, email, v2ray_uuid, level, created_at
                 FROM v2ray_keys
                 WHERE server_id = ?
                 """,
