@@ -200,21 +200,57 @@ class SubscriptionPurchaseService:
                 expires_at_matches_expected = abs(existing_expires_at - expected_expires_at) < 3600  # Разница менее часа
                 
                 # Если подписка создана очень недавно и срок соответствует ожидаемому (только что создана),
-                # то это покупка, а не продление
-                if is_very_recent and expires_at_matches_expected and purchase_notification_not_sent:
-                    logger.info(
-                        f"[SUBSCRIPTION] User {payment.user_id} has very recent subscription {subscription_id} "
-                        f"(created {subscription_age}s ago, expires_at={existing_expires_at}, "
-                        f"expected={expected_expires_at}, purchase_notification_sent={purchase_notification_sent}). "
-                        f"This is a PURCHASE (subscription just created, not a renewal)."
-                    )
-                    
-                    # Используем существующую подписку, но отправляем уведомление о покупке
-                    # НЕ продлеваем подписку, так как она уже создана с правильным сроком
-                    existing_subscription = existing_subscription_row
-                    return await self._send_purchase_notification_for_existing_subscription(
-                        payment, tariff, existing_subscription, now
-                    )
+                # проверяем, есть ли уже другие completed платежи для этой подписки
+                if is_very_recent and expires_at_matches_expected:
+                    # Проверяем, есть ли другие completed платежи для этого пользователя с тем же тарифом
+                    # созданные после создания подписки
+                    async with open_async_connection(self.db_path) as conn:
+                        async with conn.execute(
+                            """
+                            SELECT COUNT(*) FROM payments
+                            WHERE user_id = ? 
+                            AND tariff_id = ?
+                            AND status = 'completed'
+                            AND protocol = 'v2ray'
+                            AND metadata LIKE '%subscription%'
+                            AND created_at >= ?
+                            AND payment_id != ?
+                            """,
+                            (payment.user_id, payment.tariff_id, created_at, payment.payment_id)
+                        ) as check_cursor:
+                            other_completed_count = (await check_cursor.fetchone())[0]
+                            
+                            # Если других completed платежей нет, это покупка (даже если purchase_notification_sent=1)
+                            # Это может быть retry обработки того же платежа или подписка была создана автоматически
+                            if other_completed_count == 0:
+                                logger.info(
+                                    f"[SUBSCRIPTION] User {payment.user_id} has very recent subscription {subscription_id} "
+                                    f"(created {subscription_age}s ago, expires_at={existing_expires_at}, "
+                                    f"expected={expected_expires_at}, purchase_notification_sent={purchase_notification_sent}). "
+                                    f"No other completed payments found. This is a PURCHASE (subscription just created, not a renewal)."
+                                )
+                                
+                                # Используем существующую подписку, но отправляем уведомление о покупке
+                                # НЕ продлеваем подписку, так как она уже создана с правильным сроком
+                                existing_subscription = existing_subscription_row
+                                return await self._send_purchase_notification_for_existing_subscription(
+                                    payment, tariff, existing_subscription, now
+                                )
+                            elif purchase_notification_not_sent:
+                                # Есть другие completed платежи, но уведомление не отправлено - это может быть retry
+                                logger.info(
+                                    f"[SUBSCRIPTION] User {payment.user_id} has very recent subscription {subscription_id} "
+                                    f"(created {subscription_age}s ago, expires_at={existing_expires_at}, "
+                                    f"expected={expected_expires_at}, purchase_notification_sent={purchase_notification_sent}). "
+                                    f"This is a PURCHASE (subscription just created, not a renewal)."
+                                )
+                                
+                                # Используем существующую подписку, но отправляем уведомление о покупке
+                                # НЕ продлеваем подписку, так как она уже создана с правильным сроком
+                                existing_subscription = existing_subscription_row
+                                return await self._send_purchase_notification_for_existing_subscription(
+                                    payment, tariff, existing_subscription, now
+                                )
                 
                 # Проверяем, не является ли это retry того же платежа
                 # Если подписка была создана недавно и уведомление не отправлено, 
@@ -351,7 +387,14 @@ class SubscriptionPurchaseService:
                 return await self._extend_subscription(payment, tariff, existing_subscription, now, is_purchase=False)
             
             # Создаем новую подписку
-            expires_at = now + tariff['duration_sec']
+            # ВАЛИДАЦИЯ: Проверяем, что duration_sec не None и не 0
+            duration_sec = tariff.get('duration_sec', 0) or 0
+            if duration_sec is None or duration_sec <= 0:
+                error_msg = f"Invalid tariff duration_sec for user {payment.user_id}, tariff_id={tariff.get('id')}: duration_sec={duration_sec}"
+                logger.error(f"[SUBSCRIPTION] {error_msg}")
+                return False, error_msg
+            
+            expires_at = now + duration_sec
             
             # Валидация даты истечения
             MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
@@ -599,26 +642,44 @@ class SubscriptionPurchaseService:
                 new_expires_at = existing_expires_at  # Используем существующий срок
             else:
                 # Продление: увеличиваем срок действия
-                # ВАЖНО: Валидация существующей даты истечения
-                MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
-                if existing_expires_at > MAX_REASONABLE_EXPIRY:
-                    logger.warning(
-                        f"[SUBSCRIPTION] Subscription {subscription_id} has unreasonable expiry date: "
-                        f"{existing_expires_at} (more than 10 years in future). "
-                        f"Resetting to now + duration."
-                    )
-                    # Исправляем на разумную дату: используем текущее время + длительность тарифа
-                    existing_expires_at = now + tariff['duration_sec']
+                # ВАЖНО: Не изменяем срок подписки, если он был установлен вручную через админку
+                # Признак ручной установки: expires_at очень далеко в будущем (например, 01.01.2100)
+                MANUAL_EXPIRY_THRESHOLD = 4102434000  # 01.01.2100 - признак ручной установки
+                ONE_YEAR_IN_SECONDS = 365 * 24 * 3600
+                is_manually_set = (
+                    existing_expires_at >= MANUAL_EXPIRY_THRESHOLD or
+                    (existing_expires_at > now and (existing_expires_at - now) > (5 * ONE_YEAR_IN_SECONDS))
+                )
                 
-                new_expires_at = existing_expires_at + tariff['duration_sec']
-                
-                # Дополнительная валидация новой даты
-                if new_expires_at > MAX_REASONABLE_EXPIRY:
-                    logger.error(
-                        f"[SUBSCRIPTION] Calculated expiry date is too far in future for subscription {subscription_id}: "
-                        f"{new_expires_at}. Using now + duration instead."
+                if is_manually_set:
+                    # Срок был установлен вручную - не изменяем его при продлении
+                    logger.info(
+                        f"[SUBSCRIPTION] Subscription {subscription_id} has manually set expiry date: "
+                        f"{existing_expires_at}. Not extending, keeping original expiry."
                     )
-                    new_expires_at = now + tariff['duration_sec']
+                    new_expires_at = existing_expires_at
+                else:
+                    # Обычное продление: увеличиваем срок действия
+                    # ВАЖНО: Валидация существующей даты истечения
+                    MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
+                    if existing_expires_at > MAX_REASONABLE_EXPIRY:
+                        logger.warning(
+                            f"[SUBSCRIPTION] Subscription {subscription_id} has unreasonable expiry date: "
+                            f"{existing_expires_at} (more than 10 years in future). "
+                            f"Resetting to now + duration."
+                        )
+                        # Исправляем на разумную дату: используем текущее время + длительность тарифа
+                        existing_expires_at = now + tariff['duration_sec']
+                    
+                    new_expires_at = existing_expires_at + tariff['duration_sec']
+                    
+                    # Дополнительная валидация новой даты
+                    if new_expires_at > MAX_REASONABLE_EXPIRY:
+                        logger.error(
+                            f"[SUBSCRIPTION] Calculated expiry date is too far in future for subscription {subscription_id}: "
+                            f"{new_expires_at}. Using now + duration instead."
+                        )
+                        new_expires_at = now + tariff['duration_sec']
                 
                 logger.info(
                     f"[SUBSCRIPTION] Extending subscription {subscription_id} for user {payment.user_id}: "
@@ -1132,20 +1193,20 @@ class SubscriptionPurchaseService:
                     )
                 
                 if purchase_notification_sent:
-                    # Уведомление уже отправлено - это дублирование, просто помечаем платеж как completed
-                    logger.info(f"[SUBSCRIPTION] Notification already sent for subscription {subscription_id}, marking payment as completed")
-                    try:
-                        update_success = await self.payment_repo.try_update_status(
-                            payment.payment_id,
-                            PaymentStatus.COMPLETED,
-                            PaymentStatus.PAID
-                        )
-                        if not update_success:
-                            payment.mark_as_completed()
-                            await self.payment_repo.update(payment)
-                    except Exception as e:
-                        logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
-                    return True, None
+                            # Уведомление уже отправлено - это дублирование, просто помечаем платеж как completed
+                            logger.info(f"[SUBSCRIPTION] Notification already sent for subscription {subscription_id}, marking payment as completed")
+                            try:
+                                update_success = await self.payment_repo.try_update_status(
+                                    payment.payment_id,
+                                    PaymentStatus.COMPLETED,
+                                    PaymentStatus.PAID
+                                )
+                                if not update_success:
+                                    payment.mark_as_completed()
+                                    await self.payment_repo.update(payment)
+                            except Exception as e:
+                                logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
+                            return True, None
                 
                 # Если уведомление не отправлено - отправляем уведомление о покупке для существующей подписки
                 logger.info(
@@ -1156,7 +1217,14 @@ class SubscriptionPurchaseService:
                     payment, tariff, existing_subscription, now
                 )
             
-            expires_at = now + tariff['duration_sec']
+            # ВАЛИДАЦИЯ: Проверяем, что duration_sec не None и не 0
+            duration_sec = tariff.get('duration_sec', 0) or 0
+            if duration_sec is None or duration_sec <= 0:
+                error_msg = f"Invalid tariff duration_sec for user {payment.user_id}, tariff_id={tariff.get('id')}: duration_sec={duration_sec}"
+                logger.error(f"[SUBSCRIPTION] {error_msg}")
+                return False, error_msg
+            
+            expires_at = now + duration_sec
             
             # Шаг 1: Генерируем уникальный токен
             subscription_token = None

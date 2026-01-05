@@ -1028,6 +1028,103 @@ def migrate_remove_traffic_snapshot_tables():
         conn.close()
 
 
+def migrate_remove_unlimited_column():
+    """Удаление колонки unlimited из таблицы subscriptions"""
+    import logging
+    logging.info("Миграция: удаление колонки unlimited из subscriptions")
+    
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    cursor = conn.cursor()
+    
+    try:
+        # Проверяем, существует ли колонка unlimited
+        cursor.execute("PRAGMA table_info(subscriptions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        if 'unlimited' not in columns:
+            logging.info("Колонка unlimited не существует в subscriptions, пропускаем миграцию")
+            return
+        
+        # Отключаем foreign keys для безопасного пересоздания таблицы
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        
+        # Создаем новую таблицу без колонки unlimited
+        cursor.execute("""
+            CREATE TABLE subscriptions_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                subscription_token TEXT UNIQUE NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                tariff_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                last_updated_at INTEGER,
+                notified INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0,
+                traffic_over_limit_at INTEGER,
+                traffic_over_limit_notified INTEGER DEFAULT 0,
+                purchase_notification_sent INTEGER DEFAULT 0,
+                traffic_limit_mb INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (tariff_id) REFERENCES tariffs(id)
+            )
+        """)
+        
+        # Копируем данные из старой таблицы (исключая unlimited)
+        cursor.execute("""
+            INSERT INTO subscriptions_new (
+                id, user_id, subscription_token, created_at, expires_at, tariff_id,
+                is_active, last_updated_at, notified, traffic_usage_bytes,
+                traffic_over_limit_at, traffic_over_limit_notified,
+                purchase_notification_sent, traffic_limit_mb
+            )
+            SELECT 
+                id, user_id, subscription_token, created_at, expires_at, tariff_id,
+                is_active, last_updated_at, notified, traffic_usage_bytes,
+                traffic_over_limit_at, traffic_over_limit_notified,
+                purchase_notification_sent, traffic_limit_mb
+            FROM subscriptions
+        """)
+        
+        # Удаляем старую таблицу
+        cursor.execute("DROP TABLE subscriptions")
+        
+        # Переименовываем новую таблицу
+        cursor.execute("ALTER TABLE subscriptions_new RENAME TO subscriptions")
+        
+        # Восстанавливаем индексы
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id 
+            ON subscriptions(user_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_expires_at 
+            ON subscriptions(expires_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_is_active 
+            ON subscriptions(is_active)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_token 
+            ON subscriptions(subscription_token)
+        """)
+        
+        conn.commit()
+        logging.info("Колонка unlimited успешно удалена из subscriptions")
+        
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Ошибка миграции удаления колонки unlimited: {e}")
+        raise
+    finally:
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            pass
+        conn.close()
+
+
 def migrate_add_purchase_notification_sent():
     """Добавление поля purchase_notification_sent для отслеживания отправки уведомлений о покупке подписки"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1285,6 +1382,7 @@ def _run_all_migrations():
     migrate_remove_traffic_limit_fields_from_v2ray_keys()
     migrate_fix_v2ray_keys_foreign_keys()  # Исправляем foreign keys после всех миграций, изменяющих структуру v2ray_keys
     migrate_remove_traffic_snapshot_tables()
+    migrate_remove_unlimited_column()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

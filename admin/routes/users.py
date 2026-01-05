@@ -37,6 +37,30 @@ DATABASE_PATH = settings.DATABASE_PATH
 DB_PATH = DATABASE_PATH
 
 
+def _is_user_active(user_id: int, overview: dict) -> bool:
+    """Проверяет, является ли пользователь активным (имеет ключи, связанные с активными подписками)"""
+    import time
+    now = int(time.time())
+    with open_connection(DB_PATH) as conn:
+        c = conn.cursor()
+        # Проверяем, есть ли ключи с активными подписками
+        c.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT k.id
+                FROM keys k
+                JOIN subscriptions s ON k.subscription_id = s.id
+                WHERE k.user_id = ? AND s.expires_at > ? AND s.is_active = 1
+                UNION
+                SELECT k.id
+                FROM v2ray_keys k
+                JOIN subscriptions s ON k.subscription_id = s.id
+                WHERE k.user_id = ? AND s.expires_at > ? AND s.is_active = 1
+            )
+        """, (user_id, now, user_id, now))
+        count = c.fetchone()[0]
+        return count > 0
+
+
 @router.get("/users", response_class=HTMLResponse)
 async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | None = None):
     """Страница списка пользователей"""
@@ -59,12 +83,14 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
             "email": overview.get("email") or "",
             "referral_count": ref_cnt,
             "last_activity": last_activity,
-            "is_active": bool((overview.get("outline_count") or 0) + (overview.get("v2ray_count") or 0)),
+            "is_active": _is_user_active(uid, overview),
         })
     
     # Дополнительная статистика
-    active_users = sum(1 for user in user_list if user["is_active"])
-    referral_count = sum(user["referral_count"] for user in user_list)
+    # Считаем активных пользователей для всей базы, а не только для текущей страницы
+    active_users = repo.count_active_users() if not q else sum(1 for user in user_list if user["is_active"])
+    # Считаем общее количество рефералов для всей базы, а не только для текущей страницы
+    referral_count = repo.count_total_referrals() if not q else sum(user["referral_count"] for user in user_list)
     pages = (total + limit - 1) // limit
     
     return templates.TemplateResponse("users.html", {

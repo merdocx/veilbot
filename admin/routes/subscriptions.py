@@ -220,15 +220,9 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 cursor = conn.cursor()
                 user_email = UserRepository._resolve_user_email(cursor, user_id)
             
+            # Формируем информацию об истечении
             expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
             is_expired = expires_at > 0 and expires_at <= now_ts
-            
-            if is_expired:
-                expired_count += 1
-            else:
-                active_count += 1
-            
-            # Вычисляем прогресс для прогресс-бара
             lifetime_total = max(expires_at - created_at, 0) if expires_at > 0 and created_at > 0 else 0
             elapsed = max(now_ts - created_at, 0) if created_at > 0 else 0
             lifetime_progress = 0.0
@@ -236,6 +230,11 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
             elif expires_at > 0 and now_ts >= expires_at:
                 lifetime_progress = 1.0
+            
+            if is_expired:
+                expired_count += 1
+            else:
+                active_count += 1
             
             # Получаем список ключей подписки
             keys_list = subscription_repo.get_subscription_keys_list(sub_id)
@@ -288,13 +287,13 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
             traffic_info = {
                 "display": traffic_display,
                 "limit_display": traffic_limit_display,
-                # В UI всегда показываем эффективный лимит (с учётом тарифа), как на странице ключей
                 "limit_mb": effective_limit_mb,
                 "usage_percent": usage_percent,
                 "over_limit": over_limit,
             }
             
-            subscription_models.append({
+            # Формируем модель подписки для шаблона
+            subscription_model = {
                 "id": sub_id,
                 "user_id": user_id,
                 "user_email": user_email or "—",
@@ -316,9 +315,10 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50):
                 "keys_count": keys_count or 0,
                 "subscription_keys": keys_info,
                 "traffic": traffic_info,
-                # Для совместимости оставляем поле, но заполняем эффективным лимитом (с учётом тарифа)
                 "traffic_limit_mb": effective_limit_mb,
-            })
+            }
+            
+            subscription_models.append(subscription_model)
         
         pages = (total + limit - 1) // limit if total > 0 else 1
         
@@ -372,15 +372,7 @@ async def edit_subscription_route(request: Request, subscription_id: int):
     new_expiry_str = form.get("new_expiry")
     traffic_limit_str = form.get("traffic_limit_mb")
     
-    logger.info(f"Edit subscription {subscription_id}: new_expiry={new_expiry_str}, traffic_limit_mb={traffic_limit_str!r} (type: {type(traffic_limit_str)})")
-    
-    # Дополнительная проверка - может быть значение приходит под другим ключом
-    if traffic_limit_str is None:
-        # Проверяем все возможные варианты ключей
-        for key in form_dict.keys():
-            if 'traffic' in key.lower() or 'limit' in key.lower():
-                logger.warning(f"Found similar key: {key} = {form_dict[key]}")
-    
+    # Обработка даты из формы
     if not new_expiry_str:
         if _is_json_request(request):
             return JSONResponse({"error": "new_expiry is required"}, status_code=400)
@@ -390,34 +382,39 @@ async def edit_subscription_route(request: Request, subscription_id: int):
         # Парсим datetime-local format (YYYY-MM-DDTHH:mm) в timestamp
         dt = datetime.strptime(new_expiry_str, "%Y-%m-%dT%H:%M")
         new_expiry = int(dt.timestamp())
-        
-        # Парсим лимит трафика (логика как в keys.py)
-        # Важно: проверяем наличие поля в форме, а не только значение
-        # Если поле присутствует в форме (даже если пустое или 0), нужно обновить лимит
-        new_limit: int | None = None
-        traffic_limit_present = "traffic_limit_mb" in form_dict
-        
-        if traffic_limit_present:
-            traffic_limit_str = form.get("traffic_limit_mb")
-            if traffic_limit_str is not None:
-                trimmed = traffic_limit_str.strip()
-                if trimmed == "":
-                    new_limit = 0
-                else:
-                    try:
-                        new_limit = int(trimmed)
-                    except ValueError:
-                        if _is_json_request(request):
-                            return JSONResponse({"error": "traffic_limit_mb must be an integer"}, status_code=400)
-                        return RedirectResponse(url="/subscriptions", status_code=303)
-                    if new_limit < 0:
-                        if _is_json_request(request):
-                            return JSONResponse({"error": "traffic_limit_mb must be >= 0"}, status_code=400)
-                        return RedirectResponse(url="/subscriptions", status_code=303)
-            else:
-                # Поле есть в форме, но значение None - значит пустое, устанавливаем 0
+    except ValueError:
+        if _is_json_request(request):
+            return JSONResponse({"error": "Invalid date format"}, status_code=400)
+        return RedirectResponse(url="/subscriptions", status_code=303)
+    
+    # Обработка лимита трафика из формы
+    new_limit: int | None = None
+    traffic_limit_present = "traffic_limit_mb" in form_dict
+    
+    if traffic_limit_present:
+        # Обычная обработка лимита трафика из формы
+        traffic_limit_str = form.get("traffic_limit_mb")
+        if traffic_limit_str is not None:
+            trimmed = traffic_limit_str.strip()
+            if trimmed == "":
                 new_limit = 0
-        
+            else:
+                try:
+                    new_limit = int(trimmed)
+                except ValueError:
+                    if _is_json_request(request):
+                        return JSONResponse({"error": "traffic_limit_mb must be an integer"}, status_code=400)
+                    return RedirectResponse(url="/subscriptions", status_code=303)
+                if new_limit < 0:
+                    if _is_json_request(request):
+                        return JSONResponse({"error": "traffic_limit_mb must be >= 0"}, status_code=400)
+                    return RedirectResponse(url="/subscriptions", status_code=303)
+        else:
+            new_limit = 0
+    
+    logger.info(f"Edit subscription {subscription_id}: new_expiry={new_expiry}, traffic_limit_mb={new_limit}")
+    
+    try:
         subscription_repo = SubscriptionRepository(DB_PATH)
         subscription = subscription_repo.get_subscription_by_id(subscription_id)
         
@@ -426,17 +423,17 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                 return JSONResponse({"error": "Subscription not found"}, status_code=404)
             return RedirectResponse(url="/subscriptions", status_code=303)
         
-        # Обновляем срок подписки
-        subscription_repo.extend_subscription(subscription_id, new_expiry)
+        # Обновляем подписку: expiry и traffic_limit_mb
+        current_tariff_id = subscription[5] if subscription and len(subscription) > 5 else None
         
-        # Обновляем лимит трафика (если поле было в форме, включая случай когда значение 0)
-        # Важно: проверяем наличие поля в форме, а не только значение new_limit
-        # Это позволяет сохранить значение 0 (без лимита)
-        # Примечание: Лимиты трафика контролируются на уровне подписки, а не отдельных ключей
-        if traffic_limit_present and new_limit is not None:
-            logger.info(f"About to update subscription {subscription_id} traffic_limit_mb: new_limit={new_limit}, type={type(new_limit)}")
+        logger.info(f"Updating subscription {subscription_id}: expiry={new_expiry}, traffic_limit_mb={new_limit}")
+        
+        # Обновляем expiry
+        subscription_repo.extend_subscription(subscription_id, new_expiry, tariff_id=current_tariff_id)
+        
+        # Обновляем лимит трафика (если указан)
+        if new_limit is not None:
             subscription_repo.update_subscription_traffic_limit(subscription_id, new_limit)
-            logger.info(f"Updated subscription {subscription_id} traffic_limit_mb to {new_limit}")
         
         # Проверяем, что значение действительно сохранилось
         check_sub = subscription_repo.get_subscription_by_id(subscription_id)
@@ -476,60 +473,55 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                         "error": "Subscription data not found",
                     })
                 
+                # Распаковываем данные подписки
                 (
                     sub_id, user_id, token, created_at, expires_at, tariff_id,
                     is_active, last_updated_at, notified, tariff_name, keys_count, traffic_limit_mb
                 ) = subscription_updated
                 
-                logger.info(f"Building response: traffic_limit_mb from DB = {traffic_limit_mb}")
+                # Формируем expiry_info
+                expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
+                is_expired = expires_at > 0 and expires_at <= now_ts
+                lifetime_total = max(expires_at - created_at, 0) if expires_at > 0 and created_at > 0 else 0
+                elapsed = max(now_ts - created_at, 0) if created_at > 0 else 0
+                lifetime_progress = 0.0
+                if lifetime_total > 0:
+                    lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
+                elif expires_at > 0 and now_ts >= expires_at:
+                    lifetime_progress = 1.0
                 
-                # Пересчитываем трафик подписки
+                # Формируем traffic_info
                 traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
                 traffic_limit_bytes = subscription_repo.get_subscription_traffic_limit(sub_id)
-                
+
                 traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
                 traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
 
-                # Переводим эффективный лимит в МБ для отображения/редактирования
                 effective_limit_mb = None
                 if traffic_limit_bytes and traffic_limit_bytes > 0:
                     try:
                         effective_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
                     except (TypeError, ValueError, OverflowError):
                         effective_limit_mb = None
-                
+
                 usage_percent = None
                 over_limit = False
                 if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
                     try:
                         usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
                         over_limit = traffic_usage_bytes > traffic_limit_bytes
-                    except (TypeError, ValueError) as e:
-                        logger.warning(f"Error calculating usage_percent: {e}")
-                        usage_percent = None
-                        over_limit = False
-                
+                    except (TypeError, ValueError):
+                        pass
+
                 traffic_info = {
                     "display": traffic_display,
                     "limit_display": traffic_limit_display,
-                    # В UI всегда показываем эффективный лимит (с учётом тарифа), как на странице ключей
                     "limit_mb": effective_limit_mb,
                     "usage_percent": usage_percent,
                     "over_limit": over_limit,
                 }
                 
-                expiry_info = _format_expiry_remaining(new_expiry, now_ts)
-                is_expired = new_expiry <= now_ts
-                
-                # Вычисляем прогресс для прогресс-бара
-                lifetime_total = max(new_expiry - created_at, 0) if new_expiry and created_at else 0
-                elapsed = max(now_ts - created_at, 0) if created_at else 0
-                lifetime_progress = 0.0
-                if lifetime_total > 0:
-                    lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
-                elif new_expiry and now_ts >= new_expiry:
-                    lifetime_progress = 1.0
-                
+                # Формируем данные подписки для ответа
                 subscription_data = {
                     "id": sub_id,
                     "expires_at": _format_timestamp(new_expiry),
@@ -541,11 +533,8 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                     "status": "Активна" if (is_active and not is_expired) else "Истекла",
                     "status_class": "status-active" if (is_active and not is_expired) else "status-expired",
                     "traffic": traffic_info,
-                    # Для совместимости оставляем поле, но заполняем эффективным лимитом
                     "traffic_limit_mb": effective_limit_mb,
                 }
-                
-                logger.info(f"Returning subscription data: traffic_limit_mb = {subscription_data.get('traffic_limit_mb')}, traffic.limit_mb = {traffic_info.get('limit_mb')}")
                 
                 return JSONResponse({
                     "message": user_message,
@@ -869,7 +858,7 @@ async def get_subscription(request: Request, token: str):
 
 class SyncKeysRequest(BaseModel):
     """Модель запроса для синхронизации ключей"""
-    dry_run: bool = True
+    dry_run: bool = False
     server_scope: str = "all"  # "all" или "single"
     server_id: Optional[int] = None
     create_missing: bool = True

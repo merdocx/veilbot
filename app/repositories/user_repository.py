@@ -33,21 +33,15 @@ class UserRepository:
         return row[0] if row else ""
 
     def count_users(self, query: Optional[str] = None) -> int:
+        """Подсчет всех пользователей из таблицы users"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            base_query = (
-                "SELECT user_id FROM ("
-                "SELECT DISTINCT user_id FROM keys "
-                "UNION "
-                "SELECT DISTINCT user_id FROM v2ray_keys"
-                ")"
-            )
             if query:
                 like = f"%{query.strip()}%"
-                sql = f"SELECT COUNT(*) FROM ({base_query}) AS combined WHERE CAST(user_id AS TEXT) LIKE ?"
+                sql = "SELECT COUNT(*) FROM users WHERE CAST(user_id AS TEXT) LIKE ?"
                 c.execute(sql, (like,))
             else:
-                sql = f"SELECT COUNT(*) FROM ({base_query}) AS combined"
+                sql = "SELECT COUNT(*) FROM users"
                 c.execute(sql)
             row = c.fetchone()
             return int(row[0] if row and row[0] is not None else 0)
@@ -55,37 +49,27 @@ class UserRepository:
     def list_users(self, query: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Tuple[int, int]]:
         """
         Возвращает список (user_id, referral_count) с пагинацией и поиском по user_id.
-        Источник пользователей — таблица keys (как в текущей логике админки).
+        Источник пользователей — таблица users (все пользователи, которые когда-либо нажали /start).
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-
-            base_subquery = (
-                "SELECT DISTINCT user_id FROM keys "
-                "UNION "
-                "SELECT DISTINCT user_id FROM v2ray_keys"
-            )
 
             if query:
                 like = f"%{query.strip()}%"
                 sql = (
                     "SELECT u.user_id, "
                     "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count "
-                    "FROM ("
-                    f"    SELECT user_id FROM ({base_subquery}) AS combined "
-                    "    WHERE CAST(user_id AS TEXT) LIKE ? "
-                    "    ORDER BY user_id LIMIT ? OFFSET ?"
-                    ") u"
+                    "FROM users u "
+                    "WHERE CAST(u.user_id AS TEXT) LIKE ? "
+                    "ORDER BY u.user_id LIMIT ? OFFSET ?"
                 )
                 c.execute(sql, (like, limit, offset))
             else:
                 sql = (
                     "SELECT u.user_id, "
                     "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count "
-                    "FROM ("
-                    f"    SELECT user_id FROM ({base_subquery}) AS combined "
-                    "    ORDER BY user_id LIMIT ? OFFSET ?"
-                    ") u"
+                    "FROM users u "
+                    "ORDER BY u.user_id LIMIT ? OFFSET ?"
                 )
                 c.execute(sql, (limit, offset))
 
@@ -122,6 +106,36 @@ class UserRepository:
         from app.repositories.key_repository import KeyRepository
         repo = KeyRepository(self.db_path)
         return repo.count_keys_unified(user_id=user_id)
+
+    def count_total_referrals(self) -> int:
+        """Подсчет общего количества рефералов для всех пользователей"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM referrals")
+            row = c.fetchone()
+            return int(row[0] if row and row[0] is not None else 0)
+
+    def count_active_users(self) -> int:
+        """Подсчет активных пользователей (с активными подписками)"""
+        import time
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            now = int(time.time())
+            c.execute("""
+                SELECT COUNT(DISTINCT user_id) FROM (
+                    SELECT k.user_id
+                    FROM keys k
+                    JOIN subscriptions s ON k.subscription_id = s.id
+                    WHERE s.expires_at > ? AND s.is_active = 1
+                    UNION
+                    SELECT k.user_id
+                    FROM v2ray_keys k
+                    JOIN subscriptions s ON k.subscription_id = s.id
+                    WHERE s.expires_at > ? AND s.is_active = 1
+                )
+            """, (now, now))
+            row = c.fetchone()
+            return int(row[0] if row and row[0] is not None else 0)
 
     def list_referrals(self, referrer_id: int) -> list[dict]:
         with open_connection(self.db_path) as conn:

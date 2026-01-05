@@ -100,21 +100,23 @@ class SubscriptionRepository:
         Args:
             subscription_id: ID подписки
             new_expires_at: Новый срок действия (timestamp)
-            tariff_id: Опционально - обновить tariff_id подписки
+            tariff_id: Опционально - обновить tariff_id подписки. Если None, сохраняется текущее значение.
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             now = int(time.time())
-            if tariff_id is not None:
-                c.execute(
-                    "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0, tariff_id = ? WHERE id = ?",
-                    (new_expires_at, now, tariff_id, subscription_id),
-                )
-            else:
-                c.execute(
-                    "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0 WHERE id = ?",
-                    (new_expires_at, now, subscription_id),
-                )
+            
+            # Если tariff_id не передан, сохраняем текущее значение из БД
+            if tariff_id is None:
+                c.execute("SELECT tariff_id FROM subscriptions WHERE id = ?", (subscription_id,))
+                row = c.fetchone()
+                tariff_id = row[0] if row else None
+            
+            # Обновляем все поля, включая tariff_id
+            c.execute(
+                "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0, tariff_id = ? WHERE id = ?",
+                (new_expires_at, now, tariff_id, subscription_id),
+            )
             conn.commit()
 
     def get_expired_subscriptions(self, grace_threshold: int) -> List[Tuple]:
@@ -300,6 +302,9 @@ class SubscriptionRepository:
         traffic_limit_mb: Optional[int] = None,
     ) -> int:
         """Создать новую подписку (асинхронная версия)"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         async with open_async_connection(self.db_path) as conn:
             now = int(time.time())
             # Если traffic_limit_mb не передан, пытаемся получить из тарифа
@@ -316,6 +321,22 @@ class SubscriptionRepository:
                     traffic_limit_mb = 0
             if traffic_limit_mb is None:
                 traffic_limit_mb = 0
+            
+            # ВАЛИДАЦИЯ: Проверяем, что expires_at больше created_at (не нулевая длительность)
+            if expires_at <= now:
+                error_msg = f"Subscription expires_at must be greater than created_at for user {user_id}: expires_at={expires_at}, created_at={now}"
+                logger.error(f"[SUBSCRIPTION_VALIDATION] {error_msg}")
+                raise ValueError(error_msg)
+            
+            # ВАЛИДАЦИЯ: Проверяем только базовую валидность (не слишком далеко в будущем)
+            # НЕ проверяем соответствие created_at + duration_sec, так как подписка может быть продлена
+            MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
+            if expires_at > MAX_REASONABLE_EXPIRY:
+                logger.error(
+                    f"[SUBSCRIPTION_VALIDATION] Subscription expires_at is too far in future for user {user_id}: "
+                    f"expires_at={expires_at} (more than 10 years). Rejecting creation."
+                )
+                raise ValueError(f"expires_at is too far in future: {expires_at}")
             
             cursor = await conn.execute(
                 """
@@ -389,20 +410,22 @@ class SubscriptionRepository:
         Args:
             subscription_id: ID подписки
             new_expires_at: Новый срок действия (timestamp)
-            tariff_id: Опционально - обновить tariff_id подписки
+            tariff_id: Опционально - обновить tariff_id подписки. Если None, сохраняется текущее значение.
         """
         async with open_async_connection(self.db_path) as conn:
             now = int(time.time())
-            if tariff_id is not None:
-                await conn.execute(
-                    "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0, tariff_id = ? WHERE id = ?",
-                    (new_expires_at, now, tariff_id, subscription_id),
-                )
-            else:
-                await conn.execute(
-                    "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0 WHERE id = ?",
-                    (new_expires_at, now, subscription_id),
-                )
+            
+            # Если tariff_id не передан, сохраняем текущее значение из БД
+            if tariff_id is None:
+                async with conn.execute("SELECT tariff_id FROM subscriptions WHERE id = ?", (subscription_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    tariff_id = row[0] if row else None
+            
+            # Обновляем все поля, включая tariff_id
+            await conn.execute(
+                "UPDATE subscriptions SET expires_at = ?, last_updated_at = ?, purchase_notification_sent = 0, tariff_id = ? WHERE id = ?",
+                (new_expires_at, now, tariff_id, subscription_id),
+            )
             await conn.commit()
 
     async def get_expired_subscriptions_async(self, grace_threshold: int) -> List[Tuple]:
@@ -861,7 +884,8 @@ class SubscriptionRepository:
         Логика:
         - Если traffic_limit_mb установлен (не NULL), используется он (0 = безлимит)
         - Если traffic_limit_mb NULL, используется лимит из тарифа
-        Возвращает только подписки с лимитом > 0 (безлимитные не включаются)"""
+        Возвращает только подписки с лимитом > 0 (безлимитные не включаются)
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""

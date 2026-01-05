@@ -374,6 +374,125 @@ async def sync_all_keys_with_servers(
                     server_name = next((s["name"] for s in servers if s["id"] == server_id), f"Server #{server_id}")
                     logger.warning(f"  Сервер #{server_id} ({server_name}) временно недоступен по API (ключи сохранены)")
     
+    # ========== ЭТАП 2.5: Удаление ключей для неактивных подписок ==========
+    if delete_inactive_server_keys:
+        logger.info("\n[ЭТАП 2.5] Удаление ключей для неактивных подписок...")
+        
+        active_subscription_ids = {sub["id"] for sub in subscriptions}
+        
+        # Удаляем V2Ray ключи для неактивных подписок
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT k.id, k.subscription_id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.subscription_id IS NOT NULL 
+                AND k.subscription_id NOT IN (
+                    SELECT id FROM subscriptions 
+                    WHERE is_active = 1 AND expires_at > ?
+                )
+            """, (now,))
+            inactive_v2ray_keys = cursor.fetchall()
+        
+        # Удаляем Outline ключи для неактивных подписок
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT k.id, k.subscription_id, k.server_id, k.key_id, s.api_url, s.cert_sha256
+                FROM keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.protocol = 'outline'
+                AND k.subscription_id IS NOT NULL 
+                AND k.subscription_id NOT IN (
+                    SELECT id FROM subscriptions 
+                    WHERE is_active = 1 AND expires_at > ?
+                )
+            """, (now,))
+            inactive_outline_keys = cursor.fetchall()
+        
+        total_inactive_keys = len(inactive_v2ray_keys) + len(inactive_outline_keys)
+        
+        if total_inactive_keys > 0:
+            logger.info(f"  Найдено ключей для неактивных подписок: {total_inactive_keys} (V2Ray: {len(inactive_v2ray_keys)}, Outline: {len(inactive_outline_keys)})")
+            
+            if not dry_run:
+                # Удаляем ключи с серверов и из БД
+                deleted_from_servers = 0
+                
+                # Удаляем V2Ray ключи
+                for key_row in inactive_v2ray_keys:
+                    key_id, sub_id, server_id, v2ray_uuid, api_url, api_key = key_row
+                    try:
+                        if api_url and api_key and v2ray_uuid:
+                            server_config = {
+                                'api_url': api_url,
+                                'api_key': api_key,
+                                'domain': '',
+                            }
+                            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                            try:
+                                deleted = await protocol_client.delete_user(v2ray_uuid)
+                                if deleted:
+                                    deleted_from_servers += 1
+                            finally:
+                                await protocol_client.close()
+                    except Exception as e:
+                        logger.warning(f"    Ошибка удаления V2Ray ключа {v2ray_uuid[:8]}... с сервера: {e}")
+                
+                # Удаляем Outline ключи
+                for key_row in inactive_outline_keys:
+                    key_id, sub_id, server_id, outline_key_id, api_url, cert_sha256 = key_row
+                    try:
+                        if api_url and outline_key_id:
+                            server_config = {
+                                'api_url': api_url,
+                                'cert_sha256': cert_sha256 or '',
+                            }
+                            protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+                            try:
+                                deleted = await protocol_client.delete_user(outline_key_id)
+                                if deleted:
+                                    deleted_from_servers += 1
+                            except Exception as e:
+                                logger.warning(f"    Ошибка удаления Outline ключа {outline_key_id} с сервера: {e}")
+                    except Exception as e:
+                        logger.warning(f"    Ошибка удаления Outline ключа {outline_key_id} с сервера: {e}")
+                
+                # Удаляем из БД
+                with get_db_cursor(commit=True) as cursor:
+                    with safe_foreign_keys_off(cursor):
+                        # Удаляем V2Ray ключи
+                        if inactive_v2ray_keys:
+                            v2ray_key_ids = [k[0] for k in inactive_v2ray_keys]
+                            placeholders = ','.join('?' * len(v2ray_key_ids))
+                            cursor.execute(f"""
+                                DELETE FROM v2ray_keys
+                                WHERE id IN ({placeholders})
+                            """, v2ray_key_ids)
+                            v2ray_deleted = cursor.rowcount
+                        else:
+                            v2ray_deleted = 0
+                        
+                        # Удаляем Outline ключи
+                        if inactive_outline_keys:
+                            outline_key_ids = [k[0] for k in inactive_outline_keys]
+                            placeholders = ','.join('?' * len(outline_key_ids))
+                            cursor.execute(f"""
+                                DELETE FROM keys
+                                WHERE id IN ({placeholders}) AND protocol = 'outline'
+                            """, outline_key_ids)
+                            outline_deleted = cursor.rowcount
+                        else:
+                            outline_deleted = 0
+                        
+                        total_deleted = v2ray_deleted + outline_deleted
+                        stats["keys_deleted_from_db"] += total_deleted
+                        stats["keys_deleted_from_servers"] += deleted_from_servers
+                        logger.info(f"  Удалено ключей: {total_deleted} из БД, {deleted_from_servers} с серверов (V2Ray: {v2ray_deleted}, Outline: {outline_deleted})")
+            else:
+                logger.info(f"  [DRY RUN] Будет удалено {total_inactive_keys} ключей для неактивных подписок")
+        else:
+            logger.info("  Ключей для неактивных подписок не найдено")
+    
     # Фильтруем серверы: оставляем только активные (независимо от доступности по API)
     # Серверы, недоступные по API, будут пропущены на этапах синхронизации, но ключи останутся в БД
     available_servers = [s for s in servers if s["active"]]

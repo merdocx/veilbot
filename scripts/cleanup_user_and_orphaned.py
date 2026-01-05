@@ -129,7 +129,11 @@ async def cleanup_user_data_with_free_key_flag(user_id: int) -> Dict[str, int]:
             subscription_keys = repo.get_subscription_keys_for_deletion(subscription_id)
             
             # Удалить ключи через V2Ray API
-            for v2ray_uuid, api_url, api_key in subscription_keys:
+            for key_identifier, api_url, api_key, protocol in subscription_keys:
+                # Обрабатываем только V2Ray ключи
+                if protocol != 'v2ray':
+                    continue
+                v2ray_uuid = key_identifier
                 if v2ray_uuid and api_url and api_key:
                     protocol_client = None
                     try:

@@ -104,15 +104,16 @@ async def format_subscription_short_info(subscription_data: tuple) -> str:
     Args:
         subscription_data: Кортеж с данными подписки (id, user_id, token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified)
     """
-    subscription_id, user_id, token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified = subscription_data
+    subscription_id, user_id, token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified = subscription_data[:9]
     
     now = int(time.time())
-    remaining_time = expires_at - now
     
-    # Форматируем дату истечения
+    # Формируем информацию о сроке действия
+    remaining_time = expires_at - now
     from datetime import datetime
     expiry_date = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y")
     remaining_str = format_duration(remaining_time)
+    time_info = f"⏳ Осталось времени: {remaining_str} (до {expiry_date})"
     
     # Получаем информацию о трафике
     repo = SubscriptionRepository()
@@ -129,7 +130,7 @@ async def format_subscription_short_info(subscription_data: tuple) -> str:
     
     msg = (
         f"📋 У Вас уже есть подписка\n\n"
-        f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n\n"
+        f"{time_info}\n\n"
         f"{traffic_info}"
     )
     
@@ -719,7 +720,9 @@ async def handle_email_for_subscription(message: types.Message):
                 f"💰 Сумма: *{tariff['price_rub']}₽*\n"
                 f"📧 Email: `{email}`\n\n"
                 f"Нажмите кнопку ниже для оплаты:\n"
-                f"⚠️ Ссылка действительна 1 час",
+                f"⚠️ Ссылка действительна 1 час\n\n"
+                f"📄 [Публичная оферта](https://veil-bot.ru/static/oferta.html)\n"
+                f"🔒 [Политика конфиденциальности](https://veil-bot.ru/static/privacy.html)",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )

@@ -6,6 +6,7 @@ import asyncio
 import time
 import logging
 import sqlite3
+import secrets
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, Callable
 from aiogram import types
@@ -990,6 +991,7 @@ async def process_referral_bonus(
     """
     Обработать реферальный бонус для реферера.
     Приоритет: если есть активная подписка - продлеваем её, иначе продлеваем ключ.
+    При начислении бонуса добавляется 1 месяц подписки и 100 ГБ трафика (одноразово).
     
     Args:
         cursor: Курсор БД
@@ -1002,6 +1004,9 @@ async def process_referral_bonus(
     Returns:
         True если бонус был успешно начислен, False иначе
     """
+    # Константа: 100 ГБ = 102400 МБ
+    REFERRAL_TRAFFIC_BONUS_MB = 102400
+    
     try:
         now = int(time.time())
         
@@ -1018,6 +1023,47 @@ async def process_referral_bonus(
             # Продлеваем подписку
             subscription_repo.extend_subscription(subscription_id, new_expires_at)
             
+            # Получаем traffic_limit_mb из подписки
+            cursor.execute(
+                "SELECT traffic_limit_mb, tariff_id FROM subscriptions WHERE id = ?",
+                (subscription_id,)
+            )
+            sub_row = cursor.fetchone()
+            traffic_limit_mb = sub_row[0] if sub_row else None
+            tariff_id = sub_row[1] if sub_row else None
+            
+            # Добавляем 100 ГБ трафика
+            traffic_added = False
+            new_traffic_limit_mb = None
+            
+            if traffic_limit_mb is None:
+                # Если traffic_limit_mb = NULL, получаем из тарифа и добавляем 100 ГБ
+                if tariff_id:
+                    cursor.execute(
+                        "SELECT traffic_limit_mb FROM tariffs WHERE id = ?",
+                        (tariff_id,)
+                    )
+                    tariff_row = cursor.fetchone()
+                    if tariff_row and tariff_row[0] is not None:
+                        base_limit = tariff_row[0] or 0
+                        new_traffic_limit_mb = base_limit + REFERRAL_TRAFFIC_BONUS_MB
+                    else:
+                        new_traffic_limit_mb = REFERRAL_TRAFFIC_BONUS_MB
+                else:
+                    new_traffic_limit_mb = REFERRAL_TRAFFIC_BONUS_MB
+            elif traffic_limit_mb > 0:
+                # Если traffic_limit_mb > 0, добавляем 100 ГБ
+                new_traffic_limit_mb = traffic_limit_mb + REFERRAL_TRAFFIC_BONUS_MB
+            # Если traffic_limit_mb = 0 (безлимит), не добавляем трафик
+            
+            if new_traffic_limit_mb is not None:
+                subscription_repo.update_subscription_traffic_limit(subscription_id, new_traffic_limit_mb)
+                traffic_added = True
+                logger.info(
+                    f"Added {REFERRAL_TRAFFIC_BONUS_MB} MB traffic to subscription {subscription_id} "
+                    f"for referrer {referrer_id}: {traffic_limit_mb} -> {new_traffic_limit_mb} MB"
+                )
+            
             # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
             # Подписка уже обновлена выше в коде (new_expires_at), ключи автоматически используют срок из подписки
             # Подсчитываем количество ключей для логирования
@@ -1029,16 +1075,23 @@ async def process_referral_bonus(
             
             # Отправляем уведомление
             bot = get_bot_instance()
-            await safe_send_message(
-                bot, 
-                referrer_id, 
-                "🎉 Ваша подписка продлена на месяц за приглашённого друга!"
-            )
+            if traffic_added:
+                await safe_send_message(
+                    bot, 
+                    referrer_id, 
+                    "🎉 Ваша подписка продлена на месяц и добавлено 100 ГБ трафика за приглашённого друга!"
+                )
+            else:
+                await safe_send_message(
+                    bot, 
+                    referrer_id, 
+                    "🎉 Ваша подписка продлена на месяц за приглашённого друга!"
+                )
             
             logger.info(
                 f"Extended subscription {subscription_id} for referrer {referrer_id}: "
                 f"{existing_expires_at} -> {new_expires_at} (+{bonus_duration}s), "
-                f"extended {keys_extended} keys"
+                f"extended {keys_extended} keys, traffic_added={traffic_added}"
             )
             return True
         
@@ -1062,6 +1115,7 @@ async def process_referral_bonus(
             except Exception as e:
                 logger.error(f"Error extending referrer key: {e}")
                 # Если не удалось продлить, выдаем новый ключ
+                # Для реферального бонуса создаем подписку с 100 ГБ трафика
                 cursor.execute(
                     "SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", 
                     (bonus_duration,)
@@ -1074,20 +1128,74 @@ async def process_referral_bonus(
                         "price_rub": bonus_tariff[4], 
                         "duration_sec": bonus_tariff[2]
                     }
+                    
+                    # Создаем подписку с 100 ГБ трафика перед созданием ключа
+                    subscription_token = secrets.token_urlsafe(32)
+                    expires_at = now + bonus_duration
+                    subscription_id = subscription_repo.create_subscription(
+                        referrer_id,
+                        subscription_token,
+                        expires_at,
+                        bonus_tariff_dict["id"]
+                    )
+                    # Устанавливаем лимит трафика 100 ГБ
+                    subscription_repo.update_subscription_traffic_limit(subscription_id, REFERRAL_TRAFFIC_BONUS_MB)
+                    logger.info(
+                        f"Created subscription {subscription_id} with {REFERRAL_TRAFFIC_BONUS_MB} MB traffic "
+                        f"for referrer {referrer_id} referral bonus (fallback after extend failed)"
+                    )
+                    
+                    # Создаем ключ
                     await create_new_key_flow_with_protocol(
                         cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol
                     )
+                    
+                    # Привязываем созданный ключ к подписке
+                    # Находим последний созданный ключ пользователя для этого протокола
+                    if protocol == 'v2ray':
+                        cursor.execute("""
+                            SELECT id FROM v2ray_keys 
+                            WHERE user_id = ? AND subscription_id IS NULL 
+                            ORDER BY created_at DESC LIMIT 1
+                        """, (referrer_id,))
+                    else:  # outline
+                        cursor.execute("""
+                            SELECT id FROM keys 
+                            WHERE user_id = ? AND protocol = 'outline' AND subscription_id IS NULL 
+                            ORDER BY created_at DESC LIMIT 1
+                        """, (referrer_id,))
+                    
+                    created_key = cursor.fetchone()
+                    if created_key:
+                        key_id = created_key[0]
+                        if protocol == 'v2ray':
+                            cursor.execute(
+                                "UPDATE v2ray_keys SET subscription_id = ? WHERE id = ?",
+                                (subscription_id, key_id)
+                            )
+                        else:  # outline
+                            cursor.execute(
+                                "UPDATE keys SET subscription_id = ? WHERE id = ?",
+                                (subscription_id, key_id)
+                            )
+                        cursor.connection.commit()
+                        logger.info(
+                            f"Linked key {key_id} (protocol={protocol}) to subscription {subscription_id} "
+                            f"for referrer {referrer_id} (fallback after extend failed)"
+                        )
+                    
                     bot = get_bot_instance()
                     await safe_send_message(
                         bot, 
                         referrer_id, 
-                        "🎉 Вам выдан бесплатный месяц за приглашённого друга!"
+                        "🎉 Вам выдан бесплатный месяц и 100 ГБ трафика за приглашённого друга!"
                     )
                     return True
         elif key:
             logger.warning(f"extend_existing_key is None, cannot extend referrer key for user {referrer_id}")
         else:
             # Выдаём новый ключ на месяц
+            # Для реферального бонуса создаем подписку с 100 ГБ трафика
             cursor.execute(
                 "SELECT * FROM tariffs WHERE duration_sec >= ? ORDER BY duration_sec ASC LIMIT 1", 
                 (bonus_duration,)
@@ -1100,14 +1208,68 @@ async def process_referral_bonus(
                     "price_rub": bonus_tariff[4], 
                     "duration_sec": bonus_tariff[2]
                 }
+                
+                # Создаем подписку с 100 ГБ трафика перед созданием ключа
+                import secrets
+                subscription_token = secrets.token_urlsafe(32)
+                expires_at = now + bonus_duration
+                subscription_id = subscription_repo.create_subscription(
+                    referrer_id,
+                    subscription_token,
+                    expires_at,
+                    bonus_tariff_dict["id"]
+                )
+                # Устанавливаем лимит трафика 100 ГБ
+                subscription_repo.update_subscription_traffic_limit(subscription_id, REFERRAL_TRAFFIC_BONUS_MB)
+                logger.info(
+                    f"Created subscription {subscription_id} with {REFERRAL_TRAFFIC_BONUS_MB} MB traffic "
+                    f"for referrer {referrer_id} referral bonus"
+                )
+                
+                # Создаем ключ
                 await create_new_key_flow_with_protocol(
                     cursor, message, referrer_id, bonus_tariff_dict, None, None, protocol
                 )
+                
+                # Привязываем созданный ключ к подписке
+                # Находим последний созданный ключ пользователя для этого протокола
+                if protocol == 'v2ray':
+                    cursor.execute("""
+                        SELECT id FROM v2ray_keys 
+                        WHERE user_id = ? AND subscription_id IS NULL 
+                        ORDER BY created_at DESC LIMIT 1
+                    """, (referrer_id,))
+                else:  # outline
+                    cursor.execute("""
+                        SELECT id FROM keys 
+                        WHERE user_id = ? AND protocol = 'outline' AND subscription_id IS NULL 
+                        ORDER BY created_at DESC LIMIT 1
+                    """, (referrer_id,))
+                
+                created_key = cursor.fetchone()
+                if created_key:
+                    key_id = created_key[0]
+                    if protocol == 'v2ray':
+                        cursor.execute(
+                            "UPDATE v2ray_keys SET subscription_id = ? WHERE id = ?",
+                            (subscription_id, key_id)
+                        )
+                    else:  # outline
+                        cursor.execute(
+                            "UPDATE keys SET subscription_id = ? WHERE id = ?",
+                            (subscription_id, key_id)
+                        )
+                    cursor.connection.commit()
+                    logger.info(
+                        f"Linked key {key_id} (protocol={protocol}) to subscription {subscription_id} "
+                        f"for referrer {referrer_id}"
+                    )
+                
                 bot = get_bot_instance()
                 await safe_send_message(
                     bot, 
                     referrer_id, 
-                    "🎉 Вам выдан бесплатный месяц за приглашённого друга!"
+                    "🎉 Вам выдан бесплатный месяц и 100 ГБ трафика за приглашённого друга!"
                 )
                 return True
         

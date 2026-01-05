@@ -145,19 +145,22 @@
                 : '';
             console.log(`[VeilBot][subscriptions] Updating edit button traffic_limit_mb from traffic.limit_mb: ${limitMb}`);
             editButton.dataset.trafficLimit = limitMb;
-            console.log(`[VeilBot][subscriptions] Edit button trafficLimit attribute: ${editButton.dataset.trafficLimit}`);
         }
 
         // Обновляем информацию о трафике
         if (subscription.traffic) {
             const trafficDisplay = row.querySelector('[data-field="traffic-display"]');
-            if (trafficDisplay && subscription.traffic.display) {
-                trafficDisplay.textContent = subscription.traffic.display;
+            if (trafficDisplay) {
+                if (subscription.traffic && subscription.traffic.display) {
+                    trafficDisplay.textContent = subscription.traffic.display;
+                } else {
+                    trafficDisplay.textContent = '—';
+                }
             }
 
             const trafficLimit = row.querySelector('[data-field="traffic-limit"]');
             if (trafficLimit) {
-                if (subscription.traffic.limit_display && subscription.traffic.limit_display !== '—') {
+                if (subscription.traffic && subscription.traffic.limit_display && subscription.traffic.limit_display !== '—') {
                     trafficLimit.textContent = `Лимит: ${subscription.traffic.limit_display}`;
                     trafficLimit.classList.remove('text-muted');
                 } else {
@@ -203,6 +206,7 @@
 
         const formData = new FormData(form);
         
+        
         // Обрабатываем traffic_limit_mb: явно обрабатываем значение 0
         // Важно: если пользователь вводит 0, нужно явно отправить "0", а не пустую строку
         const trafficLimitInput = form.querySelector('#traffic_limit_mb');
@@ -215,6 +219,7 @@
             }
             // Если значение не пустое и не 0, оно уже в FormData
         }
+        
 
         try {
             const response = await fetch(form.action, {
@@ -255,6 +260,7 @@
             resetFormLoadingState(form);
         }
     };
+
 
     const handleDeleteSubscription = async (trigger) => {
         const subscriptionId = trigger.dataset.subscriptionId;

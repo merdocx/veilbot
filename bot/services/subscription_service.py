@@ -553,7 +553,26 @@ class SubscriptionService:
             Словарь с данными подписки или None при ошибке
         """
         now = int(time.time())
+        
+        # ВАЛИДАЦИЯ: Проверяем, что duration_sec не None и не 0
+        if duration_sec is None or duration_sec <= 0:
+            logger.error(
+                f"[SUBSCRIPTION_VALIDATION] Invalid duration_sec for user {user_id}, "
+                f"tariff_id={tariff_id}: duration_sec={duration_sec}. Rejecting creation."
+            )
+            return None
+        
         expires_at = now + duration_sec
+        
+        # ВАЛИДАЦИЯ: Проверяем только базовую валидность (не слишком далеко в будущем)
+        # НЕ проверяем соответствие created_at + duration_sec, так как подписка может быть продлена
+        MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
+        if expires_at > MAX_REASONABLE_EXPIRY:
+            logger.error(
+                f"[SUBSCRIPTION_VALIDATION] expires_at is too far in future for user {user_id}, "
+                f"tariff_id={tariff_id}: expires_at={expires_at}. Rejecting creation."
+            )
+            return None
 
         # Проверка на бесплатный тариф и защита от повторной выдачи
         is_free_tariff = False
@@ -613,9 +632,27 @@ class SubscriptionService:
                     'expires_at': existing_expires_at,
                 }
             
-            # ПРИБАВЛЯЕМ срок к текущей дате истечения, а не берем максимум
-            # Это гарантирует, что пользователь получит полный оплаченный срок
-            new_expires_at = existing_expires_at + duration_sec
+            # ВАЖНО: Не изменяем срок подписки, если он был установлен вручную через админку
+            # Признак ручной установки: expires_at очень далеко в будущем (например, 01.01.2100)
+            MANUAL_EXPIRY_THRESHOLD = 4102434000  # 01.01.2100 - признак ручной установки
+            ONE_YEAR_IN_SECONDS = 365 * 24 * 3600
+            is_manually_set = (
+                existing_expires_at >= MANUAL_EXPIRY_THRESHOLD or
+                (existing_expires_at > now and (existing_expires_at - now) > (5 * ONE_YEAR_IN_SECONDS))
+            )
+            
+            if is_manually_set:
+                # Срок был установлен вручную - не изменяем его при продлении
+                logger.info(
+                    f"[SUBSCRIPTION] Subscription {existing_id} has manually set expiry date: "
+                    f"{existing_expires_at}. Not extending, keeping original expiry."
+                )
+                new_expires_at = existing_expires_at
+            else:
+                # ПРИБАВЛЯЕМ срок к текущей дате истечения, а не берем максимум
+                # Это гарантирует, что пользователь получит полный оплаченный срок
+                new_expires_at = existing_expires_at + duration_sec
+            
             await self.repository.extend_subscription_async(existing_id, new_expires_at)
             
             # Продлеваем все ключи подписки на серверах (v2ray и outline)

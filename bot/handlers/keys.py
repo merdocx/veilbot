@@ -72,6 +72,7 @@ async def handle_my_keys_btn(message: types.Message):
                 if tariff_row and tariff_row[0] is not None:
                     effective_limit_mb = int(tariff_row[0] or 0)
             
+            # Формируем информацию о лимите трафика
             if effective_limit_mb and effective_limit_mb > 0:
                 traffic_limit = f"{effective_limit_mb} ГБ"
             else:
@@ -82,7 +83,7 @@ async def handle_my_keys_btn(message: types.Message):
                 'token': token,
                 'expires_at': expires_at,
                 'server_count': server_count,
-                'traffic_limit': traffic_limit
+                'traffic_limit': traffic_limit,
             }
     
     with get_db_cursor() as cursor:
@@ -112,7 +113,12 @@ async def handle_my_keys_btn(message: types.Message):
         outline_keys = cursor.fetchall()
     
     # Добавляем Outline ключи
-    for access_url, exp, protocol, country, sub_id in outline_keys:
+    for key_row in outline_keys:
+        if len(key_row) == 6:
+            access_url, exp, protocol, country, sub_id = key_row
+        else:
+            access_url, exp, protocol, country, sub_id = key_row
+        
         all_keys.append({
             'type': 'outline',
             'config': access_url,
@@ -128,10 +134,13 @@ async def handle_my_keys_btn(message: types.Message):
     # Если есть подписка, показываем её первой
     if subscription_info:
         from datetime import datetime
+        subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_info['token']}"
+        
+        # Формируем информацию о сроке действия
         expiry_date = datetime.fromtimestamp(subscription_info['expires_at']).strftime("%d.%m.%Y")
         remaining_time = subscription_info['expires_at'] - now
         remaining_str = format_duration(remaining_time)
-        subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_info['token']}"
+        time_info = f"⏳ Осталось времени: {remaining_str} (до {expiry_date})"
         
         # Получаем информацию о трафике
         repo = SubscriptionRepository()
@@ -149,7 +158,7 @@ async def handle_my_keys_btn(message: types.Message):
         msg += (
             f"📋 *Ваша подписка (коснитесь, чтобы скопировать):*\n\n"
             f"🔗 `{subscription_url}`\n\n"
-            f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n\n"
+            f"{time_info}\n\n"
             f"{traffic_info}\n\n"
             f"📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n\n"
             f"💡 Как использовать:\n"

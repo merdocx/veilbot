@@ -60,26 +60,19 @@ async def handle_support(message: types.Message) -> None:
     """Обработчик кнопки связи с поддержкой"""
     help_keyboard = get_help_keyboard()
     
-    if SUPPORT_USERNAME:
-        # Убираем @ если пользователь добавил его
-        username = SUPPORT_USERNAME.lstrip('@')
-        support_text = (
-            f"💬 Напишите нашему специалисту поддержки:\n"
-            f"@{username}\n\n"
-            f"Мы поможем решить любую проблему!"
-        )
-        support_button = InlineKeyboardMarkup()
-        support_button.add(InlineKeyboardButton(
-            "💬 Написать в поддержку",
-            url=f"https://t.me/{username}?start"
-        ))
-        await message.answer(support_text, reply_markup=support_button)
-    else:
-        await message.answer(
-            "❌ Контакт поддержки не настроен.\n"
-            "Обратитесь к администратору бота.",
-            reply_markup=help_keyboard
-        )
+    # Используем @vee_support как контакт поддержки
+    username = "vee_support"
+    support_text = (
+        f"💬 Напишите нашему специалисту поддержки:\n"
+        f"@{username}\n\n"
+        f"Мы поможем решить любую проблему!"
+    )
+    support_button = InlineKeyboardMarkup()
+    support_button.add(InlineKeyboardButton(
+        "💬 Написать в поддержку",
+        url=f"https://t.me/{username}?start"
+    ))
+    await message.answer(support_text, reply_markup=support_button)
 
 
 async def handle_help_back(message: types.Message) -> None:

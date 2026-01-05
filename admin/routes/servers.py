@@ -7,11 +7,16 @@ from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
 import logging
+import asyncio
 from urllib.parse import urlparse, urlunparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.repositories.server_repository import ServerRepository
 from app.settings import settings
+from app.infra.sqlite_utils import open_connection
+from app.infra.foreign_keys import safe_foreign_keys_off
+from vpn_protocols import V2RayProtocol
+from outline import delete_key as outline_delete_key
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token, validate_csrf_token
@@ -266,8 +271,19 @@ async def delete_server(request: Request, server_id: int):
             log_admin_action(request, "DELETE_SERVER", f"ID: {server_id}, Name: {server[1]}")
             # Сохраняем информацию о протоколе перед удалением для инвалидации кэша
             server_protocol = server[7] if len(server) > 7 else None
+            api_url = server[2] if len(server) > 2 else ""
+            api_key = server[9] if len(server) > 9 else ""
+            cert_sha256 = server[3] if len(server) > 3 else ""
         else:
             server_protocol = None
+            api_url = ""
+            api_key = ""
+            cert_sha256 = ""
+        
+        # Удаляем все ключи с сервера перед удалением из БД
+        if server and server_protocol:
+            logging.info(f"Server {server_id} is being deleted. Deleting all keys from server and database.")
+            await _delete_all_keys_from_server(server_id, server_protocol, api_url, api_key, cert_sha256)
         
         deletion_stats = repo.delete_server(server_id)
         log_admin_action(
@@ -389,6 +405,19 @@ async def edit_server(
         new_active = 1 if active else 0
         new_available = 1 if available_for_purchase else 0
 
+        # Если сервер деактивируется (active: 1 -> 0), удаляем все ключи с сервера и из БД
+        if current_active == 1 and new_active == 0:
+            logging.info(f"Server {server_id} is being deactivated. Deleting all keys from server and database.")
+            # Используем текущие данные сервера из БД для удаления ключей
+            current_api_url = current_server[2] if current_server and len(current_server) > 2 else ""
+            current_api_key = current_server[9] if current_server and len(current_server) > 9 else ""
+            current_cert_sha256 = current_server[3] if current_server and len(current_server) > 3 else ""
+            try:
+                await _delete_all_keys_from_server(server_id, current_protocol, current_api_url, current_api_key, current_cert_sha256)
+            except Exception as e:
+                logging.error(f"Error deleting keys from server {server_id} during deactivation: {e}", exc_info=True)
+                # Продолжаем выполнение даже при ошибке удаления ключей
+
         repo.update_server(
             server_id=server_id,
             name=server_data.name,
@@ -428,3 +457,120 @@ async def edit_server(
     except Exception as e:
         log_admin_action(request, "EDIT_SERVER_ERROR", f"Database error: {str(e)}")
         return RedirectResponse(url="/servers", status_code=HTTP_303_SEE_OTHER)
+
+
+async def _delete_all_keys_from_server(
+    server_id: int,
+    protocol: str,
+    api_url: str,
+    api_key: str,
+    cert_sha256: str
+) -> None:
+    """
+    Удалить все ключи с сервера и из БД при деактивации сервера.
+    
+    Args:
+        server_id: ID сервера
+        protocol: Протокол сервера ('v2ray' или 'outline')
+        api_url: URL API сервера
+        api_key: API ключ (для V2Ray)
+        cert_sha256: SHA256 сертификата (для Outline)
+    """
+    logging.info(f"Deleting all keys from server {server_id} (protocol: {protocol})")
+    
+    deleted_from_server = 0
+    deleted_from_db = 0
+    errors = []
+    
+    try:
+        # Получаем все ключи с этого сервера из БД
+        with open_connection(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            
+            if protocol == 'v2ray':
+                # Получаем V2Ray ключи
+                cursor.execute("""
+                    SELECT id, v2ray_uuid, user_id
+                    FROM v2ray_keys
+                    WHERE server_id = ?
+                """, (server_id,))
+                v2ray_keys = cursor.fetchall()
+                
+                # Удаляем V2Ray ключи с сервера
+                if v2ray_keys and api_url and api_key:
+                    protocol_client = None
+                    try:
+                        protocol_client = V2RayProtocol(api_url, api_key)
+                        for key_id, v2ray_uuid, user_id in v2ray_keys:
+                            if v2ray_uuid:
+                                try:
+                                    result = await protocol_client.delete_user(v2ray_uuid)
+                                    if result:
+                                        deleted_from_server += 1
+                                        logging.info(f"Deleted V2Ray key {v2ray_uuid} from server {server_id}")
+                                    else:
+                                        errors.append(f"Failed to delete V2Ray key {v2ray_uuid} from server")
+                                except Exception as e:
+                                    error_msg = f"Error deleting V2Ray key {v2ray_uuid}: {e}"
+                                    logging.error(error_msg, exc_info=True)
+                                    errors.append(error_msg)
+                    finally:
+                        if protocol_client:
+                            try:
+                                await protocol_client.close()
+                            except Exception:
+                                pass
+                
+                # Удаляем V2Ray ключи из БД
+                with safe_foreign_keys_off(cursor):
+                    cursor.execute("DELETE FROM v2ray_keys WHERE server_id = ?", (server_id,))
+                    deleted_from_db += cursor.rowcount
+                    conn.commit()
+                    logging.info(f"Deleted {cursor.rowcount} V2Ray keys from database for server {server_id}")
+            
+            elif protocol == 'outline':
+                # Получаем Outline ключи
+                cursor.execute("""
+                    SELECT id, key_id, user_id
+                    FROM keys
+                    WHERE server_id = ? AND protocol = 'outline'
+                """, (server_id,))
+                outline_keys = cursor.fetchall()
+                
+                # Удаляем Outline ключи с сервера
+                if outline_keys and api_url and cert_sha256:
+                    for key_id, outline_key_id, user_id in outline_keys:
+                        if outline_key_id:
+                            try:
+                                result = outline_delete_key(api_url, cert_sha256, outline_key_id)
+                                if result:
+                                    deleted_from_server += 1
+                                    logging.info(f"Deleted Outline key {outline_key_id} from server {server_id}")
+                                else:
+                                    errors.append(f"Failed to delete Outline key {outline_key_id} from server")
+                            except Exception as e:
+                                error_msg = f"Error deleting Outline key {outline_key_id}: {e}"
+                                logging.error(error_msg, exc_info=True)
+                                errors.append(error_msg)
+                
+                # Удаляем Outline ключи из БД
+                with safe_foreign_keys_off(cursor):
+                    cursor.execute("DELETE FROM keys WHERE server_id = ? AND protocol = 'outline'", (server_id,))
+                    deleted_from_db += cursor.rowcount
+                    conn.commit()
+                    logging.info(f"Deleted {cursor.rowcount} Outline keys from database for server {server_id}")
+            
+            else:
+                logging.warning(f"Unknown protocol {protocol} for server {server_id}")
+        
+        logging.info(
+            f"Server {server_id} deactivation: deleted {deleted_from_server} keys from server, "
+            f"{deleted_from_db} keys from database. Errors: {len(errors)}"
+        )
+        
+        if errors:
+            logging.warning(f"Errors during key deletion for server {server_id}: {errors}")
+    
+    except Exception as e:
+        logging.error(f"Error deleting keys from server {server_id}: {e}", exc_info=True)
+        # Продолжаем выполнение даже при ошибках - ключи все равно нужно удалить из БД

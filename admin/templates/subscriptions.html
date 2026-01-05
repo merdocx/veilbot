@@ -67,7 +67,8 @@
                     data-subscription-id="{{ subscription.id }}"
                     data-status="{{ subscription.status }}"
                     data-expiry-ts="{{ subscription.expires_at_ts }}"
-                    data-expiry-iso="{{ subscription.expires_at_iso }}">
+                    data-expiry-iso="{{ subscription.expires_at_iso }}"
+                    data-expiry-state="{{ subscription.expiry_state }}">
                     <td class="subscriptions-table__cell subscriptions-table__cell--id">
                         <span class="text-muted">#{{ subscription.id }}</span>
                     </td>
@@ -211,11 +212,11 @@
             <label class="form-label">Режим выполнения</label>
             <div class="form-radio-group">
                 <label class="form-radio">
-                    <input type="radio" name="dry_run" value="true" checked>
+                    <input type="radio" name="dry_run" value="true">
                     <span>Режим проверки (dry run)</span>
                 </label>
                 <label class="form-radio">
-                    <input type="radio" name="dry_run" value="false">
+                    <input type="radio" name="dry_run" value="false" checked>
                     <span>Реальная синхронизация</span>
                 </label>
             </div>

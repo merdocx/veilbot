@@ -880,7 +880,11 @@ async def monitor_subscription_traffic_limits() -> None:
         keys = repo.get_subscription_keys_for_deletion(subscription_id)
         
         success_count = 0
-        for v2ray_uuid, api_url, api_key in keys:
+        for key_identifier, api_url, api_key, protocol in keys:
+            # Обрабатываем только V2Ray ключи
+            if protocol != 'v2ray':
+                continue
+            v2ray_uuid = key_identifier
             if v2ray_uuid and api_url and api_key:
                 protocol_client = None
                 try:
@@ -1826,42 +1830,78 @@ async def _check_key_exists_on_server(
     api_key: str,
     domain: str,
     api_semaphore: asyncio.Semaphore,
+    protocol: str = 'v2ray',
+    cert_sha256: Optional[str] = None,
+    outline_key_id: Optional[str] = None,
 ) -> bool:
     """
     Проверить, существует ли ключ на сервере.
+    
+    Args:
+        v2ray_uuid: UUID ключа V2Ray (для protocol='v2ray')
+        api_url: URL API сервера
+        api_key: API ключ (для V2Ray)
+        domain: Домен сервера (для V2Ray)
+        api_semaphore: Семафор для ограничения параллелизма
+        protocol: Протокол ('v2ray' или 'outline')
+        cert_sha256: SHA256 сертификата (для Outline)
+        outline_key_id: ID ключа Outline (для protocol='outline')
     
     Returns:
         True если ключ существует на сервере, False если нет (404) или ошибка
     """
     async with api_semaphore:
         try:
-            server_config = {
-                'api_url': api_url,
-                'api_key': api_key,
-                'domain': domain,
-            }
-            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-            try:
-                # Пытаемся получить конфигурацию ключа
-                await protocol_client.get_user_config(
-                    v2ray_uuid,
-                    {
-                        'domain': domain or 'veil-bot.ru',
-                        'port': 443,
-                        'email': f'user@veilbot.com',
-                    }
-                )
-                return True
-            except Exception as e:
-                # Если 404 - ключа нет на сервере
-                error_str = str(e).lower()
-                if '404' in error_str or 'not found' in error_str:
+            if protocol == 'v2ray':
+                server_config = {
+                    'api_url': api_url,
+                    'api_key': api_key,
+                    'domain': domain,
+                }
+                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                try:
+                    # Пытаемся получить конфигурацию ключа
+                    await protocol_client.get_user_config(
+                        v2ray_uuid,
+                        {
+                            'domain': domain or 'veil-bot.ru',
+                            'port': 443,
+                            'email': f'user@veilbot.com',
+                        }
+                    )
+                    return True
+                except Exception as e:
+                    # Если 404 - ключа нет на сервере
+                    error_str = str(e).lower()
+                    if '404' in error_str or 'not found' in error_str:
+                        return False
+                    # Для других ошибок считаем, что ключ может существовать
+                    logger.warning(f"Error checking key {v2ray_uuid[:8]}... on server: {e}")
+                    return True  # В случае сомнений считаем, что ключ существует
+                finally:
+                    await protocol_client.close()
+            elif protocol == 'outline':
+                server_config = {
+                    'api_url': api_url,
+                    'cert_sha256': cert_sha256 or '',
+                }
+                protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+                try:
+                    # Получаем все ключи с сервера
+                    all_keys = await protocol_client.get_all_keys()
+                    if all_keys is None:
+                        return False
+                    # Проверяем наличие ключа по ID
+                    if outline_key_id:
+                        for key in all_keys:
+                            if str(key.get('id', '')) == str(outline_key_id):
+                                return True
                     return False
-                # Для других ошибок считаем, что ключ может существовать
-                logger.warning(f"Error checking key {v2ray_uuid[:8]}... on server: {e}")
-                return True  # В случае сомнений считаем, что ключ существует
-            finally:
-                await protocol_client.close()
+                except Exception as e:
+                    logger.warning(f"Error checking Outline key {outline_key_id} on server: {e}")
+                    return True  # В случае сомнений считаем, что ключ существует
+            else:
+                return True
         except Exception as e:
             logger.error(f"Failed to check key existence: {e}", exc_info=True)
             return True  # В случае ошибки считаем, что ключ существует (не пересоздаем)
@@ -1876,81 +1916,147 @@ async def _create_subscription_key_on_server(
     tariff_id: Optional[int],
     now: int,
     api_semaphore: asyncio.Semaphore,
+    protocol: str = 'v2ray',
 ) -> Tuple[bool, Optional[str]]:
     """
     Создать ключ подписки на сервере.
     
+    Args:
+        subscription_id: ID подписки
+        user_id: ID пользователя
+        server_id: ID сервера
+        server_info: Кортеж с данными сервера (зависит от протокола)
+        expires_at: Timestamp истечения подписки
+        tariff_id: ID тарифа
+        now: Текущий timestamp
+        api_semaphore: Семафор для ограничения параллелизма
+        protocol: Протокол ('v2ray' или 'outline')
+    
     Returns:
         (success: bool, error_message: Optional[str])
     """
-    server_id_db, name, api_url, api_key, domain, v2ray_path = server_info
+    if protocol == 'v2ray':
+        server_id_db, name, api_url, api_key, domain, v2ray_path = server_info
+    elif protocol == 'outline':
+        server_id_db, name, api_url, cert_sha256 = server_info[:4]
+        api_key = None
+        domain = None
+        v2ray_path = None
+    else:
+        return False, f"Unsupported protocol: {protocol}"
     
     async with api_semaphore:  # Ограничиваем параллелизм API-запросов
         try:
             key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
-            server_config = {
-                'api_url': api_url,
-                'api_key': api_key,
-                'domain': domain,
-            }
             
-            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-            try:
-                user_data = await protocol_client.create_user(key_email, name=name)
-                
-                if not user_data or not user_data.get('uuid'):
-                    return False, "Failed to create user on V2Ray server"
-                
-                v2ray_uuid = user_data['uuid']
-                
-                # Получаем client_config
-                client_config = await protocol_client.get_user_config(
-                    v2ray_uuid,
-                    {
-                        'domain': domain or 'veil-bot.ru',
-                        'port': 443,
-                        'email': key_email,
-                    }
-                )
-                
-                # Извлекаем VLESS URL из конфигурации
-                if 'vless://' in client_config:
-                    lines = client_config.split('\n')
-                    for line in lines:
-                        if line.strip().startswith('vless://'):
-                            client_config = line.strip()
-                            break
-                
-                # Используем INSERT OR IGNORE для избежания race conditions
-                with get_db_cursor(commit=True) as cursor:
-                    cursor.connection.execute("PRAGMA foreign_keys = OFF")
-                    try:
-                        cursor.execute("""
-                            INSERT OR IGNORE INTO v2ray_keys 
-                            (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            server_id,
-                            user_id,
-                            v2ray_uuid,
-                            key_email,
-                            now,
-                            expires_at,
-                            tariff_id,
-                            client_config,
-                            subscription_id,
-                        ))
-                        if cursor.rowcount == 0:
-                            # Ключ уже существует (race condition), удаляем с сервера
-                            await protocol_client.delete_user(v2ray_uuid)
-                            return False, "Key already exists (race condition)"
-                    finally:
-                        cursor.connection.execute("PRAGMA foreign_keys = ON")
-                
-                return True, None
-                
-            finally:
-                await protocol_client.close()
+            if protocol == 'v2ray':
+                server_config = {
+                    'api_url': api_url,
+                    'api_key': api_key,
+                    'domain': domain,
+                }
+                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                try:
+                    user_data = await protocol_client.create_user(key_email, name=name)
+                    
+                    if not user_data or not user_data.get('uuid'):
+                        return False, "Failed to create user on V2Ray server"
+                    
+                    v2ray_uuid = user_data['uuid']
+                    
+                    # Получаем client_config
+                    client_config = await protocol_client.get_user_config(
+                        v2ray_uuid,
+                        {
+                            'domain': domain or 'veil-bot.ru',
+                            'port': 443,
+                            'email': key_email,
+                        }
+                    )
+                    
+                    # Извлекаем VLESS URL из конфигурации
+                    if 'vless://' in client_config:
+                        lines = client_config.split('\n')
+                        for line in lines:
+                            if line.strip().startswith('vless://'):
+                                client_config = line.strip()
+                                break
+                    
+                    # Используем INSERT OR IGNORE для избежания race conditions
+                    with get_db_cursor(commit=True) as cursor:
+                        cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                        try:
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO v2ray_keys 
+                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                server_id,
+                                user_id,
+                                v2ray_uuid,
+                                key_email,
+                                now,
+                                expires_at,
+                                tariff_id,
+                                client_config,
+                                subscription_id,
+                            ))
+                            if cursor.rowcount == 0:
+                                # Ключ уже существует (race condition), удаляем с сервера
+                                await protocol_client.delete_user(v2ray_uuid)
+                                return False, "Key already exists (race condition)"
+                        finally:
+                            cursor.connection.execute("PRAGMA foreign_keys = ON")
+                    
+                    return True, None
+                    
+                finally:
+                    await protocol_client.close()
+            elif protocol == 'outline':
+                server_config = {
+                    'api_url': api_url,
+                    'cert_sha256': cert_sha256 or '',
+                }
+                protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+                try:
+                    user_data = await protocol_client.create_user(key_email)
+                    
+                    if not user_data or not user_data.get('id') or not user_data.get('accessUrl'):
+                        return False, "Failed to create user on Outline server"
+                    
+                    outline_key_id = user_data['id']
+                    access_url = user_data['accessUrl']
+                    
+                    # Используем INSERT OR IGNORE для избежания race conditions
+                    with get_db_cursor(commit=True) as cursor:
+                        cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                        try:
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO keys 
+                                (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
+                                VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, 'outline', ?)
+                            """, (
+                                server_id,
+                                user_id,
+                                access_url,
+                                outline_key_id,
+                                now,
+                                key_email,
+                                tariff_id,
+                                subscription_id,
+                            ))
+                            if cursor.rowcount == 0:
+                                # Ключ уже существует (race condition), удаляем с сервера
+                                await protocol_client.delete_user(outline_key_id)
+                                return False, "Key already exists (race condition)"
+                        finally:
+                            cursor.connection.execute("PRAGMA foreign_keys = ON")
+                    
+                    return True, None
+                    
+                except Exception as e:
+                    logger.error(f"Error creating Outline key: {e}", exc_info=True)
+                    return False, str(e)
                 
         except sqlite3.IntegrityError as e:
             logger.warning(
@@ -1971,13 +2077,28 @@ async def _delete_subscription_key_from_server(
     key_id: int,
     subscription_id: int,
     server_id: int,
-    v2ray_uuid: str,
+    v2ray_uuid: Optional[str],
     api_url: Optional[str],
     api_key: Optional[str],
     api_semaphore: asyncio.Semaphore,
+    protocol: str = 'v2ray',
+    cert_sha256: Optional[str] = None,
+    outline_key_id: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Удалить ключ подписки с сервера и из БД.
+    
+    Args:
+        key_id: ID ключа в БД
+        subscription_id: ID подписки
+        server_id: ID сервера
+        v2ray_uuid: UUID ключа V2Ray (для protocol='v2ray')
+        api_url: URL API сервера
+        api_key: API ключ (для V2Ray)
+        api_semaphore: Семафор для ограничения параллелизма
+        protocol: Протокол ('v2ray' или 'outline')
+        cert_sha256: SHA256 сертификата (для Outline)
+        outline_key_id: ID ключа Outline (для protocol='outline')
     
     Returns:
         (success: bool, error_message: Optional[str])
@@ -1986,57 +2107,109 @@ async def _delete_subscription_key_from_server(
         try:
             deleted_from_server = False
             
-            # Удаляем через V2Ray API
-            if api_url and api_key and v2ray_uuid:
-                server_config = {
-                    'api_url': api_url,
-                    'api_key': api_key,
-                    'domain': '',
-                }
-                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                try:
-                    deleted_from_server = await protocol_client.delete_user(v2ray_uuid)
-                    if deleted_from_server:
-                        logger.debug(
-                            f"Sync: Deleted key {v2ray_uuid[:8]}... "
-                            f"from server {server_id} via API"
-                        )
-                    else:
+            if protocol == 'v2ray':
+                # Удаляем через V2Ray API
+                if api_url and api_key and v2ray_uuid:
+                    server_config = {
+                        'api_url': api_url,
+                        'api_key': api_key,
+                        'domain': '',
+                    }
+                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                    try:
+                        deleted_from_server = await protocol_client.delete_user(v2ray_uuid)
+                        if deleted_from_server:
+                            logger.debug(
+                                f"Sync: Deleted key {v2ray_uuid[:8]}... "
+                                f"from server {server_id} via API"
+                            )
+                        else:
+                            logger.warning(
+                                f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
+                                f"from server {server_id} via API (returned False)"
+                            )
+                    except Exception as api_error:
                         logger.warning(
                             f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
-                            f"from server {server_id} via API (returned False)"
+                            f"from server {server_id} via API: {api_error}"
                         )
-                except Exception as api_error:
-                    logger.warning(
-                        f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
-                        f"from server {server_id} via API: {api_error}"
+                        deleted_from_server = False
+                    finally:
+                        await protocol_client.close()
+                else:
+                    # Если нет данных для удаления с сервера, считаем что нужно удалить из БД
+                    logger.debug(
+                        f"Sync: Key {key_id} has no server info, will delete from DB only"
                     )
-                    deleted_from_server = False
-                finally:
-                    await protocol_client.close()
-            else:
-                # Если нет данных для удаления с сервера, считаем что нужно удалить из БД
-                logger.debug(
-                    f"Sync: Key {key_id} has no server info, will delete from DB only"
-                )
-                deleted_from_server = True
-            
-            # Удаляем из БД только если удаление с сервера успешно или нет данных о сервере
-            if deleted_from_server:
-                with get_db_cursor(commit=True) as cursor:
-                    with safe_foreign_keys_off(cursor):
-                        cursor.execute(
-                            "DELETE FROM v2ray_keys WHERE id = ?",
-                            (key_id,)
-                        )
-                        if cursor.rowcount == 0:
-                            logger.warning(
-                                f"Sync: Key {key_id} not found in DB (may have been deleted already)"
+                    deleted_from_server = True
+                
+                # Удаляем из БД только если удаление с сервера успешно или нет данных о сервере
+                if deleted_from_server:
+                    with get_db_cursor(commit=True) as cursor:
+                        with safe_foreign_keys_off(cursor):
+                            cursor.execute(
+                                "DELETE FROM v2ray_keys WHERE id = ?",
+                                (key_id,)
                             )
-                            return False, "Key not found in DB"
-                return True, None
+                            if cursor.rowcount == 0:
+                                logger.warning(
+                                    f"Sync: Key {key_id} not found in DB (may have been deleted already)"
+                                )
+                                return False, "Key not found in DB"
+                    return True, None
+                else:
+                    return False, "Failed to delete from server"
+            elif protocol == 'outline':
+                # Удаляем через Outline API
+                if api_url and outline_key_id:
+                    server_config = {
+                        'api_url': api_url,
+                        'cert_sha256': cert_sha256 or '',
+                    }
+                    protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+                    try:
+                        deleted_from_server = await protocol_client.delete_user(outline_key_id)
+                        if deleted_from_server:
+                            logger.debug(
+                                f"Sync: Deleted Outline key {outline_key_id} "
+                                f"from server {server_id} via API"
+                            )
+                        else:
+                            logger.warning(
+                                f"Sync: Failed to delete Outline key {outline_key_id} "
+                                f"from server {server_id} via API (returned False)"
+                            )
+                    except Exception as api_error:
+                        logger.warning(
+                            f"Sync: Failed to delete Outline key {outline_key_id} "
+                            f"from server {server_id} via API: {api_error}"
+                        )
+                        deleted_from_server = False
+                else:
+                    # Если нет данных для удаления с сервера, считаем что нужно удалить из БД
+                    logger.debug(
+                        f"Sync: Outline key {key_id} has no server info, will delete from DB only"
+                    )
+                    deleted_from_server = True
+                
+                # Удаляем из БД только если удаление с сервера успешно или нет данных о сервере
+                if deleted_from_server:
+                    with get_db_cursor(commit=True) as cursor:
+                        with safe_foreign_keys_off(cursor):
+                            cursor.execute(
+                                "DELETE FROM keys WHERE id = ? AND protocol = 'outline'",
+                                (key_id,)
+                            )
+                            if cursor.rowcount == 0:
+                                logger.warning(
+                                    f"Sync: Outline key {key_id} not found in DB (may have been deleted already)"
+                                )
+                                return False, "Key not found in DB"
+                    return True, None
+                else:
+                    return False, "Failed to delete from server"
             else:
-                return False, "Failed to delete from server"
+                return False, f"Unsupported protocol: {protocol}"
                 
         except Exception as e:
             logger.error(
@@ -2048,14 +2221,17 @@ async def _delete_subscription_key_from_server(
 
 async def _process_subscription_sync(
     subscription: tuple,
-    existing_keys_by_subscription: Dict[int, list],
-    active_server_ids: set,
-    active_servers_dict: Dict[int, tuple],
+    v2ray_keys_by_subscription: Dict[int, list],
+    outline_keys_by_subscription: Dict[int, list],
+    v2ray_active_server_ids: set,
+    v2ray_active_servers_dict: Dict[int, tuple],
+    outline_active_server_ids: set,
+    outline_active_servers_dict: Dict[int, tuple],
     now: int,
     api_semaphore: asyncio.Semaphore,
 ) -> Dict[str, Any]:
     """
-    Обработать синхронизацию одной подписки.
+    Обработать синхронизацию одной подписки для V2Ray и Outline серверов.
     
     Returns:
         dict с результатами: created, deleted, failed_create, failed_delete, tokens_to_invalidate
@@ -2071,137 +2247,23 @@ async def _process_subscription_sync(
     }
     
     try:
-        existing_keys = existing_keys_by_subscription.get(subscription_id, [])
-        existing_server_ids = {key[1] for key in existing_keys}
-        
-        # Проверяем существующие ключи на серверах
-        # Если ключ есть в БД, но его нет на сервере - нужно пересоздать
-        keys_to_recreate = []
-        verified_existing_server_ids = set()
-        
-        for key in existing_keys:
-            key_id, server_id, v2ray_uuid, api_url, api_key = key
-            if server_id in active_server_ids:
-                # Проверяем наличие ключа на сервере
-                server_info = active_servers_dict.get(server_id)
-                if server_info:
-                    server_id_db, name, api_url_from_dict, api_key_from_dict, domain, v2ray_path = server_info
-                    key_exists = await _check_key_exists_on_server(
-                        v2ray_uuid,
-                        api_url_from_dict or api_url,
-                        api_key_from_dict or api_key,
-                        domain or '',
-                        api_semaphore
-                    )
-                    if key_exists:
-                        verified_existing_server_ids.add(server_id)
-                    else:
-                        # Ключ есть в БД, но его нет на сервере - нужно пересоздать
-                        logger.info(
-                            f"Sync: Key {key_id} (UUID: {v2ray_uuid[:8]}...) for subscription {subscription_id} "
-                            f"exists in DB but not on server {server_id}, will recreate"
-                        )
-                        keys_to_recreate.append(key)
-                else:
-                    # Если нет информации о сервере, считаем что ключ существует
-                    verified_existing_server_ids.add(server_id)
-            else:
-                # Для неактивных серверов не проверяем
-                verified_existing_server_ids.add(server_id)
-        
-        # Определяем серверы, где нужно создать ключи
-        servers_to_create = active_server_ids - verified_existing_server_ids
-        
-        # Определяем ключи на неактивных серверах, которые нужно удалить
-        keys_to_delete = [
-            key for key in existing_keys
-            if key[1] not in active_server_ids
-        ]
-        
-        # Находим дубликаты: несколько ключей одной подписки на одном сервере
-        keys_by_server = defaultdict(list)
-        for key in existing_keys:
-            key_id, server_id, v2ray_uuid, api_url, api_key = key
-            if server_id in active_server_ids:
-                keys_by_server[server_id].append(key)
-        
-        # Для каждого сервера, если есть несколько ключей - оставляем самый новый, остальные удаляем
-        duplicate_keys_to_delete = []
-        for server_id, server_keys in keys_by_server.items():
-            if len(server_keys) > 1:
-                server_keys_sorted = sorted(server_keys, key=lambda k: k[0], reverse=True)
-                for duplicate_key in server_keys_sorted[1:]:
-                    duplicate_keys_to_delete.append(duplicate_key)
-                    logger.info(
-                        f"Sync: Found duplicate key {duplicate_key[0]} for subscription {subscription_id} "
-                        f"on server {server_id}, will be deleted"
-                    )
-        
-        keys_to_delete.extend(duplicate_keys_to_delete)
-        
-        # Удаляем ключи, которые нужно пересоздать (они есть в БД, но не на сервере)
-        for key_to_recreate in keys_to_recreate:
-            key_id, server_id, v2ray_uuid, api_url, api_key = key_to_recreate
-            # Удаляем старую запись из БД перед пересозданием
-            with get_db_cursor(commit=True) as cursor:
-                cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_id,))
-                logger.info(f"Sync: Deleted DB record for key {key_id} before recreation")
-            # Добавляем сервер в список для создания
-            if server_id not in servers_to_create:
-                servers_to_create.add(server_id)
-        
-        # Параллельно создаем недостающие ключи
-        create_tasks = []
-        for server_id in servers_to_create:
-            if server_id not in active_servers_dict:
-                continue
-            server_info = active_servers_dict[server_id]
-            create_tasks.append(
-                _create_subscription_key_on_server(
-                    subscription_id, user_id, server_id, server_info,
-                    expires_at, tariff_id, now, api_semaphore
-                )
+        # Обрабатываем V2Ray ключи
+        if v2ray_active_server_ids:
+            await _process_protocol_sync(
+                subscription_id, user_id, token, expires_at, tariff_id,
+                v2ray_keys_by_subscription.get(subscription_id, []),
+                v2ray_active_server_ids, v2ray_active_servers_dict,
+                'v2ray', now, api_semaphore, result
             )
         
-        if create_tasks:
-            create_results = await asyncio.gather(*create_tasks, return_exceptions=True)
-            for task_result in create_results:
-                if isinstance(task_result, Exception):
-                    result['failed_create'] += 1
-                    logger.error(f"Sync: Exception in create task: {task_result}", exc_info=True)
-                else:
-                    success, error = task_result
-                    if success:
-                        result['created'] += 1
-                    else:
-                        result['failed_create'] += 1
-                        if error and "already exists" not in error.lower():
-                            logger.warning(f"Sync: Failed to create key: {error}")
-        
-        # Параллельно удаляем ключи
-        delete_tasks = []
-        for key_id, server_id, v2ray_uuid, api_url, api_key in keys_to_delete:
-            delete_tasks.append(
-                _delete_subscription_key_from_server(
-                    key_id, subscription_id, server_id, v2ray_uuid,
-                    api_url, api_key, api_semaphore
-                )
+        # Обрабатываем Outline ключи
+        if outline_active_server_ids:
+            await _process_protocol_sync(
+                subscription_id, user_id, token, expires_at, tariff_id,
+                outline_keys_by_subscription.get(subscription_id, []),
+                outline_active_server_ids, outline_active_servers_dict,
+                'outline', now, api_semaphore, result
             )
-        
-        if delete_tasks:
-            delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
-            for task_result in delete_results:
-                if isinstance(task_result, Exception):
-                    result['failed_delete'] += 1
-                    logger.error(f"Sync: Exception in delete task: {task_result}", exc_info=True)
-                else:
-                    success, error = task_result
-                    if success:
-                        result['deleted'] += 1
-                    else:
-                        result['failed_delete'] += 1
-                        if error:
-                            logger.warning(f"Sync: Failed to delete key: {error}")
         
         # Добавляем токен для инвалидации кэша, если были изменения
         if result['created'] > 0 or result['deleted'] > 0:
@@ -2214,13 +2276,200 @@ async def _process_subscription_sync(
             f"Sync: Error processing subscription {subscription_id}: {e}",
             exc_info=True
         )
-        result['failed_create'] += len(servers_to_create) if 'servers_to_create' in locals() else 0
         return result
+
+
+async def _process_protocol_sync(
+    subscription_id: int,
+    user_id: int,
+    token: str,
+    expires_at: int,
+    tariff_id: Optional[int],
+    existing_keys: list,
+    active_server_ids: set,
+    active_servers_dict: Dict[int, tuple],
+    protocol: str,
+    now: int,
+    api_semaphore: asyncio.Semaphore,
+    result: Dict[str, Any],
+) -> None:
+    """
+    Обработать синхронизацию ключей для одного протокола (V2Ray или Outline).
+    """
+    existing_server_ids = {key[1] for key in existing_keys}
+    
+    # Проверяем существующие ключи на серверах
+    keys_to_recreate = []
+    verified_existing_server_ids = set()
+    
+    for key in existing_keys:
+        if protocol == 'v2ray':
+            key_id, server_id, v2ray_uuid, api_url, api_key = key
+            outline_key_id = None
+            cert_sha256 = None
+        else:  # outline
+            key_id, server_id, outline_key_id, api_url, cert_sha256 = key
+            v2ray_uuid = None
+            api_key = None
+        
+        if server_id in active_server_ids:
+            # Проверяем наличие ключа на сервере
+            server_info = active_servers_dict.get(server_id)
+            if server_info:
+                if protocol == 'v2ray':
+                    server_id_db, name, api_url_from_dict, api_key_from_dict, domain, v2ray_path = server_info
+                    key_exists = await _check_key_exists_on_server(
+                        v2ray_uuid,
+                        api_url_from_dict or api_url,
+                        api_key_from_dict or api_key,
+                        domain or '',
+                        api_semaphore,
+                        protocol='v2ray'
+                    )
+                else:  # outline
+                    server_id_db, name, api_url_from_dict, cert_sha256_from_dict = server_info
+                    key_exists = await _check_key_exists_on_server(
+                        '',
+                        api_url_from_dict or api_url,
+                        '',
+                        '',
+                        api_semaphore,
+                        protocol='outline',
+                        cert_sha256=cert_sha256_from_dict or cert_sha256,
+                        outline_key_id=outline_key_id
+                    )
+                
+                if key_exists:
+                    verified_existing_server_ids.add(server_id)
+                else:
+                    # Ключ есть в БД, но его нет на сервере - нужно пересоздать
+                    logger.info(
+                        f"Sync: Key {key_id} for subscription {subscription_id} "
+                        f"exists in DB but not on server {server_id}, will recreate"
+                    )
+                    keys_to_recreate.append(key)
+            else:
+                verified_existing_server_ids.add(server_id)
+        else:
+            verified_existing_server_ids.add(server_id)
+    
+    # Определяем серверы, где нужно создать ключи
+    servers_to_create = active_server_ids - verified_existing_server_ids
+    
+    # Определяем ключи на неактивных серверах, которые нужно удалить
+    keys_to_delete = [
+        key for key in existing_keys
+        if key[1] not in active_server_ids
+    ]
+    
+    # Находим дубликаты
+    keys_by_server = defaultdict(list)
+    for key in existing_keys:
+        if key[1] in active_server_ids:
+            keys_by_server[key[1]].append(key)
+    
+    # Для каждого сервера, если есть несколько ключей - оставляем самый новый, остальные удаляем
+    duplicate_keys_to_delete = []
+    for server_id, server_keys in keys_by_server.items():
+        if len(server_keys) > 1:
+            server_keys_sorted = sorted(server_keys, key=lambda k: k[0], reverse=True)
+            for duplicate_key in server_keys_sorted[1:]:
+                duplicate_keys_to_delete.append(duplicate_key)
+                logger.info(
+                    f"Sync: Found duplicate {protocol} key {duplicate_key[0]} for subscription {subscription_id} "
+                    f"on server {server_id}, will be deleted"
+                )
+    
+    keys_to_delete.extend(duplicate_keys_to_delete)
+    
+    # Удаляем ключи, которые нужно пересоздать
+    for key_to_recreate in keys_to_recreate:
+        key_id = key_to_recreate[0]
+        if protocol == 'v2ray':
+            with get_db_cursor(commit=True) as cursor:
+                cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_id,))
+        else:  # outline
+            with get_db_cursor(commit=True) as cursor:
+                cursor.execute("DELETE FROM keys WHERE id = ? AND protocol = 'outline'", (key_id,))
+        logger.info(f"Sync: Deleted DB record for {protocol} key {key_id} before recreation")
+        server_id = key_to_recreate[1]
+        if server_id not in servers_to_create:
+            servers_to_create.add(server_id)
+    
+    # Параллельно создаем недостающие ключи
+    create_tasks = []
+    for server_id in servers_to_create:
+        if server_id not in active_servers_dict:
+            continue
+        server_info = active_servers_dict[server_id]
+        create_tasks.append(
+            _create_subscription_key_on_server(
+                subscription_id, user_id, server_id, server_info,
+                expires_at, tariff_id, now, api_semaphore, protocol=protocol
+            )
+        )
+    
+    if create_tasks:
+        create_results = await asyncio.gather(*create_tasks, return_exceptions=True)
+        for task_result in create_results:
+            if isinstance(task_result, Exception):
+                result['failed_create'] += 1
+                logger.error(f"Sync: Exception in create task: {task_result}", exc_info=True)
+            else:
+                success, error = task_result
+                if success:
+                    result['created'] += 1
+                else:
+                    result['failed_create'] += 1
+                    if error and "already exists" not in error.lower():
+                        logger.warning(f"Sync: Failed to create {protocol} key: {error}")
+    
+    # Параллельно удаляем ключи
+    delete_tasks = []
+    for key in keys_to_delete:
+        key_id = key[0]
+        server_id = key[1]
+        if protocol == 'v2ray':
+            v2ray_uuid = key[2]
+            api_url = key[3]
+            api_key = key[4]
+            delete_tasks.append(
+                _delete_subscription_key_from_server(
+                    key_id, subscription_id, server_id, v2ray_uuid,
+                    api_url, api_key, api_semaphore, protocol='v2ray'
+                )
+            )
+        else:  # outline
+            outline_key_id = key[2]
+            api_url = key[3]
+            cert_sha256 = key[4]
+            delete_tasks.append(
+                _delete_subscription_key_from_server(
+                    key_id, subscription_id, server_id, None,
+                    api_url, None, api_semaphore, protocol='outline',
+                    cert_sha256=cert_sha256, outline_key_id=outline_key_id
+                )
+            )
+    
+    if delete_tasks:
+        delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
+        for task_result in delete_results:
+            if isinstance(task_result, Exception):
+                result['failed_delete'] += 1
+                logger.error(f"Sync: Exception in delete task: {task_result}", exc_info=True)
+            else:
+                success, error = task_result
+                if success:
+                    result['deleted'] += 1
+                else:
+                    result['failed_delete'] += 1
+                    if error:
+                        logger.warning(f"Sync: Failed to delete {protocol} key: {error}")
 
 
 async def sync_subscription_keys_with_active_servers() -> None:
     """
-    Синхронизация ключей подписок с активными серверами.
+    Синхронизация ключей подписок с активными серверами (V2Ray и Outline).
     Удаляет ключи на неактивных серверах и создает недостающие на активных.
     Запускается каждые 30 минут.
     
@@ -2230,6 +2479,7 @@ async def sync_subscription_keys_with_active_servers() -> None:
     - Батчингом операций БД
     - Батчингом инвалидации кэша
     - Rate limiting для API-запросов
+    - Поддержкой V2Ray и Outline серверов
     """
     async def job() -> None:
         try:
@@ -2256,38 +2506,75 @@ async def sync_subscription_keys_with_active_servers() -> None:
                     WHERE protocol = 'v2ray' AND active = 1
                     ORDER BY id
                 """)
-                active_servers = cursor.fetchall()
+                v2ray_servers = cursor.fetchall()
             
-            if not active_servers:
-                logger.debug("No active V2Ray servers found for sync")
+            # Получаем активные Outline серверы (только сервер с id=8 и available_for_purchase=1)
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, name, api_url, cert_sha256
+                    FROM servers
+                    WHERE protocol = 'outline' AND active = 1 
+                    AND available_for_purchase = 1
+                    ORDER BY CASE WHEN id = 8 THEN 0 ELSE 1 END, id
+                    LIMIT 1
+                """)
+                outline_servers = cursor.fetchall()
+            
+            if not v2ray_servers and not outline_servers:
+                logger.debug("No active servers found for sync")
                 return
             
-            active_server_ids = {server[0] for server in active_servers}
-            active_servers_dict = {server[0]: server for server in active_servers}
+            # Обрабатываем V2Ray серверы
+            v2ray_active_server_ids = {server[0] for server in v2ray_servers}
+            v2ray_active_servers_dict = {server[0]: server for server in v2ray_servers}
+            
+            # Обрабатываем Outline серверы
+            outline_active_server_ids = {server[0] for server in outline_servers}
+            outline_active_servers_dict = {server[0]: server for server in outline_servers}
             
             logger.info(
                 f"Starting sync: {len(active_subscriptions)} subscriptions, "
-                f"{len(active_servers)} active servers"
+                f"{len(v2ray_servers)} V2Ray servers, {len(outline_servers)} Outline servers"
             )
             
-            # ОПТИМИЗАЦИЯ 1: Получаем все ключи подписок одним запросом
+            # ОПТИМИЗАЦИЯ 1: Получаем все ключи подписок одним запросом для каждого протокола
             subscription_ids = [sub[0] for sub in active_subscriptions]
             placeholders = ','.join('?' * len(subscription_ids))
-            existing_keys_by_subscription: Dict[int, list] = defaultdict(list)
             
-            with get_db_cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key, k.subscription_id
-                    FROM v2ray_keys k
-                    JOIN servers s ON k.server_id = s.id
-                    WHERE k.subscription_id IN ({placeholders})
-                """, subscription_ids)
-                all_existing_keys = cursor.fetchall()
+            # V2Ray ключи
+            v2ray_keys_by_subscription: Dict[int, list] = defaultdict(list)
+            if v2ray_servers:
+                with get_db_cursor() as cursor:
+                    cursor.execute(f"""
+                        SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key, k.subscription_id
+                        FROM v2ray_keys k
+                        JOIN servers s ON k.server_id = s.id
+                        WHERE k.subscription_id IN ({placeholders})
+                    """, subscription_ids)
+                    all_v2ray_keys = cursor.fetchall()
+                
+                # Группируем ключи по subscription_id
+                for key_row in all_v2ray_keys:
+                    key_id, server_id, v2ray_uuid, api_url, api_key, sub_id = key_row
+                    v2ray_keys_by_subscription[sub_id].append((key_id, server_id, v2ray_uuid, api_url, api_key))
             
-            # Группируем ключи по subscription_id
-            for key_row in all_existing_keys:
-                key_id, server_id, v2ray_uuid, api_url, api_key, sub_id = key_row
-                existing_keys_by_subscription[sub_id].append((key_id, server_id, v2ray_uuid, api_url, api_key))
+            # Outline ключи
+            outline_keys_by_subscription: Dict[int, list] = defaultdict(list)
+            if outline_servers:
+                with get_db_cursor() as cursor:
+                    cursor.execute(f"""
+                        SELECT k.id, k.server_id, k.key_id, s.api_url, s.cert_sha256, k.subscription_id
+                        FROM keys k
+                        JOIN servers s ON k.server_id = s.id
+                        WHERE k.subscription_id IN ({placeholders})
+                        AND k.protocol = 'outline'
+                    """, subscription_ids)
+                    all_outline_keys = cursor.fetchall()
+                
+                # Группируем ключи по subscription_id
+                for key_row in all_outline_keys:
+                    key_id, server_id, outline_key_id, api_url, cert_sha256, sub_id = key_row
+                    outline_keys_by_subscription[sub_id].append((key_id, server_id, outline_key_id, api_url, cert_sha256))
             
             # ОПТИМИЗАЦИЯ 2: Rate limiting для API-запросов (макс 10 параллельных запросов к серверам)
             api_semaphore = asyncio.Semaphore(10)
@@ -2306,8 +2593,10 @@ async def sync_subscription_keys_with_active_servers() -> None:
                 # Создаем задачи для батча
                 tasks = [
                     _process_subscription_sync(
-                        subscription, existing_keys_by_subscription,
-                        active_server_ids, active_servers_dict,
+                        subscription, 
+                        v2ray_keys_by_subscription, outline_keys_by_subscription,
+                        v2ray_active_server_ids, v2ray_active_servers_dict,
+                        outline_active_server_ids, outline_active_servers_dict,
                         now, api_semaphore
                     )
                     for subscription in batch
@@ -2347,3 +2636,5 @@ async def sync_subscription_keys_with_active_servers() -> None:
         job=job,
         max_backoff=3600,
     )
+
+

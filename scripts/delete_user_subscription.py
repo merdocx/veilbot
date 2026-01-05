@@ -62,7 +62,11 @@ async def delete_user_subscription(user_id: int) -> None:
     
     # Удалить ключи через V2Ray API
     deleted_v2ray_count = 0
-    for v2ray_uuid, api_url, api_key in subscription_keys:
+    for key_identifier, api_url, api_key, protocol in subscription_keys:
+        # Обрабатываем только V2Ray ключи
+        if protocol != 'v2ray':
+            continue
+        v2ray_uuid = key_identifier
         if v2ray_uuid and api_url and api_key:
             try:
                 logger.info(f"Удаление V2Ray ключа {v2ray_uuid} с сервера {api_url}")
