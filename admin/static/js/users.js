@@ -16,15 +16,28 @@ const initVipHandlers = () => {
             }
 
             // Получаем CSRF токен из мета-тега или скрытого поля
-            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
-                || document.querySelector('input[name="csrf_token"]')?.value;
+            let csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
+                || document.querySelector('input[name="csrf_token"]')?.value
+                || document.querySelector('[name="csrf_token"]')?.value;
+            
+            // Если токен не найден, попробуем получить его через глобальную переменную или из формы
+            if (!csrfToken) {
+                // Пробуем найти в любом скрытом input на странице
+                const csrfInput = document.querySelector('input[type="hidden"][name*="csrf"]');
+                if (csrfInput) {
+                    csrfToken = csrfInput.value;
+                }
+            }
             
             if (!csrfToken) {
-                console.error('[VeilBot][users] CSRF token not found');
+                console.error('[VeilBot][users] CSRF token not found. Available inputs:', 
+                    Array.from(document.querySelectorAll('input[type="hidden"]')).map(i => i.name));
                 alert('Ошибка: CSRF токен не найден. Перезагрузите страницу.');
                 e.target.checked = !isChecked; // Откатываем изменение
                 return;
             }
+            
+            console.log('[VeilBot][users] Toggling VIP for user', userId, 'with token:', csrfToken.substring(0, 10) + '...');
 
             // Отправляем запрос
             try {
@@ -37,6 +50,8 @@ const initVipHandlers = () => {
                 });
 
                 const data = await response.json();
+                
+                console.log('[VeilBot][users] VIP toggle response:', data);
 
                 if (!response.ok || !data.success) {
                     throw new Error(data.error || 'Ошибка при изменении VIP статуса');

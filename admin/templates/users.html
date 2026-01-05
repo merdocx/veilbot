@@ -146,6 +146,7 @@
 {% endif %}
 {% block extra_scripts %}
     {{ super() }}
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <script type="module" src="/static/js/users.js"></script>
 {% endblock %}
 {% endblock %}
