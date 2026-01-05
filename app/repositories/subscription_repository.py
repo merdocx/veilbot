@@ -554,12 +554,51 @@ class SubscriptionRepository:
                 # Восстанавливаем foreign keys
                 await conn.execute("PRAGMA foreign_keys=ON")
 
-    def list_subscriptions(self, limit: int = 50, offset: int = 0) -> List[Tuple]:
+    def list_subscriptions(self, query: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Tuple]:
         """Получить список всех активных подписок с информацией о ключах"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute(
+            
+            if query:
+                like = f"%{query.strip()}%"
+                sql = """
+                SELECT 
+                    s.id,
+                    s.user_id,
+                    s.subscription_token,
+                    s.created_at,
+                    s.expires_at,
+                    s.tariff_id,
+                    s.is_active,
+                    s.last_updated_at,
+                    s.notified,
+                    t.name as tariff_name,
+                    COALESCE(vk.v2ray_count, 0) + COALESCE(ok.outline_count, 0) as keys_count,
+                    s.traffic_limit_mb
+                FROM subscriptions s
+                LEFT JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN (
+                    SELECT subscription_id, COUNT(*) as v2ray_count
+                    FROM v2ray_keys
+                    GROUP BY subscription_id
+                ) vk ON vk.subscription_id = s.id
+                LEFT JOIN (
+                    SELECT subscription_id, COUNT(*) as outline_count
+                    FROM keys
+                    WHERE protocol = 'outline'
+                    GROUP BY subscription_id
+                ) ok ON ok.subscription_id = s.id
+                WHERE s.is_active = 1
+                  AND (CAST(s.id AS TEXT) LIKE ?
+                    OR CAST(s.user_id AS TEXT) LIKE ?
+                    OR s.subscription_token LIKE ?
+                    OR t.name LIKE ?)
+                ORDER BY s.created_at DESC
+                LIMIT ? OFFSET ?
                 """
+                c.execute(sql, (like, like, like, like, limit, offset))
+            else:
+                sql = """
                 SELECT 
                     s.id,
                     s.user_id,
@@ -589,17 +628,31 @@ class SubscriptionRepository:
                 WHERE s.is_active = 1
                 ORDER BY s.created_at DESC
                 LIMIT ? OFFSET ?
-                """,
-                (limit, offset),
-            )
+                """
+                c.execute(sql, (limit, offset))
             return c.fetchall()
 
-    def count_subscriptions(self) -> int:
+    def count_subscriptions(self, query: Optional[str] = None) -> int:
         """Получить общее количество активных подписок"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = 1")
-            return c.fetchone()[0]
+            if query:
+                like = f"%{query.strip()}%"
+                sql = """
+                SELECT COUNT(*)
+                FROM subscriptions s
+                LEFT JOIN tariffs t ON s.tariff_id = t.id
+                WHERE s.is_active = 1
+                  AND (CAST(s.id AS TEXT) LIKE ?
+                    OR CAST(s.user_id AS TEXT) LIKE ?
+                    OR s.subscription_token LIKE ?
+                    OR t.name LIKE ?)
+                """
+                c.execute(sql, (like, like, like, like))
+            else:
+                c.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = 1")
+            row = c.fetchone()
+            return row[0] if row else 0
 
     def get_subscription_by_id(self, subscription_id: int) -> Optional[Tuple]:
         """Получить подписку по ID с информацией о тарифе и количестве ключей"""

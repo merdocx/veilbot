@@ -627,12 +627,27 @@
             }
         }
 
-        if (window.VeilBotCommon && typeof window.VeilBotCommon.initTableSearch === 'function') {
-            window.VeilBotCommon.initTableSearch({
+        // Серверный поиск вместо клиентского (live-поиск без перезагрузки страницы)
+        if (typeof window.initLiveSearch === 'function') {
+            window.initLiveSearch({
+                pageUrl: '/subscriptions',
                 tableSelector: '#subscriptions-table',
+                statsSelector: '.stats-grid',
+                paginationSelector: '.pagination',
             });
         } else {
-            console.warn('[VeilBot][subscriptions] initTableSearch недоступен');
+            console.warn('[VeilBot][subscriptions] initLiveSearch недоступен, загружаем скрипт...');
+            const script = document.createElement('script');
+            script.src = '/static/js/live-search.js';
+            script.onload = () => {
+                window.initLiveSearch({
+                    pageUrl: '/subscriptions',
+                    tableSelector: '#subscriptions-table',
+                    statsSelector: '.stats-grid',
+                    paginationSelector: '.pagination',
+                });
+            };
+            document.head.appendChild(script);
         }
 
         updateProgressBars();
