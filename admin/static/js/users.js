@@ -57,31 +57,11 @@ const initVipHandlers = () => {
                     throw new Error(data.error || 'Ошибка при изменении VIP статуса');
                 }
 
-                // Обновляем визуальное отображение звездочки
-                const row = e.target.closest('tr');
-                if (row) {
-                    const userCell = row.querySelector('td:first-child .cell-primary');
-                    if (userCell) {
-                        if (isChecked) {
-                            // Добавляем звездочку, если её нет
-                            if (!userCell.querySelector('.material-icons')) {
-                                const star = document.createElement('span');
-                                star.className = 'material-icons icon-small';
-                                star.style.color = '#FFD700';
-                                star.style.verticalAlign = 'middle';
-                                star.title = 'VIP пользователь';
-                                star.textContent = 'star';
-                                userCell.insertBefore(star, userCell.firstChild);
-                            }
-                        } else {
-                            // Удаляем звездочку
-                            const star = userCell.querySelector('.material-icons');
-                            if (star) {
-                                star.remove();
-                            }
-                        }
-                    }
-                }
+                console.log('[VeilBot][users] VIP status updated successfully, reloading page...');
+                
+                // Обновляем страницу, чтобы получить актуальные данные с сервера
+                // Это гарантирует, что состояние будет синхронизировано
+                window.location.reload();
             } catch (error) {
                 console.error('[VeilBot][users] Error toggling VIP status:', error);
                 alert('Ошибка при изменении VIP статуса: ' + error.message);
