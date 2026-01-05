@@ -33,13 +33,44 @@ class UserRepository:
         return row[0] if row else ""
 
     def count_users(self, query: Optional[str] = None) -> int:
-        """Подсчет всех пользователей из таблицы users"""
+        """Подсчет всех пользователей из таблицы users с поиском по user_id и email"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             if query:
-                like = f"%{query.strip()}%"
-                sql = "SELECT COUNT(*) FROM users WHERE CAST(user_id AS TEXT) LIKE ?"
-                c.execute(sql, (like,))
+                query = query.strip()
+                like = f"%{query}%"
+                # Поиск по user_id или email
+                # Email может быть в keys, v2ray_keys или payments
+                sql = """
+                    SELECT COUNT(DISTINCT u.user_id)
+                    FROM users u
+                    WHERE CAST(u.user_id AS TEXT) LIKE ?
+                       OR EXISTS (
+                           SELECT 1 FROM keys k 
+                           WHERE k.user_id = u.user_id 
+                             AND k.email LIKE ? 
+                             AND k.email IS NOT NULL 
+                             AND k.email != '' 
+                             AND k.email NOT LIKE 'user_%@veilbot.com'
+                       )
+                       OR EXISTS (
+                           SELECT 1 FROM v2ray_keys k 
+                           WHERE k.user_id = u.user_id 
+                             AND k.email LIKE ? 
+                             AND k.email IS NOT NULL 
+                             AND k.email != '' 
+                             AND k.email NOT LIKE 'user_%@veilbot.com'
+                       )
+                       OR EXISTS (
+                           SELECT 1 FROM payments p 
+                           WHERE p.user_id = u.user_id 
+                             AND p.email LIKE ? 
+                             AND p.email IS NOT NULL 
+                             AND p.email != '' 
+                             AND p.email NOT LIKE 'user_%@veilbot.com'
+                       )
+                """
+                c.execute(sql, (like, like, like, like))
             else:
                 sql = "SELECT COUNT(*) FROM users"
                 c.execute(sql)
@@ -48,23 +79,50 @@ class UserRepository:
 
     def list_users(self, query: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Tuple[int, int]]:
         """
-        Возвращает список (user_id, referral_count) с пагинацией и поиском по user_id.
+        Возвращает список (user_id, referral_count, is_vip) с пагинацией и поиском по user_id и email.
         Источник пользователей — таблица users (все пользователи, которые когда-либо нажали /start).
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
 
             if query:
-                like = f"%{query.strip()}%"
+                query = query.strip()
+                like = f"%{query}%"
+                # Поиск по user_id или email
+                # Email может быть в keys, v2ray_keys или payments
                 sql = (
-                    "SELECT u.user_id, "
+                    "SELECT DISTINCT u.user_id, "
                     "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count, "
                     "       COALESCE(u.is_vip, 0) as is_vip "
                     "FROM users u "
                     "WHERE CAST(u.user_id AS TEXT) LIKE ? "
+                    "   OR EXISTS ("
+                    "       SELECT 1 FROM keys k "
+                    "       WHERE k.user_id = u.user_id "
+                    "         AND k.email LIKE ? "
+                    "         AND k.email IS NOT NULL "
+                    "         AND k.email != '' "
+                    "         AND k.email NOT LIKE 'user_%@veilbot.com'"
+                    "   ) "
+                    "   OR EXISTS ("
+                    "       SELECT 1 FROM v2ray_keys k "
+                    "       WHERE k.user_id = u.user_id "
+                    "         AND k.email LIKE ? "
+                    "         AND k.email IS NOT NULL "
+                    "         AND k.email != '' "
+                    "         AND k.email NOT LIKE 'user_%@veilbot.com'"
+                    "   ) "
+                    "   OR EXISTS ("
+                    "       SELECT 1 FROM payments p "
+                    "       WHERE p.user_id = u.user_id "
+                    "         AND p.email LIKE ? "
+                    "         AND p.email IS NOT NULL "
+                    "         AND p.email != '' "
+                    "         AND p.email NOT LIKE 'user_%@veilbot.com'"
+                    "   ) "
                     "ORDER BY u.user_id LIMIT ? OFFSET ?"
                 )
-                c.execute(sql, (like, limit, offset))
+                c.execute(sql, (like, like, like, like, limit, offset))
             else:
                 sql = (
                     "SELECT u.user_id, "
