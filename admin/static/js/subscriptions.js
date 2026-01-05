@@ -641,8 +641,9 @@
                 searchInput.setAttribute('data-auto-search', '1');
                 
                 let searchTimeout = null;
-
-                const applySearchResponse = async (response) => {
+                
+                // Используем searchInputForInit для всех операций
+                const searchInput = searchInputForInit;
                     if (!response.ok) {
                         throw new Error(`Search request failed with status ${response.status}`);
                     }

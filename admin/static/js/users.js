@@ -1,19 +1,29 @@
 const initUsersPage = () => {
+    // Устанавливаем атрибуты СРАЗУ, чтобы common.js их увидел при инициализации
+    const searchInput = document.getElementById('global-search');
+    if (searchInput) {
+        searchInput.setAttribute('data-server-search', '1');
+        searchInput.setAttribute('data-auto-search', '1');
+    }
+    
     // Серверный поиск вместо клиентского (live-поиск без перезагрузки страницы)
     // Инициализируем поиск с задержкой, чтобы common.js успел проверить атрибуты
     setTimeout(() => {
         const searchForm = document.getElementById('search-form');
-        const searchInput = document.getElementById('global-search');
+        const searchInputForInit = document.getElementById('global-search');
         const resetSearchBtn = document.getElementById('reset-search-btn');
     
-        if (searchForm && searchInput) {
+        if (searchForm && searchInputForInit) {
             // Убеждаемся, что клиентский поиск не активен для этого элемента
-            // Устанавливаем атрибуты ДО клонирования, чтобы common.js их видел
-            searchInput.setAttribute('data-server-search', '1');
-            searchInput.setAttribute('data-auto-search', '1');
+            // Атрибуты уже установлены выше
+            searchInputForInit.setAttribute('data-server-search', '1');
+            searchInputForInit.setAttribute('data-auto-search', '1');
             
             let searchTimeout = null;
-
+            
+            // Используем searchInputForInit для всех операций
+            const searchInput = searchInputForInit;
+            
             const applySearchResponse = async (response) => {
                 if (!response.ok) {
                     throw new Error(`Search request failed with status ${response.status}`);
@@ -41,7 +51,7 @@ const initUsersPage = () => {
                 if (newPagination) {
                     if (currentPagination) {
                         currentPagination.replaceWith(newPagination);
-    } else {
+                    } else {
                         // Если пагинации не было (одна страница), но теперь есть – добавляем после таблицы
                         const tableWrapper = document.querySelector('.table-scroll');
                         if (tableWrapper && tableWrapper.parentElement) {
