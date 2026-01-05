@@ -70,6 +70,12 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
     # Нормализуем параметр поиска - пустые строки должны быть None
     query_normalized = q.strip() if (q and isinstance(q, str) and q.strip()) else None
     
+    # Для отладки
+    if query_normalized:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"[users] Search query: {query_normalized}")
+    
     repo = UserRepository(DB_PATH)
     offset = (max(page, 1) - 1) * limit
     total = repo.count_users(query=query_normalized)
