@@ -1,12 +1,23 @@
 const initVipHandlers = () => {
-    // Обработчик VIP чекбоксов
-    const vipCheckboxes = document.querySelectorAll('.vip-checkbox');
-    vipCheckboxes.forEach(checkbox => {
-        // Удаляем старые обработчики
-        const newCheckbox = checkbox.cloneNode(true);
-        checkbox.parentNode.replaceChild(newCheckbox, checkbox);
-        
-        newCheckbox.addEventListener('change', async (e) => {
+    // Используем делегирование событий для надежной работы даже после обновления DOM
+    // Находим таблицу и слушаем события на ней
+    const table = document.querySelector('#users-table');
+    if (!table) {
+        console.warn('[VeilBot][users] Users table not found');
+        return;
+    }
+    
+    // Удаляем старый обработчик, если есть
+    if (table._vipHandler) {
+        table.removeEventListener('change', table._vipHandler);
+    }
+    
+    // Создаем новый обработчик с делегированием
+    table._vipHandler = async (e) => {
+        // Проверяем, что клик был на VIP чекбоксе
+        if (!e.target || !e.target.classList.contains('vip-checkbox')) {
+            return;
+        }
             const userId = e.target.dataset.userId;
             const isChecked = e.target.checked;
             
@@ -67,8 +78,11 @@ const initVipHandlers = () => {
                 alert('Ошибка при изменении VIP статуса: ' + error.message);
                 e.target.checked = !isChecked; // Откатываем изменение
             }
-        });
-    });
+    };
+    
+    // Добавляем обработчик на таблицу с делегированием
+    table.addEventListener('change', table._vipHandler);
+    console.log('[VeilBot][users] VIP handlers initialized with event delegation');
 };
 
 const initUsersPage = () => {
