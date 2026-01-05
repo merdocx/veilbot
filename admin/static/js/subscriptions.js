@@ -644,6 +644,8 @@
                 
                 // Используем searchInputForInit для всех операций
                 const searchInput = searchInputForInit;
+                
+                const applySearchResponse = async (response) => {
                     if (!response.ok) {
                         throw new Error(`Search request failed with status ${response.status}`);
                     }
@@ -664,6 +666,13 @@
                     }
                     if (newTableBody && currentTableBody) {
                         currentTableBody.replaceWith(newTableBody);
+                        // Переинициализируем обработчики кликов после обновления таблицы
+                        const table = document.getElementById('subscriptions-table');
+                        if (table) {
+                            // Удаляем старый обработчик и добавляем новый
+                            table.removeEventListener('click', handleTableClick);
+                            table.addEventListener('click', handleTableClick);
+                        }
                     }
                     if (newPagination) {
                         if (currentPagination) {
@@ -677,6 +686,7 @@
                     } else if (currentPagination) {
                         currentPagination.remove();
                     }
+                };
                     
                     // Переинициализируем только обработчики после обновления таблицы (но не поиск, чтобы избежать циклов)
                     updateProgressBars();
