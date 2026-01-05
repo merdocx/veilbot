@@ -1130,7 +1130,7 @@ async def process_referral_bonus(
                     }
                     
                     # Создаем подписку с 100 ГБ трафика перед созданием ключа
-                    subscription_token = secrets.token_urlsafe(32)
+                    subscription_token = secrets.token_urlsafe(32)  # noqa: F823
                     expires_at = now + bonus_duration
                     subscription_id = subscription_repo.create_subscription(
                         referrer_id,

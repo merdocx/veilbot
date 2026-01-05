@@ -200,7 +200,7 @@ def analyze_referrers():
             print(f"   Первый реферал: {format_timestamp(result['first_referral_at'])}")
             print(f"   Последний реферал: {format_timestamp(result['last_referral_at'])}")
             
-                if result['subscription_id']:
+            if result['subscription_id']:
                 print(f"   Подписка ID: {result['subscription_id']}")
                 print(f"   Истекает: {format_timestamp(result['expires_at'])}")
                 
