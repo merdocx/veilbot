@@ -1741,7 +1741,7 @@ async def _create_subscription_key_on_server(
         (success: bool, error_message: Optional[str])
     """
     if protocol == 'v2ray':
-    server_id_db, name, api_url, api_key, domain, v2ray_path = server_info
+        server_id_db, name, api_url, api_key, domain, v2ray_path = server_info
     elif protocol == 'outline':
         server_id_db, name, api_url, cert_sha256 = server_info[:4]
         api_key = None
@@ -1755,68 +1755,68 @@ async def _create_subscription_key_on_server(
             key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
             
             if protocol == 'v2ray':
-            server_config = {
-                'api_url': api_url,
-                'api_key': api_key,
-                'domain': domain,
-            }
-            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-            try:
-                user_data = await protocol_client.create_user(key_email, name=name)
-                
-                if not user_data or not user_data.get('uuid'):
-                    return False, "Failed to create user on V2Ray server"
-                
-                v2ray_uuid = user_data['uuid']
-                
-                # Получаем client_config
-                client_config = await protocol_client.get_user_config(
-                    v2ray_uuid,
-                    {
-                        'domain': domain or 'veil-bot.ru',
-                        'port': 443,
-                        'email': key_email,
-                    }
-                )
-                
-                # Извлекаем VLESS URL из конфигурации
-                if 'vless://' in client_config:
-                    lines = client_config.split('\n')
-                    for line in lines:
-                        if line.strip().startswith('vless://'):
-                            client_config = line.strip()
-                            break
-                
-                # Используем INSERT OR IGNORE для избежания race conditions
-                with get_db_cursor(commit=True) as cursor:
-                    cursor.connection.execute("PRAGMA foreign_keys = OFF")
-                    try:
-                        cursor.execute("""
-                            INSERT OR IGNORE INTO v2ray_keys 
-                            (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            server_id,
-                            user_id,
-                            v2ray_uuid,
-                            key_email,
-                            now,
-                            expires_at,
-                            tariff_id,
-                            client_config,
-                            subscription_id,
-                        ))
-                        if cursor.rowcount == 0:
-                            # Ключ уже существует (race condition), удаляем с сервера
-                            await protocol_client.delete_user(v2ray_uuid)
-                            return False, "Key already exists (race condition)"
-                    finally:
-                        cursor.connection.execute("PRAGMA foreign_keys = ON")
-                
-                return True, None
-            finally:
+                server_config = {
+                    'api_url': api_url,
+                    'api_key': api_key,
+                    'domain': domain,
+                }
+                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                try:
+                    user_data = await protocol_client.create_user(key_email, name=name)
+                    
+                    if not user_data or not user_data.get('uuid'):
+                        return False, "Failed to create user on V2Ray server"
+                    
+                    v2ray_uuid = user_data['uuid']
+                    
+                    # Получаем client_config
+                    client_config = await protocol_client.get_user_config(
+                        v2ray_uuid,
+                        {
+                            'domain': domain or 'veil-bot.ru',
+                            'port': 443,
+                            'email': key_email,
+                        }
+                    )
+                    
+                    # Извлекаем VLESS URL из конфигурации
+                    if 'vless://' in client_config:
+                        lines = client_config.split('\n')
+                        for line in lines:
+                            if line.strip().startswith('vless://'):
+                                client_config = line.strip()
+                                break
+                    
+                    # Используем INSERT OR IGNORE для избежания race conditions
+                    with get_db_cursor(commit=True) as cursor:
+                        cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                        try:
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO v2ray_keys 
+                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                server_id,
+                                user_id,
+                                v2ray_uuid,
+                                key_email,
+                                now,
+                                expires_at,
+                                tariff_id,
+                                client_config,
+                                subscription_id,
+                            ))
+                            if cursor.rowcount == 0:
+                                # Ключ уже существует (race condition), удаляем с сервера
+                                await protocol_client.delete_user(v2ray_uuid)
+                                return False, "Key already exists (race condition)"
+                        finally:
+                            cursor.connection.execute("PRAGMA foreign_keys = ON")
+                    
+                    return True, None
+                finally:
                     if hasattr(protocol_client, 'close'):
-                await protocol_client.close()
+                        await protocol_client.close()
             elif protocol == 'outline':
                 server_config = {
                     'api_url': api_url,
