@@ -348,12 +348,19 @@ async def update_key_expiry(request: Request, key_id: int):
 @router.post("/users/{user_id}/toggle-vip")
 async def toggle_user_vip(request: Request, user_id: int, csrf_token: str = Form(...)):
     """Переключение VIP статуса пользователя"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"[VIP_TOGGLE] Received request for user_id={user_id}, csrf_token={csrf_token[:10]}...")
+    
     if not request.session.get("admin_logged_in"):
+        logger.warning(f"[VIP_TOGGLE] Not authorized for user_id={user_id}")
         return JSONResponse({"error": "Not authorized"}, status_code=403)
     
     # Проверка CSRF
     from ..dependencies.csrf import validate_csrf_token
     if not validate_csrf_token(request, csrf_token):
+        logger.warning(f"[VIP_TOGGLE] Invalid CSRF token for user_id={user_id}")
         return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
     
     try:
@@ -361,8 +368,18 @@ async def toggle_user_vip(request: Request, user_id: int, csrf_token: str = Form
         current_vip_status = repo.is_user_vip(user_id)
         new_vip_status = not current_vip_status
         
+        logger.info(f"[VIP_TOGGLE] Current status: {current_vip_status}, New status: {new_vip_status} for user_id={user_id}")
+        
         # Устанавливаем VIP статус
         repo.set_user_vip_status(user_id, new_vip_status)
+        
+        # Проверяем, что статус сохранился
+        verify_status = repo.is_user_vip(user_id)
+        if verify_status != new_vip_status:
+            logger.error(f"[VIP_TOGGLE] Status not saved correctly! Expected: {new_vip_status}, Got: {verify_status}")
+            return JSONResponse({"error": "Failed to save VIP status"}, status_code=500)
+        
+        logger.info(f"[VIP_TOGGLE] Status saved successfully: {verify_status} for user_id={user_id}")
         
         # Если установлен VIP, обновляем все активные подписки пользователя
         if new_vip_status:
