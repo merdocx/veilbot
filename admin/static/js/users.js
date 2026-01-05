@@ -54,9 +54,9 @@ const initUsersPage = () => {
             };
             
             const performSearch = () => {
-                // Получаем текущее значение из input (может быть изменено после клонирования)
+                // Получаем текущее значение из input
                 const currentSearchInput = document.getElementById('global-search');
-                const searchValue = currentSearchInput ? currentSearchInput.value : '';
+                const searchValue = currentSearchInput ? currentSearchInput.value.trim() : '';
                 
                 // Сбрасываем страницу на первую при поиске
                 const pageInput = searchForm.querySelector('input[name="page"]');
@@ -64,25 +64,23 @@ const initUsersPage = () => {
                     pageInput.value = '1';
                 }
                 
-                // Убеждаемся, что значение в форме синхронизировано с input
-                const qInput = searchForm.querySelector('input[name="q"]');
-                if (qInput && qInput !== currentSearchInput) {
-                    qInput.value = searchValue;
-                } else if (currentSearchInput && currentSearchInput.name !== 'q') {
-                    // Если клонированный input потерял атрибут name, восстанавливаем его
-                    currentSearchInput.setAttribute('name', 'q');
+                // Убеждаемся, что input является частью формы и имеет правильный name
+                if (currentSearchInput && currentSearchInput.form === searchForm) {
+                    if (!currentSearchInput.getAttribute('name')) {
+                        currentSearchInput.setAttribute('name', 'q');
+                    }
                 }
                 
-                // Формируем URL с параметрами поиска
-                const formData = new FormData(searchForm);
-                const params = new URLSearchParams(formData);
-                
-                // Если значение поиска есть, но его нет в FormData, добавляем вручную
-                if (searchValue && !params.has('q')) {
+                // Формируем URL с параметрами поиска - используем прямое значение
+                const params = new URLSearchParams();
+                if (searchValue) {
                     params.set('q', searchValue);
                 }
+                params.set('page', '1');
                 
                 const url = `/users?${params.toString()}`;
+                
+                console.log('[VeilBot][users] Performing search:', { searchValue, url });
 
                 // Выполняем запрос через fetch, чтобы обновить таблицу без перезагрузки
                 fetch(url, {
