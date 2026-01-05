@@ -631,14 +631,14 @@
         // Инициализируем поиск с задержкой, чтобы common.js успел проверить атрибуты
         setTimeout(() => {
             const searchForm = document.getElementById('search-form');
-            const searchInput = document.getElementById('global-search');
+            const searchInputForInit = document.getElementById('global-search');
             const resetSearchBtn = document.getElementById('reset-search-btn');
         
-            if (searchForm && searchInput) {
+            if (searchForm && searchInputForInit) {
                 // Убеждаемся, что клиентский поиск не активен для этого элемента
-                // Устанавливаем атрибуты ДО клонирования, чтобы common.js их видел
-                searchInput.setAttribute('data-server-search', '1');
-                searchInput.setAttribute('data-auto-search', '1');
+                // Атрибуты уже установлены выше
+                searchInputForInit.setAttribute('data-server-search', '1');
+                searchInputForInit.setAttribute('data-auto-search', '1');
                 
                 let searchTimeout = null;
                 
@@ -734,7 +734,7 @@
                     const url = new URL(window.location.href);
                     if (searchValue && searchValue.trim()) {
                         url.searchParams.set('q', searchValue.trim());
-                    } else {
+        } else {
                         url.searchParams.delete('q');
                     }
                     url.searchParams.set('page', '1');
