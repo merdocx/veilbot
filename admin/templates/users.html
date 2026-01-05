@@ -31,7 +31,7 @@
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
             <form method="get" action="/users" id="search-form" style="display: flex; gap: 8px; flex: 1;">
-                <input type="text" id="global-search" name="q" value="{{ q }}" placeholder="Поиск по ID пользователя..." class="filter-input filter-input--grow" data-table-id="users-table">
+                <input type="text" id="global-search" name="q" value="{{ q }}" placeholder="Поиск по ID, username, имени, фамилии, email или количеству рефералов..." class="filter-input filter-input--grow" data-table-id="users-table">
                 <input type="hidden" name="page" value="1" id="search-page-input">
                 <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
             </form>
