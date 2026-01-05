@@ -2104,13 +2104,13 @@ async def _process_protocol_sync(
     """
     Обработать синхронизацию ключей для одного протокола (V2Ray или Outline).
     """
-        existing_server_ids = {key[1] for key in existing_keys}
-        
-        # Проверяем существующие ключи на серверах
-        keys_to_recreate = []
-        verified_existing_server_ids = set()
-        
-        for key in existing_keys:
+    existing_server_ids = {key[1] for key in existing_keys}
+    
+    # Проверяем существующие ключи на серверах
+    keys_to_recreate = []
+    verified_existing_server_ids = set()
+    
+    for key in existing_keys:
         if protocol == 'v2ray':
             key_id, server_id, v2ray_uuid, api_url, api_key = key
             outline_key_id = None
@@ -2120,10 +2120,10 @@ async def _process_protocol_sync(
             v2ray_uuid = None
             api_key = None
         
-            if server_id in active_server_ids:
-                # Проверяем наличие ключа на сервере
-                server_info = active_servers_dict.get(server_id)
-                if server_info:
+        if server_id in active_server_ids:
+            # Проверяем наличие ключа на сервере
+            server_info = active_servers_dict.get(server_id)
+            if server_info:
                 if protocol == 'v2ray':
                     server_id_db, name, api_url_from_dict, api_key_from_dict, domain, v2ray_path = server_info
                     key_exists = await _check_key_exists_on_server(
@@ -2147,51 +2147,51 @@ async def _process_protocol_sync(
                         outline_key_id=outline_key_id
                     )
                 
-                    if key_exists:
-                        verified_existing_server_ids.add(server_id)
-                    else:
-                        # Ключ есть в БД, но его нет на сервере - нужно пересоздать
-                        logger.info(
-                        f"Sync: Key {key_id} for subscription {subscription_id} "
-                            f"exists in DB but not on server {server_id}, will recreate"
-                        )
-                        keys_to_recreate.append(key)
-                else:
+                if key_exists:
                     verified_existing_server_ids.add(server_id)
+                else:
+                    # Ключ есть в БД, но его нет на сервере - нужно пересоздать
+                    logger.info(
+                        f"Sync: Key {key_id} for subscription {subscription_id} "
+                        f"exists in DB but not on server {server_id}, will recreate"
+                    )
+                    keys_to_recreate.append(key)
             else:
                 verified_existing_server_ids.add(server_id)
-        
-        # Определяем серверы, где нужно создать ключи
-        servers_to_create = active_server_ids - verified_existing_server_ids
-        
-        # Определяем ключи на неактивных серверах, которые нужно удалить
-        keys_to_delete = [
-            key for key in existing_keys
-            if key[1] not in active_server_ids
-        ]
-        
+        else:
+            verified_existing_server_ids.add(server_id)
+    
+    # Определяем серверы, где нужно создать ключи
+    servers_to_create = active_server_ids - verified_existing_server_ids
+    
+    # Определяем ключи на неактивных серверах, которые нужно удалить
+    keys_to_delete = [
+        key for key in existing_keys
+        if key[1] not in active_server_ids
+    ]
+    
     # Находим дубликаты
-        keys_by_server = defaultdict(list)
-        for key in existing_keys:
+    keys_by_server = defaultdict(list)
+    for key in existing_keys:
         if key[1] in active_server_ids:
             keys_by_server[key[1]].append(key)
-        
-        # Для каждого сервера, если есть несколько ключей - оставляем самый новый, остальные удаляем
-        duplicate_keys_to_delete = []
-        for server_id, server_keys in keys_by_server.items():
-            if len(server_keys) > 1:
-                server_keys_sorted = sorted(server_keys, key=lambda k: k[0], reverse=True)
-                for duplicate_key in server_keys_sorted[1:]:
-                    duplicate_keys_to_delete.append(duplicate_key)
-                    logger.info(
+    
+    # Для каждого сервера, если есть несколько ключей - оставляем самый новый, остальные удаляем
+    duplicate_keys_to_delete = []
+    for server_id, server_keys in keys_by_server.items():
+        if len(server_keys) > 1:
+            server_keys_sorted = sorted(server_keys, key=lambda k: k[0], reverse=True)
+            for duplicate_key in server_keys_sorted[1:]:
+                duplicate_keys_to_delete.append(duplicate_key)
+                logger.info(
                     f"Sync: Found duplicate {protocol} key {duplicate_key[0]} for subscription {subscription_id} "
-                        f"on server {server_id}, will be deleted"
-                    )
-        
-        keys_to_delete.extend(duplicate_keys_to_delete)
-        
+                    f"on server {server_id}, will be deleted"
+                )
+    
+    keys_to_delete.extend(duplicate_keys_to_delete)
+    
     # Удаляем ключи, которые нужно пересоздать
-        for key_to_recreate in keys_to_recreate:
+    for key_to_recreate in keys_to_recreate:
         key_id = key_to_recreate[0]
         if protocol == 'v2ray':
             with get_db_cursor(commit=True) as cursor:
@@ -2201,40 +2201,40 @@ async def _process_protocol_sync(
                 cursor.execute("DELETE FROM keys WHERE id = ? AND protocol = 'outline'", (key_id,))
         logger.info(f"Sync: Deleted DB record for {protocol} key {key_id} before recreation")
         server_id = key_to_recreate[1]
-            if server_id not in servers_to_create:
-                servers_to_create.add(server_id)
-        
-        # Параллельно создаем недостающие ключи
-        create_tasks = []
-        for server_id in servers_to_create:
-            if server_id not in active_servers_dict:
-                continue
-            server_info = active_servers_dict[server_id]
-            create_tasks.append(
-                _create_subscription_key_on_server(
-                    subscription_id, user_id, server_id, server_info,
+        if server_id not in servers_to_create:
+            servers_to_create.add(server_id)
+    
+    # Параллельно создаем недостающие ключи
+    create_tasks = []
+    for server_id in servers_to_create:
+        if server_id not in active_servers_dict:
+            continue
+        server_info = active_servers_dict[server_id]
+        create_tasks.append(
+            _create_subscription_key_on_server(
+                subscription_id, user_id, server_id, server_info,
                 expires_at, tariff_id, now, api_semaphore, protocol=protocol
-                )
             )
-        
-        if create_tasks:
-            create_results = await asyncio.gather(*create_tasks, return_exceptions=True)
-            for task_result in create_results:
-                if isinstance(task_result, Exception):
-                    result['failed_create'] += 1
-                    logger.error(f"Sync: Exception in create task: {task_result}", exc_info=True)
+        )
+    
+    if create_tasks:
+        create_results = await asyncio.gather(*create_tasks, return_exceptions=True)
+        for task_result in create_results:
+            if isinstance(task_result, Exception):
+                result['failed_create'] += 1
+                logger.error(f"Sync: Exception in create task: {task_result}", exc_info=True)
+            else:
+                success, error = task_result
+                if success:
+                    result['created'] += 1
                 else:
-                    success, error = task_result
-                    if success:
-                        result['created'] += 1
-                    else:
-                        result['failed_create'] += 1
-                        if error and "already exists" not in error.lower():
-                            logger.warning(f"Sync: Failed to create {protocol} key: {error}")
-        
-        # Параллельно удаляем ключи
-        delete_tasks = []
-        for key in keys_to_delete:
+                    result['failed_create'] += 1
+                    if error and "already exists" not in error.lower():
+                        logger.warning(f"Sync: Failed to create {protocol} key: {error}")
+
+    # Параллельно удаляем ключи
+    delete_tasks = []
+    for key in keys_to_delete:
         key_id = key[0]
         server_id = key[1]
         if protocol == 'v2ray':
@@ -2258,21 +2258,21 @@ async def _process_protocol_sync(
                     cert_sha256=cert_sha256, outline_key_id=outline_key_id
                 )
             )
-        
-        if delete_tasks:
-            delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
-            for task_result in delete_results:
-                if isinstance(task_result, Exception):
-                    result['failed_delete'] += 1
-                    logger.error(f"Sync: Exception in delete task: {task_result}", exc_info=True)
+    
+    if delete_tasks:
+        delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
+        for task_result in delete_results:
+            if isinstance(task_result, Exception):
+                result['failed_delete'] += 1
+                logger.error(f"Sync: Exception in delete task: {task_result}", exc_info=True)
+            else:
+                success, error = task_result
+                if success:
+                    result['deleted'] += 1
                 else:
-                    success, error = task_result
-                    if success:
-                        result['deleted'] += 1
-                    else:
-                        result['failed_delete'] += 1
-                        if error:
-                            logger.warning(f"Sync: Failed to delete {protocol} key: {error}")
+                    result['failed_delete'] += 1
+                    if error:
+                        logger.warning(f"Sync: Failed to delete {protocol} key: {error}")
 
 
 def _extract_v2ray_uuid(remote_entry: Dict[str, Any]) -> Optional[str]:
