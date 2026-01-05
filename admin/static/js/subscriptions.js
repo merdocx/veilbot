@@ -628,7 +628,7 @@
         }
 
         // Серверный поиск вместо клиентского (live-поиск без перезагрузки страницы)
-        // Инициализируем поиск с небольшой задержкой, чтобы common.js успел загрузиться
+        // Инициализируем поиск с задержкой, чтобы common.js успел проверить атрибуты
         setTimeout(() => {
             const searchForm = document.getElementById('search-form');
             const searchInput = document.getElementById('global-search');
@@ -636,6 +636,7 @@
         
             if (searchForm && searchInput) {
                 // Убеждаемся, что клиентский поиск не активен для этого элемента
+                // Устанавливаем атрибуты ДО клонирования, чтобы common.js их видел
                 searchInput.setAttribute('data-server-search', '1');
                 searchInput.setAttribute('data-auto-search', '1');
                 
@@ -764,24 +765,49 @@
                     performSearch();
                 };
                 
-                const newInput = searchInput.cloneNode(true);
+                // Сохраняем все атрибуты и значение перед клонированием
                 const currentValue = searchInput.value;
                 const currentName = searchInput.getAttribute('name');
+                const currentPlaceholder = searchInput.getAttribute('placeholder');
+                const currentClass = searchInput.getAttribute('class');
+                
+                const newInput = searchInput.cloneNode(true);
                 searchInput.parentNode.replaceChild(newInput, searchInput);
                 const freshSearchInput = document.getElementById('global-search');
                 
-                freshSearchInput.value = currentValue;
-                
-                if (currentName && !freshSearchInput.getAttribute('name')) {
-                    freshSearchInput.setAttribute('name', currentName);
+                if (!freshSearchInput) {
+                    console.error('[VeilBot][subscriptions] Failed to find input after cloning');
+                    return;
                 }
                 
+                // Восстанавливаем все атрибуты и значение
+                freshSearchInput.value = currentValue;
+                if (currentName) {
+                    freshSearchInput.setAttribute('name', currentName);
+                }
+                if (currentPlaceholder) {
+                    freshSearchInput.setAttribute('placeholder', currentPlaceholder);
+                }
+                if (currentClass) {
+                    freshSearchInput.setAttribute('class', currentClass);
+                }
+                
+                // Убеждаемся, что атрибуты установлены (это важно для common.js)
                 freshSearchInput.setAttribute('data-server-search', '1');
                 freshSearchInput.setAttribute('data-auto-search', '1');
                 
-                freshSearchInput.addEventListener('input', handleSearchInput, { capture: true, passive: false });
+                // Добавляем обработчики с оберткой для input, чтобы убедиться, что они срабатывают
+                const inputHandler = (e) => {
+                    console.log('[VeilBot][subscriptions] Input event triggered', e.target.value);
+                    handleSearchInput(e);
+                };
+                
+                freshSearchInput.addEventListener('input', inputHandler, { capture: true, passive: false });
                 freshSearchInput.addEventListener('keydown', handleSearchKeydown, { capture: true, passive: false });
                 searchForm.addEventListener('submit', handleSearchSubmit, { capture: true, passive: false });
+                
+                // Проверяем, что обработчик действительно добавлен
+                console.log('[VeilBot][subscriptions] Event listeners added, input element:', freshSearchInput);
                 
                 const handleResetSearchUpdated = (event) => {
                     event.preventDefault();
@@ -808,9 +834,11 @@
                     resetSearchBtn.addEventListener('click', handleResetSearchUpdated, { capture: true, passive: false });
                 }
                 
-                console.log('[VeilBot][subscriptions] Live search initialized');
+                console.log('[VeilBot][subscriptions] Live search initialized on element:', freshSearchInput);
+            } else {
+                console.warn('[VeilBot][subscriptions] Search form or input not found');
             }
-        }, 100);
+        }, 300); // Увеличена задержка до 300ms чтобы common.js успел проверить атрибуты
 
         updateProgressBars();
     };

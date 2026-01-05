@@ -1,6 +1,6 @@
 const initUsersPage = () => {
     // Серверный поиск вместо клиентского (live-поиск без перезагрузки страницы)
-    // Инициализируем поиск с небольшой задержкой, чтобы common.js успел загрузиться
+    // Инициализируем поиск с задержкой, чтобы common.js успел проверить атрибуты
     setTimeout(() => {
         const searchForm = document.getElementById('search-form');
         const searchInput = document.getElementById('global-search');
@@ -8,6 +8,7 @@ const initUsersPage = () => {
     
         if (searchForm && searchInput) {
             // Убеждаемся, что клиентский поиск не активен для этого элемента
+            // Устанавливаем атрибуты ДО клонирования, чтобы common.js их видел
             searchInput.setAttribute('data-server-search', '1');
             searchInput.setAttribute('data-auto-search', '1');
             
@@ -40,7 +41,7 @@ const initUsersPage = () => {
                 if (newPagination) {
                     if (currentPagination) {
                         currentPagination.replaceWith(newPagination);
-                    } else {
+    } else {
                         // Если пагинации не было (одна страница), но теперь есть – добавляем после таблицы
                         const tableWrapper = document.querySelector('.table-scroll');
                         if (tableWrapper && tableWrapper.parentElement) {
@@ -95,8 +96,8 @@ const initUsersPage = () => {
                         // В случае ошибки откатываемся к обычному переходу по ссылке
                         console.error('[VeilBot][users] live search failed, falling back to full reload', error);
                         window.location.href = url;
-                    });
-            };
+            });
+        };
             
             const handleSearchInput = (event) => {
                 // Останавливаем всплытие, чтобы клиентский поиск не сработал
@@ -145,29 +146,50 @@ const initUsersPage = () => {
             
             // Удаляем все существующие обработчики, если они есть, и добавляем новые
             // Клонируем input чтобы удалить старые обработчики от common.js
-            const newInput = searchInput.cloneNode(true);
-            // Сохраняем значение и атрибуты перед клонированием
+            // Но сначала сохраняем все атрибуты и значение
             const currentValue = searchInput.value;
             const currentName = searchInput.getAttribute('name');
+            const currentPlaceholder = searchInput.getAttribute('placeholder');
+            const currentClass = searchInput.getAttribute('class');
+            
+            const newInput = searchInput.cloneNode(true);
             searchInput.parentNode.replaceChild(newInput, searchInput);
             const freshSearchInput = document.getElementById('global-search');
             
-            // Восстанавливаем значение
-            freshSearchInput.value = currentValue;
-            
-            // Восстанавливаем атрибут name если он был потерян при клонировании
-            if (currentName && !freshSearchInput.getAttribute('name')) {
-                freshSearchInput.setAttribute('name', currentName);
+            if (!freshSearchInput) {
+                console.error('[VeilBot][users] Failed to find input after cloning');
+                return;
             }
             
-            // Убеждаемся, что атрибуты установлены
+            // Восстанавливаем все атрибуты и значение
+            freshSearchInput.value = currentValue;
+            if (currentName) {
+                freshSearchInput.setAttribute('name', currentName);
+            }
+            if (currentPlaceholder) {
+                freshSearchInput.setAttribute('placeholder', currentPlaceholder);
+            }
+            if (currentClass) {
+                freshSearchInput.setAttribute('class', currentClass);
+            }
+            
+            // Убеждаемся, что атрибуты установлены (это важно для common.js)
             freshSearchInput.setAttribute('data-server-search', '1');
             freshSearchInput.setAttribute('data-auto-search', '1');
             
             // Добавляем обработчики с capture: true чтобы перехватить событие до других обработчиков
-            freshSearchInput.addEventListener('input', handleSearchInput, { capture: true, passive: false });
+            // Используем обертку для input события, чтобы убедиться, что оно срабатывает
+            const inputHandler = (e) => {
+                console.log('[VeilBot][users] Input event triggered', e.target.value);
+                handleSearchInput(e);
+            };
+            
+            freshSearchInput.addEventListener('input', inputHandler, { capture: true, passive: false });
             freshSearchInput.addEventListener('keydown', handleSearchKeydown, { capture: true, passive: false });
             searchForm.addEventListener('submit', handleSearchSubmit, { capture: true, passive: false });
+            
+            // Проверяем, что обработчик действительно добавлен
+            console.log('[VeilBot][users] Event listeners added, input element:', freshSearchInput);
             
             // Обновляем handleResetSearch чтобы использовать freshSearchInput
             const handleResetSearchUpdated = (event) => {
@@ -199,9 +221,11 @@ const initUsersPage = () => {
                 resetSearchBtn.addEventListener('click', handleResetSearchUpdated, { capture: true, passive: false });
             }
             
-            console.log('[VeilBot][users] Live search initialized');
+            console.log('[VeilBot][users] Live search initialized on element:', freshSearchInput);
+        } else {
+            console.warn('[VeilBot][users] Search form or input not found');
         }
-    }, 100); // Задержка 100ms чтобы common.js успел инициализироваться
+    }, 300); // Увеличена задержка до 300ms чтобы common.js успел проверить атрибуты
 
     // Обработчик VIP чекбоксов
     initVipHandlers();
