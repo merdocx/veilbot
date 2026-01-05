@@ -1237,7 +1237,22 @@ class SubscriptionPurchaseService:
                 logger.error(f"[SUBSCRIPTION] {error_msg}")
                 return False, error_msg
             
-            expires_at = now + duration_sec
+            # Проверяем VIP статус пользователя
+            from app.repositories.user_repository import UserRepository
+            user_repo = UserRepository(self.db_path)
+            is_vip = user_repo.is_user_vip(payment.user_id)
+            
+            # Константы для VIP подписок
+            VIP_EXPIRES_AT = 4102434000  # 01.01.2100 00:00 UTC
+            VIP_TRAFFIC_LIMIT_MB = 0  # 0 = безлимит
+            
+            if is_vip:
+                expires_at = VIP_EXPIRES_AT
+                traffic_limit_mb = VIP_TRAFFIC_LIMIT_MB
+                logger.info(f"[SUBSCRIPTION] Creating VIP subscription for user {payment.user_id}, expires_at={expires_at}")
+            else:
+                expires_at = now + duration_sec
+                traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
             
             # Шаг 1: Генерируем уникальный токен
             subscription_token = None

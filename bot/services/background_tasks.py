@@ -1657,33 +1657,34 @@ async def _check_key_exists_on_server(
     async with api_semaphore:
         try:
             if protocol == 'v2ray':
-            server_config = {
-                'api_url': api_url,
-                'api_key': api_key,
-                'domain': domain,
-            }
-            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-            try:
-                # Пытаемся получить конфигурацию ключа
-                await protocol_client.get_user_config(
-                    v2ray_uuid,
-                    {
-                        'domain': domain or 'veil-bot.ru',
-                        'port': 443,
-                        'email': f'user@veilbot.com',
-                    }
-                )
-                return True
-            except Exception as e:
-                # Если 404 - ключа нет на сервере
-                error_str = str(e).lower()
-                if '404' in error_str or 'not found' in error_str:
-                    return False
-                # Для других ошибок считаем, что ключ может существовать
-                logger.warning(f"Error checking key {v2ray_uuid[:8]}... on server: {e}")
-                return True  # В случае сомнений считаем, что ключ существует
-            finally:
-                await protocol_client.close()
+                server_config = {
+                    'api_url': api_url,
+                    'api_key': api_key,
+                    'domain': domain,
+                }
+                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                try:
+                    # Пытаемся получить конфигурацию ключа
+                    await protocol_client.get_user_config(
+                        v2ray_uuid,
+                        {
+                            'domain': domain or 'veil-bot.ru',
+                            'port': 443,
+                            'email': f'user@veilbot.com',
+                        }
+                    )
+                    return True
+                except Exception as e:
+                    # Если 404 - ключа нет на сервере
+                    error_str = str(e).lower()
+                    if '404' in error_str or 'not found' in error_str:
+                        return False
+                    # Для других ошибок считаем, что ключ может существовать
+                    logger.warning(f"Error checking key {v2ray_uuid[:8]}... on server: {e}")
+                    return True  # В случае сомнений считаем, что ключ существует
+                finally:
+                    if hasattr(protocol_client, 'close'):
+                        await protocol_client.close()
             elif protocol == 'outline':
                 server_config = {
                     'api_url': api_url,
@@ -1813,8 +1814,8 @@ async def _create_subscription_key_on_server(
                         cursor.connection.execute("PRAGMA foreign_keys = ON")
                 
                 return True, None
-                
             finally:
+                    if hasattr(protocol_client, 'close'):
                 await protocol_client.close()
             elif protocol == 'outline':
                 server_config = {
@@ -1861,7 +1862,9 @@ async def _create_subscription_key_on_server(
                 except Exception as e:
                     logger.error(f"Error creating Outline key: {e}", exc_info=True)
                     return False, str(e)
-                
+                finally:
+                    if hasattr(protocol_client, 'close'):
+                        await protocol_client.close()
         except sqlite3.IntegrityError as e:
             logger.warning(
                 f"Sync: Integrity error when inserting key for subscription {subscription_id} "
@@ -1939,6 +1942,7 @@ async def _delete_subscription_key_from_server(
                     )
                     deleted_from_server = False
                 finally:
+                    if hasattr(protocol_client, 'close'):
                     await protocol_client.close()
             else:
                 # Если нет данных для удаления с сервера, считаем что нужно удалить из БД
@@ -2226,11 +2230,11 @@ async def _process_protocol_sync(
                     else:
                         result['failed_create'] += 1
                         if error and "already exists" not in error.lower():
-                        logger.warning(f"Sync: Failed to create {protocol} key: {error}")
+                            logger.warning(f"Sync: Failed to create {protocol} key: {error}")
         
         # Параллельно удаляем ключи
         delete_tasks = []
-    for key in keys_to_delete:
+        for key in keys_to_delete:
         key_id = key[0]
         server_id = key[1]
         if protocol == 'v2ray':
@@ -2268,7 +2272,7 @@ async def _process_protocol_sync(
                     else:
                         result['failed_delete'] += 1
                         if error:
-                        logger.warning(f"Sync: Failed to delete {protocol} key: {error}")
+                            logger.warning(f"Sync: Failed to delete {protocol} key: {error}")
 
 
 def _extract_v2ray_uuid(remote_entry: Dict[str, Any]) -> Optional[str]:
@@ -2359,11 +2363,13 @@ async def _delete_orphaned_keys_from_server(
         try:
             remote_keys = await protocol_client.get_all_keys()
             if not remote_keys:
-                await protocol_client.close()
+                if hasattr(protocol_client, 'close'):
+                    await protocol_client.close()
                 return 0, 0
     except Exception as e:
             logger.warning(f"Sync: Failed to get keys from {protocol} server {server_id} ({server_name}): {e}")
-            await protocol_client.close()
+            if hasattr(protocol_client, 'close'):
+                await protocol_client.close()
             return 0, 1
         
         # Находим orphaned ключи
