@@ -676,8 +676,14 @@
                         currentPagination.remove();
                     }
                     
-                    // Переинициализируем обработчики после обновления таблицы
-                    init();
+                    // Переинициализируем только обработчики после обновления таблицы (но не поиск, чтобы избежать циклов)
+                    updateProgressBars();
+                    const updatedTable = document.getElementById('subscriptions-table');
+                    if (updatedTable) {
+                        // Удаляем старый обработчик и добавляем новый
+                        updatedTable.removeEventListener('click', handleTableClick);
+                        updatedTable.addEventListener('click', handleTableClick);
+                    }
                 };
                 
                 const performSearch = () => {
