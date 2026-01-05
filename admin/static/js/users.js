@@ -54,14 +54,34 @@ const initUsersPage = () => {
             };
             
             const performSearch = () => {
+                // Получаем текущее значение из input (может быть изменено после клонирования)
+                const currentSearchInput = document.getElementById('global-search');
+                const searchValue = currentSearchInput ? currentSearchInput.value : '';
+                
                 // Сбрасываем страницу на первую при поиске
                 const pageInput = searchForm.querySelector('input[name="page"]');
                 if (pageInput) {
                     pageInput.value = '1';
                 }
+                
+                // Убеждаемся, что значение в форме синхронизировано с input
+                const qInput = searchForm.querySelector('input[name="q"]');
+                if (qInput && qInput !== currentSearchInput) {
+                    qInput.value = searchValue;
+                } else if (currentSearchInput && currentSearchInput.name !== 'q') {
+                    // Если клонированный input потерял атрибут name, восстанавливаем его
+                    currentSearchInput.setAttribute('name', 'q');
+                }
+                
                 // Формируем URL с параметрами поиска
                 const formData = new FormData(searchForm);
                 const params = new URLSearchParams(formData);
+                
+                // Если значение поиска есть, но его нет в FormData, добавляем вручную
+                if (searchValue && !params.has('q')) {
+                    params.set('q', searchValue);
+                }
+                
                 const url = `/users?${params.toString()}`;
 
                 // Выполняем запрос через fetch, чтобы обновить таблицу без перезагрузки
@@ -128,13 +148,19 @@ const initUsersPage = () => {
             // Удаляем все существующие обработчики, если они есть, и добавляем новые
             // Клонируем input чтобы удалить старые обработчики от common.js
             const newInput = searchInput.cloneNode(true);
-            // Сохраняем значение перед клонированием
+            // Сохраняем значение и атрибуты перед клонированием
             const currentValue = searchInput.value;
+            const currentName = searchInput.getAttribute('name');
             searchInput.parentNode.replaceChild(newInput, searchInput);
             const freshSearchInput = document.getElementById('global-search');
             
             // Восстанавливаем значение
             freshSearchInput.value = currentValue;
+            
+            // Восстанавливаем атрибут name если он был потерян при клонировании
+            if (currentName && !freshSearchInput.getAttribute('name')) {
+                freshSearchInput.setAttribute('name', currentName);
+            }
             
             // Убеждаемся, что атрибуты установлены
             freshSearchInput.setAttribute('data-server-search', '1');
