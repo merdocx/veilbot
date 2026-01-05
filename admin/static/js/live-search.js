@@ -17,14 +17,25 @@
             debounceMs = 500
         } = config;
 
-        // Инициализация с задержкой, чтобы common.js успел загрузиться
+        // Инициализация с задержкой, чтобы common.js успел загрузиться и проверить атрибуты
         setTimeout(() => {
             const searchForm = document.getElementById(searchFormId);
             const searchInput = document.getElementById(searchInputId);
             const resetSearchBtn = document.getElementById(resetBtnId);
 
             if (!searchForm || !searchInput) {
-                console.warn('[VeilBot][live-search] Search form or input not found');
+                console.warn('[VeilBot][live-search] Search form or input not found', {
+                    formId: searchFormId,
+                    inputId: searchInputId,
+                    form: searchForm,
+                    input: searchInput
+                });
+                return;
+            }
+
+            // Убеждаемся, что клиентский поиск не активен
+            if (searchInput.dataset.autoSearch === '1' && searchInput.dataset.serverSearch !== '1') {
+                console.warn('[VeilBot][live-search] Client-side search already active, skipping server search');
                 return;
             }
 
@@ -55,6 +66,10 @@
                 }
                 if (newTableBody && currentTableBody) {
                     currentTableBody.replaceWith(newTableBody);
+                    // Переинициализируем обработчики страницы после обновления таблицы
+                    if (typeof window.initUsersPage === 'function') {
+                        window.initUsersPage();
+                    }
                 }
                 if (newPagination) {
                     if (currentPagination) {
@@ -147,10 +162,19 @@
             };
 
             // Клонируем input чтобы удалить старые обработчики от common.js
+            // Но сначала убеждаемся, что атрибуты установлены на оригинальном input
+            searchInput.setAttribute('data-server-search', '1');
+            searchInput.setAttribute('data-auto-search', '1');
+            
             const newInput = searchInput.cloneNode(true);
             const currentValue = searchInput.value;
             searchInput.parentNode.replaceChild(newInput, searchInput);
             const freshSearchInput = document.getElementById(searchInputId);
+
+            if (!freshSearchInput) {
+                console.error('[VeilBot][live-search] Failed to find input after cloning');
+                return;
+            }
 
             // Восстанавливаем значение
             freshSearchInput.value = currentValue;
@@ -194,7 +218,7 @@
             }
 
             console.log('[VeilBot][live-search] Initialized for', pageUrl);
-        }, 100);
+        }, 200);
     };
 })();
 

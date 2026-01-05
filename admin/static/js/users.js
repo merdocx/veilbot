@@ -107,5 +107,10 @@ if (document.readyState === 'loading') {
     initUsersPage();
 }
 
+// Экспортируем функцию для переинициализации после обновления таблицы
+if (typeof window !== 'undefined') {
+    window.initUsersPage = initUsersPage;
+}
+
 export {};
 
