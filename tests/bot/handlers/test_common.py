@@ -50,23 +50,21 @@ class TestCommonHandlers:
     
     @pytest.mark.asyncio
     async def test_handle_support_with_username(self, mock_message):
-        """Тест обработки связи с поддержкой - username указан"""
-        with patch('bot.handlers.common.SUPPORT_USERNAME', 'support_user'):
-            await handle_support(mock_message)
-            
-            mock_message.answer.assert_called_once()
-            call_args = mock_message.answer.call_args
-            assert "support_user" in call_args[0][0]
-            assert call_args[1]['reply_markup'] is not None
+        """Тест обработки связи с поддержкой - используется @vee_support"""
+        await handle_support(mock_message)
+        
+        mock_message.answer.assert_called_once()
+        call_args = mock_message.answer.call_args
+        assert "@vee_support" in call_args[0][0]
+        assert call_args[1]['reply_markup'] is not None
     
     @pytest.mark.asyncio
     async def test_handle_support_without_username(self, mock_message):
-        """Тест обработки связи с поддержкой - username не указан"""
-        with patch('bot.handlers.common.SUPPORT_USERNAME', None):
-            await handle_support(mock_message)
-            
-            mock_message.answer.assert_called_once()
-            assert "не настроен" in mock_message.answer.call_args[0][0]
+        """Тест обработки связи с поддержкой - всегда используется @vee_support"""
+        await handle_support(mock_message)
+        
+        mock_message.answer.assert_called_once()
+        assert "@vee_support" in mock_message.answer.call_args[0][0]
     
     @pytest.mark.asyncio
     async def test_handle_help_back(self, mock_message):
