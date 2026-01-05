@@ -592,11 +592,35 @@ class SubscriptionRepository:
                   AND (CAST(s.id AS TEXT) LIKE ?
                     OR CAST(s.user_id AS TEXT) LIKE ?
                     OR s.subscription_token LIKE ?
-                    OR t.name LIKE ?)
+                    OR t.name LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM keys k 
+                        WHERE k.user_id = s.user_id 
+                          AND k.email LIKE ? 
+                          AND k.email IS NOT NULL 
+                          AND k.email != '' 
+                          AND k.email NOT LIKE 'user_%@veilbot.com'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM v2ray_keys k 
+                        WHERE k.user_id = s.user_id 
+                          AND k.email LIKE ? 
+                          AND k.email IS NOT NULL 
+                          AND k.email != '' 
+                          AND k.email NOT LIKE 'user_%@veilbot.com'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM payments p 
+                        WHERE p.user_id = s.user_id 
+                          AND p.email LIKE ? 
+                          AND p.email IS NOT NULL 
+                          AND p.email != '' 
+                          AND p.email NOT LIKE 'user_%@veilbot.com'
+                    ))
                 ORDER BY s.created_at DESC
                 LIMIT ? OFFSET ?
                 """
-                c.execute(sql, (like, like, like, like, limit, offset))
+                c.execute(sql, (like, like, like, like, like, like, like, limit, offset))
             else:
                 sql = """
                 SELECT 
@@ -646,9 +670,33 @@ class SubscriptionRepository:
                   AND (CAST(s.id AS TEXT) LIKE ?
                     OR CAST(s.user_id AS TEXT) LIKE ?
                     OR s.subscription_token LIKE ?
-                    OR t.name LIKE ?)
+                    OR t.name LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM keys k 
+                        WHERE k.user_id = s.user_id 
+                          AND k.email LIKE ? 
+                          AND k.email IS NOT NULL 
+                          AND k.email != '' 
+                          AND k.email NOT LIKE 'user_%@veilbot.com'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM v2ray_keys k 
+                        WHERE k.user_id = s.user_id 
+                          AND k.email LIKE ? 
+                          AND k.email IS NOT NULL 
+                          AND k.email != '' 
+                          AND k.email NOT LIKE 'user_%@veilbot.com'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM payments p 
+                        WHERE p.user_id = s.user_id 
+                          AND p.email LIKE ? 
+                          AND p.email IS NOT NULL 
+                          AND p.email != '' 
+                          AND p.email NOT LIKE 'user_%@veilbot.com'
+                    ))
                 """
-                c.execute(sql, (like, like, like, like))
+                c.execute(sql, (like, like, like, like, like, like, like))
             else:
                 c.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = 1")
             row = c.fetchone()
