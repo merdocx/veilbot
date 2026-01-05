@@ -55,6 +55,11 @@
                 }
                 if (newTableBody && currentTableBody) {
                     currentTableBody.replaceWith(newTableBody);
+                    // Вызываем событие для переинициализации обработчиков на странице
+                    const event = new CustomEvent('tableUpdated', { 
+                        detail: { tableSelector, newTableBody } 
+                    });
+                    document.dispatchEvent(event);
                 }
                 if (newPagination) {
                     if (currentPagination) {

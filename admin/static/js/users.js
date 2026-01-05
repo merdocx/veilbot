@@ -97,6 +97,14 @@ const initUsersPage = () => {
     
     // Инициализируем обработчики VIP
     initVipHandlers();
+    
+    // Переинициализируем обработчики VIP после обновления таблицы через live-search
+    document.addEventListener('tableUpdated', (event) => {
+        if (event.detail && event.detail.tableSelector === '#users-table') {
+            console.log('[VeilBot][users] Table updated, reinitializing VIP handlers');
+            initVipHandlers();
+        }
+    });
 };
 
 if (document.readyState === 'loading') {
