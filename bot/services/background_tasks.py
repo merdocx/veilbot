@@ -2366,7 +2366,7 @@ async def _delete_orphaned_keys_from_server(
                 if hasattr(protocol_client, 'close'):
                     await protocol_client.close()
                 return 0, 0
-    except Exception as e:
+        except Exception as e:
             logger.warning(f"Sync: Failed to get keys from {protocol} server {server_id} ({server_name}): {e}")
             if hasattr(protocol_client, 'close'):
                 await protocol_client.close()
@@ -2524,7 +2524,7 @@ async def sync_subscription_keys_with_active_servers() -> None:
                 logger.debug("No active servers or subscriptions found for sync")
                 # Все равно проверяем orphaned ключи
                 if not all_servers:
-                return
+                    return
             
             # Обрабатываем V2Ray серверы
             v2ray_active_server_ids = {server[0] for server in v2ray_servers}
@@ -2552,24 +2552,24 @@ async def sync_subscription_keys_with_active_servers() -> None:
             
             if active_subscriptions:
                 # ОПТИМИЗАЦИЯ 1: Получаем все ключи подписок одним запросом для каждого протокола
-            subscription_ids = [sub[0] for sub in active_subscriptions]
-            placeholders = ','.join('?' * len(subscription_ids))
-            
+                subscription_ids = [sub[0] for sub in active_subscriptions]
+                placeholders = ','.join('?' * len(subscription_ids))
+                
                 # V2Ray ключи
                 v2ray_keys_by_subscription: Dict[int, list] = defaultdict(list)
                 if v2ray_servers:
-            with get_db_cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key, k.subscription_id
-                    FROM v2ray_keys k
-                    JOIN servers s ON k.server_id = s.id
-                    WHERE k.subscription_id IN ({placeholders})
-                """, subscription_ids)
+                    with get_db_cursor() as cursor:
+                        cursor.execute(f"""
+                            SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key, k.subscription_id
+                            FROM v2ray_keys k
+                            JOIN servers s ON k.server_id = s.id
+                            WHERE k.subscription_id IN ({placeholders})
+                        """, subscription_ids)
                         all_v2ray_keys = cursor.fetchall()
-            
-            # Группируем ключи по subscription_id
+                    
+                    # Группируем ключи по subscription_id
                     for key_row in all_v2ray_keys:
-                key_id, server_id, v2ray_uuid, api_url, api_key, sub_id = key_row
+                        key_id, server_id, v2ray_uuid, api_url, api_key, sub_id = key_row
                         v2ray_keys_by_subscription[sub_id].append((key_id, server_id, v2ray_uuid, api_url, api_key))
                 
                 # Outline ключи
