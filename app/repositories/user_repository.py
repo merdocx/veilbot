@@ -127,10 +127,27 @@ class UserRepository:
     
     def set_user_vip_status(self, user_id: int, is_vip: bool) -> None:
         """Установить VIP статус пользователя"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("UPDATE users SET is_vip = ? WHERE user_id = ?", (1 if is_vip else 0, user_id))
+            vip_value = 1 if is_vip else 0
+            c.execute("UPDATE users SET is_vip = ? WHERE user_id = ?", (vip_value, user_id))
+            rows_affected = c.rowcount
             conn.commit()
+            
+            logger.info(f"[UserRepository] set_user_vip_status: user_id={user_id}, is_vip={is_vip}, rows_affected={rows_affected}")
+            
+            # Проверяем, что действительно сохранилось
+            c.execute("SELECT is_vip FROM users WHERE user_id = ?", (user_id,))
+            row = c.fetchone()
+            if row:
+                saved_value = bool(row[0] or 0)
+                if saved_value != is_vip:
+                    logger.error(f"[UserRepository] VIP status mismatch! Expected: {is_vip}, Saved: {saved_value} for user_id={user_id}")
+                else:
+                    logger.info(f"[UserRepository] VIP status verified: user_id={user_id}, is_vip={saved_value}")
     
     def count_active_users(self) -> int:
         """Подсчет активных пользователей (с активными подписками)"""
