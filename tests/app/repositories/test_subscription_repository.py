@@ -12,6 +12,21 @@ def _init_db(tmp_path):
 
     conn.execute(
         """
+        CREATE TABLE users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            created_at INTEGER,
+            last_active_at INTEGER,
+            blocked INTEGER DEFAULT 0,
+            is_vip INTEGER DEFAULT 0
+        )
+        """
+    )
+
+    conn.execute(
+        """
         CREATE TABLE subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -133,6 +148,10 @@ def _insert_subscription(conn, **overrides):
 
 def test_get_subscriptions_with_traffic_limits_prefers_subscription_limit(repo):
     conn = sqlite3.connect(repo.db_path)
+    # Создаем пользователя для корректной работы JOIN
+    conn.execute(
+        "INSERT OR IGNORE INTO users (user_id, is_vip) VALUES (1, 0)"
+    )
     conn.execute(
         "INSERT INTO tariffs (id, name, traffic_limit_mb) VALUES (1, 'base', 1024)"
     )
@@ -154,6 +173,10 @@ def test_get_subscriptions_with_traffic_limits_prefers_subscription_limit(repo):
 
 def test_get_subscriptions_with_traffic_limits_fallbacks_to_tariff(repo):
     conn = sqlite3.connect(repo.db_path)
+    # Создаем пользователя для корректной работы JOIN
+    conn.execute(
+        "INSERT OR IGNORE INTO users (user_id, is_vip) VALUES (1, 0)"
+    )
     conn.execute(
         "INSERT INTO tariffs (id, name, traffic_limit_mb) VALUES (2, 'premium', 512)"
     )
