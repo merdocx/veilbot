@@ -72,7 +72,10 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
     total = repo.count_users(query=q)
     rows = repo.list_users(query=q, limit=limit, offset=offset)
     user_list = []
-    for uid, ref_cnt in rows:
+    for row in rows:
+        uid = row[0]
+        ref_cnt = row[1] if len(row) > 1 else 0
+        is_vip = bool(row[2] if len(row) > 2 else 0)
         ref_cnt = ref_cnt or 0
         overview = repo.get_user_overview(uid)
         last_activity = overview.get("last_activity") or None
@@ -84,6 +87,7 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
             "referral_count": ref_cnt,
             "last_activity": last_activity,
             "is_active": _is_user_active(uid, overview),
+            "is_vip": is_vip,
         })
     
     # Дополнительная статистика
