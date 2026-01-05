@@ -31,13 +31,9 @@
 
     <!-- Filters -->
     <div class="filter-bar">
-        <div class="filter-bar__group flex-1">
-            <form method="get" action="/subscriptions" id="search-form" style="display: flex; gap: 8px; flex: 1;">
-                <input type="text" id="global-search" name="q" value="{{ q }}" placeholder="Поиск по ID, user_id, token, тарифу..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
-                <input type="hidden" name="page" value="1" id="search-page-input">
-                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
-            </form>
-            <button type="button" class="btn" id="reset-search-btn">
+        <div class="filter-bar__group">
+            <input type="text" id="global-search" data-table-id="subscriptions-table" placeholder="Поиск по всем столбцам..." class="filter-input">
+            <button type="button" class="btn filter-bar__reset" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
                 Сбросить
             </button>
@@ -77,12 +73,7 @@
                         <span class="text-muted">#{{ subscription.id }}</span>
                     </td>
                     <td class="subscriptions-table__cell subscriptions-table__cell--user">
-                        <div class="cell-primary">
-                            {% if subscription.is_vip %}
-                            <span class="material-icons icon-small" style="color: #FFD700; vertical-align: middle;" title="VIP пользователь">star</span>
-                            {% endif %}
-                            TG: {{ subscription.user_id }}
-                        </div>
+                        <div class="cell-primary">TG: {{ subscription.user_id }}</div>
                         {% if subscription.user_email and subscription.user_email != "—" %}
                         <div class="cell-secondary text-muted">{{ subscription.user_email }}</div>
                         {% endif %}
@@ -169,7 +160,7 @@
 {% if pages > 1 %}
 <div class="pagination">
     {% if page > 1 %}
-        <a href="?page={{ page - 1 }}{% if q %}&q={{ q|urlencode }}{% endif %}">
+        <a href="?page={{ page - 1 }}">
             <span class="material-icons icon-small">chevron_left</span>
         </a>
     {% endif %}
@@ -178,7 +169,7 @@
         {% if p == page %}
             <a href="#" class="active">{{ p }}</a>
         {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
-            <a href="?page={{ p }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ p }}</a>
+            <a href="?page={{ p }}">{{ p }}</a>
         {% elif p == 4 and page > 5 %}
             <span>...</span>
         {% elif p == pages - 3 and page < pages - 4 %}
@@ -187,7 +178,7 @@
     {% endfor %}
     
     {% if page < pages %}
-        <a href="?page={{ page + 1 }}{% if q %}&q={{ q|urlencode }}{% endif %}">
+        <a href="?page={{ page + 1 }}">
             <span class="material-icons icon-small">chevron_right</span>
         </a>
     {% endif %}

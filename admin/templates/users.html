@@ -31,7 +31,7 @@
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
             <form method="get" action="/users" id="search-form" style="display: flex; gap: 8px; flex: 1;">
-                <input type="text" id="global-search" name="q" value="{{ q }}" placeholder="Поиск по ID, username, имени, email, рефералам..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
+                <input type="text" id="global-search" name="q" value="{{ q }}" placeholder="Поиск по ID пользователя..." class="filter-input filter-input--grow" data-table-id="users-table">
                 <input type="hidden" name="page" value="1" id="search-page-input">
                 <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
             </form>
@@ -51,7 +51,6 @@
                     <th>Рефералов</th>
                     <th>Последняя активность</th>
                     <th>Статус</th>
-                    <th class="text-center">VIP</th>
                     <th style="width: 150px; min-width: 150px;">Действия</th>
                 </tr>
             </thead>
@@ -60,12 +59,7 @@
                 <tr>
                     <td>
                         {% if user.user_id %}
-                            <div class="cell-primary">
-                                {% if user.is_vip %}
-                                    <span class="material-icons icon-small" style="color: #FFD700; vertical-align: middle;" title="VIP пользователь">star</span>
-                                {% endif %}
-                                TG: {{ user.user_id }}
-                            </div>
+                            <div class="cell-primary">TG: {{ user.user_id }}</div>
                         {% else %}
                             <div class="cell-primary text-muted">—</div>
                         {% endif %}
@@ -90,13 +84,6 @@
                             <span class="badge badge-neutral">Неактивен</span>
                         {% endif %}
                     </td>
-                    <td class="text-center">
-                        <input type="checkbox" 
-                               class="vip-checkbox" 
-                               data-user-id="{{ user.user_id }}"
-                               {% if user.is_vip %}checked{% endif %}
-                               title="VIP статус">
-                    </td>
                     <td style="width: 150px; min-width: 150px;">
                         <div class="action-buttons">
                             <a href="/users/{{ user.user_id }}" class="btn btn-primary">
@@ -109,7 +96,7 @@
                 {% endfor %}
                 {% if not users %}
                 <tr>
-                    <td colspan="6" class="text-center text-muted">
+                    <td colspan="5" class="text-center text-muted">
                         <span class="material-icons icon">inbox</span>
                         <br>Нет пользователей
                     </td>
@@ -146,7 +133,6 @@
 {% endif %}
 {% block extra_scripts %}
     {{ super() }}
-    <meta name="csrf-token" content="{{ csrf_token }}">
     <script type="module" src="/static/js/users.js"></script>
 {% endblock %}
 {% endblock %}

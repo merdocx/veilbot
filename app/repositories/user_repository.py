@@ -33,113 +33,38 @@ class UserRepository:
         return row[0] if row else ""
 
     def count_users(self, query: Optional[str] = None) -> int:
-        """Подсчет всех пользователей из таблицы users с поиском по всем полям"""
+        """Подсчет всех пользователей из таблицы users"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             if query:
-                query = query.strip()
-                like = f"%{query}%"
-                # Поиск по всем полям: user_id, username, first_name, last_name, email, referral_count
-                sql = """
-                    SELECT COUNT(DISTINCT u.user_id)
-                    FROM users u
-                    LEFT JOIN (
-                        SELECT referrer_id, COUNT(*) as referral_count
-                        FROM referrals
-                        GROUP BY referrer_id
-                    ) r ON r.referrer_id = u.user_id
-                    WHERE CAST(u.user_id AS TEXT) LIKE ?
-                       OR IFNULL(u.username, '') LIKE ?
-                       OR IFNULL(u.first_name, '') LIKE ?
-                       OR IFNULL(u.last_name, '') LIKE ?
-                       OR CAST(IFNULL(r.referral_count, 0) AS TEXT) LIKE ?
-                       OR EXISTS (
-                           SELECT 1 FROM keys k 
-                           WHERE k.user_id = u.user_id 
-                             AND k.email LIKE ? 
-                             AND k.email IS NOT NULL 
-                             AND k.email != '' 
-                             AND k.email NOT LIKE 'user_%@veilbot.com'
-                       )
-                       OR EXISTS (
-                           SELECT 1 FROM v2ray_keys k 
-                           WHERE k.user_id = u.user_id 
-                             AND k.email LIKE ? 
-                             AND k.email IS NOT NULL 
-                             AND k.email != '' 
-                             AND k.email NOT LIKE 'user_%@veilbot.com'
-                       )
-                       OR EXISTS (
-                           SELECT 1 FROM payments p 
-                           WHERE p.user_id = u.user_id 
-                             AND p.email LIKE ? 
-                             AND p.email IS NOT NULL 
-                             AND p.email != '' 
-                             AND p.email NOT LIKE 'user_%@veilbot.com'
-                       )
-                """
-                c.execute(sql, (like, like, like, like, like, like, like, like))
+                like = f"%{query.strip()}%"
+                sql = "SELECT COUNT(*) FROM users WHERE CAST(user_id AS TEXT) LIKE ?"
+                c.execute(sql, (like,))
             else:
                 sql = "SELECT COUNT(*) FROM users"
                 c.execute(sql)
             row = c.fetchone()
             return int(row[0] if row and row[0] is not None else 0)
 
-    def list_users(self, query: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Tuple[int, int]]:
+    def list_users(self, query: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Tuple[int, int, int]]:
         """
-        Возвращает список (user_id, referral_count, is_vip) с пагинацией и поиском по всем полям.
+        Возвращает список (user_id, referral_count, is_vip) с пагинацией и поиском по user_id.
         Источник пользователей — таблица users (все пользователи, которые когда-либо нажали /start).
-        Поиск работает по: user_id, username, first_name, last_name, email, referral_count
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
 
             if query:
-                query = query.strip()
-                like = f"%{query}%"
-                # Поиск по всем полям: user_id, username, first_name, last_name, email, referral_count
+                like = f"%{query.strip()}%"
                 sql = (
-                    "SELECT DISTINCT u.user_id, "
+                    "SELECT u.user_id, "
                     "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count, "
                     "       COALESCE(u.is_vip, 0) as is_vip "
                     "FROM users u "
-                    "LEFT JOIN ("
-                    "    SELECT referrer_id, COUNT(*) as referral_count "
-                    "    FROM referrals "
-                    "    GROUP BY referrer_id"
-                    ") r ON r.referrer_id = u.user_id "
                     "WHERE CAST(u.user_id AS TEXT) LIKE ? "
-                    "   OR IFNULL(u.username, '') LIKE ? "
-                    "   OR IFNULL(u.first_name, '') LIKE ? "
-                    "   OR IFNULL(u.last_name, '') LIKE ? "
-                    "   OR CAST(IFNULL(r.referral_count, 0) AS TEXT) LIKE ? "
-                    "   OR EXISTS ("
-                    "       SELECT 1 FROM keys k "
-                    "       WHERE k.user_id = u.user_id "
-                    "         AND k.email LIKE ? "
-                    "         AND k.email IS NOT NULL "
-                    "         AND k.email != '' "
-                    "         AND k.email NOT LIKE 'user_%@veilbot.com'"
-                    "   ) "
-                    "   OR EXISTS ("
-                    "       SELECT 1 FROM v2ray_keys k "
-                    "       WHERE k.user_id = u.user_id "
-                    "         AND k.email LIKE ? "
-                    "         AND k.email IS NOT NULL "
-                    "         AND k.email != '' "
-                    "         AND k.email NOT LIKE 'user_%@veilbot.com'"
-                    "   ) "
-                    "   OR EXISTS ("
-                    "       SELECT 1 FROM payments p "
-                    "       WHERE p.user_id = u.user_id "
-                    "         AND p.email LIKE ? "
-                    "         AND p.email IS NOT NULL "
-                    "         AND p.email != '' "
-                    "         AND p.email NOT LIKE 'user_%@veilbot.com'"
-                    "   ) "
                     "ORDER BY u.user_id LIMIT ? OFFSET ?"
                 )
-                c.execute(sql, (like, like, like, like, like, like, like, like, limit, offset))
+                c.execute(sql, (like, limit, offset))
             else:
                 sql = (
                     "SELECT u.user_id, "
@@ -239,63 +164,5 @@ class UserRepository:
                     }
                 )
             return results
-
-    def get_user(self, user_id: int) -> Optional[dict]:
-        """Получить информацию о пользователе, включая VIP статус"""
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("""
-                SELECT user_id, username, first_name, last_name, 
-                       created_at, last_active_at, blocked, 
-                       COALESCE(is_vip, 0) as is_vip
-                FROM users
-                WHERE user_id = ?
-            """, (user_id,))
-            row = c.fetchone()
-            if not row:
-                return None
-            return {
-                "user_id": row[0],
-                "username": row[1],
-                "first_name": row[2],
-                "last_name": row[3],
-                "created_at": row[4],
-                "last_active_at": row[5],
-                "blocked": bool(row[6]),
-                "is_vip": bool(row[7]),
-            }
-
-    def is_user_vip(self, user_id: int) -> bool:
-        """Проверить, является ли пользователь VIP"""
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("""
-                SELECT COALESCE(is_vip, 0) FROM users WHERE user_id = ?
-            """, (user_id,))
-            row = c.fetchone()
-            return bool(row[0] if row else 0)
-
-    def set_user_vip_status(self, user_id: int, is_vip: bool) -> None:
-        """Установить VIP статус пользователя"""
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("""
-                UPDATE users 
-                SET is_vip = ?
-                WHERE user_id = ?
-            """, (1 if is_vip else 0, user_id))
-            conn.commit()
-
-    def get_vip_users(self) -> List[Tuple[int, int]]:
-        """Получить список всех VIP пользователей (user_id, is_vip)"""
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("""
-                SELECT user_id, COALESCE(is_vip, 0) as is_vip
-                FROM users
-                WHERE COALESCE(is_vip, 0) = 1
-                ORDER BY user_id
-            """)
-            return c.fetchall()
 
 
