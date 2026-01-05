@@ -7,7 +7,7 @@ import time
 import logging
 import sqlite3
 from collections import defaultdict
-from typing import Optional, Callable, Awaitable, Dict, Any, List, Tuple
+from typing import Optional, Callable, Awaitable, Dict, Any, List, Tuple, Set
 from datetime import datetime
 
 from app.infra.sqlite_utils import get_db_cursor, retry_db_operation
@@ -189,9 +189,9 @@ async def auto_delete_expired_keys() -> None:
 
     await _run_periodic(
         "auto_delete_expired_keys",
-        interval_seconds=600,
+        interval_seconds=3600,  # 1 час
         job=job,
-        max_backoff=3600,
+        max_backoff=10800,  # до 3 часов при повторяющихся ошибках
     )
 
 
@@ -259,9 +259,9 @@ async def check_key_availability() -> None:
 
     await _run_periodic(
         "check_key_availability",
-        interval_seconds=300,
+        interval_seconds=600,  # 10 минут
         job=job,
-        max_backoff=1800,
+        max_backoff=3600,  # до 1 часа при повторяющихся ошибках
     )
 
 
@@ -1620,210 +1620,6 @@ async def create_keys_for_new_server(server_id: int) -> None:
         )
 
 
-async def check_and_create_keys_for_new_servers() -> None:
-    """
-    Периодическая проверка наличия новых серверов без ключей для активных подписок
-    Запускается каждые 15 минут
-    """
-    async def job() -> None:
-        try:
-            from app.repositories.server_repository import ServerRepository
-            from app.repositories.subscription_repository import SubscriptionRepository
-            
-            server_repo = ServerRepository()
-            subscription_repo = SubscriptionRepository()
-            now = int(time.time())
-            
-            # Получаем все активные V2Ray серверы
-            with get_db_cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, name, api_url, api_key, domain, v2ray_path, available_for_purchase
-                    FROM servers
-                    WHERE protocol = 'v2ray' AND active = 1 AND available_for_purchase = 1
-                """)
-                active_v2ray_servers = cursor.fetchall()
-            
-            if not active_v2ray_servers:
-                logger.debug("No active V2Ray servers found for periodic check")
-                return
-            
-            # Получаем все активные подписки
-            with get_db_cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, user_id, subscription_token, expires_at, tariff_id
-                    FROM subscriptions
-                    WHERE is_active = 1 AND expires_at > ?
-                """, (now,))
-                active_subscriptions = cursor.fetchall()
-            
-            if not active_subscriptions:
-                logger.debug("No active subscriptions found for periodic check")
-                return
-            
-            logger.info(
-                f"Periodic check: Found {len(active_v2ray_servers)} active V2Ray servers "
-                f"and {len(active_subscriptions)} active subscriptions"
-            )
-            
-            total_created = 0
-            total_failed = 0
-            
-            # Для каждого сервера проверяем наличие ключей для всех подписок
-            for server_id, name, api_url, api_key, domain, v2ray_path, available_for_purchase in active_v2ray_servers:
-                if not available_for_purchase:
-                    continue
-                
-                for subscription_id, user_id, token, expires_at, tariff_id in active_subscriptions:
-                    try:
-                        # Проверяем, есть ли уже ключ для этой подписки на этом сервере
-                        with get_db_cursor() as cursor:
-                            cursor.execute("""
-                                SELECT id FROM v2ray_keys
-                                WHERE server_id = ? AND user_id = ? AND subscription_id = ?
-                            """, (server_id, user_id, subscription_id))
-                            existing_key = cursor.fetchone()
-                        
-                        if existing_key:
-                            continue  # Ключ уже существует
-                        
-                        # Создаем ключ
-                        logger.info(
-                            f"Periodic check: Creating missing key for subscription {subscription_id} "
-                            f"on server {server_id} (user_id={user_id})"
-                        )
-                        
-                        # Генерация email для ключа
-                        key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
-                        
-                        # Создать ключ на сервере
-                        server_config = {
-                            'api_url': api_url,
-                            'api_key': api_key,
-                            'domain': domain,
-                        }
-                        
-                        from vpn_protocols import ProtocolFactory
-                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                        # Передаем название сервера вместо email для name в V2Ray API
-                        user_data = await protocol_client.create_user(key_email, name=name)
-                        
-                        if not user_data or not user_data.get('uuid'):
-                            raise Exception("Failed to create user on V2Ray server")
-                        
-                        v2ray_uuid = user_data['uuid']
-                        
-                        # Получить client_config
-                        client_config = await protocol_client.get_user_config(
-                            v2ray_uuid,
-                            {
-                                'domain': domain or 'veil-bot.ru',
-                                'port': 443,
-                                'email': key_email,
-                            }
-                        )
-                        
-                        # Извлекаем VLESS URL из конфигурации
-                        if 'vless://' in client_config:
-                            lines = client_config.split('\n')
-                            for line in lines:
-                                if line.strip().startswith('vless://'):
-                                    client_config = line.strip()
-                                    break
-                        
-                        # Перепроверяем в БД перед созданием (мог появиться конкурентно)
-                        with get_db_cursor() as check_cursor:
-                            check_cursor.execute("""
-                                SELECT id FROM v2ray_keys
-                                WHERE server_id = ? AND subscription_id = ?
-                            """, (server_id, subscription_id))
-                            if check_cursor.fetchone():
-                                logger.debug(
-                                    f"Periodic check: Key already exists for subscription {subscription_id} "
-                                    f"on server {server_id}, skipping"
-                                )
-                                await protocol_client.close()
-                                # Удаляем созданный на сервере ключ, так как он не нужен
-                                try:
-                                    await protocol_client.delete_user(v2ray_uuid)
-                                except Exception as cleanup_error:
-                                    logger.warning(
-                                        f"Periodic check: Failed to cleanup orphaned key on server {server_id}: {cleanup_error}"
-                                    )
-                                continue
-                        
-                        # Сохранить ключ в БД
-                        # Временно отключаем проверку внешних ключей из-за несоответствия структуры users(id) vs users(user_id)
-                        with get_db_cursor(commit=True) as cursor:
-                            cursor.connection.execute("PRAGMA foreign_keys = OFF")
-                            try:
-                                cursor.execute("""
-                                    INSERT INTO v2ray_keys 
-                                    (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (
-                                    server_id,
-                                    user_id,
-                                    v2ray_uuid,
-                                    key_email,
-                                    now,
-                                    expires_at,
-                                    tariff_id,
-                                    client_config,
-                                    subscription_id,
-                                ))
-                            except sqlite3.IntegrityError as e:
-                                # Если все же произошла ошибка уникальности (например, по v2ray_uuid)
-                                logger.warning(
-                                    f"Periodic check: Integrity error when inserting key for subscription {subscription_id} "
-                                    f"on server {server_id}: {e}. Key may have been created concurrently."
-                                )
-                                await protocol_client.close()
-                                # Удаляем созданный на сервере ключ, так как он не нужен
-                                try:
-                                    await protocol_client.delete_user(v2ray_uuid)
-                                except Exception as cleanup_error:
-                                    logger.warning(
-                                        f"Periodic check: Failed to cleanup orphaned key on server {server_id}: {cleanup_error}"
-                                    )
-                                continue
-                            finally:
-                                cursor.connection.execute("PRAGMA foreign_keys = ON")
-                        
-                        # Инвалидировать кэш подписки
-                        from bot.services.subscription_service import invalidate_subscription_cache
-                        invalidate_subscription_cache(token)
-                        
-                        total_created += 1
-                        logger.info(
-                            f"Periodic check: Created key for subscription {subscription_id} "
-                            f"on server {server_id}"
-                        )
-                        
-                    except Exception as e:
-                        total_failed += 1
-                        logger.error(
-                            f"Periodic check: Failed to create key for subscription {subscription_id} "
-                            f"on server {server_id}: {e}",
-                            exc_info=True
-                        )
-                        continue
-            
-            if total_created > 0 or total_failed > 0:
-                logger.info(
-                    f"Periodic check completed: {total_created} keys created, {total_failed} failed"
-                )
-        
-        except Exception as e:
-            logger.error(f"Error in periodic check for new servers: {e}", exc_info=True)
-    
-    await _run_periodic(
-        "check_and_create_keys_for_new_servers",
-        interval_seconds=900,  # 15 минут
-        job=job,
-        max_backoff=3600,
-    )
-
-
 async def _check_key_exists_on_server(
     v2ray_uuid: str,
     api_url: str,
@@ -2467,11 +2263,190 @@ async def _process_protocol_sync(
                         logger.warning(f"Sync: Failed to delete {protocol} key: {error}")
 
 
+def _extract_v2ray_uuid(remote_entry: Dict[str, Any]) -> Optional[str]:
+    """Извлечь UUID ключа V2Ray из ответа сервера"""
+    uuid = remote_entry.get("uuid")
+    if not uuid:
+        key_info = remote_entry.get("key") or {}
+        if isinstance(key_info, dict):
+            uuid = key_info.get("uuid")
+    if isinstance(uuid, str) and uuid.strip():
+        return uuid.strip()
+    return None
+
+
+def _extract_outline_key_id(remote_entry: Dict[str, Any]) -> Optional[str]:
+    """Извлечь ID ключа Outline из ответа сервера"""
+    key_id = remote_entry.get("id")
+    if key_id is not None:
+        return str(key_id).strip()
+    return None
+
+
+async def _delete_orphaned_keys_from_server(
+    server_id: int,
+    server_name: str,
+    protocol: str,
+    api_url: str,
+    api_key: Optional[str] = None,
+    cert_sha256: Optional[str] = None,
+    api_semaphore: asyncio.Semaphore = None,
+) -> Tuple[int, int]:
+    """
+    Удалить orphaned ключи с сервера (которых нет в БД).
+    
+    Returns:
+        (deleted_count, error_count)
+    """
+    if api_semaphore is None:
+        api_semaphore = asyncio.Semaphore(10)
+    
+    deleted_count = 0
+    error_count = 0
+    
+    try:
+        # Получаем ключи из БД для этого сервера
+        if protocol == 'v2ray':
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT v2ray_uuid, email
+                    FROM v2ray_keys
+                    WHERE server_id = ?
+                """, (server_id,))
+                db_keys = cursor.fetchall()
+            
+            db_uuids: Set[str] = {row[0].strip() for row in db_keys if row[0]}
+            db_emails: Set[str] = {(row[1] or "").lower().strip() for row in db_keys if row[1]}
+        else:  # outline
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT key_id, email
+                    FROM keys
+                    WHERE server_id = ? AND protocol = 'outline' AND (key_id IS NOT NULL AND key_id != '')
+                """, (server_id,))
+                db_keys = cursor.fetchall()
+            
+            db_key_ids: Set[str] = {str(row[0]).strip() for row in db_keys if row[0]}
+            db_emails: Set[str] = {(row[1] or "").lower().strip() for row in db_keys if row[1]}
+        
+        # Создаем клиент протокола
+        if protocol == 'v2ray':
+            if not api_url or not api_key:
+                return 0, 0
+            server_config = {
+                'api_url': api_url,
+                'api_key': api_key,
+            }
+            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+        else:  # outline
+            if not api_url:
+                return 0, 0
+            server_config = {
+                'api_url': api_url,
+                'cert_sha256': cert_sha256 or '',
+            }
+            protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+        
+        # Получаем все ключи с сервера
+        try:
+            remote_keys = await protocol_client.get_all_keys()
+            if not remote_keys:
+                await protocol_client.close()
+                return 0, 0
+        except Exception as e:
+            logger.warning(f"Sync: Failed to get keys from {protocol} server {server_id} ({server_name}): {e}")
+            await protocol_client.close()
+            return 0, 1
+        
+        # Находим orphaned ключи
+        keys_to_delete = []
+        for remote_entry in remote_keys:
+            if protocol == 'v2ray':
+                remote_uuid = _extract_v2ray_uuid(remote_entry)
+                if not remote_uuid or remote_uuid in db_uuids:
+                    continue
+                
+                remote_name = (remote_entry.get("name") or "").lower().strip()
+                remote_email = (remote_entry.get("email") or "").lower().strip()
+                
+                key_info = remote_entry.get("key") if isinstance(remote_entry.get("key"), dict) else None
+                if isinstance(key_info, dict):
+                    remote_name = remote_name or (key_info.get("name") or "").lower().strip()
+                    remote_email = remote_email or (key_info.get("email") or "").lower().strip()
+                
+                if remote_name in db_emails or remote_email in db_emails:
+                    continue
+                
+                key_identifier = (
+                    remote_entry.get("id")
+                    or remote_entry.get("key_id")
+                    or (key_info.get("id") if isinstance(key_info, dict) else None)
+                    or (key_info.get("key_id") if isinstance(key_info, dict) else None)
+                    or remote_uuid
+                )
+                
+                keys_to_delete.append({
+                    "uuid": remote_uuid,
+                    "id": key_identifier,
+                })
+            else:  # outline
+                remote_key_id = _extract_outline_key_id(remote_entry)
+                if not remote_key_id or remote_key_id in db_key_ids:
+                    continue
+                
+                remote_name = (remote_entry.get("name") or "").lower().strip()
+                if remote_name in db_emails:
+                    continue
+                
+                keys_to_delete.append({"key_id": remote_key_id})
+        
+        # Удаляем orphaned ключи
+        if keys_to_delete:
+            logger.info(f"Sync: Found {len(keys_to_delete)} orphaned {protocol} keys on server {server_id} ({server_name})")
+            
+            async def delete_key(key_info: Dict[str, Any]) -> bool:
+                async with api_semaphore:
+                    try:
+                        if protocol == 'v2ray':
+                            deleted = await protocol_client.delete_user(str(key_info["id"]))
+                        else:  # outline
+                            deleted = await protocol_client.delete_user(key_info["key_id"])
+                        return deleted
+                    except Exception as e:
+                        logger.warning(f"Sync: Failed to delete orphaned {protocol} key: {e}")
+                        return False
+            
+            delete_tasks = [delete_key(key_info) for key_info in keys_to_delete]
+            delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
+            
+            for result in delete_results:
+                if isinstance(result, Exception):
+                    error_count += 1
+                elif result:
+                    deleted_count += 1
+                else:
+                    error_count += 1
+        
+        # Закрываем соединение (если метод доступен)
+        try:
+            if hasattr(protocol_client, 'close'):
+                await protocol_client.close()
+        except Exception:
+            pass
+        
+    except Exception as e:
+        logger.error(f"Sync: Error deleting orphaned keys from {protocol} server {server_id}: {e}", exc_info=True)
+        error_count += 1
+    
+    return deleted_count, error_count
+
+
 async def sync_subscription_keys_with_active_servers() -> None:
     """
     Синхронизация ключей подписок с активными серверами (V2Ray и Outline).
-    Удаляет ключи на неактивных серверах и создает недостающие на активных.
-    Запускается каждые 30 минут.
+    Удаляет ключи на неактивных серверах, создает недостающие на активных,
+    и удаляет orphaned ключи с всех серверов (которых нет в БД).
+    Запускается каждый час.
     
     Оптимизированная версия с:
     - Оптимизацией SQL-запросов (один запрос для всех ключей)
@@ -2480,6 +2455,7 @@ async def sync_subscription_keys_with_active_servers() -> None:
     - Батчингом инвалидации кэша
     - Rate limiting для API-запросов
     - Поддержкой V2Ray и Outline серверов
+    - Удалением orphaned ключей с всех серверов
     """
     async def job() -> None:
         try:
@@ -2496,7 +2472,8 @@ async def sync_subscription_keys_with_active_servers() -> None:
             
             if not active_subscriptions:
                 logger.debug("No active subscriptions found for sync")
-                return
+                # Все равно проверяем orphaned ключи на всех серверах
+                active_subscriptions = []
             
             # Получаем все активные V2Ray серверы
             with get_db_cursor() as cursor:
@@ -2520,9 +2497,20 @@ async def sync_subscription_keys_with_active_servers() -> None:
                 """)
                 outline_servers = cursor.fetchall()
             
-            if not v2ray_servers and not outline_servers:
-                logger.debug("No active servers found for sync")
-                return
+            # Получаем ВСЕ серверы для проверки orphaned ключей (не только активные)
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, name, protocol, api_url, api_key, cert_sha256
+                    FROM servers
+                    WHERE protocol IN ('v2ray', 'outline')
+                """)
+                all_servers = cursor.fetchall()
+            
+            if not v2ray_servers and not outline_servers and not active_subscriptions:
+                logger.debug("No active servers or subscriptions found for sync")
+                # Все равно проверяем orphaned ключи
+                if not all_servers:
+                    return
             
             # Обрабатываем V2Ray серверы
             v2ray_active_server_ids = {server[0] for server in v2ray_servers}
@@ -2534,96 +2522,137 @@ async def sync_subscription_keys_with_active_servers() -> None:
             
             logger.info(
                 f"Starting sync: {len(active_subscriptions)} subscriptions, "
-                f"{len(v2ray_servers)} V2Ray servers, {len(outline_servers)} Outline servers"
+                f"{len(v2ray_servers)} V2Ray servers, {len(outline_servers)} Outline servers, "
+                f"{len(all_servers)} total servers for orphaned check"
             )
-            
-            # ОПТИМИЗАЦИЯ 1: Получаем все ключи подписок одним запросом для каждого протокола
-            subscription_ids = [sub[0] for sub in active_subscriptions]
-            placeholders = ','.join('?' * len(subscription_ids))
-            
-            # V2Ray ключи
-            v2ray_keys_by_subscription: Dict[int, list] = defaultdict(list)
-            if v2ray_servers:
-                with get_db_cursor() as cursor:
-                    cursor.execute(f"""
-                        SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key, k.subscription_id
-                        FROM v2ray_keys k
-                        JOIN servers s ON k.server_id = s.id
-                        WHERE k.subscription_id IN ({placeholders})
-                    """, subscription_ids)
-                    all_v2ray_keys = cursor.fetchall()
-                
-                # Группируем ключи по subscription_id
-                for key_row in all_v2ray_keys:
-                    key_id, server_id, v2ray_uuid, api_url, api_key, sub_id = key_row
-                    v2ray_keys_by_subscription[sub_id].append((key_id, server_id, v2ray_uuid, api_url, api_key))
-            
-            # Outline ключи
-            outline_keys_by_subscription: Dict[int, list] = defaultdict(list)
-            if outline_servers:
-                with get_db_cursor() as cursor:
-                    cursor.execute(f"""
-                        SELECT k.id, k.server_id, k.key_id, s.api_url, s.cert_sha256, k.subscription_id
-                        FROM keys k
-                        JOIN servers s ON k.server_id = s.id
-                        WHERE k.subscription_id IN ({placeholders})
-                        AND k.protocol = 'outline'
-                    """, subscription_ids)
-                    all_outline_keys = cursor.fetchall()
-                
-                # Группируем ключи по subscription_id
-                for key_row in all_outline_keys:
-                    key_id, server_id, outline_key_id, api_url, cert_sha256, sub_id = key_row
-                    outline_keys_by_subscription[sub_id].append((key_id, server_id, outline_key_id, api_url, cert_sha256))
             
             # ОПТИМИЗАЦИЯ 2: Rate limiting для API-запросов (макс 10 параллельных запросов к серверам)
             api_semaphore = asyncio.Semaphore(10)
             
-            # ОПТИМИЗАЦИЯ 3: Параллельная обработка подписок батчами
-            batch_size = 20  # Обрабатываем по 20 подписок параллельно
+            # Синхронизация подписок (если есть активные подписки)
             total_created = 0
             total_deleted = 0
             total_failed_create = 0
             total_failed_delete = 0
             tokens_to_invalidate = set()
             
-            for i in range(0, len(active_subscriptions), batch_size):
-                batch = active_subscriptions[i:i + batch_size]
+            if active_subscriptions:
+                # ОПТИМИЗАЦИЯ 1: Получаем все ключи подписок одним запросом для каждого протокола
+                subscription_ids = [sub[0] for sub in active_subscriptions]
+                placeholders = ','.join('?' * len(subscription_ids))
                 
-                # Создаем задачи для батча
-                tasks = [
-                    _process_subscription_sync(
-                        subscription, 
-                        v2ray_keys_by_subscription, outline_keys_by_subscription,
-                        v2ray_active_server_ids, v2ray_active_servers_dict,
-                        outline_active_server_ids, outline_active_servers_dict,
-                        now, api_semaphore
-                    )
-                    for subscription in batch
-                ]
-                
-                # Параллельно обрабатываем батч
-                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # Собираем статистику
-                for result in batch_results:
-                    if isinstance(result, Exception):
-                        logger.error(f"Sync: Exception in batch processing: {result}", exc_info=True)
-                        continue
+                # V2Ray ключи
+                v2ray_keys_by_subscription: Dict[int, list] = defaultdict(list)
+                if v2ray_servers:
+                    with get_db_cursor() as cursor:
+                        cursor.execute(f"""
+                            SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key, k.subscription_id
+                            FROM v2ray_keys k
+                            JOIN servers s ON k.server_id = s.id
+                            WHERE k.subscription_id IN ({placeholders})
+                        """, subscription_ids)
+                        all_v2ray_keys = cursor.fetchall()
                     
-                    total_created += result['created']
-                    total_deleted += result['deleted']
-                    total_failed_create += result['failed_create']
-                    total_failed_delete += result['failed_delete']
-                    tokens_to_invalidate.update(result.get('tokens_to_invalidate', set()))
+                    # Группируем ключи по subscription_id
+                    for key_row in all_v2ray_keys:
+                        key_id, server_id, v2ray_uuid, api_url, api_key, sub_id = key_row
+                        v2ray_keys_by_subscription[sub_id].append((key_id, server_id, v2ray_uuid, api_url, api_key))
+                
+                # Outline ключи
+                outline_keys_by_subscription: Dict[int, list] = defaultdict(list)
+                if outline_servers:
+                    with get_db_cursor() as cursor:
+                        cursor.execute(f"""
+                            SELECT k.id, k.server_id, k.key_id, s.api_url, s.cert_sha256, k.subscription_id
+                            FROM keys k
+                            JOIN servers s ON k.server_id = s.id
+                            WHERE k.subscription_id IN ({placeholders})
+                            AND k.protocol = 'outline'
+                        """, subscription_ids)
+                        all_outline_keys = cursor.fetchall()
+                    
+                    # Группируем ключи по subscription_id
+                    for key_row in all_outline_keys:
+                        key_id, server_id, outline_key_id, api_url, cert_sha256, sub_id = key_row
+                        outline_keys_by_subscription[sub_id].append((key_id, server_id, outline_key_id, api_url, cert_sha256))
+                
+                # ОПТИМИЗАЦИЯ 3: Параллельная обработка подписок батчами
+                batch_size = 20  # Обрабатываем по 20 подписок параллельно
+                
+                for i in range(0, len(active_subscriptions), batch_size):
+                    batch = active_subscriptions[i:i + batch_size]
+                    
+                    # Создаем задачи для батча
+                    tasks = [
+                        _process_subscription_sync(
+                            subscription, 
+                            v2ray_keys_by_subscription, outline_keys_by_subscription,
+                            v2ray_active_server_ids, v2ray_active_servers_dict,
+                            outline_active_server_ids, outline_active_servers_dict,
+                            now, api_semaphore
+                        )
+                        for subscription in batch
+                    ]
+                    
+                    # Параллельно обрабатываем батч
+                    batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    # Собираем статистику
+                    for result in batch_results:
+                        if isinstance(result, Exception):
+                            logger.error(f"Sync: Exception in batch processing: {result}", exc_info=True)
+                            continue
+                        
+                        total_created += result['created']
+                        total_deleted += result['deleted']
+                        total_failed_create += result['failed_create']
+                        total_failed_delete += result['failed_delete']
+                        tokens_to_invalidate.update(result.get('tokens_to_invalidate', set()))
             
             # ОПТИМИЗАЦИЯ 4: Батчинг инвалидации кэша (один раз для всех измененных подписок)
             for token in tokens_to_invalidate:
                 invalidate_subscription_cache(token)
             
+            # Удаление orphaned ключей с ВСЕХ серверов (не только активных)
+            total_orphaned_deleted = 0
+            total_orphaned_errors = 0
+            
+            if all_servers:
+                logger.info(f"Checking {len(all_servers)} servers for orphaned keys...")
+                
+                orphaned_tasks = []
+                for server_row in all_servers:
+                    server_id, server_name, protocol, api_url, api_key, cert_sha256 = server_row
+                    if protocol == 'v2ray':
+                        orphaned_tasks.append(
+                            _delete_orphaned_keys_from_server(
+                                server_id, server_name, 'v2ray', api_url, api_key,
+                                None, api_semaphore
+                            )
+                        )
+                    elif protocol == 'outline':
+                        orphaned_tasks.append(
+                            _delete_orphaned_keys_from_server(
+                                server_id, server_name, 'outline', api_url, None,
+                                cert_sha256, api_semaphore
+                            )
+                        )
+                
+                if orphaned_tasks:
+                    orphaned_results = await asyncio.gather(*orphaned_tasks, return_exceptions=True)
+                    for result in orphaned_results:
+                        if isinstance(result, Exception):
+                            logger.error(f"Sync: Exception in orphaned keys deletion: {result}", exc_info=True)
+                            total_orphaned_errors += 1
+                        else:
+                            deleted, errors = result
+                            total_orphaned_deleted += deleted
+                            total_orphaned_errors += errors
+            
             logger.info(
                 f"Sync completed: {total_created} created, {total_deleted} deleted, "
                 f"{total_failed_create} failed to create, {total_failed_delete} failed to delete, "
+                f"{total_orphaned_deleted} orphaned keys deleted, {total_orphaned_errors} orphaned errors, "
                 f"{len(tokens_to_invalidate)} subscriptions cache invalidated"
             )
         
@@ -2632,9 +2661,9 @@ async def sync_subscription_keys_with_active_servers() -> None:
     
     await _run_periodic(
         "sync_subscription_keys_with_active_servers",
-        interval_seconds=1800,  # 30 минут
+        interval_seconds=3600,  # 1 час
         job=job,
-        max_backoff=3600,
+        max_backoff=10800,  # до 3 часов при повторяющихся ошибках
     )
 
 

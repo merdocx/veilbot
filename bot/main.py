@@ -161,7 +161,6 @@ def start_background_tasks(loop):
     from bot.services.background_tasks import (
         auto_delete_expired_subscriptions,
         notify_expiring_subscriptions,
-        check_and_create_keys_for_new_servers,
         retry_failed_subscription_notifications,
         sync_subscription_keys_with_active_servers,
         cleanup_expired_payments,
@@ -174,7 +173,6 @@ def start_background_tasks(loop):
         auto_delete_expired_subscriptions(),
         notify_expiring_subscriptions(),
         monitor_subscription_traffic_limits(),
-        check_and_create_keys_for_new_servers(),
         retry_failed_subscription_notifications(),
         sync_subscription_keys_with_active_servers(),
         cleanup_expired_payments(),
