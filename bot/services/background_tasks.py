@@ -1915,58 +1915,58 @@ async def _delete_subscription_key_from_server(
             deleted_from_server = False
             
             if protocol == 'v2ray':
-            # Удаляем через V2Ray API
-            if api_url and api_key and v2ray_uuid:
-                server_config = {
-                    'api_url': api_url,
-                    'api_key': api_key,
-                    'domain': '',
-                }
-                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                try:
-                    deleted_from_server = await protocol_client.delete_user(v2ray_uuid)
-                    if deleted_from_server:
-                        logger.debug(
-                            f"Sync: Deleted key {v2ray_uuid[:8]}... "
-                            f"from server {server_id} via API"
-                        )
-                    else:
+                # Удаляем через V2Ray API
+                if api_url and api_key and v2ray_uuid:
+                    server_config = {
+                        'api_url': api_url,
+                        'api_key': api_key,
+                        'domain': '',
+                    }
+                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                    try:
+                        deleted_from_server = await protocol_client.delete_user(v2ray_uuid)
+                        if deleted_from_server:
+                            logger.debug(
+                                f"Sync: Deleted key {v2ray_uuid[:8]}... "
+                                f"from server {server_id} via API"
+                            )
+                        else:
+                            logger.warning(
+                                f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
+                                f"from server {server_id} via API (returned False)"
+                            )
+                    except Exception as api_error:
                         logger.warning(
                             f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
-                            f"from server {server_id} via API (returned False)"
+                            f"from server {server_id} via API: {api_error}"
                         )
-                except Exception as api_error:
-                    logger.warning(
-                        f"Sync: Failed to delete key {v2ray_uuid[:8]}... "
-                        f"from server {server_id} via API: {api_error}"
+                        deleted_from_server = False
+                    finally:
+                        if hasattr(protocol_client, 'close'):
+                            await protocol_client.close()
+                else:
+                    # Если нет данных для удаления с сервера, считаем что нужно удалить из БД
+                    logger.debug(
+                        f"Sync: Key {key_id} has no server info, will delete from DB only"
                     )
-                    deleted_from_server = False
-                finally:
-                    if hasattr(protocol_client, 'close'):
-                    await protocol_client.close()
-            else:
-                # Если нет данных для удаления с сервера, считаем что нужно удалить из БД
-                logger.debug(
-                    f"Sync: Key {key_id} has no server info, will delete from DB only"
-                )
-                deleted_from_server = True
-            
-            # Удаляем из БД только если удаление с сервера успешно или нет данных о сервере
-            if deleted_from_server:
-                with get_db_cursor(commit=True) as cursor:
-                    with safe_foreign_keys_off(cursor):
-                        cursor.execute(
-                            "DELETE FROM v2ray_keys WHERE id = ?",
-                            (key_id,)
-                        )
-                        if cursor.rowcount == 0:
-                            logger.warning(
-                                f"Sync: Key {key_id} not found in DB (may have been deleted already)"
+                    deleted_from_server = True
+                
+                # Удаляем из БД только если удаление с сервера успешно или нет данных о сервере
+                if deleted_from_server:
+                    with get_db_cursor(commit=True) as cursor:
+                        with safe_foreign_keys_off(cursor):
+                            cursor.execute(
+                                "DELETE FROM v2ray_keys WHERE id = ?",
+                                (key_id,)
                             )
-                            return False, "Key not found in DB"
-                return True, None
-            else:
-                return False, "Failed to delete from server"
+                            if cursor.rowcount == 0:
+                                logger.warning(
+                                    f"Sync: Key {key_id} not found in DB (may have been deleted already)"
+                                )
+                                return False, "Key not found in DB"
+                    return True, None
+                else:
+                    return False, "Failed to delete from server"
             elif protocol == 'outline':
                 # Удаляем через Outline API
                 if api_url and outline_key_id:
