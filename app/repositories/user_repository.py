@@ -117,6 +117,21 @@ class UserRepository:
             row = c.fetchone()
             return int(row[0] if row and row[0] is not None else 0)
 
+    def is_user_vip(self, user_id: int) -> bool:
+        """Проверить, является ли пользователь VIP"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("SELECT COALESCE(is_vip, 0) FROM users WHERE user_id = ?", (user_id,))
+            row = c.fetchone()
+            return bool(row[0] if row else 0)
+    
+    def set_user_vip_status(self, user_id: int, is_vip: bool) -> None:
+        """Установить VIP статус пользователя"""
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("UPDATE users SET is_vip = ? WHERE user_id = ?", (1 if is_vip else 0, user_id))
+            conn.commit()
+    
     def count_active_users(self) -> int:
         """Подсчет активных пользователей (с активными подписками)"""
         import time

@@ -1,3 +1,81 @@
+const initVipHandlers = () => {
+    // Обработчик VIP чекбоксов
+    const vipCheckboxes = document.querySelectorAll('.vip-checkbox');
+    vipCheckboxes.forEach(checkbox => {
+        // Удаляем старые обработчики
+        const newCheckbox = checkbox.cloneNode(true);
+        checkbox.parentNode.replaceChild(newCheckbox, checkbox);
+        
+        newCheckbox.addEventListener('change', async (e) => {
+            const userId = e.target.dataset.userId;
+            const isChecked = e.target.checked;
+            
+            if (!userId) {
+                console.error('[VeilBot][users] No user ID found');
+                return;
+            }
+
+            // Получаем CSRF токен из мета-тега или скрытого поля
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
+                || document.querySelector('input[name="csrf_token"]')?.value;
+            
+            if (!csrfToken) {
+                console.error('[VeilBot][users] CSRF token not found');
+                alert('Ошибка: CSRF токен не найден. Перезагрузите страницу.');
+                e.target.checked = !isChecked; // Откатываем изменение
+                return;
+            }
+
+            // Отправляем запрос
+            try {
+                const formData = new FormData();
+                formData.append('csrf_token', csrfToken);
+
+                const response = await fetch(`/users/${userId}/toggle-vip`, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'Ошибка при изменении VIP статуса');
+                }
+
+                // Обновляем визуальное отображение звездочки
+                const row = e.target.closest('tr');
+                if (row) {
+                    const userCell = row.querySelector('td:first-child .cell-primary');
+                    if (userCell) {
+                        if (isChecked) {
+                            // Добавляем звездочку, если её нет
+                            if (!userCell.querySelector('.material-icons')) {
+                                const star = document.createElement('span');
+                                star.className = 'material-icons icon-small';
+                                star.style.color = '#FFD700';
+                                star.style.verticalAlign = 'middle';
+                                star.title = 'VIP пользователь';
+                                star.textContent = 'star';
+                                userCell.insertBefore(star, userCell.firstChild);
+                            }
+                        } else {
+                            // Удаляем звездочку
+                            const star = userCell.querySelector('.material-icons');
+                            if (star) {
+                                star.remove();
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('[VeilBot][users] Error toggling VIP status:', error);
+                alert('Ошибка при изменении VIP статуса: ' + error.message);
+                e.target.checked = !isChecked; // Откатываем изменение
+            }
+        });
+    });
+};
+
 const initUsersPage = () => {
     // Инициализируем live-поиск
     if (typeof window.initLiveSearch === 'function') {
@@ -21,6 +99,9 @@ const initUsersPage = () => {
         };
         document.head.appendChild(script);
     }
+    
+    // Инициализируем обработчики VIP
+    initVipHandlers();
 };
 
 if (document.readyState === 'loading') {
