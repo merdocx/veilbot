@@ -177,7 +177,7 @@
                 // Очищаем поле ввода
                 freshSearchInput.value = '';
 
-                // Обновляем URL без перезагрузки
+                // Обновляем URL без перезагрузки, сохраняя другие параметры (например, vip_filter)
                 const url = new URL(window.location.href);
                 url.searchParams.delete('q');
                 url.searchParams.set('page', '1');

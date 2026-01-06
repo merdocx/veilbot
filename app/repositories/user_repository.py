@@ -32,13 +32,26 @@ class UserRepository:
         row = cursor.fetchone()
         return row[0] if row else ""
 
-    def count_users(self, query: Optional[str] = None) -> int:
-        """Подсчет всех пользователей из таблицы users"""
+    def count_users(self, query: Optional[str] = None, vip_filter: Optional[str] = None) -> int:
+        """Подсчет всех пользователей из таблицы users
+        
+        Args:
+            query: Поисковый запрос
+            vip_filter: Фильтр по VIP статусу ('vip', 'non_vip', None для всех)
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            
+            # Базовое условие для VIP фильтра
+            vip_condition = ""
+            if vip_filter == "vip":
+                vip_condition = "AND COALESCE(u.is_vip, 0) = 1"
+            elif vip_filter == "non_vip":
+                vip_condition = "AND COALESCE(u.is_vip, 0) = 0"
+            
             if query:
                 like = f"%{query.strip()}%"
-                sql = """
+                sql = f"""
                 SELECT COUNT(DISTINCT u.user_id)
                 FROM users u
                 LEFT JOIN (
@@ -46,7 +59,7 @@ class UserRepository:
                     FROM referrals
                     GROUP BY referrer_id
                 ) r ON r.referrer_id = u.user_id
-                WHERE CAST(u.user_id AS TEXT) LIKE ?
+                WHERE (CAST(u.user_id AS TEXT) LIKE ?
                    OR IFNULL(u.username, '') LIKE ?
                    OR IFNULL(u.first_name, '') LIKE ?
                    OR IFNULL(u.last_name, '') LIKE ?
@@ -74,75 +87,91 @@ class UserRepository:
                          AND p.email IS NOT NULL 
                          AND p.email != '' 
                          AND p.email NOT LIKE 'user_%@veilbot.com'
-                   )
+                   ))
+                   {vip_condition}
                 """
                 c.execute(sql, (like, like, like, like, like, like, like, like))
             else:
-                sql = "SELECT COUNT(*) FROM users"
+                sql = f"SELECT COUNT(*) FROM users u WHERE 1=1 {vip_condition}"
                 c.execute(sql)
             row = c.fetchone()
             return int(row[0] if row and row[0] is not None else 0)
 
-    def list_users(self, query: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Tuple[int, int, int]]:
+    def list_users(self, query: Optional[str] = None, limit: int = 50, offset: int = 0, vip_filter: Optional[str] = None) -> List[Tuple[int, int, int]]:
         """
         Возвращает список (user_id, referral_count, is_vip) с пагинацией и поиском.
         Поиск работает по: user_id, username, first_name, last_name, email, referral_count
         Источник пользователей — таблица users (все пользователи, которые когда-либо нажали /start).
+        
+        Args:
+            query: Поисковый запрос
+            limit: Лимит записей
+            offset: Смещение для пагинации
+            vip_filter: Фильтр по VIP статусу ('vip', 'non_vip', None для всех)
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
 
+            # Базовое условие для VIP фильтра
+            vip_condition = ""
+            if vip_filter == "vip":
+                vip_condition = "AND COALESCE(u.is_vip, 0) = 1"
+            elif vip_filter == "non_vip":
+                vip_condition = "AND COALESCE(u.is_vip, 0) = 0"
+
             if query:
                 like = f"%{query.strip()}%"
                 sql = (
-                    "SELECT DISTINCT u.user_id, "
-                    "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count, "
-                    "       COALESCE(u.is_vip, 0) as is_vip "
-                    "FROM users u "
-                    "LEFT JOIN ("
-                    "    SELECT referrer_id, COUNT(*) as referral_count "
-                    "    FROM referrals "
-                    "    GROUP BY referrer_id"
-                    ") r ON r.referrer_id = u.user_id "
-                    "WHERE CAST(u.user_id AS TEXT) LIKE ? "
-                    "   OR IFNULL(u.username, '') LIKE ? "
-                    "   OR IFNULL(u.first_name, '') LIKE ? "
-                    "   OR IFNULL(u.last_name, '') LIKE ? "
-                    "   OR CAST(IFNULL(r.referral_count, 0) AS TEXT) LIKE ? "
-                    "   OR EXISTS ("
-                    "       SELECT 1 FROM keys k "
-                    "       WHERE k.user_id = u.user_id "
-                    "         AND k.email LIKE ? "
-                    "         AND k.email IS NOT NULL "
-                    "         AND k.email != '' "
-                    "         AND k.email NOT LIKE 'user_%@veilbot.com'"
-                    "   ) "
-                    "   OR EXISTS ("
-                    "       SELECT 1 FROM v2ray_keys k "
-                    "       WHERE k.user_id = u.user_id "
-                    "         AND k.email LIKE ? "
-                    "         AND k.email IS NOT NULL "
-                    "         AND k.email != '' "
-                    "         AND k.email NOT LIKE 'user_%@veilbot.com'"
-                    "   ) "
-                    "   OR EXISTS ("
-                    "       SELECT 1 FROM payments p "
-                    "       WHERE p.user_id = u.user_id "
-                    "         AND p.email LIKE ? "
-                    "         AND p.email IS NOT NULL "
-                    "         AND p.email != '' "
-                    "         AND p.email NOT LIKE 'user_%@veilbot.com'"
-                    "   ) "
-                    "ORDER BY u.user_id LIMIT ? OFFSET ?"
+                    f"SELECT DISTINCT u.user_id, "
+                    f"       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count, "
+                    f"       COALESCE(u.is_vip, 0) as is_vip "
+                    f"FROM users u "
+                    f"LEFT JOIN ("
+                    f"    SELECT referrer_id, COUNT(*) as referral_count "
+                    f"    FROM referrals "
+                    f"    GROUP BY referrer_id"
+                    f") r ON r.referrer_id = u.user_id "
+                    f"WHERE (CAST(u.user_id AS TEXT) LIKE ? "
+                    f"   OR IFNULL(u.username, '') LIKE ? "
+                    f"   OR IFNULL(u.first_name, '') LIKE ? "
+                    f"   OR IFNULL(u.last_name, '') LIKE ? "
+                    f"   OR CAST(IFNULL(r.referral_count, 0) AS TEXT) LIKE ? "
+                    f"   OR EXISTS ("
+                    f"       SELECT 1 FROM keys k "
+                    f"       WHERE k.user_id = u.user_id "
+                    f"         AND k.email LIKE ? "
+                    f"         AND k.email IS NOT NULL "
+                    f"         AND k.email != '' "
+                    f"         AND k.email NOT LIKE 'user_%@veilbot.com'"
+                    f"   ) "
+                    f"   OR EXISTS ("
+                    f"       SELECT 1 FROM v2ray_keys k "
+                    f"       WHERE k.user_id = u.user_id "
+                    f"         AND k.email LIKE ? "
+                    f"         AND k.email IS NOT NULL "
+                    f"         AND k.email != '' "
+                    f"         AND k.email NOT LIKE 'user_%@veilbot.com'"
+                    f"   ) "
+                    f"   OR EXISTS ("
+                    f"       SELECT 1 FROM payments p "
+                    f"       WHERE p.user_id = u.user_id "
+                    f"         AND p.email LIKE ? "
+                    f"         AND p.email IS NOT NULL "
+                    f"         AND p.email != '' "
+                    f"         AND p.email NOT LIKE 'user_%@veilbot.com'"
+                    f"   )) "
+                    f"   {vip_condition} "
+                    f"ORDER BY u.user_id LIMIT ? OFFSET ?"
                 )
                 c.execute(sql, (like, like, like, like, like, like, like, like, limit, offset))
             else:
                 sql = (
-                    "SELECT u.user_id, "
-                    "       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count, "
-                    "       COALESCE(u.is_vip, 0) as is_vip "
-                    "FROM users u "
-                    "ORDER BY u.user_id LIMIT ? OFFSET ?"
+                    f"SELECT u.user_id, "
+                    f"       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.user_id) AS referral_count, "
+                    f"       COALESCE(u.is_vip, 0) as is_vip "
+                    f"FROM users u "
+                    f"WHERE 1=1 {vip_condition} "
+                    f"ORDER BY u.user_id LIMIT ? OFFSET ?"
                 )
                 c.execute(sql, (limit, offset))
 

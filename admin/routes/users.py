@@ -62,15 +62,19 @@ def _is_user_active(user_id: int, overview: dict) -> bool:
 
 
 @router.get("/users", response_class=HTMLResponse)
-async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | None = None):
+async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | None = None, vip_filter: str | None = None):
     """Страница списка пользователей"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
+    # Валидация vip_filter
+    if vip_filter not in (None, "vip", "non_vip"):
+        vip_filter = None
+    
     repo = UserRepository(DB_PATH)
     offset = (max(page, 1) - 1) * limit
-    total = repo.count_users(query=q)
-    rows = repo.list_users(query=q, limit=limit, offset=offset)
+    total = repo.count_users(query=q, vip_filter=vip_filter)
+    rows = repo.list_users(query=q, limit=limit, offset=offset, vip_filter=vip_filter)
     user_list = []
     for row in rows:
         uid = row[0]
@@ -107,6 +111,7 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
         "referral_count": referral_count,
         "pages": pages,
         "q": q or "",
+        "vip_filter": vip_filter or "",
         "csrf_token": get_csrf_token(request),
     })
 

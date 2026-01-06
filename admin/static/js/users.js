@@ -87,6 +87,27 @@ const initVipHandlers = () => {
 };
 
 const initUsersPage = () => {
+    // Обработчик изменения фильтра VIP
+    const vipFilter = document.getElementById('vip-filter');
+    if (vipFilter) {
+        vipFilter.addEventListener('change', () => {
+            // При изменении фильтра VIP перезагружаем страницу с новым параметром
+            const form = document.getElementById('search-form');
+            if (form) {
+                const formData = new FormData(form);
+                const params = new URLSearchParams();
+                if (formData.get('q')) {
+                    params.set('q', formData.get('q'));
+                }
+                if (formData.get('vip_filter')) {
+                    params.set('vip_filter', formData.get('vip_filter'));
+                }
+                params.set('page', '1'); // Сбрасываем на первую страницу
+                window.location.href = `/users?${params.toString()}`;
+            }
+        });
+    }
+    
     // Инициализируем live-поиск
     if (typeof window.initLiveSearch === 'function') {
         window.initLiveSearch({
@@ -94,6 +115,14 @@ const initUsersPage = () => {
             tableSelector: '#users-table',
             statsSelector: '.stats-grid',
             paginationSelector: '.pagination',
+            // Передаем дополнительные параметры для сохранения фильтра VIP
+            getExtraParams: () => {
+                const vipFilter = document.getElementById('vip-filter');
+                if (vipFilter && vipFilter.value) {
+                    return { vip_filter: vipFilter.value };
+                }
+                return {};
+            },
         });
     } else {
         console.warn('[VeilBot][users] initLiveSearch недоступен, загружаем скрипт...');
@@ -105,6 +134,14 @@ const initUsersPage = () => {
                 tableSelector: '#users-table',
                 statsSelector: '.stats-grid',
                 paginationSelector: '.pagination',
+                // Передаем дополнительные параметры для сохранения фильтра VIP
+                getExtraParams: () => {
+                    const vipFilter = document.getElementById('vip-filter');
+                    if (vipFilter && vipFilter.value) {
+                        return { vip_filter: vipFilter.value };
+                    }
+                    return {};
+                },
             });
         };
         document.head.appendChild(script);
