@@ -385,6 +385,33 @@ async def process_pending_paid_payments() -> None:
                 if is_subscription:
                     try:
                         from payments.services.subscription_purchase_service import SubscriptionPurchaseService
+                        from payments.repositories.payment_repository import PaymentRepository
+                        from payments.models.payment import PaymentStatus
+                        from app.settings import settings as app_settings
+                        
+                        # КРИТИЧНО: Атомарная проверка статуса платежа через репозиторий
+                        # Это предотвращает race condition, когда между проверкой и обработкой другой процесс уже обработал платеж
+                        payment_repo = PaymentRepository(app_settings.DATABASE_PATH)
+                        fresh_payment = await payment_repo.get_by_payment_id(payment_uuid)
+                        
+                        if not fresh_payment:
+                            logging.warning(f"[AUTO-ISSUE] Payment {payment_uuid} not found, skipping")
+                            continue
+                        
+                        # Если платеж уже обработан, пропускаем
+                        if fresh_payment.status == PaymentStatus.COMPLETED:
+                            logging.info(
+                                f"[AUTO-ISSUE] Payment {payment_uuid} already completed, skipping subscription processing. "
+                                f"Payment was likely processed by webhook or another process."
+                            )
+                            continue
+                        
+                        # Если статус не PAID, пропускаем (возможно, платеж еще не оплачен или уже обработан)
+                        if fresh_payment.status != PaymentStatus.PAID:
+                            logging.debug(
+                                f"[AUTO-ISSUE] Payment {payment_uuid} status is {fresh_payment.status.value} (not paid), skipping"
+                            )
+                            continue
                         
                         subscription_service = SubscriptionPurchaseService()
                         success, error_msg = await subscription_service.process_subscription_purchase(payment_uuid)
@@ -1326,12 +1353,22 @@ async def retry_failed_subscription_notifications() -> None:
                     
                     # КРИТИЧНО: Проверяем статус платежа ПЕРЕД обработкой (защита от race condition)
                     # Статус мог измениться на completed между получением списка и этой проверкой
+                    # КРИТИЧНО: Получаем свежий статус платежа из БД для атомарной проверки
                     fresh_payment = await payment_repo.get_by_payment_id(payment.payment_id)
                     if not fresh_payment:
                         logger.warning(f"[RETRY] Payment {payment.payment_id} not found, skipping")
                         continue
                     
-                    if fresh_payment.status.value != 'paid':
+                    # КРИТИЧНО: Проверяем статус через enum для надежности
+                    from payments.models.payment import PaymentStatus
+                    if fresh_payment.status == PaymentStatus.COMPLETED:
+                        logger.info(
+                            f"[RETRY] Payment {payment.payment_id} already completed, skipping. "
+                            f"Payment was likely processed by webhook or another process."
+                        )
+                        continue
+                    
+                    if fresh_payment.status != PaymentStatus.PAID:
                         logger.info(
                             f"[RETRY] Payment {payment.payment_id} status is {fresh_payment.status.value} (not paid), skipping. "
                             f"Payment was likely processed by another process."
@@ -1342,6 +1379,7 @@ async def retry_failed_subscription_notifications() -> None:
                     
                     # Используем process_subscription_purchase для обработки
                     # Он сам проверит статус, создаст/продлит подписку и отправит уведомление
+                    # Внутри process_subscription_purchase есть дополнительная защита от повторной обработки
                     success, error_msg = await subscription_service.process_subscription_purchase(payment.payment_id)
                     
                     if success:

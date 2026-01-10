@@ -118,6 +118,74 @@ class SubscriptionRepository:
                 (new_expires_at, now, tariff_id, subscription_id),
             )
             conn.commit()
+    
+    def extend_subscription_by_duration(self, subscription_id: int, duration_sec: int, tariff_id: Optional[int] = None, max_expires_at: Optional[int] = None) -> int:
+        """Атомарно продлить подписку на указанное количество секунд
+        
+        ВАЖНО: Использует атомарное SQL-обновление для предотвращения race conditions.
+        Вычисление нового expires_at происходит в БД, а не в Python.
+        
+        Args:
+            subscription_id: ID подписки
+            duration_sec: Количество секунд для продления
+            tariff_id: Опционально - обновить tariff_id подписки. Если None, сохраняется текущее значение.
+            max_expires_at: Максимальное значение expires_at (для защиты от ручных установок). Если None, ограничений нет.
+            
+        Returns:
+            Новое значение expires_at после продления
+        """
+        with open_connection(self.db_path) as conn:
+            c = conn.cursor()
+            now = int(time.time())
+            
+            # Если tariff_id не передан, сохраняем текущее значение из БД
+            if tariff_id is None:
+                c.execute("SELECT tariff_id FROM subscriptions WHERE id = ?", (subscription_id,))
+                row = c.fetchone()
+                tariff_id = row[0] if row else None
+            
+            # Атомарное обновление: вычисляем новый expires_at прямо в SQL
+            # Это предотвращает race conditions при одновременном продлении
+            # SQLite не поддерживает RETURNING, поэтому делаем SELECT после UPDATE
+            if max_expires_at is not None:
+                # Если есть ограничение на максимальное значение, используем CASE для защиты ручных установок
+                c.execute(
+                    """
+                    UPDATE subscriptions 
+                    SET expires_at = CASE 
+                        WHEN expires_at + ? > ? THEN ?
+                        ELSE expires_at + ?
+                    END,
+                    last_updated_at = ?,
+                    purchase_notification_sent = 0,
+                    tariff_id = COALESCE(?, tariff_id)
+                    WHERE id = ?
+                    """,
+                    (duration_sec, max_expires_at, max_expires_at, duration_sec, now, tariff_id, subscription_id),
+                )
+            else:
+                # Обычное продление без ограничений
+                c.execute(
+                    """
+                    UPDATE subscriptions 
+                    SET expires_at = expires_at + ?,
+                        last_updated_at = ?,
+                        purchase_notification_sent = 0,
+                        tariff_id = COALESCE(?, tariff_id)
+                    WHERE id = ?
+                    """,
+                    (duration_sec, now, tariff_id, subscription_id),
+                )
+            
+            conn.commit()
+            
+            # Получаем новое значение expires_at
+            c.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (subscription_id,))
+            row = c.fetchone()
+            if row:
+                return row[0]
+            else:
+                raise ValueError(f"Subscription {subscription_id} not found")
 
     def get_expired_subscriptions(self, grace_threshold: int) -> List[Tuple]:
         """Получить истекшие подписки (для grace period) - включая деактивированные"""
@@ -427,6 +495,72 @@ class SubscriptionRepository:
                 (new_expires_at, now, tariff_id, subscription_id),
             )
             await conn.commit()
+    
+    async def extend_subscription_by_duration_async(self, subscription_id: int, duration_sec: int, tariff_id: Optional[int] = None, max_expires_at: Optional[int] = None) -> int:
+        """Атомарно продлить подписку на указанное количество секунд (асинхронная версия)
+        
+        ВАЖНО: Использует атомарное SQL-обновление для предотвращения race conditions.
+        Вычисление нового expires_at происходит в БД, а не в Python.
+        
+        Args:
+            subscription_id: ID подписки
+            duration_sec: Количество секунд для продления
+            tariff_id: Опционально - обновить tariff_id подписки. Если None, сохраняется текущее значение.
+            max_expires_at: Максимальное значение expires_at (для защиты от ручных установок). Если None, ограничений нет.
+            
+        Returns:
+            Новое значение expires_at после продления
+        """
+        async with open_async_connection(self.db_path) as conn:
+            now = int(time.time())
+            
+            # Если tariff_id не передан, сохраняем текущее значение из БД
+            if tariff_id is None:
+                async with conn.execute("SELECT tariff_id FROM subscriptions WHERE id = ?", (subscription_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    tariff_id = row[0] if row else None
+            
+            # Атомарное обновление: вычисляем новый expires_at прямо в SQL
+            # Это предотвращает race conditions при одновременном продлении
+            if max_expires_at is not None:
+                # Если есть ограничение на максимальное значение, используем CASE для защиты ручных установок
+                await conn.execute(
+                    """
+                    UPDATE subscriptions 
+                    SET expires_at = CASE 
+                        WHEN expires_at + ? > ? THEN ?
+                        ELSE expires_at + ?
+                    END,
+                    last_updated_at = ?,
+                    purchase_notification_sent = 0,
+                    tariff_id = COALESCE(?, tariff_id)
+                    WHERE id = ?
+                    """,
+                    (duration_sec, max_expires_at, max_expires_at, duration_sec, now, tariff_id, subscription_id),
+                )
+            else:
+                # Обычное продление без ограничений
+                await conn.execute(
+                    """
+                    UPDATE subscriptions 
+                    SET expires_at = expires_at + ?,
+                        last_updated_at = ?,
+                        purchase_notification_sent = 0,
+                        tariff_id = COALESCE(?, tariff_id)
+                    WHERE id = ?
+                    """,
+                    (duration_sec, now, tariff_id, subscription_id),
+                )
+            
+            await conn.commit()
+            
+            # Получаем новое значение expires_at
+            async with conn.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (subscription_id,)) as check_cursor:
+                row = await check_cursor.fetchone()
+                if row:
+                    return row[0]
+                else:
+                    raise ValueError(f"Subscription {subscription_id} not found")
 
     async def get_expired_subscriptions_async(self, grace_threshold: int) -> List[Tuple]:
         """Получить истекшие подписки (для grace period) (асинхронная версия)"""

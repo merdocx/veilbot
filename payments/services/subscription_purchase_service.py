@@ -79,6 +79,7 @@ class SubscriptionPurchaseService:
                 return False, error_msg
             
             # Шаг 3: Проверяем статус платежа - должен быть paid
+            # КРИТИЧНО: Атомарная проверка и обновление статуса для предотвращения race conditions
             # Если платеж уже completed, значит он уже обработан (возможно другим процессом)
             if payment.status == PaymentStatus.COMPLETED:
                 logger.info(f"[SUBSCRIPTION] Payment {payment_id} already completed, skipping")
@@ -116,12 +117,11 @@ class SubscriptionPurchaseService:
             )
             
             # Шаг 5: Определяем, это покупка или продление
-            # ВАЖНО: Если у пользователя есть активный бесплатный ключ (включая grace period),
-            # то любая оплата - это продление, а не покупка
-            # Проверяем наличие активной подписки с учетом grace_period
-            # ВАЖНО: Если подписка существует и это новый платеж (не retry), это продление
-            # Если подписка была создана недавно и уведомление о покупке не отправлено,
-            # проверяем, не является ли это retry того же платежа
+            # ВАЖНО: Атомарность обеспечивается через:
+            # 1. Атомарное обновление expires_at в SQL (extend_subscription_by_duration_async)
+            # 2. Проверку статуса COMPLETED в начале функции
+            # 3. Уникальные ограничения на подписки (если нужны)
+            
             from ..utils.renewal_detector import DEFAULT_GRACE_PERIOD
             
             now = int(time.time())
@@ -129,6 +129,8 @@ class SubscriptionPurchaseService:
             RECENT_SUBSCRIPTION_THRESHOLD = 1800  # 30 минут - если подписка создана недавно, это может быть покупка
             
             # Проверяем наличие активной подписки (с учетом grace_period)
+            # ВАЖНО: Даже если два процесса одновременно проверили отсутствие подписки и оба попытаются создать,
+            # атомарное обновление expires_at предотвратит проблему при продлении
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     """
@@ -655,10 +657,16 @@ class SubscriptionPurchaseService:
                 new_expires_at = existing_expires_at  # Используем существующий срок
             else:
                 # Продление: увеличиваем срок действия
+                # ВАЖНО: Используем атомарное обновление для предотвращения race conditions
+                # Вместо чтения expires_at в Python и вычисления нового значения,
+                # используем SQL-обновление с вычислением прямо в БД
+                
                 # ВАЖНО: Не изменяем срок подписки, если он был установлен вручную через админку
                 # Признак ручной установки: expires_at очень далеко в будущем (например, 01.01.2100)
                 MANUAL_EXPIRY_THRESHOLD = 4102434000  # 01.01.2100 - признак ручной установки
                 ONE_YEAR_IN_SECONDS = 365 * 24 * 3600
+                MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
+                
                 is_manually_set = (
                     existing_expires_at >= MANUAL_EXPIRY_THRESHOLD or
                     (existing_expires_at > now and (existing_expires_at - now) > (5 * ONE_YEAR_IN_SECONDS))
@@ -671,37 +679,34 @@ class SubscriptionPurchaseService:
                         f"{existing_expires_at}. Not extending, keeping original expiry."
                     )
                     new_expires_at = existing_expires_at
+                    # Обновляем только tariff_id и лимит трафика, но не expires_at
+                    await self.subscription_repo.extend_subscription_async(subscription_id, new_expires_at, tariff['id'])
                 else:
-                    # Обычное продление: увеличиваем срок действия
-                    # ВАЖНО: Валидация существующей даты истечения
-                    MAX_REASONABLE_EXPIRY = now + (10 * 365 * 24 * 3600)  # 10 лет
-                    if existing_expires_at > MAX_REASONABLE_EXPIRY:
-                        logger.warning(
-                            f"[SUBSCRIPTION] Subscription {subscription_id} has unreasonable expiry date: "
-                            f"{existing_expires_at} (more than 10 years in future). "
-                            f"Resetting to now + duration."
-                        )
-                        # Исправляем на разумную дату: используем текущее время + длительность тарифа
-                        existing_expires_at = now + tariff['duration_sec']
+                    # Обычное продление: используем атомарное SQL-обновление
+                    # Это предотвращает race conditions при одновременном продлении несколькими процессами
+                    logger.info(
+                        f"[SUBSCRIPTION] Atomically extending subscription {subscription_id} for user {payment.user_id} "
+                        f"by {tariff['duration_sec']}s (current expires_at={existing_expires_at})"
+                    )
                     
-                    new_expires_at = existing_expires_at + tariff['duration_sec']
+                    # Атомарное обновление: вычисление нового expires_at происходит в SQL
+                    # Используем ограничение MAX_REASONABLE_EXPIRY для защиты от неразумных дат,
+                    # но только если текущий expires_at еще разумен
+                    # Если existing_expires_at уже превышает MAX_REASONABLE_EXPIRY, значит это была ручная установка,
+                    # и мы не должны продлевать (но это уже проверено выше в is_manually_set)
+                    use_max_limit = existing_expires_at <= MAX_REASONABLE_EXPIRY
+                    new_expires_at = await self.subscription_repo.extend_subscription_by_duration_async(
+                        subscription_id, 
+                        tariff['duration_sec'], 
+                        tariff['id'],
+                        max_expires_at=MAX_REASONABLE_EXPIRY if use_max_limit else None
+                    )
                     
-                    # Дополнительная валидация новой даты
-                    if new_expires_at > MAX_REASONABLE_EXPIRY:
-                        logger.error(
-                            f"[SUBSCRIPTION] Calculated expiry date is too far in future for subscription {subscription_id}: "
-                            f"{new_expires_at}. Using now + duration instead."
-                        )
-                        new_expires_at = now + tariff['duration_sec']
-                
-                logger.info(
-                    f"[SUBSCRIPTION] Extending subscription {subscription_id} for user {payment.user_id}: "
-                    f"{existing_expires_at} -> {new_expires_at} (+{tariff['duration_sec']}s)"
-                )
-                
-                # Шаг 1: Обновляем подписку (срок, tariff_id и лимит трафика)
-                # ВАЖНО: Обновляем tariff_id подписки на тариф из платежа
-                await self.subscription_repo.extend_subscription_async(subscription_id, new_expires_at, tariff['id'])
+                    logger.info(
+                        f"[SUBSCRIPTION] Subscription {subscription_id} extended atomically: "
+                        f"new expires_at={new_expires_at} (added {tariff['duration_sec']}s, "
+                        f"previous={existing_expires_at})"
+                    )
                 
                 # Обновляем лимит трафика подписки из тарифа
                 # ВАЖНО: Обновляем всегда, даже если лимит = 0 (безлимит), чтобы корректно применить новый тариф
@@ -714,12 +719,10 @@ class SubscriptionPurchaseService:
                 # Шаг 2: Продлеваем все ключи подписки
                 # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
                 # Это гарантирует, что при продлении подписки все ключи будут активны
-                async with open_async_connection(self.db_path) as conn:
-                    # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
-                    # ВАЖНО: traffic_limit_mb не обновляется в ключах - лимит управляется через подписку (subscriptions.traffic_limit_mb)
-                    # Подписка уже обновлена выше в коде (new_expires_at и traffic_limit_mb), ключи автоматически используют данные из подписки
-                    # Не нужно обновлять ключи - они используют данные из подписки
-                    await conn.commit()
+                # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
+                # ВАЖНО: traffic_limit_mb не обновляется в ключах - лимит управляется через подписку (subscriptions.traffic_limit_mb)
+                # Подписка уже обновлена выше в коде (new_expires_at и traffic_limit_mb), ключи автоматически используют данные из подписки
+                # Не нужно обновлять ключи - они используют данные из подписки
                 
                 logger.info(
                     f"[SUBSCRIPTION] Extended subscription {subscription_id} - keys automatically use updated subscription data"

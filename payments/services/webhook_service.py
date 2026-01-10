@@ -243,29 +243,61 @@ class WebhookService:
             if paid:
                 # Атомарно переводим в PAID, если еще pending
                 if payment.status == PaymentStatus.PENDING:
-                    await self.payment_repo.try_update_status(
+                    atomic_success = await self.payment_repo.try_update_status(
                         tx_id, PaymentStatus.PAID, PaymentStatus.PENDING
                     )
+                    if not atomic_success:
+                        # Статус уже изменился другим процессом
+                        logger.info(f"Payment {tx_id} already processed by another process")
+                        # Проверяем, был ли платеж успешно обработан
+                        updated_payment = await self.payment_repo.get_by_payment_id(tx_id)
+                        if updated_payment and updated_payment.status == PaymentStatus.COMPLETED:
+                            logger.info(f"Payment {tx_id} already completed, skipping")
+                            return True
+                        return False
 
                 success = await self.payment_service.process_payment_success(tx_id)
                 if success:
                     # Запускаем обработку ключей/подписок по аналогии с YooKassa
+                    # КРИТИЧНО: Проверяем статус перед обработкой подписки (защита от повторной обработки)
+                    # Platega может отправить несколько webhook'ов для одного платежа
+                    payment_check = await self.payment_repo.get_by_payment_id(tx_id)
                     if (
-                        payment.metadata
-                        and payment.metadata.get("key_type") == "subscription"
-                        and payment.protocol == "v2ray"
+                        payment_check
+                        and payment_check.metadata
+                        and payment_check.metadata.get("key_type") == "subscription"
+                        and payment_check.protocol == "v2ray"
                     ):
-                        subscription_service = SubscriptionPurchaseService()
-                        ok, error_msg = await subscription_service.process_subscription_purchase(tx_id)
-                        if not ok:
-                            logger.error(
-                                f"Failed to process subscription for payment {tx_id} via Platega webhook: {error_msg}"
+                        # Проверяем, не обработан ли уже платеж
+                        if payment_check.status == PaymentStatus.COMPLETED:
+                            logger.info(
+                                f"Payment {tx_id} already completed, skipping subscription processing via Platega webhook. "
+                                f"This webhook was likely a duplicate."
                             )
+                        else:
+                            # КРИТИЧНО: Обрабатываем подписку СРАЗУ при получении webhook'а
+                            subscription_service = SubscriptionPurchaseService()
+                            ok, error_msg = await subscription_service.process_subscription_purchase(tx_id)
+                            if ok:
+                                logger.info(f"Subscription purchase processed successfully for payment {tx_id} via Platega webhook, notification sent")
+                            else:
+                                # Если обработка не удалась, логируем ошибку, но не блокируем webhook
+                                # Платеж уже помечен как paid, обработка будет повторена при следующем webhook'е или проверке статуса
+                                logger.error(
+                                    f"CRITICAL: Failed to process subscription purchase for payment {tx_id} via Platega webhook: {error_msg}. "
+                                    f"Will retry on next webhook or status check."
+                                )
+                        # НЕ вызываем process_paid_payments_without_keys для подписок
+                        # Это предотвращает дублирование обработки
                     else:
+                        # Для обычных платежей (не подписок) используем старую логику
                         try:
                             await self.payment_service.process_paid_payments_without_keys()
+                            logger.info(f"Key creation triggered for payment {tx_id} via Platega webhook")
                         except Exception as e:
                             logger.error(f"Error creating key for payment {tx_id} via Platega webhook: {e}")
+                            # Не возвращаем False, т.к. платеж уже обработан
+                            # Ключ будет создан фоновой задачей
                     return True
 
             # Обработка неуспешных статусов

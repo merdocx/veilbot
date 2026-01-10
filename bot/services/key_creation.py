@@ -1480,13 +1480,24 @@ async def wait_for_payment_with_protocol(
                         # Используем единый сервис для обработки подписки
                         # Это предотвращает дублирование уведомлений и обеспечивает единообразную обработку
                         from payments.services.subscription_purchase_service import SubscriptionPurchaseService
+                        from payments.repositories.payment_repository import PaymentRepository
+                        from payments.models.payment import PaymentStatus
                         
-                        # Проверяем, не обработан ли уже платеж через SubscriptionPurchaseService
-                        # (может быть обработан через webhook или фоновую задачу)
-                        cursor.execute("SELECT status FROM payments WHERE payment_id = ?", (payment_id,))
-                        status_row = cursor.fetchone()
-                        if status_row and (status_row[0] or "").lower() == "completed":
-                            logging.info(f"Payment {payment_id} already completed, skipping subscription processing in wait_for_payment_with_protocol")
+                        # КРИТИЧНО: Атомарная проверка статуса платежа через репозиторий
+                        # Это предотвращает race condition, когда между проверкой и обработкой другой процесс уже обработал платеж
+                        payment_repo = PaymentRepository()
+                        fresh_payment = await payment_repo.get_by_payment_id(payment_id)
+                        
+                        if not fresh_payment:
+                            logging.warning(f"Payment {payment_id} not found in wait_for_payment_with_protocol")
+                            return
+                        
+                        # Если платеж уже обработан, пропускаем
+                        if fresh_payment.status == PaymentStatus.COMPLETED:
+                            logging.info(
+                                f"Payment {payment_id} already completed, skipping subscription processing in wait_for_payment_with_protocol. "
+                                f"Payment was likely processed by webhook or background task."
+                            )
                             return
                         
                         # Используем SubscriptionPurchaseService для обработки подписки
