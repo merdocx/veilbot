@@ -441,6 +441,9 @@ class SubscriptionPurchaseService:
                 traffic_limit_mb=traffic_limit_mb,
             )
             
+            # Обновляем subscription_id в платеже
+            await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
+            
             logger.info(
                 f"[SUBSCRIPTION] Created subscription {subscription_id} for user {payment.user_id} as renewal of free key, "
                 f"expires_at={expires_at}"
@@ -1292,6 +1295,10 @@ class SubscriptionPurchaseService:
                         # Подписка уже создана другим процессом
                         subscription_id = existing[0]
                         await conn.commit()
+                        
+                        # Обновляем subscription_id в платеже
+                        await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
+                        
                         logger.info(
                             f"[SUBSCRIPTION] Subscription {subscription_id} already exists (race condition detected), "
                             f"using existing subscription for user {payment.user_id}"
@@ -1308,6 +1315,10 @@ class SubscriptionPurchaseService:
                         )
                         subscription_id = cursor.lastrowid
                         await conn.commit()
+                        
+                        # Обновляем subscription_id в платеже
+                        await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
+                        
                         logger.info(
                             f"[SUBSCRIPTION] Created subscription {subscription_id} for user {payment.user_id}, "
                             f"expires_at={expires_at}"

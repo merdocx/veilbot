@@ -26,6 +26,7 @@ class Payment:
     updated_at: Optional[datetime] = None
     paid_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    subscription_id: Optional[int] = None
     
     def __post_init__(self):
         if self.created_at is None:
@@ -52,7 +53,8 @@ class Payment:
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'paid_at': self.paid_at.isoformat() if self.paid_at else None,
-            'metadata': self.metadata
+            'metadata': self.metadata,
+            'subscription_id': self.subscription_id
         }
     
     @classmethod

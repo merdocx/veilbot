@@ -2,7 +2,7 @@
 API маршруты для подписок V2Ray
 """
 from fastapi import APIRouter, Request, HTTPException, Form, Body
-from fastapi.responses import PlainTextResponse, RedirectResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -345,7 +345,6 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q
         error_details = traceback.format_exc()
         logger.error(f"Traceback: {error_details}")
         # Возвращаем простую страницу с ошибкой
-        from fastapi.responses import HTMLResponse
         error_html = f"""
         <!DOCTYPE html>
         <html>
@@ -992,3 +991,218 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
             "error": error_msg,
             "details": str(e) if len(str(e)) < 200 else str(e)[:200] + "..."
         }, status_code=500)
+
+
+def _calculate_subscription_discrepancies(db_path: str) -> list:
+    """
+    Рассчитать расхождения между реальными и расчетными сроками подписок
+    
+    Формула расчета:
+    - Если подписка создана ДО первого платежа: created_at + (количество_платежей × duration_sec)
+    - Если подписка создана ПОСЛЕ первого платежа: первый_платеж + (количество_платежей × duration_sec)
+    - + Реферальные бонусы (30 дней за каждого реферала)
+    
+    ВАЖНО:
+    - Использует subscription_id для точной связи платежей с конкретными подписками
+    - Это решает проблему смешивания платежей разных подписок (если старая подписка истекла и удалена)
+    - Для обратной совместимости: если платежи без subscription_id, использует fallback по tariff_id
+    
+    ОГРАНИЧЕНИЕ:
+    - Текущая формула не учитывает разные тарифы в одной подписке (если пользователь продлевал
+      подписку разными тарифами, например: сначала на 1 день, потом на 1 месяц).
+      В этом случае используется duration_sec текущего тарифа подписки для всех платежей.
+    """
+    from app.repositories.tariff_repository import TariffRepository
+    from payments.utils.renewal_detector import DEFAULT_GRACE_PERIOD
+    
+    VIP_EXPIRES_AT = 4102434000  # 01.01.2100
+    REFERRAL_BONUS_DURATION = 30 * 24 * 3600  # 30 дней
+    now = int(time.time())
+    FREE_V2RAY_TARIFF_ID = settings.FREE_V2RAY_TARIFF_ID
+    
+    discrepancies = []
+    
+    with open_connection(db_path) as conn:
+        cursor = conn.cursor()
+        
+        # Получаем всех не VIP пользователей с активными подписками
+        cursor.execute('''
+            SELECT DISTINCT s.user_id, s.id as subscription_id, s.created_at, s.expires_at, s.tariff_id,
+                   u.is_vip, t.name as tariff_name, t.duration_sec, t.price_rub
+            FROM subscriptions s
+            JOIN users u ON s.user_id = u.user_id
+            LEFT JOIN tariffs t ON s.tariff_id = t.id
+            WHERE u.is_vip = 0 AND s.is_active = 1 AND s.expires_at < ?
+            ORDER BY s.user_id, s.created_at
+        ''', (VIP_EXPIRES_AT,))
+        
+        subscriptions = cursor.fetchall()
+        
+        for user_id, sub_id, sub_created_at, sub_expires_at, tariff_id, is_vip, tariff_name, duration_sec, price_rub in subscriptions:
+            if duration_sec is None:
+                continue
+            
+            # Получаем платежи для ЭТОЙ конкретной подписки
+            # Сначала пытаемся найти платежи с subscription_id (новые платежи)
+            cursor.execute('''
+                SELECT id, payment_id, created_at, status, amount, subscription_id, tariff_id
+                FROM payments
+                WHERE subscription_id = ?
+                  AND status = 'completed'
+                  AND protocol = 'v2ray'
+                  AND metadata LIKE '%subscription%'
+                ORDER BY created_at ASC
+            ''', (sub_id,))
+            
+            payments = cursor.fetchall()
+            
+            # Если платежей с subscription_id нет, используем fallback для старых платежей
+            # (платежи без subscription_id, но с нужным tariff_id и в временных рамках подписки)
+            if not payments:
+                # Fallback: платежи без subscription_id, но близко по времени к созданию подписки
+                # Берем платежи в диапазоне ±7 дней от created_at подписки
+                GRACE_WINDOW = 7 * 24 * 3600  # 7 дней
+                window_start = sub_created_at - GRACE_WINDOW
+                window_end = sub_expires_at + GRACE_WINDOW
+                
+                cursor.execute('''
+                    SELECT id, payment_id, created_at, status, amount, subscription_id, tariff_id
+                    FROM payments
+                    WHERE user_id = ? 
+                      AND tariff_id = ?
+                      AND status = 'completed'
+                      AND protocol = 'v2ray'
+                      AND metadata LIKE '%subscription%'
+                      AND (subscription_id IS NULL OR subscription_id = 0)
+                      AND created_at >= ?
+                      AND created_at <= ?
+                    ORDER BY created_at ASC
+                ''', (user_id, tariff_id or 4, window_start, window_end))
+                
+                payments = cursor.fetchall()
+            
+            if not payments:
+                continue
+            
+            first_payment_date = payments[0][2]
+            days_before = (sub_created_at - first_payment_date) / 86400
+            
+            # ВАЖНО: Суммируем duration_sec каждого тарифа из платежей, а не используем duration_sec подписки
+            # Это учитывает случаи, когда пользователь продлевал подписку разными тарифами
+            total_duration_sec = 0
+            tariff_repo = TariffRepository(db_path)
+            
+            for payment in payments:
+                payment_tariff_id = payment[6] if len(payment) > 6 else tariff_id
+                if payment_tariff_id:
+                    tariff_row = tariff_repo.get_tariff(payment_tariff_id)
+                    if tariff_row and tariff_row[2]:  # duration_sec
+                        total_duration_sec += tariff_row[2]
+                    elif duration_sec:  # Fallback на duration_sec подписки
+                        total_duration_sec += duration_sec
+            
+            # Правильный расчет с учетом разных тарифов
+            if days_before > 1:
+                # Подписка создана ДО платежа (возможно бесплатная) - считаем от created_at + сумма duration_sec платежей
+                calculated_expires = sub_created_at + total_duration_sec
+            else:
+                # Платеж был ДО создания подписки - считаем от первого платежа + сумма duration_sec платежей
+                calculated_expires = first_payment_date + total_duration_sec
+            
+            # Учитываем реферальные бонусы
+            cursor.execute('''
+                SELECT COUNT(*)
+                FROM referrals r
+                WHERE r.referrer_id = ?
+                  AND r.bonus_issued = 1
+                  AND EXISTS (
+                      SELECT 1 FROM payments p
+                      WHERE p.user_id = r.referred_id
+                        AND p.status = 'completed'
+                        AND p.amount > 0
+                        AND p.created_at <= ?
+                  )
+            ''', (user_id, sub_expires_at))
+            
+            bonuses_count = cursor.fetchone()[0] or 0
+            calculated_expires += (bonuses_count * REFERRAL_BONUS_DURATION)
+            
+            diff_days = (sub_expires_at - calculated_expires) / 86400
+            
+            # Учитываем только значительные расхождения (>2 дня)
+            if abs(diff_days) > 2:
+                # Не учитываем естественно истекшие подписки (если оба срока прошли)
+                is_naturally_expired = calculated_expires < now and sub_expires_at < now
+                if not is_naturally_expired or abs(diff_days) > 30:
+                    discrepancies.append({
+                        'user_id': user_id,
+                        'subscription_id': sub_id,
+                        'tariff_name': tariff_name or 'N/A',
+                        'tariff_id': tariff_id,
+                        'sub_created_at': sub_created_at,
+                        'sub_expires_at': sub_expires_at,
+                        'calculated_expires': calculated_expires,
+                        'diff_days': diff_days,
+                        'payments_count': len(payments),
+                        'first_payment_date': first_payment_date,
+                        'bonuses_count': bonuses_count,
+                        'days_before_payment': days_before,
+                        'is_expired': sub_expires_at < now,
+                        'calc_is_expired': calculated_expires < now
+                    })
+    
+    return sorted(discrepancies, key=lambda x: abs(x['diff_days']), reverse=True)
+
+
+@router.get("/subscriptions/discrepancies")
+async def subscription_discrepancies_page(request: Request):
+    """Страница расхождений подписок"""
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login")
+    
+    try:
+        log_admin_action(request, "SUBSCRIPTION_DISCREPANCIES_PAGE_ACCESS")
+        
+        discrepancies = _calculate_subscription_discrepancies(DB_PATH)
+        
+        # Форматируем данные для шаблона
+        formatted_discrepancies = []
+        for disc in discrepancies:
+            formatted_discrepancies.append({
+                'user_id': disc['user_id'],
+                'subscription_id': disc['subscription_id'],
+                'tariff_name': disc['tariff_name'],
+                'tariff_id': disc['tariff_id'],
+                'sub_created_at': _format_timestamp(disc['sub_created_at']),
+                'sub_expires_at': _format_timestamp(disc['sub_expires_at']),
+                'calculated_expires': _format_timestamp(disc['calculated_expires']),
+                'first_payment_date': _format_timestamp(disc['first_payment_date']),
+                'diff_days': disc['diff_days'],
+                'diff_days_formatted': f"{disc['diff_days']:+.1f}",
+                'payments_count': disc['payments_count'],
+                'bonuses_count': disc['bonuses_count'],
+                'days_before_payment': f"{disc['days_before_payment']:+.1f}",
+                'is_expired': disc['is_expired'],
+                'status': 'Истекла' if disc['is_expired'] else 'Активна'
+            })
+        
+        return templates.TemplateResponse("subscription_discrepancies.html", {
+            "request": request,
+            "discrepancies": formatted_discrepancies,
+            "total": len(formatted_discrepancies),
+            "csrf_token": get_csrf_token(request),
+        })
+    except Exception as e:
+        logger.error(f"Error in subscription_discrepancies_page: {e}", exc_info=True)
+        error_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Ошибка</title></head>
+        <body>
+            <h1>Ошибка при загрузке расхождений</h1>
+            <p>{str(e)}</p>
+            <p><a href="/subscriptions">Вернуться к подпискам</a></p>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=error_html, status_code=500)

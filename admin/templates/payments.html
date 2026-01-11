@@ -93,6 +93,7 @@
                     <th>ID</th>
                     <th>Провайдер</th>
                     <th>Тариф</th>
+                    <th>Подписка</th>
                     <th>Пользователь</th>
                     <th>Сумма</th>
                     <th>Создан</th>
@@ -115,6 +116,17 @@
                     </td>
                     <td>
                         <div class="cell-primary">#{{ p.tariff_id or '—' }}</div>
+                    </td>
+                    <td>
+                        {% if p.subscription_id %}
+                            <div class="cell-primary">
+                                <a href="/subscriptions?q={{ p.subscription_id }}&page=1" class="link-plain" title="Открыть подписку #{{ p.subscription_id }}">
+                                    #{{ p.subscription_id }}
+                                </a>
+                            </div>
+                        {% else %}
+                            <div class="cell-primary text-muted">—</div>
+                        {% endif %}
                     </td>
                     <td>
                         {% if p.user_id %}

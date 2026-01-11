@@ -50,7 +50,8 @@ class PaymentRepository:
                     created_at INTEGER,
                     updated_at INTEGER,
                     paid_at INTEGER,
-                    metadata TEXT
+                    metadata TEXT,
+                    subscription_id INTEGER
                 )
                 """
             )
@@ -74,6 +75,7 @@ class PaymentRepository:
                     ("updated_at", "INTEGER"),
                     ("paid_at", "INTEGER"),
                     ("metadata", "TEXT"),
+                    ("subscription_id", "INTEGER"),
                 ]
 
                 for name, decl in required_columns:
@@ -91,6 +93,7 @@ class PaymentRepository:
                     ("CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id)", "user_id"),
                     ("CREATE INDEX IF NOT EXISTS idx_payments_tariff_id ON payments(tariff_id)", "tariff_id"),
                     ("CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status)", "user_status"),
+                    ("CREATE INDEX IF NOT EXISTS idx_payments_subscription_id ON payments(subscription_id)", "subscription_id"),
                 ]
                 for index_sql, index_name in indexes:
                     try:
@@ -187,20 +190,33 @@ class PaymentRepository:
                         created_at=safe_timestamp(row[13]) if len(row) > 13 else None,
                         updated_at=safe_timestamp(row[14]) if len(row) > 14 else None,
                         paid_at=safe_timestamp(row[15]) if len(row) > 15 else None,
-                        metadata=safe_metadata(row[16]) if len(row) > 16 else {}
+                        metadata=safe_metadata(row[16]) if len(row) > 16 else {},
+                        subscription_id=row[17] if len(row) > 17 else None
                     )
 
             # Вариант 2: "наследуемая схема db.py" — столбцы исходной таблицы + добавленные ALTER TABLE
             # Фактический порядок (см. PRAGMA table_info):
             # 0 id | 1 user_id | 2 tariff_id | 3 payment_id | 4 status | 5 email | 6 revoked | 7 protocol |
             # 8 amount | 9 created_at | 10 country | 11 currency | 12 provider | 13 method | 14 description |
-            # 15 updated_at | 16 paid_at | 17 metadata
+            # 15 updated_at | 16 paid_at | 17 metadata | 18 crypto_invoice_id | 19 crypto_amount | 20 crypto_currency |
+            # 21 crypto_network | 22 crypto_tx_hash | 23 subscription_id
             if len(row) >= 14:
                 # row[3] должен быть строкой платежа (обычно содержит '-')
                 looks_like_payment_id = isinstance(row[3], str) and ('-' in row[3] or len(row[3]) >= 12)
                 looks_like_user_id = isinstance(row[1], (int,)) or (isinstance(row[1], str) and row[1].isdigit())
                 looks_like_tariff_id = isinstance(row[2], (int,)) or (isinstance(row[2], str) and row[2].isdigit())
                 if looks_like_payment_id and looks_like_user_id and looks_like_tariff_id:
+                    # Определяем позицию subscription_id
+                    # Если есть crypto колонки (24 колонки), subscription_id на позиции 23
+                    # Если нет crypto колонок, subscription_id на позиции 18
+                    subscription_id_value = None
+                    if len(row) > 23:
+                        # Таблица с crypto колонками: subscription_id на позиции 23
+                        subscription_id_value = row[23]
+                    elif len(row) > 18:
+                        # Таблица без crypto колонок: subscription_id на позиции 18
+                        subscription_id_value = row[18]
+                    
                     return Payment(
                         id=row[0],
                         user_id=int(row[1]) if row[1] is not None else 0,
@@ -218,10 +234,26 @@ class PaymentRepository:
                         description=row[14] if len(row) > 14 else None,
                         updated_at=safe_timestamp(row[15]) if len(row) > 15 else None,
                         paid_at=safe_timestamp(row[16]) if len(row) > 16 else None,
-                        metadata=safe_metadata(row[17]) if len(row) > 17 else {}
+                        metadata=safe_metadata(row[17]) if len(row) > 17 else {},
+                        subscription_id=subscription_id_value
                     )
             
             # Вариант 3: Современная таблица, созданная платежным модулем (ожидаемый порядок полей)
+            # Также обрабатываем случай, когда таблица была расширена crypto колонками и subscription_id
+            
+            # Находим subscription_id - он может быть на разных позициях в зависимости от схемы
+            # Стандартная позиция: 17 (после metadata)
+            # Если есть crypto колонки: 23 (после crypto колонок)
+            subscription_id_value = None
+            if len(row) > 23:
+                # Таблица с crypto колонками: subscription_id на позиции 23
+                subscription_id_value = row[23]
+            elif len(row) > 17:
+                # Стандартная таблица: subscription_id на позиции 17
+                subscription_id_value = row[17]
+            else:
+                subscription_id_value = None
+            
             return Payment(
                 id=row[0],
                 payment_id=row[1],
@@ -239,7 +271,8 @@ class PaymentRepository:
                 created_at=safe_timestamp(row[13]),
                 updated_at=safe_timestamp(row[14]),
                 paid_at=safe_timestamp(row[15]),
-                metadata=safe_metadata(row[16])
+                metadata=safe_metadata(row[16]),
+                subscription_id=subscription_id_value
             )
         except Exception as e:
             logger.error(f"Error creating Payment from row: {e}, row: {row}")
@@ -332,7 +365,8 @@ class PaymentRepository:
             int(payment.created_at.timestamp()) if payment.created_at else None,
             int(payment.updated_at.timestamp()) if payment.updated_at else None,
             int(payment.paid_at.timestamp()) if payment.paid_at else None,
-            json.dumps(payment.metadata, ensure_ascii=False) if payment.metadata else None
+            json.dumps(payment.metadata, ensure_ascii=False) if payment.metadata else None,
+            payment.subscription_id
         )
     
     async def create(self, payment: Payment) -> Payment:
@@ -346,8 +380,8 @@ class PaymentRepository:
                         INSERT INTO payments (
                             payment_id, user_id, tariff_id, amount, currency, email, 
                             status, country, protocol, provider, method, description,
-                            created_at, updated_at, paid_at, metadata
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            created_at, updated_at, paid_at, metadata, subscription_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         self._payment_to_row(payment),
                     )
@@ -424,7 +458,7 @@ class PaymentRepository:
                         user_id = ?, tariff_id = ?, amount = ?, currency = ?, 
                         email = ?, status = ?, country = ?, protocol = ?, 
                         provider = ?, method = ?, description = ?, 
-                        created_at = ?, updated_at = ?, paid_at = ?, metadata = ?
+                        created_at = ?, updated_at = ?, paid_at = ?, metadata = ?, subscription_id = ?
                     WHERE payment_id = ?
                 """, update_data)
                 
@@ -458,6 +492,25 @@ class PaymentRepository:
                 
         except Exception as e:
             logger.error(f"Error updating payment status: {e}")
+            return False
+    
+    async def update_subscription_id(self, payment_id: str, subscription_id: int) -> bool:
+        """Обновление subscription_id платежа"""
+        try:
+            async with open_async_connection(self.db_path) as conn:
+                cursor = await conn.execute(
+                    "UPDATE payments SET subscription_id = ?, updated_at = ? WHERE payment_id = ?",
+                    (subscription_id, int(datetime.now(timezone.utc).timestamp()), payment_id)
+                )
+                await conn.commit()
+                
+                success = cursor.rowcount > 0
+                if success:
+                    logger.info(f"Payment subscription_id updated: {payment_id} -> subscription_id={subscription_id}")
+                return success
+                
+        except Exception as e:
+            logger.error(f"Error updating payment subscription_id: {e}")
             return False
     
     async def try_update_status(self, payment_id: str, new_status: PaymentStatus, expected_status: PaymentStatus) -> bool:
