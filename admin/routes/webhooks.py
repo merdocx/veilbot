@@ -234,7 +234,6 @@ async def cryptobot_webhook(request: Request):
                 user_id, tariff_id, country, protocol, email, metadata_json, current_status = payment_row
                 
                 # Парсим metadata (поддерживаем JSON и Python dict строки для совместимости)
-                import json
                 metadata = {}
                 if metadata_json:
                     try:
