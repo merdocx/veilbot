@@ -233,14 +233,26 @@ async def cryptobot_webhook(request: Request):
                 
                 user_id, tariff_id, country, protocol, email, metadata_json, current_status = payment_row
                 
-                # Парсим metadata
+                # Парсим metadata (поддерживаем JSON и Python dict строки для совместимости)
                 import json
                 metadata = {}
                 if metadata_json:
                     try:
-                        metadata = json.loads(metadata_json) if isinstance(metadata_json, str) else metadata_json
+                        if isinstance(metadata_json, str):
+                            # Пробуем JSON
+                            metadata = json.loads(metadata_json)
+                        else:
+                            metadata = metadata_json
                     except Exception:
-                        metadata = {}
+                        # Если не JSON, пробуем как Python dict строку
+                        try:
+                            if isinstance(metadata_json, str) and metadata_json.strip().startswith('{'):
+                                import ast
+                                metadata = ast.literal_eval(metadata_json)
+                                if not isinstance(metadata, dict):
+                                    metadata = {}
+                        except Exception:
+                            metadata = {}
                 
                 # Обновляем статус платежа на 'paid', если он еще 'pending'
                 if current_status == 'pending':
