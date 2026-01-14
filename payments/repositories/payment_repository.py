@@ -128,11 +128,25 @@ class PaymentRepository:
                 if isinstance(value, dict):
                     return value
                 if isinstance(value, str):
+                    # Пробуем парсить как JSON
                     try:
                         return json.loads(value)
                     except (json.JSONDecodeError, ValueError, TypeError):
-                        # Если не JSON, логируем предупреждение и возвращаем пустой dict
-                        logger.warning(f"Invalid JSON metadata format, returning empty dict: {value[:100] if len(value) > 100 else value}")
+                        # Если не JSON, пробуем как Python dict строку (eval с осторожностью)
+                        try:
+                            # Проверяем, что это действительно dict-подобная строка
+                            value_stripped = value.strip()
+                            if value_stripped.startswith('{') and value_stripped.endswith('}'):
+                                # Используем ast.literal_eval для безопасного парсинга Python литералов
+                                import ast
+                                result = ast.literal_eval(value)
+                                if isinstance(result, dict):
+                                    return result
+                        except Exception:
+                            pass
+                        # Логируем предупреждение только если это не похоже на Python dict
+                        if not (value.strip().startswith('{') and value.strip().endswith('}')):
+                            logger.warning(f"Invalid metadata format, returning empty dict: {value[:100] if len(value) > 100 else value}")
                         return {}
                 # Для других типов пытаемся преобразовать в dict
                 try:
@@ -167,112 +181,45 @@ class PaymentRepository:
                 except Exception:
                     return PaymentProvider.YOOKASSA
             
-            # Вариант 1: "перепутанные поля" (очень старый формат)
-            # В старых платежах: user_id содержит payment_id, tariff_id содержит user_id, payment_id содержит tariff_id
-            if len(row) >= 4:
-                user_id_value = str(row[2]) if row[2] else ""
-                payment_id_value = str(row[1]) if row[1] else ""
-                if (len(user_id_value) > 20 and '-' in user_id_value and payment_id_value.isdigit() and len(payment_id_value) < 20):
-                    return Payment(
-                        id=row[0],
-                        payment_id=row[2],
-                        user_id=row[3],
-                        tariff_id=row[1],
-                        amount=row[4] if len(row) > 4 else 0,
-                        currency=row[5] if len(row) > 5 and row[5] else 'RUB',
-                        email=row[6] if len(row) > 6 else None,
-                        status=safe_status(row[7] if len(row) > 7 and row[7] else 'pending'),
-                        country=row[8] if len(row) > 8 else None,
-                        protocol=row[9] if len(row) > 9 and row[9] else 'outline',
-                        provider=safe_provider(row[10] if len(row) > 10 and row[10] else 'yookassa'),
-                        method=row[11] if len(row) > 11 else None,
-                        description=row[12] if len(row) > 12 else None,
-                        created_at=safe_timestamp(row[13]) if len(row) > 13 else None,
-                        updated_at=safe_timestamp(row[14]) if len(row) > 14 else None,
-                        paid_at=safe_timestamp(row[15]) if len(row) > 15 else None,
-                        metadata=safe_metadata(row[16]) if len(row) > 16 else {},
-                        subscription_id=row[17] if len(row) > 17 else None
-                    )
-
-            # Вариант 2: "наследуемая схема db.py" — столбцы исходной таблицы + добавленные ALTER TABLE
-            # Фактический порядок (см. PRAGMA table_info):
+            # Каноническая схема (после нормализации данных):
             # 0 id | 1 user_id | 2 tariff_id | 3 payment_id | 4 status | 5 email | 6 revoked | 7 protocol |
             # 8 amount | 9 created_at | 10 country | 11 currency | 12 provider | 13 method | 14 description |
-            # 15 updated_at | 16 paid_at | 17 metadata | 18 crypto_invoice_id | 19 crypto_amount | 20 crypto_currency |
-            # 21 crypto_network | 22 crypto_tx_hash | 23 subscription_id
-            if len(row) >= 14:
-                # row[3] должен быть строкой платежа (обычно содержит '-')
-                looks_like_payment_id = isinstance(row[3], str) and ('-' in row[3] or len(row[3]) >= 12)
-                looks_like_user_id = isinstance(row[1], (int,)) or (isinstance(row[1], str) and row[1].isdigit())
-                looks_like_tariff_id = isinstance(row[2], (int,)) or (isinstance(row[2], str) and row[2].isdigit())
-                if looks_like_payment_id and looks_like_user_id and looks_like_tariff_id:
-                    # Определяем позицию subscription_id
-                    # Если есть crypto колонки (24 колонки), subscription_id на позиции 23
-                    # Если нет crypto колонок, subscription_id на позиции 18
-                    subscription_id_value = None
-                    if len(row) > 23:
-                        # Таблица с crypto колонками: subscription_id на позиции 23
-                        subscription_id_value = row[23]
-                    elif len(row) > 18:
-                        # Таблица без crypto колонок: subscription_id на позиции 18
-                        subscription_id_value = row[18]
-                    
-                    return Payment(
-                        id=row[0],
-                        user_id=int(row[1]) if row[1] is not None else 0,
-                        tariff_id=int(row[2]) if row[2] is not None else 0,
-                        payment_id=row[3],
-                        status=safe_status(row[4] if row[4] else 'pending'),
-                        email=row[5],
-                        protocol=row[7] if len(row) > 7 and row[7] else 'outline',
-                        amount=row[8] if len(row) > 8 and row[8] is not None else 0,
-                        created_at=safe_timestamp(row[9]) if len(row) > 9 else None,
-                        country=row[10] if len(row) > 10 else None,
-                        currency=row[11] if len(row) > 11 and row[11] else 'RUB',
-                        provider=safe_provider(row[12] if len(row) > 12 and row[12] else 'yookassa'),
-                        method=row[13] if len(row) > 13 else None,
-                        description=row[14] if len(row) > 14 else None,
-                        updated_at=safe_timestamp(row[15]) if len(row) > 15 else None,
-                        paid_at=safe_timestamp(row[16]) if len(row) > 16 else None,
-                        metadata=safe_metadata(row[17]) if len(row) > 17 else {},
-                        subscription_id=subscription_id_value
-                    )
-            
-            # Вариант 3: Современная таблица, созданная платежным модулем (ожидаемый порядок полей)
-            # Также обрабатываем случай, когда таблица была расширена crypto колонками и subscription_id
-            
-            # Находим subscription_id - он может быть на разных позициях в зависимости от схемы
-            # Стандартная позиция: 17 (после metadata)
-            # Если есть crypto колонки: 23 (после crypto колонок)
+            # 15 updated_at | 16 paid_at | 17 metadata | [18..22 crypto_* optional] | subscription_id
+            #
+            # Поддерживаем два варианта длины:
+            # - >= 24: есть crypto_* и subscription_id на позиции 23
+            # - >= 18: без crypto_*, subscription_id на позиции 18 (после metadata)
+            if len(row) < 17:
+                raise ValueError(f"Unexpected payments row length: {len(row)}")
+
+            # subscription_id position
             subscription_id_value = None
-            if len(row) > 23:
-                # Таблица с crypto колонками: subscription_id на позиции 23
+            if len(row) >= 24:
                 subscription_id_value = row[23]
-            elif len(row) > 17:
-                # Стандартная таблица: subscription_id на позиции 17
-                subscription_id_value = row[17]
+            elif len(row) >= 19:
+                subscription_id_value = row[18]
             else:
                 subscription_id_value = None
-            
+
             return Payment(
                 id=row[0],
-                payment_id=row[1],
-                user_id=row[2],
-                tariff_id=row[3],
-                amount=row[4],
-                currency=row[5] if row[5] else 'RUB',
-                email=row[6],
-                status=safe_status(row[7] if row[7] else 'pending'),
-                country=row[8],
-                protocol=row[9] if row[9] else 'outline',
-                provider=safe_provider(row[10] if row[10] else 'yookassa'),
-                method=row[11],
-                description=row[12],
-                created_at=safe_timestamp(row[13]),
-                updated_at=safe_timestamp(row[14]),
-                paid_at=safe_timestamp(row[15]),
-                metadata=safe_metadata(row[16]),
-                subscription_id=subscription_id_value
+                user_id=int(row[1]) if row[1] is not None else 0,
+                tariff_id=int(row[2]) if row[2] is not None else 0,
+                payment_id=str(row[3]) if row[3] is not None else "",
+                status=safe_status(row[4] if len(row) > 4 and row[4] else "pending"),
+                email=row[5] if len(row) > 5 else None,
+                protocol=row[7] if len(row) > 7 and row[7] else "outline",
+                amount=int(row[8]) if len(row) > 8 and row[8] is not None else 0,
+                created_at=safe_timestamp(row[9]) if len(row) > 9 else None,
+                country=row[10] if len(row) > 10 else None,
+                currency=row[11] if len(row) > 11 and row[11] else "RUB",
+                provider=safe_provider(row[12] if len(row) > 12 and row[12] else "yookassa"),
+                method=row[13] if len(row) > 13 else None,
+                description=row[14] if len(row) > 14 else None,
+                updated_at=safe_timestamp(row[15]) if len(row) > 15 else None,
+                paid_at=safe_timestamp(row[16]) if len(row) > 16 else None,
+                metadata=safe_metadata(row[17]) if len(row) > 17 else {},
+                subscription_id=subscription_id_value,
             )
         except Exception as e:
             logger.error(f"Error creating Payment from row: {e}, row: {row}")
@@ -915,18 +862,37 @@ class PaymentRepository:
                 ) as cursor:
                     paid_count = (await cursor.fetchone())[0] or 0
                 
-                # Общая сумма по completed платежам
+                # Общая сумма по completed платежам (разбивка по валюте)
                 async with conn.execute(
-                    "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = ?",
-                    (PaymentStatus.COMPLETED.value,)
+                    """
+                    SELECT currency, COALESCE(SUM(amount), 0) AS total
+                    FROM payments
+                    WHERE status = ?
+                    GROUP BY currency
+                    """,
+                    (PaymentStatus.COMPLETED.value,),
                 ) as cursor:
-                    completed_total = (await cursor.fetchone())[0] or 0
+                    rows = await cursor.fetchall()
+
+                totals_by_currency: Dict[str, int] = {}
+                for cur_code, total in rows or []:
+                    key = (cur_code or "RUB")
+                    try:
+                        totals_by_currency[str(key)] = int(total or 0)
+                    except Exception:
+                        totals_by_currency[str(key)] = 0
+
+                completed_total_rub = totals_by_currency.get("RUB", 0)
+                completed_total_usd = totals_by_currency.get("USD", 0)
                 
                 return {
                     "total_count": total_count,
                     "pending_count": pending_count,
                     "paid_count": paid_count,
-                    "completed_total_amount": completed_total,
+                    # legacy key (RUB) for backward compatibility
+                    "completed_total_amount": completed_total_rub,
+                    "completed_total_amount_rub": completed_total_rub,
+                    "completed_total_amount_usd": completed_total_usd,
                 }
                 
         except Exception as e:
@@ -936,4 +902,6 @@ class PaymentRepository:
                 "pending_count": 0,
                 "paid_count": 0,
                 "completed_total_amount": 0,
+                "completed_total_amount_rub": 0,
+                "completed_total_amount_usd": 0,
             }

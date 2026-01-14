@@ -204,14 +204,14 @@ async def cryptobot_webhook(request: Request):
                 return JSONResponse({"status": "error", "reason": "no invoice_id"}, status_code=400)
             
             try:
-                # Получаем платеж из БД
+                # Получаем платеж из БД (проверяем и pending, и paid статусы)
                 from payments.config import get_payment_service
                 payment_service = get_payment_service()
                 
                 with open_connection(DB_PATH) as conn:
                     c = conn.cursor()
                     c.execute(
-                        "SELECT user_id, tariff_id, country, protocol, email FROM payments WHERE payment_id = ? AND status = 'pending'",
+                        "SELECT user_id, tariff_id, country, protocol, email, metadata, status FROM payments WHERE payment_id = ? AND status IN ('pending', 'paid')",
                         (str(invoice_id),)
                     )
                     payment_row = c.fetchone()
@@ -231,17 +231,61 @@ async def cryptobot_webhook(request: Request):
                         pass
                     return JSONResponse({"status": "ok", "processed": False})  # Возвращаем 200 чтобы CryptoBot не повторял
                 
-                user_id, tariff_id, country, protocol, email = payment_row
+                user_id, tariff_id, country, protocol, email, metadata_json, current_status = payment_row
                 
-                # Обновляем статус платежа
-                with open_connection(DB_PATH) as conn:
-                    c = conn.cursor()
-                    c.execute(
-                        "UPDATE payments SET status = 'paid', paid_at = strftime('%s','now') WHERE payment_id = ?",
-                        (str(invoice_id),)
-                    )
-                    conn.commit()
+                # Парсим metadata
+                import json
+                metadata = {}
+                if metadata_json:
+                    try:
+                        metadata = json.loads(metadata_json) if isinstance(metadata_json, str) else metadata_json
+                    except Exception:
+                        metadata = {}
                 
+                # Обновляем статус платежа на 'paid', если он еще 'pending'
+                if current_status == 'pending':
+                    with open_connection(DB_PATH) as conn:
+                        c = conn.cursor()
+                        c.execute(
+                            "UPDATE payments SET status = 'paid', paid_at = strftime('%s','now') WHERE payment_id = ?",
+                            (str(invoice_id),)
+                        )
+                        conn.commit()
+                
+                # Проверяем, это подписка или обычный ключ
+                key_type = metadata.get('key_type') if metadata else None
+                is_subscription = key_type == 'subscription' and protocol == 'v2ray'
+                
+                if is_subscription:
+                    # Обрабатываем подписку через SubscriptionPurchaseService
+                    from payments.services.subscription_purchase_service import SubscriptionPurchaseService
+                    
+                    subscription_service = SubscriptionPurchaseService()
+                    success, error_msg = await subscription_service.process_subscription_purchase(str(invoice_id))
+                    
+                    if success:
+                        logging.info(f"[CRYPTOBOT_WEBHOOK] Subscription purchase processed successfully for payment {invoice_id} via webhook")
+                    else:
+                        logging.error(
+                            f"[CRYPTOBOT_WEBHOOK] CRITICAL: Failed to process subscription purchase for payment {invoice_id} via webhook: {error_msg}. "
+                            f"Will retry on next webhook or status check."
+                        )
+                    
+                    # Обновляем лог как успешный
+                    try:
+                        with open_connection(DB_PATH) as conn:
+                            c = conn.cursor()
+                            c.execute(
+                                "UPDATE webhook_logs SET result = 'ok' WHERE provider = 'cryptobot' AND event = ? AND created_at = (SELECT MAX(created_at) FROM webhook_logs WHERE provider = 'cryptobot')",
+                                (str(update_type),)
+                            )
+                            conn.commit()
+                    except Exception:
+                        pass
+                    
+                    return JSONResponse({"status": "ok"})
+                
+                # Обрабатываем обычный ключ (старый код)
                 # Получаем данные тарифа
                 with open_connection(DB_PATH) as conn:
                     c = conn.cursor()

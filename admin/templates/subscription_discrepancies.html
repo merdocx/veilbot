@@ -19,6 +19,7 @@
     </div>
     <div class="card-body">
         <p>Эта страница показывает подписки, у которых реальный срок действия отличается от расчетного.</p>
+        <p><strong>Важно:</strong> Показываются только подписки с расхождением более <strong>2 дней</strong>. Подписки с меньшими расхождениями считаются корректными и не отображаются.</p>
         <p><strong>Формула расчета:</strong></p>
         <ul>
             <li>Если подписка создана ДО первого платежа: <code>created_at + сумма(duration_sec всех платежей)</code></li>
@@ -39,8 +40,16 @@
 <!-- Discrepancies Table -->
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">Список расхождений</h2>
-        <p class="card-subtitle">Подписки с некорректными сроками действия</p>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h2 class="card-title">Список расхождений</h2>
+                <p class="card-subtitle">Подписки с некорректными сроками действия</p>
+            </div>
+            <button type="button" id="refresh-btn" class="btn btn-primary" title="Обновить данные" style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons icon-small" id="refresh-icon">refresh</span>
+                <span id="refresh-text">Обновить</span>
+            </button>
+        </div>
     </div>
 
     <!-- Table -->
@@ -168,5 +177,66 @@
     color: #666;
     margin-top: 2px;
 }
+
+#refresh-btn {
+    transition: all 0.3s ease;
+}
+
+#refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#refresh-icon.refreshing {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
 </style>
+
+<script>
+(function() {
+    'use strict';
+    
+    function initRefreshButton() {
+        const refreshBtn = document.getElementById('refresh-btn');
+        const refreshIcon = document.getElementById('refresh-icon');
+        const refreshText = document.getElementById('refresh-text');
+        
+        if (!refreshBtn || !refreshIcon || !refreshText) {
+            console.warn('Refresh button elements not found');
+            return;
+        }
+        
+        refreshBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // Блокируем кнопку и показываем анимацию
+            refreshBtn.disabled = true;
+            refreshIcon.classList.add('refreshing');
+            refreshText.textContent = 'Обновление...';
+            
+            // Перезагружаем страницу с принудительным обновлением кэша
+            setTimeout(function() {
+                window.location.href = window.location.href.split('?')[0] + '?refresh=' + Date.now();
+            }, 100);
+        });
+    }
+    
+    // Инициализация при загрузке DOM
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initRefreshButton);
+    } else {
+        initRefreshButton();
+    }
+})();
+</script>
 {% endblock %}

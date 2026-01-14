@@ -813,27 +813,32 @@ body {
 
 #payments-table th:nth-child(4),
 #payments-table td:nth-child(4) { 
-    width: 24%;
+    width: 8%;
 }
 
 #payments-table th:nth-child(5),
 #payments-table td:nth-child(5) { 
-    width: 12%;
+    width: 16%;
 }
 
 #payments-table th:nth-child(6),
 #payments-table td:nth-child(6) { 
-    width: 18%;
+    width: 10%;
 }
 
 #payments-table th:nth-child(7),
 #payments-table td:nth-child(7) { 
-    width: 10%;
+    width: 12%;
 }
 
 #payments-table th:nth-child(8),
 #payments-table td:nth-child(8) { 
     width: 10%;
+}
+
+#payments-table th:nth-child(9),
+#payments-table td:nth-child(9) { 
+    width: 18%;
 }
 
 #tariffs-table {

@@ -146,6 +146,8 @@ async def payments_page(
     pending_count_all = stats["pending_count"]
     paid_count_all = stats["paid_count"]
     completed_total_amount = stats["completed_total_amount"]
+    completed_total_amount_rub = stats.get("completed_total_amount_rub", completed_total_amount)
+    completed_total_amount_usd = stats.get("completed_total_amount_usd", 0)
 
     # Быстрая статистика для заголовка
     try:
@@ -203,6 +205,8 @@ async def payments_page(
             "pending_count_all": pending_count_all,
             "paid_count_all": paid_count_all,
             "completed_total_amount": completed_total_amount,
+            "completed_total_amount_rub": completed_total_amount_rub,
+            "completed_total_amount_usd": completed_total_amount_usd,
             "email": email or "",
             "user_id": user_id or "",
             "payment_id": payment_id or "",

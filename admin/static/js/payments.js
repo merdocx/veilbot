@@ -131,6 +131,50 @@ const initPaymentsPage = () => {
         });
     });
 
+    // Обработчик фильтра по статусу
+    const statusFilter = document.getElementById('status-filter');
+    const searchForm = document.getElementById('search-form');
+    if (statusFilter && searchForm) {
+        statusFilter.addEventListener('change', () => {
+            // Сбрасываем страницу на 1 при изменении фильтра
+            const pageInput = document.getElementById('search-page-input');
+            if (pageInput) {
+                pageInput.value = '1';
+            }
+            // Отправляем форму
+            if (typeof searchForm.requestSubmit === 'function') {
+                searchForm.requestSubmit();
+            } else {
+                searchForm.submit();
+            }
+        });
+    }
+
+    // Обновляем кнопку сброса, чтобы она сбрасывала и статус
+    const resetBtn = document.getElementById('reset-search-btn');
+    if (resetBtn && searchForm) {
+        resetBtn.addEventListener('click', () => {
+            // Сбрасываем все поля формы
+            const searchInput = document.getElementById('global-search');
+            if (searchInput) {
+                searchInput.value = '';
+            }
+            if (statusFilter) {
+                statusFilter.value = '';
+            }
+            const pageInput = document.getElementById('search-page-input');
+            if (pageInput) {
+                pageInput.value = '1';
+            }
+            // Отправляем форму
+            if (typeof searchForm.requestSubmit === 'function') {
+                searchForm.requestSubmit();
+            } else {
+                searchForm.submit();
+            }
+        });
+    }
+
     initStatusFilters();
 
     // Инициализируем live-поиск
