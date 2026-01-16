@@ -28,6 +28,7 @@ from bot.services.background_tasks import (
     check_key_availability,
     process_pending_paid_payments,
     monitor_subscription_traffic_limits,
+    fix_payments_without_subscription_id,
 )
 
 # Импортируем функции и переменные из bot.py
@@ -164,6 +165,7 @@ def start_background_tasks(loop):
         retry_failed_subscription_notifications,
         sync_subscription_keys_with_active_servers,
         cleanup_expired_payments,
+        fix_payments_without_subscription_id,
     )
     
     background_tasks = [
@@ -176,6 +178,7 @@ def start_background_tasks(loop):
         retry_failed_subscription_notifications(),
         sync_subscription_keys_with_active_servers(),
         cleanup_expired_payments(),
+        fix_payments_without_subscription_id(),
     ]
     
     for task in background_tasks:

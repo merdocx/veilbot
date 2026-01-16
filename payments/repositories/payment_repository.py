@@ -442,8 +442,20 @@ class PaymentRepository:
             return False
     
     async def update_subscription_id(self, payment_id: str, subscription_id: int) -> bool:
-        """Обновление subscription_id платежа"""
-        try:
+        """
+        Обновление subscription_id платежа с retry механизмом
+        
+        Использует retry механизм для обработки ошибок "database is locked"
+        и других временных ошибок БД.
+        
+        Args:
+            payment_id: ID платежа
+            subscription_id: ID подписки
+            
+        Returns:
+            True если subscription_id успешно обновлен, False в противном случае
+        """
+        async def _update_operation():
             async with open_async_connection(self.db_path) as conn:
                 cursor = await conn.execute(
                     "UPDATE payments SET subscription_id = ?, updated_at = ? WHERE payment_id = ?",
@@ -454,10 +466,24 @@ class PaymentRepository:
                 success = cursor.rowcount > 0
                 if success:
                     logger.info(f"Payment subscription_id updated: {payment_id} -> subscription_id={subscription_id}")
+                else:
+                    logger.warning(f"Payment subscription_id update: no rows affected for payment_id={payment_id}")
                 return success
-                
+        
+        try:
+            return await retry_async_db_operation(
+                _update_operation,
+                max_attempts=3,
+                initial_delay=0.1,
+                operation_name="update_subscription_id",
+                operation_context={"payment_id": payment_id, "subscription_id": subscription_id}
+            )
         except Exception as e:
-            logger.error(f"Error updating payment subscription_id: {e}")
+            logger.error(
+                f"Error updating payment subscription_id after retries: {e}. "
+                f"Payment ID: {payment_id}, Subscription ID: {subscription_id}",
+                exc_info=True
+            )
             return False
     
     async def try_update_status(self, payment_id: str, new_status: PaymentStatus, expected_status: PaymentStatus) -> bool:

@@ -90,6 +90,14 @@ class SubscriptionPurchaseService:
                 logger.warning(f"[SUBSCRIPTION] {error_msg}")
                 return False, error_msg
             
+            # УЛУЧШЕНИЕ ИДЕМПОТЕНТНОСТИ: Дополнительная атомарная проверка статуса перед обработкой
+            # Это предотвращает двойную обработку, если платеж уже обрабатывается другим процессом
+            # Дополнительная защита: проверяем, не обрабатывается ли платеж прямо сейчас
+            payment_status_check = await self.payment_repo.get_by_payment_id(payment_id)
+            if payment_status_check and payment_status_check.status == PaymentStatus.COMPLETED:
+                logger.info(f"[SUBSCRIPTION] Payment {payment_id} was completed by another process (race condition detected), skipping")
+                return True, None
+            
             # Шаг 4: Получаем тариф
             tariff_row = self.tariff_repo.get_tariff(payment.tariff_id)
             if not tariff_row:
@@ -886,14 +894,18 @@ class SubscriptionPurchaseService:
             
             # Шаг 6: Обновляем subscription_id в платеже (если еще не обновлен)
             # ВАЖНО: Это нужно делать и для покупки, и для продления
-            try:
-                await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
+            # УЛУЧШЕНИЕ: update_subscription_id теперь использует retry механизм
+            subscription_id_updated = await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
+            if subscription_id_updated:
                 logger.info(f"[SUBSCRIPTION] Updated payment {payment.payment_id} subscription_id to {subscription_id}")
-            except Exception as sub_id_error:
-                logger.warning(
-                    f"[SUBSCRIPTION] Failed to update subscription_id for payment {payment.payment_id}: {sub_id_error}. "
-                    f"Continuing with payment status update."
+            else:
+                logger.error(
+                    f"[SUBSCRIPTION] CRITICAL: Failed to update subscription_id for payment {payment.payment_id} "
+                    f"after retries. Payment will remain without subscription_id. "
+                    f"This should be fixed by monitoring task."
                 )
+                # Не прерываем выполнение, так как основная обработка завершена
+                # Мониторинговая задача исправит это позже
             
             # Шаг 6.5: Уведомление успешно отправлено - помечаем платеж как completed
             # ВАЖНО: mark_purchase_notification_sent вызываем ТОЛЬКО для покупки (is_purchase=True)

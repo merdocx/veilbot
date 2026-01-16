@@ -1410,6 +1410,153 @@ async def retry_failed_subscription_notifications() -> None:
     )
 
 
+async def fix_payments_without_subscription_id() -> None:
+    """
+    Мониторинг и исправление платежей без subscription_id
+    
+    Эта задача периодически проверяет completed платежи за подписки, которые не имеют subscription_id,
+    и пытается исправить это, привязывая платежи к соответствующим подпискам.
+    
+    Это решает проблему, когда update_subscription_id завершился с ошибкой или был вызван
+    до добавления этого вызова в код.
+    """
+    
+    async def job() -> None:
+        try:
+            from payments.repositories.payment_repository import PaymentRepository
+            from app.repositories.subscription_repository import SubscriptionRepository
+            from app.settings import settings as app_settings
+            from payments.models.payment import PaymentStatus
+            
+            payment_repo = PaymentRepository(app_settings.DATABASE_PATH)
+            subscription_repo = SubscriptionRepository(app_settings.DATABASE_PATH)
+            
+            # Получаем все completed платежи за подписки без subscription_id
+            # Используем прямой SQL запрос для эффективности
+            from app.infra.sqlite_utils import open_async_connection
+            
+            async with open_async_connection(app_settings.DATABASE_PATH) as conn:
+                async with conn.execute(
+                    """
+                    SELECT p.id, p.payment_id, p.user_id, p.tariff_id, p.created_at, p.updated_at
+                    FROM payments p
+                    WHERE p.status = 'completed'
+                    AND p.subscription_id IS NULL
+                    AND p.protocol = 'v2ray'
+                    AND p.metadata LIKE '%subscription%'
+                    AND p.created_at > ?  -- Только платежи за последние 90 дней
+                    ORDER BY p.created_at DESC
+                    LIMIT 50  -- Обрабатываем максимум 50 платежей за раз
+                    """,
+                    (int(time.time()) - 90 * 24 * 3600,)
+                ) as cursor:
+                    payments_without_sub = await cursor.fetchall()
+            
+            if not payments_without_sub:
+                return
+            
+            logger.info(f"[FIX_SUBSCRIPTION_ID] Found {len(payments_without_sub)} completed payments without subscription_id")
+            
+            fixed_count = 0
+            failed_count = 0
+            
+            for payment_row in payments_without_sub:
+                payment_id_db = payment_row[0]
+                payment_id = payment_row[1]
+                user_id = payment_row[2]
+                tariff_id = payment_row[3]
+                payment_created_at = payment_row[4]
+                
+                try:
+                    # Ищем активную подписку для этого пользователя и тарифа
+                    # Проверяем подписки, созданные до или в момент обработки платежа
+                    grace_period = 24 * 3600  # 24 часа
+                    grace_threshold = payment_created_at - grace_period
+                    
+                    async with open_async_connection(app_settings.DATABASE_PATH) as conn:
+                        async with conn.execute(
+                            """
+                            SELECT id, created_at, expires_at
+                            FROM subscriptions
+                            WHERE user_id = ?
+                            AND tariff_id = ?
+                            AND is_active = 1
+                            AND created_at <= ?
+                            AND expires_at > ?
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                            """,
+                            (user_id, tariff_id, payment_created_at + 3600, grace_threshold)
+                        ) as sub_cursor:
+                            subscription_row = await sub_cursor.fetchone()
+                    
+                    if subscription_row:
+                        subscription_id = subscription_row[0]
+                        sub_created_at = subscription_row[1]
+                        sub_expires_at = subscription_row[2]
+                        
+                        # Проверяем, что подписка была активна на момент обработки платежа
+                        # Платеж должен был продлить эту подписку
+                        if payment_created_at <= sub_expires_at + 3600:  # Разница менее часа
+                            # Привязываем платеж к подписке
+                            success = await payment_repo.update_subscription_id(payment_id, subscription_id)
+                            
+                            if success:
+                                fixed_count += 1
+                                logger.info(
+                                    f"[FIX_SUBSCRIPTION_ID] Fixed payment {payment_id} (DB ID: {payment_id_db}): "
+                                    f"linked to subscription {subscription_id} (user {user_id}, tariff {tariff_id})"
+                                )
+                            else:
+                                failed_count += 1
+                                logger.warning(
+                                    f"[FIX_SUBSCRIPTION_ID] Failed to update subscription_id for payment {payment_id} "
+                                    f"(DB ID: {payment_id_db}): update_subscription_id returned False"
+                                )
+                        else:
+                            logger.debug(
+                                f"[FIX_SUBSCRIPTION_ID] Payment {payment_id} (created {payment_created_at}) "
+                                f"does not match subscription {subscription_id} (expires {sub_expires_at})"
+                            )
+                    else:
+                        # Не нашли подписку - возможно, платеж был обработан как покупка, но подписка не была создана
+                        # Или подписка была деактивирована
+                        logger.debug(
+                            f"[FIX_SUBSCRIPTION_ID] No matching subscription found for payment {payment_id} "
+                            f"(user {user_id}, tariff {tariff_id}, created {payment_created_at})"
+                        )
+                    
+                    # Небольшая задержка между обработкой
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(
+                        f"[FIX_SUBSCRIPTION_ID] Error fixing payment {payment_id} (DB ID: {payment_id_db}): {e}",
+                        exc_info=True
+                    )
+                    continue
+            
+            if fixed_count > 0:
+                logger.info(
+                    f"[FIX_SUBSCRIPTION_ID] Fixed {fixed_count} payments, {failed_count} failed"
+                )
+            elif failed_count > 0:
+                logger.warning(
+                    f"[FIX_SUBSCRIPTION_ID] Failed to fix {failed_count} payments"
+                )
+                    
+        except Exception as e:
+            logger.error(f"[FIX_SUBSCRIPTION_ID] Error in fix_payments_without_subscription_id: {e}", exc_info=True)
+    
+    await _run_periodic(
+        "fix_payments_without_subscription_id",
+        interval_seconds=1800,  # Каждые 30 минут
+        job=job,
+        max_backoff=3600,
+    )
+
+
 async def create_keys_for_new_server(server_id: int) -> None:
     """
     Создать ключи на новом сервере для всех активных подписок
