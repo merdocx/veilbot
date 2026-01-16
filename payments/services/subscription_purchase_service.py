@@ -192,11 +192,11 @@ class SubscriptionPurchaseService:
                 is_recent_subscription = subscription_age < RECENT_SUBSCRIPTION_THRESHOLD
                 purchase_notification_not_sent = not purchase_notification_sent
                 
-                # ВАЖНО: Проверяем, не была ли подписка создана очень недавно (менее 5 минут)
+                # ВАЖНО: Проверяем, не была ли подписка создана недавно (менее 1 часа)
                 # и соответствует ли срок действия подписки ожидаемому (created_at + duration)
                 # Если срок действия = created_at + duration, значит это только что созданная подписка
                 # и её не нужно продлевать, а нужно просто отправить уведомление о покупке
-                VERY_RECENT_THRESHOLD = 300  # 5 минут
+                VERY_RECENT_THRESHOLD = 3600  # 1 час - увеличили с 5 минут, чтобы избежать двойного продления
                 expected_expires_at = created_at + tariff['duration_sec']
                 is_very_recent = subscription_age < VERY_RECENT_THRESHOLD
                 expires_at_matches_expected = abs(existing_expires_at - expected_expires_at) < 3600  # Разница менее часа
@@ -253,6 +253,24 @@ class SubscriptionPurchaseService:
                                 return await self._send_purchase_notification_for_existing_subscription(
                                     payment, tariff, existing_subscription, now
                                 )
+                
+                # ВАЖНО: Если подписка была создана недавно (менее 1 часа) и срок соответствует ожидаемому,
+                # это покупка, а не продление, даже если уведомление уже отправлено
+                # Это предотвращает двойное продление при повторной обработке платежа
+                if is_very_recent and expires_at_matches_expected:
+                    logger.info(
+                        f"[SUBSCRIPTION] User {payment.user_id} has very recent subscription {subscription_id} "
+                        f"(created {subscription_age}s ago, expires_at={existing_expires_at}, "
+                        f"expected={expected_expires_at}). This is a PURCHASE, not a renewal. "
+                        f"Sending purchase notification if needed."
+                    )
+                    
+                    # Используем существующую подписку, но отправляем уведомление о покупке
+                    # НЕ продлеваем подписку, так как она уже создана с правильным сроком
+                    existing_subscription = existing_subscription_row
+                    return await self._send_purchase_notification_for_existing_subscription(
+                        payment, tariff, existing_subscription, now
+                    )
                 
                 # Проверяем, не является ли это retry того же платежа
                 # Если подписка была создана недавно и уведомление не отправлено, 
@@ -866,7 +884,18 @@ class SubscriptionPurchaseService:
                     )
                     # Не прерываем процесс, так как основное уведомление уже отправлено
             
-            # Шаг 6: Уведомление успешно отправлено - помечаем платеж как completed
+            # Шаг 6: Обновляем subscription_id в платеже (если еще не обновлен)
+            # ВАЖНО: Это нужно делать и для покупки, и для продления
+            try:
+                await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
+                logger.info(f"[SUBSCRIPTION] Updated payment {payment.payment_id} subscription_id to {subscription_id}")
+            except Exception as sub_id_error:
+                logger.warning(
+                    f"[SUBSCRIPTION] Failed to update subscription_id for payment {payment.payment_id}: {sub_id_error}. "
+                    f"Continuing with payment status update."
+                )
+            
+            # Шаг 6.5: Уведомление успешно отправлено - помечаем платеж как completed
             # ВАЖНО: mark_purchase_notification_sent вызываем ТОЛЬКО для покупки (is_purchase=True)
             # Для продления этот флаг не используется
             if is_purchase:
