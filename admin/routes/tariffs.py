@@ -167,6 +167,7 @@ async def edit_tariff_page(request: Request, tariff_id: int):
             "enable_yookassa": tariff[6] if len(tariff) > 6 else 1,
             "enable_platega": tariff[7] if len(tariff) > 7 else 1,
             "enable_cryptobot": tariff[8] if len(tariff) > 8 else 1,
+            "is_archived": tariff[9] if len(tariff) > 9 else 0,
         }
     })
 
@@ -183,6 +184,7 @@ async def edit_tariff(
     enable_yookassa: int = Form(1),
     enable_platega: int = Form(1),
     enable_cryptobot: int = Form(1),
+    is_archived: int = Form(0),
 ):
     """Обновление тарифа"""
     if not request.session.get("admin_logged_in"):
@@ -193,6 +195,7 @@ async def edit_tariff(
     ey = 1 if enable_yookassa else 0
     ep = 1 if enable_platega else 0
     ec = 1 if enable_cryptobot else 0
+    ia = 1 if is_archived else 0
 
     TariffRepository(DATABASE_PATH).update_tariff(
         tariff_id,
@@ -204,6 +207,7 @@ async def edit_tariff(
         enable_yookassa=ey,
         enable_platega=ep,
         enable_cryptobot=ec,
+        is_archived=ia,
     )
     
     # Инвалидируем кэш меню бота

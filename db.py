@@ -1058,6 +1058,36 @@ def migrate_add_is_vip_to_users():
         conn.close()
 
 
+def migrate_add_is_archived_to_tariffs():
+    """Добавление колонки is_archived в таблицу tariffs для архивных тарифов"""
+    import logging
+    logging.info("Миграция: добавление колонки is_archived в tariffs")
+    
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    cursor = conn.cursor()
+    
+    try:
+        # Проверяем, существует ли колонка is_archived
+        cursor.execute("PRAGMA table_info(tariffs)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        if 'is_archived' in columns:
+            logging.info("Колонка is_archived уже существует в tariffs, пропускаем миграцию")
+            return
+        
+        # Добавляем колонку is_archived
+        cursor.execute("ALTER TABLE tariffs ADD COLUMN is_archived INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Колонка is_archived успешно добавлена в tariffs")
+        
+    except Exception as e:
+        logging.error(f"Ошибка миграции добавления колонки is_archived: {e}", exc_info=True)
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def migrate_remove_unlimited_column():
     """Удаление колонки unlimited из таблицы subscriptions"""
     import logging
@@ -1414,6 +1444,7 @@ def _run_all_migrations():
     migrate_remove_traffic_snapshot_tables()
     migrate_remove_unlimited_column()
     migrate_add_is_vip_to_users()
+    migrate_add_is_archived_to_tariffs()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

@@ -76,6 +76,20 @@
                 </div>
             </div>
 
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label">Статус тарифа</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="is_archived" name="is_archived" value="1"
+                               {% if tariff.is_archived %}checked{% endif %}>
+                        <label class="form-check-label" for="is_archived">
+                            Архивировать тариф
+                        </label>
+                        <small class="form-hint d-block">Архивные тарифы не отображаются при выборе тарифа при покупке или продлении</small>
+                    </div>
+                </div>
+            </div>
+
             <div class="justify-end">
                 <a href="/tariffs" class="btn">
                     <span class="material-icons icon-small">cancel</span>

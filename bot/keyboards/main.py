@@ -112,9 +112,10 @@ def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> Repl
                 enable_platega,
                 enable_cryptobot
             FROM tariffs
+            WHERE (is_archived IS NULL OR is_archived = 0)
         """
         if paid_only:
-            base_sql += " WHERE price_rub > 0"
+            base_sql += " AND price_rub > 0"
         base_sql += " ORDER BY price_rub ASC"
         cursor.execute(base_sql)
         tariffs = cursor.fetchall()

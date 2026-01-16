@@ -9,49 +9,41 @@ class TariffRepository:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or settings.DATABASE_PATH
 
-    def list_tariffs(self, search_query: str | None = None) -> List[Tuple]:
+    def list_tariffs(self, search_query: str | None = None, include_archived: bool = True) -> List[Tuple]:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            where_clauses = []
+            params = []
+            
             if search_query:
                 search_pattern = f"%{search_query}%"
-                c.execute(
-                    """
-                    SELECT 
-                        id,
-                        name,
-                        duration_sec,
-                        price_rub,
-                        traffic_limit_mb,
-                        price_crypto_usd,
-                        enable_yookassa,
-                        enable_platega,
-                        enable_cryptobot
-                    FROM tariffs
-                    WHERE CAST(id AS TEXT) LIKE ? 
-                       OR name LIKE ? 
-                       OR CAST(price_rub AS TEXT) LIKE ?
-                       OR CAST(traffic_limit_mb AS TEXT) LIKE ?
-                    ORDER BY price_rub ASC
-                    """,
-                    (search_pattern, search_pattern, search_pattern, search_pattern),
-                )
-            else:
-                c.execute(
-                    """
-                    SELECT 
-                        id,
-                        name,
-                        duration_sec,
-                        price_rub,
-                        traffic_limit_mb,
-                        price_crypto_usd,
-                        enable_yookassa,
-                        enable_platega,
-                        enable_cryptobot
-                    FROM tariffs
-                    ORDER BY price_rub ASC
-                    """
-                )
+                where_clauses.append("(CAST(id AS TEXT) LIKE ? OR name LIKE ? OR CAST(price_rub AS TEXT) LIKE ? OR CAST(traffic_limit_mb AS TEXT) LIKE ?)")
+                params.extend([search_pattern, search_pattern, search_pattern, search_pattern])
+            
+            if not include_archived:
+                where_clauses.append("(is_archived IS NULL OR is_archived = 0)")
+            
+            where_clause = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+            
+            c.execute(
+                f"""
+                SELECT 
+                    id,
+                    name,
+                    duration_sec,
+                    price_rub,
+                    traffic_limit_mb,
+                    price_crypto_usd,
+                    enable_yookassa,
+                    enable_platega,
+                    enable_cryptobot,
+                    is_archived
+                FROM tariffs
+                {where_clause}
+                ORDER BY price_rub ASC
+                """,
+                tuple(params),
+            )
             return c.fetchall()
 
     def get_tariff(self, tariff_id: int) -> Tuple | None:
@@ -68,7 +60,8 @@ class TariffRepository:
                     price_crypto_usd,
                     enable_yookassa,
                     enable_platega,
-                    enable_cryptobot
+                    enable_cryptobot,
+                    is_archived
                 FROM tariffs
                 WHERE id = ?
                 """,
@@ -86,6 +79,7 @@ class TariffRepository:
         enable_yookassa: int = 1,
         enable_platega: int = 1,
         enable_cryptobot: int = 1,
+        is_archived: int = 0,
     ) -> int:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -99,9 +93,10 @@ class TariffRepository:
                     price_crypto_usd,
                     enable_yookassa,
                     enable_platega,
-                    enable_cryptobot
+                    enable_cryptobot,
+                    is_archived
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -112,6 +107,7 @@ class TariffRepository:
                     enable_yookassa,
                     enable_platega,
                     enable_cryptobot,
+                    is_archived,
                 ),
             )
             conn.commit()
@@ -134,6 +130,7 @@ class TariffRepository:
         enable_yookassa: int | None = None,
         enable_platega: int | None = None,
         enable_cryptobot: int | None = None,
+        is_archived: int | None = None,
     ) -> None:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -150,6 +147,8 @@ class TariffRepository:
                 fields.append(("enable_platega", int(enable_platega)))
             if enable_cryptobot is not None:
                 fields.append(("enable_cryptobot", int(enable_cryptobot)))
+            if is_archived is not None:
+                fields.append(("is_archived", int(is_archived)))
 
             set_clause = ", ".join(f"{name} = ?" for name, _ in fields)
             values = [value for _, value in fields]

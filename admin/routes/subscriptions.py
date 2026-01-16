@@ -203,10 +203,33 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q
         
         now_ts = int(time.time())
         
+        # Подсчитываем статистику для всех подписок (с учетом поиска, если есть)
+        if query_normalized:
+            # Если есть поиск, получаем все подписки, соответствующие поиску, и считаем статистику
+            all_matching_rows = subscription_repo.list_subscriptions(query=query_normalized, limit=999999, offset=0)
+            active_count = 0
+            expired_count = 0
+            for row in all_matching_rows:
+                _, _, _, _, expires_at, _, is_active, _, _, _, _, _ = row
+                if expires_at and expires_at > 0:
+                    is_expired = expires_at <= now_ts
+                    if is_expired or not is_active:
+                        expired_count += 1
+                    else:
+                        active_count += 1
+                else:
+                    expired_count += 1
+            stats = {
+                "total": total,
+                "active": active_count,
+                "expired": expired_count,
+            }
+        else:
+            # Если поиска нет, используем стандартную функцию подсчета
+            stats = _compute_subscription_stats(DB_PATH, now_ts)
+        
         # Формируем модели для отображения
         subscription_models = []
-        active_count = 0
-        expired_count = 0
         
         for row in rows:
             (
@@ -234,11 +257,6 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q
                 lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
             elif expires_at > 0 and now_ts >= expires_at:
                 lifetime_progress = 1.0
-            
-            if is_expired:
-                expired_count += 1
-            else:
-                active_count += 1
             
             # Получаем список ключей подписки
             keys_list = subscription_repo.get_subscription_keys_list(sub_id)
@@ -333,8 +351,8 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q
             "page": page,
             "limit": limit,
             "total": total,
-            "active_count": active_count,
-            "expired_count": expired_count,
+            "active_count": stats["active"],
+            "expired_count": stats["expired"],
             "active_servers": active_servers,
             "pages": pages,
             "csrf_token": get_csrf_token(request),

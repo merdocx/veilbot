@@ -26,13 +26,13 @@ def get_tariff_by_name_and_price(
     """
     try:
         cursor.execute(
-            "SELECT id, name, price_rub, duration_sec, price_crypto_usd, traffic_limit_mb FROM tariffs WHERE name = ? AND price_rub = ?",
+            "SELECT id, name, price_rub, duration_sec, price_crypto_usd, traffic_limit_mb FROM tariffs WHERE name = ? AND price_rub = ? AND (is_archived IS NULL OR is_archived = 0)",
             (tariff_name, price),
         )
     except sqlite3.OperationalError as exc:
         if "traffic_limit_mb" in str(exc):
             cursor.execute(
-                "SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND price_rub = ?",
+                "SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND price_rub = ? AND (is_archived IS NULL OR is_archived = 0)",
                 (tariff_name, price),
             )
             row = cursor.fetchone()

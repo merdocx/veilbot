@@ -345,14 +345,14 @@ async def handle_tariff_selection_for_subscription(message: types.Message):
             # Ищем по имени и крипто-цене
             try:
                 cursor.execute(
-                    "SELECT id, name, price_rub, duration_sec, price_crypto_usd, traffic_limit_mb FROM tariffs WHERE name = ? AND ABS(price_crypto_usd - ?) < 0.01",
+                    "SELECT id, name, price_rub, duration_sec, price_crypto_usd, traffic_limit_mb FROM tariffs WHERE name = ? AND ABS(price_crypto_usd - ?) < 0.01 AND (is_archived IS NULL OR is_archived = 0)",
                     (tariff_name, price_crypto),
                 )
                 row = cursor.fetchone()
             except sqlite3.OperationalError as exc:
                 if "traffic_limit_mb" in str(exc):
                     cursor.execute(
-                        "SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND ABS(price_crypto_usd - ?) < 0.01",
+                        "SELECT id, name, price_rub, duration_sec, price_crypto_usd FROM tariffs WHERE name = ? AND ABS(price_crypto_usd - ?) < 0.01 AND (is_archived IS NULL OR is_archived = 0)",
                         (tariff_name, price_crypto),
                     )
                     row = cursor.fetchone()
