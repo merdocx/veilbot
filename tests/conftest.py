@@ -66,7 +66,8 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             price_rub REAL,
             duration_sec INTEGER,
             price_crypto_usd REAL,
-            traffic_limit_mb INTEGER DEFAULT 0
+            traffic_limit_mb INTEGER DEFAULT 0,
+            is_archived INTEGER DEFAULT 0
         )
     """)
     
