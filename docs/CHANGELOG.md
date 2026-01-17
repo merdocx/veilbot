@@ -7,6 +7,26 @@
 
 ## [Unreleased]
 
+## [2.4.13] - 2026-01-16
+
+### Изменено
+- ✅ **Очистка проекта от устаревших файлов**:
+  - Удалены временные файлы (`subscription_payments_analysis.txt`, `veilbot.db`)
+  - Архивированы завершенные документы (9 файлов) в `docs/archive/`
+  - Архивированы завершенные скрипты (5 файлов) в `scripts/archive/`
+
+### Добавлено
+- ✅ **Документация по безопасности**:
+  - Добавлен `docs/SECURITY_AUDIT_REPORT_V2.md` - повторный аудит безопасности после очистки истории Git
+  - Добавлен `docs/UNUSED_FILES_ANALYSIS_2026.md` - анализ устаревших файлов проекта
+  - Добавлен `docs/RECOMMENDATIONS_BOT_PY_AND_UTILS.md` - рекомендации по bot.py и утилитам отладки
+
+### Очищено
+- ✅ **Архивирование завершенных задач**:
+  - `SECURITY_AUDIT_REPORT.md`, `SUBSCRIPTION_151_ANALYSIS.md`, `SUBSCRIPTION_DOUBLE_EXTENSION_FIX.md`, `SUBSCRIPTION_OPTIMIZATION_PROPOSAL.md`
+  - `CLEANUP_FINAL_REPORT.md`, `CLEANUP_REPORT_2025_12_17.md`, `REFERRAL_TRAFFIC_BONUS_APPLY_LIST.md`
+  - `cleanup_project.py`, `normalize_payments_table.py`, `link_subscriptions_payments.py`, `link_subscriptions_to_payments.py`, `show_subscription_payments_table.py`
+
 ## [2.4.12] - 2026-01-16
 
 ### Исправлено
