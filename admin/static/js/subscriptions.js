@@ -502,6 +502,47 @@
         await handleSyncKeys(syncParams);
     };
 
+    const copyToClipboard = async (value) => {
+        const text = value || '';
+        if (!text) {
+            notify('Ссылка подписки отсутствует', 'warning');
+            return false;
+        }
+
+        try {
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                await navigator.clipboard.writeText(text);
+                notify('Ссылка подписки скопирована в буфер обмена', 'success');
+                return true;
+            }
+        } catch (error) {
+            handleError(error, 'Clipboard API');
+        }
+
+        try {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            textarea.style.pointerEvents = 'none';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            const success = document.execCommand('copy');
+            document.body.removeChild(textarea);
+            if (success) {
+                notify('Ссылка подписки скопирована в буфер обмена', 'success');
+                return true;
+            }
+        } catch (error) {
+            handleError(error, 'document.execCommand copy');
+        }
+
+        window.prompt('Скопируйте ссылку подписки вручную (Ctrl/Cmd + C):', text);
+        return false;
+    };
+
     const handleTableClick = (event) => {
         const trigger = event.target.closest('[data-action]');
         if (!trigger) {
@@ -518,6 +559,17 @@
         if (action === 'delete-subscription') {
             event.preventDefault();
             handleDeleteSubscription(trigger);
+            return;
+        }
+
+        if (action === 'copy-subscription') {
+            event.preventDefault();
+            const subscriptionUrl = trigger.dataset.subscriptionUrl;
+            if (subscriptionUrl) {
+                copyToClipboard(subscriptionUrl);
+            } else {
+                notify('Ссылка подписки отсутствует', 'warning');
+            }
         }
     };
 

@@ -170,18 +170,17 @@ class SubscriptionPurchaseService:
             
             # Получаем все completed платежи для подписки (включая текущий)
             # Используем PaymentRepository для получения платежей
-                    async with open_async_connection(self.db_path) as conn:
-                        async with conn.execute(
-                            """
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
                     SELECT * FROM payments
                     WHERE subscription_id = ? AND status = 'completed'
                     ORDER BY created_at ASC
-                    """,
+                    """
+                    ,
                     (subscription_id,)
                 ) as cursor:
                     payment_rows = await cursor.fetchall()
-            
-            # Преобразуем в список Payment объектов через PaymentRepository._payment_from_row
             all_payments = []
             for row in payment_rows:
                 # Используем приватный метод PaymentRepository для создания Payment из строки БД
