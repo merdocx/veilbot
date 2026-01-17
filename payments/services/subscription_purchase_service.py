@@ -5,6 +5,7 @@
 import uuid
 import time
 import logging
+import asyncio
 from typing import Optional, Dict, Any, Tuple, List
 from datetime import datetime
 
@@ -135,9 +136,9 @@ class SubscriptionPurchaseService:
                 subscription_id_retry = payment.subscription_id
                 
                 # Проверяем, есть ли ключи для этой подписки
-                async with open_async_connection(self.db_path) as conn:
-                    async with conn.execute(
-                        """
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
                         SELECT COUNT(*) FROM (
                             SELECT id FROM v2ray_keys WHERE subscription_id = ?
                             UNION ALL
@@ -146,7 +147,7 @@ class SubscriptionPurchaseService:
                         """
                         ,
                         (subscription_id_retry, subscription_id_retry)
-                    ) as cursor:
+                ) as cursor:
                         keys_count = (await cursor.fetchone())[0] or 0
                 
                 if keys_count > 0:
@@ -239,8 +240,7 @@ class SubscriptionPurchaseService:
                     SELECT * FROM payments
                     WHERE subscription_id = ? AND status = 'completed'
                     ORDER BY created_at ASC
-                    """
-                    ,
+                    """,
                     (subscription_id,)
                 ) as cursor:
                     payment_rows = await cursor.fetchall()
@@ -284,26 +284,38 @@ class SubscriptionPurchaseService:
                 )
                 all_payments.append(temp_payment)
             
-            # Пересчитываем expires_at на основе всех платежей
-            new_expires_at = self._calculate_subscription_expires_at(
-                all_payments,
-                subscription_created_at,
-                payment.user_id
-            )
-            
-            # Обновляем subscription_id в платеже ПЕРЕД пересчетом expires_at
-            # Это необходимо для того, чтобы SQL-подзапрос в _recalculate_and_update_subscription_expires_at
-            # мог найти текущий платеж для получения tariff_id
+            # Обновляем subscription_id в платеже ПЕРЕД обновлением expires_at
             await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
             
-            # Атомарно обновляем expires_at (только если изменился)
+            # Расчет нового expires_at:
+            # - Если подписка создана сейчас (was_created = True) - пересчитываем на основе всех платежей
+            # - Если подписка уже существовала (was_created = False) - просто продлеваем от текущего expires_at
             current_expires_at = subscription_row[4]
-            if abs(current_expires_at - new_expires_at) > 60:  # Допускаем разницу до 1 минуты
-                await self._recalculate_and_update_subscription_expires_at(
-                    subscription_id,
+            
+            if was_created:
+                # Новая подписка - пересчитываем на основе всех платежей
+                new_expires_at = self._calculate_subscription_expires_at(
                     all_payments,
                     subscription_created_at,
                     payment.user_id
+                )
+            else:
+                # Продление существующей подписки - просто прибавляем к текущему expires_at
+                tariff_duration = tariff.get('duration_sec', 0) or 0
+                new_expires_at = current_expires_at + tariff_duration
+                
+                logger.info(
+                    f"[SUBSCRIPTION] Extending subscription {subscription_id}: "
+                    f"current_expires_at={current_expires_at} ({current_expires_at - int(time.time())}s from now), "
+                    f"tariff_duration={tariff_duration}s, new_expires_at={new_expires_at}"
+                )
+            
+            # Атомарно обновляем expires_at (только если изменился)
+            if abs(current_expires_at - new_expires_at) > 60:  # Допускаем разницу до 1 минуты
+                await self._update_subscription_expires_at(
+                    subscription_id,
+                    new_expires_at,
+                    tariff['id']
                 )
             
             # Ключи уже должны быть созданы в _get_or_create_subscription при was_created = True
@@ -317,7 +329,8 @@ class SubscriptionPurchaseService:
                         UNION ALL
                         SELECT id FROM keys WHERE subscription_id = ?
                     )
-                    """,
+                    """
+                    ,
                     (subscription_id, subscription_id)
                 ) as cursor:
                     keys_count = (await cursor.fetchone())[0] or 0
@@ -2094,98 +2107,154 @@ class SubscriptionPurchaseService:
             for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in v2ray_servers:
                 v2ray_uuid = None
                 protocol_client = None
-                try:
-                    # Генерация email для ключа
-                    key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
-                    
-                    # Создание ключа в зависимости от протокола
-                    if protocol == 'v2ray':
-                        server_config = {
-                            'api_url': api_url,
-                            'api_key': api_key,
-                            'domain': domain,
-                        }
-                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                        user_data = await protocol_client.create_user(key_email, name=server_name)
+                key_created = False
+                
+                # Retry механизм: до 3 попыток для создания ключа (защита от таймаутов)
+                max_retries = 3
+                retry_delay = 2  # секунды между попытками
+                
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        # Генерация email для ключа
+                        key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
                         
-                        if not user_data or not user_data.get('uuid'):
-                            raise Exception("Failed to create user on V2Ray server")
-                        
-                        v2ray_uuid = user_data['uuid']
-                        
-                        # Получение client_config
-                        client_config = await protocol_client.get_user_config(
-                            v2ray_uuid,
-                            {
+                        # Создание ключа в зависимости от протокола
+                        if protocol == 'v2ray':
+                            server_config = {
+                                'api_url': api_url,
+                                'api_key': api_key,
                                 'domain': domain,
-                                'port': 443,
-                                'email': key_email,
-                            },
-                        )
-                        
-                        # Извлекаем VLESS URL из конфигурации
-                        if 'vless://' in client_config:
-                            lines = client_config.split('\n')
-                            for line in lines:
-                                if line.strip().startswith('vless://'):
-                                    client_config = line.strip()
-                                    break
-                        
-                        # Сохранение V2Ray ключа в БД
-                        async with open_async_connection(self.db_path) as conn:
-                            await conn.execute("PRAGMA foreign_keys = OFF")
-                            try:
-                                # ВАЖНО: expiry_at удалено из v2ray_keys - срок действия берется из subscriptions
-                                # ВАЖНО: traffic_limit_mb не устанавливается - лимит берется из подписки
-                                cursor = await conn.execute(
-                                    """
-                                    INSERT INTO v2ray_keys 
-                                    (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    (
-                                        server_id,
-                                        user_id,
-                                        v2ray_uuid,
-                                        key_email,
-                                        now,
-                                        tariff['id'],
-                                        client_config,
-                                        subscription_id,
-                                    ),
+                            }
+                            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                            
+                            # Создание пользователя с retry
+                            if attempt > 1:
+                                logger.info(
+                                    f"[SUBSCRIPTION] Retry {attempt}/{max_retries} creating v2ray key for subscription {subscription_id} "
+                                    f"on server {server_id} ({server_name})"
                                 )
-                                await conn.commit()
-                                
-                                # Проверяем, что ключ действительно сохранен
-                                async with conn.execute(
-                                    "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
-                                    (server_id, user_id, subscription_id, v2ray_uuid)
-                                ) as check_cursor:
-                                    if not await check_cursor.fetchone():
-                                        raise Exception(f"Key was not saved to database for server {server_id}")
-                                
-                            finally:
-                                await conn.execute("PRAGMA foreign_keys = ON")
-                    
-                    created_keys += 1
-                    logger.info(
-                        f"[SUBSCRIPTION] Created v2ray key for subscription {subscription_id} on server {server_id} ({server_name})"
-                    )
-                    
-                except Exception as e:
-                    logger.error(
-                        f"[SUBSCRIPTION] Failed to create v2ray key for subscription {subscription_id} "
-                        f"on server {server_id} ({server_name}): {e}",
-                        exc_info=True,
-                    )
-                    # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
-                    if protocol_client and v2ray_uuid:
-                        try:
-                            await protocol_client.delete_user(v2ray_uuid)
-                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned v2ray key on server {server_id}")
-                        except Exception as cleanup_error:
-                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned v2ray key: {cleanup_error}")
-                    failed_servers.append(server_id)
+                                await asyncio.sleep(retry_delay)
+                            
+                            user_data = await protocol_client.create_user(key_email, name=server_name)
+                            
+                            if not user_data or not user_data.get('uuid'):
+                                raise Exception("Failed to create user on V2Ray server")
+                            
+                            v2ray_uuid = user_data['uuid']
+                            
+                            # Получение client_config
+                            client_config = await protocol_client.get_user_config(
+                                v2ray_uuid,
+                                {
+                                    'domain': domain,
+                                    'port': 443,
+                                    'email': key_email,
+                                },
+                            )
+                            
+                            # Извлекаем VLESS URL из конфигурации
+                            if 'vless://' in client_config:
+                                lines = client_config.split('\n')
+                                for line in lines:
+                                    if line.strip().startswith('vless://'):
+                                        client_config = line.strip()
+                                        break
+                            
+                            # Сохранение V2Ray ключа в БД
+                            async with open_async_connection(self.db_path) as conn:
+                                await conn.execute("PRAGMA foreign_keys = OFF")
+                                try:
+                                    # ВАЖНО: expiry_at удалено из v2ray_keys - срок действия берется из subscriptions
+                                    # ВАЖНО: traffic_limit_mb не устанавливается - лимит берется из подписки
+                                    cursor = await conn.execute(
+                                        """
+                                        INSERT INTO v2ray_keys 
+                                        (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                        """,
+                                        (
+                                            server_id,
+                                            user_id,
+                                            v2ray_uuid,
+                                            key_email,
+                                            now,
+                                            tariff['id'],
+                                            client_config,
+                                            subscription_id,
+                                        ),
+                                    )
+                                    await conn.commit()
+                                    
+                                    # Проверяем, что ключ действительно сохранен
+                                    async with conn.execute(
+                                        "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
+                                        (server_id, user_id, subscription_id, v2ray_uuid)
+                                    ) as check_cursor:
+                                        if not await check_cursor.fetchone():
+                                            raise Exception(f"Key was not saved to database for server {server_id}")
+                                    
+                                finally:
+                                    await conn.execute("PRAGMA foreign_keys = ON")
+                            
+                            key_created = True
+                            created_keys += 1
+                            
+                            if attempt > 1:
+                                logger.info(
+                                    f"[SUBSCRIPTION] Successfully created v2ray key for subscription {subscription_id} "
+                                    f"on server {server_id} ({server_name}) on retry {attempt}"
+                                )
+                            else:
+                                logger.info(
+                                    f"[SUBSCRIPTION] Created v2ray key for subscription {subscription_id} on server {server_id} ({server_name})"
+                                )
+                            break  # Успешно создан, выходим из цикла retry
+                            
+                    except Exception as e:
+                        error_msg = str(e)
+                        is_timeout = "timeout" in error_msg.lower() or "Timeout" in error_msg
+                        
+                        if attempt < max_retries and is_timeout:
+                            # Таймаут - повторяем попытку
+                            logger.warning(
+                                f"[SUBSCRIPTION] Timeout creating v2ray key for subscription {subscription_id} "
+                                f"on server {server_id} ({server_name}), attempt {attempt}/{max_retries}. "
+                                f"Retrying in {retry_delay}s..."
+                            )
+                            # Закрываем клиент перед следующей попыткой
+                            if protocol_client:
+                                try:
+                                    await protocol_client.close()
+                                except:
+                                    pass
+                            protocol_client = None
+                            v2ray_uuid = None
+                            continue
+                        else:
+                            # Другая ошибка или последняя попытка - логируем и добавляем в failed_servers
+                            logger.error(
+                                f"[SUBSCRIPTION] Failed to create v2ray key for subscription {subscription_id} "
+                                f"on server {server_id} ({server_name}), attempt {attempt}/{max_retries}: {e}",
+                                exc_info=True,
+                            )
+                            # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
+                            if protocol_client and v2ray_uuid:
+                                try:
+                                    await protocol_client.delete_user(v2ray_uuid)
+                                    logger.info(f"[SUBSCRIPTION] Cleaned up orphaned v2ray key on server {server_id}")
+                                except Exception as cleanup_error:
+                                    logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned v2ray key: {cleanup_error}")
+                            
+                            # Закрываем клиент при ошибке
+                            if protocol_client:
+                                try:
+                                    await protocol_client.close()
+                                except:
+                                    pass
+                            
+                            if not key_created:
+                                failed_servers.append(server_id)
+                            break  # Выходим из цикла retry
             
             # Создаем один Outline ключ (если есть доступный Outline сервер)
             if outline_server_row:
@@ -2326,6 +2395,37 @@ class SubscriptionPurchaseService:
                 raise e
         
         return new_expires_at
+    
+    async def _update_subscription_expires_at(
+        self,
+        subscription_id: int,
+        new_expires_at: int,
+        tariff_id: int
+    ) -> None:
+        """
+        Атомарно обновить expires_at и tariff_id подписки (для продления).
+        
+        Используется при продлении существующей подписки - просто обновляет expires_at.
+        """
+        async with open_async_connection(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                await conn.execute(
+                    """
+                    UPDATE subscriptions
+                    SET expires_at = ?, last_updated_at = ?, tariff_id = ?
+                    WHERE id = ?
+                    """,
+                    (new_expires_at, int(time.time()), tariff_id, subscription_id)
+                )
+                await conn.commit()
+                logger.info(
+                    f"[SUBSCRIPTION] Updated subscription {subscription_id}: "
+                    f"expires_at={new_expires_at}, tariff_id={tariff_id}"
+                )
+            except Exception as e:
+                await conn.rollback()
+                raise e
     
     async def _send_universal_notification(
         self,
