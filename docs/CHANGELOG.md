@@ -7,6 +7,47 @@
 
 ## [Unreleased]
 
+## [2.4.14] - 2026-01-17
+
+### Изменено
+- ✅ **Упрощение логики обработки подписок**:
+  - Упрощенная логика определения покупки vs продления (3 проверки вместо 28+)
+  - Проверка статуса `completed` (быстрая проверка)
+  - Проверка `subscription_id` (защита от retry webhook)
+  - Определение покупки/продления (есть подписка → продление, нет → покупка)
+  - Пересчет `expires_at` на основе всех платежей вместо продления
+  - Универсальное уведомление "Подписка обновлена!" для всех случаев
+
+### Добавлено
+- ✅ **Новые функции расчета подписок**:
+  - `_calculate_subscription_expires_at` - пересчет с учетом разных тарифов и реферальных бонусов
+  - `_calculate_referral_bonuses` - расчет реферальных бонусов (30 дней × количество рефералов)
+  - `_get_or_create_subscription` - получение или создание подписки (защита от race condition)
+  - `_recalculate_and_update_subscription_expires_at` - атомарное обновление `expires_at`
+  - `_send_universal_notification` - универсальное уведомление для всех платежей
+  - `_send_outline_backup_keys_notification` - отправка Outline ключей только при первом платеже
+
+### Исправлено
+- ✅ **Учет разных тарифов и реферальных бонусов**:
+  - Все платежи учитываются при расчете `expires_at` (с разными тарифами)
+  - Реферальные бонусы добавляются: 30 дней × количество рефералов с `bonus_issued=1`
+  - VIP подписки не пересчитываются (остаются `VIP_EXPIRES_AT`)
+
+### Миграция
+- ✅ **Добавлено поле `notification_sent` в таблицу `payments`**:
+  - Поле `notification_sent INTEGER DEFAULT 0` для защиты от дублирования уведомлений
+  - Миграция `migrate_add_notification_sent_to_payments()` добавлена в `db.py`
+
+### Документация
+- ✅ **Добавлена документация по упрощению логики подписок**:
+  - `docs/SUBSCRIPTION_LOGIC_SIMPLIFICATION_TZ.md` - техническое задание на упрощение
+  - `docs/SUBSCRIPTION_LOGIC_AGREED.md` - согласованный вариант реализации
+  - `docs/CURRENT_SUBSCRIPTION_PURCHASE_VS_RENEWAL_LOGIC.md` - описание текущей логики
+  - `docs/SIMPLIFIED_LOGIC_ANALYSIS.md` - анализ упрощенной логики
+  - `docs/SIMPLIFIED_LOGIC_RISKS_REVISED.md` - анализ рисков упрощенной логики
+  - `docs/WEBHOOK_RETRY_ANALYSIS.md` - анализ retry webhook'ов
+  - `docs/IMPACT_ANALYSIS_EXISTING_SUBSCRIPTIONS.md` - анализ влияния на существующие подписки
+
 ## [2.4.13] - 2026-01-16
 
 ### Изменено

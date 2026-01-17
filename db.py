@@ -1058,6 +1058,36 @@ def migrate_add_is_vip_to_users():
         conn.close()
 
 
+def migrate_add_notification_sent_to_payments():
+    """Добавление колонки notification_sent в таблицу payments для защиты от дублирования уведомлений"""
+    import logging
+    logging.info("Миграция: добавление колонки notification_sent в payments")
+    
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    cursor = conn.cursor()
+    
+    try:
+        # Проверяем, существует ли колонка notification_sent
+        cursor.execute("PRAGMA table_info(payments)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        if 'notification_sent' in columns:
+            logging.info("Колонка notification_sent уже существует в payments, пропускаем миграцию")
+            return
+        
+        # Добавляем колонку notification_sent (INTEGER DEFAULT 0)
+        cursor.execute("ALTER TABLE payments ADD COLUMN notification_sent INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Колонка notification_sent успешно добавлена в payments")
+        
+    except Exception as e:
+        logging.error(f"Ошибка миграции добавления колонки notification_sent: {e}", exc_info=True)
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def migrate_add_is_archived_to_tariffs():
     """Добавление колонки is_archived в таблицу tariffs для архивных тарифов"""
     import logging
@@ -1445,6 +1475,7 @@ def _run_all_migrations():
     migrate_remove_unlimited_column()
     migrate_add_is_vip_to_users()
     migrate_add_is_archived_to_tariffs()
+    migrate_add_notification_sent_to_payments()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

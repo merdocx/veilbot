@@ -5,14 +5,15 @@
 import uuid
 import time
 import logging
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from datetime import datetime
 
 from ..models.payment import Payment, PaymentStatus
 from ..repositories.payment_repository import PaymentRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.tariff_repository import TariffRepository
-from app.infra.sqlite_utils import open_async_connection
+from app.repositories.user_repository import UserRepository
+from app.infra.sqlite_utils import open_async_connection, open_connection
 from app.settings import settings as app_settings
 from vpn_protocols import ProtocolFactory, format_duration
 from bot.core import get_bot_instance
@@ -36,6 +37,12 @@ class SubscriptionPurchaseService:
         self.payment_repo = PaymentRepository(db_path)
         self.subscription_repo = SubscriptionRepository(db_path)
         self.tariff_repo = TariffRepository(db_path)
+        self.user_repo = UserRepository(db_path)
+        
+    # Константы для новой логики
+    VIP_EXPIRES_AT = 4102434000  # 01.01.2100 - признак VIP/ручной установки
+    DEFAULT_GRACE_PERIOD = 86400  # 24 часа
+    REFERRAL_BONUS_DURATION = 30 * 24 * 3600  # 30 дней в секундах
     
     async def process_subscription_purchase(self, payment_id: str) -> Tuple[bool, Optional[str]]:
         """
@@ -121,190 +128,142 @@ class SubscriptionPurchaseService:
                 f"tariff={tariff['name']}, duration={tariff['duration_sec']}s"
             )
             
-            # Шаг 5: Определяем, это покупка или продление
+            # Шаг 5 (НОВАЯ ЛОГИКА): Проверка subscription_id (защита от retry)
+            # КРИТИЧНО: Проверяем subscription_id раньше, чем проверку наличия подписки
+            # subscription_id обновляется раньше, чем статус completed
+            if payment.subscription_id is not None:
+                # Платеж уже связан с подпиской → это retry webhook
+                logger.info(
+                    f"[SUBSCRIPTION] Payment {payment_id} already linked to subscription {payment.subscription_id}, "
+                    f"this is a retry webhook. Skipping processing."
+                )
+                # Платеж уже обработан, подписка уже создана/продлена
+                # Не нужно повторять обработку, только отправить уведомление (если не отправлено)
+                # TODO: Реализовать send_notification_only_if_needed
+                return True, None
+            
+            # Шаг 6 (НОВАЯ ЛОГИКА): Определяем покупка/продление (упрощенная логика)
             # ВАЖНО: Атомарность обеспечивается через:
             # 1. Атомарное обновление expires_at в SQL (extend_subscription_by_duration_async)
             # 2. Проверку статуса COMPLETED в начале функции
             # 3. Уникальные ограничения на подписки (если нужны)
             
-            from ..utils.renewal_detector import DEFAULT_GRACE_PERIOD
-            
             now = int(time.time())
-            grace_threshold = now - DEFAULT_GRACE_PERIOD  # 24 часа назад
+            grace_threshold = now - self.DEFAULT_GRACE_PERIOD  # 24 часа назад
             
-            # Проверяем наличие активной подписки (с учетом grace_period)
-            # ВАЖНО: Даже если два процесса одновременно проверили отсутствие подписки и оба попытаются создать,
-            # атомарное обновление expires_at предотвратит проблему при продлении
+            # НОВАЯ УПРОЩЕННАЯ ЛОГИКА: Определение покупки/продления (1 проверка)
+            # Получаем или создаем подписку
+            subscription_row, was_created = await self._get_or_create_subscription(
+                payment.user_id,
+                payment,
+                tariff,
+                now
+            )
+            
+            if not subscription_row:
+                error_msg = "Failed to get or create subscription"
+                logger.error(f"[SUBSCRIPTION] {error_msg}")
+                return False, error_msg
+            
+            subscription_id = subscription_row[0]
+            subscription_created_at = subscription_row[3]
+            
+            # Получаем все completed платежи для подписки (включая текущий)
+            # Используем PaymentRepository для получения платежей
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     """
-                    SELECT s.id, s.user_id, s.subscription_token, s.created_at, s.expires_at, s.tariff_id, s.is_active, s.last_updated_at, s.notified, s.purchase_notification_sent,
-                           t.price_rub
-                    FROM subscriptions s
-                    LEFT JOIN tariffs t ON s.tariff_id = t.id
-                    WHERE s.user_id = ? AND s.is_active = 1 AND s.expires_at > ?
-                    ORDER BY s.created_at DESC
-                    LIMIT 1
+                    SELECT * FROM payments
+                    WHERE subscription_id = ? AND status = 'completed'
+                    ORDER BY created_at ASC
                     """,
-                    (payment.user_id, grace_threshold)
+                    (subscription_id,)
                 ) as cursor:
-                    existing_subscription_row = await cursor.fetchone()
+                    payment_rows = await cursor.fetchall()
             
-            # Проверяем наличие активной бесплатной подписки (включая grace period)
-            # Бесплатная подписка определяется по price_rub = 0 или tariff_id = FREE_V2RAY_TARIFF_ID
-            from app.settings import settings as app_settings
-            FREE_V2RAY_TARIFF_ID = app_settings.FREE_V2RAY_TARIFF_ID
+            # Преобразуем в список Payment объектов через PaymentRepository._payment_from_row
+            all_payments = []
+            for row in payment_rows:
+                # Используем приватный метод PaymentRepository для создания Payment из строки БД
+                try:
+                    # Импортируем PaymentRepository для доступа к _payment_from_row
+                    from payments.repositories.payment_repository import PaymentRepository
+                    payment_repo_temp = PaymentRepository(self.db_path)
+                    p = payment_repo_temp._payment_from_row(row)
+                    if p:
+                        all_payments.append(p)
+                except Exception as e:
+                    logger.warning(f"[SUBSCRIPTION] Error creating Payment from row: {e}")
+                    continue
             
-            has_active_free_subscription = False
-            if existing_subscription_row:
-                subscription_tariff_id = existing_subscription_row[5] if len(existing_subscription_row) > 5 else None
-                subscription_price_rub = existing_subscription_row[10] if len(existing_subscription_row) > 10 else None
-                # Проверяем, является ли подписка бесплатной
-                has_active_free_subscription = (
-                    subscription_tariff_id == FREE_V2RAY_TARIFF_ID or
-                    (subscription_price_rub is not None and subscription_price_rub == 0)
+            # Добавляем текущий платеж в список (если его еще нет)
+            current_payment_in_list = any(p.payment_id == payment_id for p in all_payments)
+            if not current_payment_in_list:
+                # Используем текущий платеж (будет completed после обработки)
+                # Создаем копию с обновленным subscription_id и статусом
+                temp_payment = Payment(
+                    payment_id=payment.payment_id,
+                    user_id=payment.user_id,
+                    tariff_id=payment.tariff_id,
+                    amount=payment.amount or 0,
+                    currency=payment.currency or 'RUB',
+                    email=payment.email,
+                    status=PaymentStatus.COMPLETED,  # Считаем как completed для расчета
+                    country=payment.country,
+                    protocol=payment.protocol,
+                    provider=payment.provider,
+                    method=payment.method,
+                    description=payment.description,
+                    created_at=payment.created_at,
+                    updated_at=payment.updated_at,
+                    paid_at=payment.paid_at,
+                    metadata=payment.metadata,
+                    subscription_id=subscription_id
+                )
+                all_payments.append(temp_payment)
+            
+            # Пересчитываем expires_at на основе всех платежей
+            new_expires_at = self._calculate_subscription_expires_at(
+                all_payments,
+                subscription_created_at,
+                payment.user_id
+            )
+            
+            # Атомарно обновляем expires_at (только если изменился)
+            current_expires_at = subscription_row[4]
+            if abs(current_expires_at - new_expires_at) > 60:  # Допускаем разницу до 1 минуты
+                await self._recalculate_and_update_subscription_expires_at(
+                    subscription_id,
+                    all_payments,
+                    subscription_created_at,
+                    payment.user_id
                 )
             
-            # Если есть активная бесплатная подписка, любая оплата - это продление
-            if has_active_free_subscription:
-                if existing_subscription_row:
-                    # Есть активная бесплатная подписка - продлеваем её
-                    logger.info(
-                        f"[SUBSCRIPTION] User {payment.user_id} has active free subscription "
-                        f"(tariff_id={subscription_tariff_id}, price_rub={subscription_price_rub}, grace_threshold={grace_threshold}). "
-                        f"This is a RENEWAL."
-                    )
-                    # Преобразуем в tuple для совместимости с _extend_subscription (без price_rub)
-                    existing_subscription = existing_subscription_row[:10]
-                    return await self._extend_subscription(payment, tariff, existing_subscription, now, is_purchase=False)
-                else:
-                    # Это не должно произойти, но на всякий случай
-                    logger.warning(
-                        f"[SUBSCRIPTION] User {payment.user_id} has active free subscription but row is None. "
-                        f"This should not happen."
-                    )
+            # Обновляем subscription_id в платеже (связывание)
+            await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
             
-            if existing_subscription_row:
-                subscription_id = existing_subscription_row[0]
-                subscription_token = existing_subscription_row[2]
-                existing_expires_at = existing_subscription_row[4]
-                created_at = existing_subscription_row[3]
-                purchase_notification_sent = existing_subscription_row[9] if len(existing_subscription_row) > 9 else 0
-                
-                # Проверяем, была ли подписка создана недавно и уведомление о покупке не отправлено
-                subscription_age = now - created_at if created_at else 0
-                is_recent_subscription = subscription_age < self.RECENT_SUBSCRIPTION_THRESHOLD
-                purchase_notification_not_sent = not purchase_notification_sent
-                
-                # ВАЖНО: Проверяем, не была ли подписка создана недавно (менее 1 часа)
-                # и соответствует ли срок действия подписки ожидаемому (created_at + duration)
-                # Если срок действия = created_at + duration, значит это только что созданная подписка
-                # и её не нужно продлевать, а нужно просто отправить уведомление о покупке
-                expected_expires_at = created_at + tariff['duration_sec']
-                is_very_recent = subscription_age < self.VERY_RECENT_THRESHOLD
-                expires_at_matches_expected = abs(existing_expires_at - expected_expires_at) < self.EXPIRES_AT_MATCH_TOLERANCE
-                
-                # Если подписка создана очень недавно и срок соответствует ожидаемому (только что создана),
-                # проверяем, есть ли уже другие completed платежи для этой подписки
-                # ОБЪЕДИНЕННЫЙ ЗАПРОС: используем один запрос для проверки других платежей
-                if is_very_recent and expires_at_matches_expected:
-                    # Проверяем, есть ли другие completed платежи для этого пользователя с тем же тарифом
-                    # созданные в пределах часа от создания подписки (для обработки обоих случаев: retry и других платежей)
-                    async with open_async_connection(self.db_path) as conn:
-                        async with conn.execute(
-                            """
-                            SELECT COUNT(*) FROM payments
-                            WHERE user_id = ? 
-                            AND tariff_id = ?
-                            AND status = 'completed'
-                            AND protocol = 'v2ray'
-                            AND metadata LIKE '%subscription%'
-                            AND created_at >= ?
-                            AND payment_id != ?
-                            """,
-                            (payment.user_id, payment.tariff_id, created_at - self.VERY_RECENT_THRESHOLD, payment.payment_id)
-                        ) as check_cursor:
-                            other_completed_count = (await check_cursor.fetchone())[0]
-                            
-                            # Если других completed платежей нет ИЛИ уведомление не отправлено - это покупка
-                            # Это может быть retry обработки того же платежа или подписка была создана автоматически
-                            if other_completed_count == 0 or purchase_notification_not_sent:
-                                logger.info(
-                                    f"[SUBSCRIPTION] User {payment.user_id} has very recent subscription {subscription_id} "
-                                    f"(created {subscription_age}s ago, expires_at={existing_expires_at}, "
-                                    f"expected={expected_expires_at}, purchase_notification_sent={purchase_notification_sent}, "
-                                    f"other_completed_count={other_completed_count}). "
-                                    f"This is a PURCHASE (subscription just created, not a renewal)."
-                                )
-                                
-                                # Используем существующую подписку, но отправляем уведомление о покупке
-                                # НЕ продлеваем подписку, так как она уже создана с правильным сроком
-                                existing_subscription = existing_subscription_row
-                                return await self._send_purchase_notification_for_existing_subscription(
-                                    payment, tariff, existing_subscription, now
-                                )
-                
-                # Проверяем, не является ли это retry того же платежа (для не очень недавно созданных подписок)
-                # Если подписка была создана недавно (менее 30 минут) и уведомление не отправлено,
-                # и нет других completed платежей - это может быть retry обработки того же платежа
-                # ОБЪЕДИНЕННЫЙ ЗАПРОС: используем один запрос, который покрывает оба случая
-                other_completed_count = None
-                if (is_recent_subscription and purchase_notification_not_sent) and not (is_very_recent and expires_at_matches_expected):
-                    # Вычисляем other_completed_count только если не вычислили выше в блоке is_very_recent
-                    # (так как is_very_recent уже обработал свой случай и вернул результат)
-                    async with open_async_connection(self.db_path) as conn:
-                        async with conn.execute(
-                            """
-                            SELECT COUNT(*) FROM payments
-                            WHERE user_id = ? 
-                            AND tariff_id = ?
-                            AND status = 'completed'
-                            AND protocol = 'v2ray'
-                            AND metadata LIKE '%subscription%'
-                            AND created_at >= ?
-                            AND payment_id != ?
-                            """,
-                            (payment.user_id, payment.tariff_id, created_at - self.VERY_RECENT_THRESHOLD, payment.payment_id)
-                        ) as check_cursor:
-                            other_completed_count = (await check_cursor.fetchone())[0]
-                    
-                    # Если других completed платежей нет - это может быть retry
-                    if other_completed_count == 0:
-                        logger.info(
-                            f"[SUBSCRIPTION] User {payment.user_id} has recent subscription {subscription_id} "
-                            f"(created {subscription_age}s ago, purchase_notification_sent={purchase_notification_sent}). "
-                            f"This is likely a PURCHASE (retry of same payment)."
-                        )
-                        
-                        # Используем существующую подписку, но отправляем уведомление о покупке
-                        existing_subscription = existing_subscription_row
-                        return await self._send_purchase_notification_for_existing_subscription(
-                            payment, tariff, existing_subscription, now
-                        )
-                
-                # Есть активная подписка - это ПРОДЛЕНИЕ
-                # (независимо от того, когда была создана подписка, если это новый платеж)
-                logger.info(
-                    f"[SUBSCRIPTION] User {payment.user_id} has active subscription {subscription_id} "
-                    f"(expires_at={existing_expires_at}, created_at={created_at}, age={subscription_age}s, "
-                    f"purchase_notification_sent={purchase_notification_sent}, grace_threshold={grace_threshold}). "
-                    f"This is a RENEWAL."
+            # Отправляем универсальное уведомление
+            await self._send_universal_notification(payment, subscription_row, tariff, new_expires_at, was_created, subscription_id)
+            
+            # Атомарно обновляем статус на completed
+            update_success = await self.payment_repo.try_update_status(
+                payment_id,
+                PaymentStatus.COMPLETED,
+                PaymentStatus.PAID
+            )
+            
+            if not update_success:
+                logger.warning(
+                    f"[SUBSCRIPTION] Failed to update status to completed for payment {payment_id}, "
+                    f"may have been updated by another process"
                 )
-                
-                # Преобразуем в tuple для совместимости с _extend_subscription
-                existing_subscription = existing_subscription_row
-                
-                # ПРОДЛЕНИЕ: Продлеваем существующую подписку
-                return await self._extend_subscription(payment, tariff, existing_subscription, now, is_purchase=False)
-            else:
-                # Нет активной подписки - это ПОКУПКА
-                logger.info(
-                    f"[SUBSCRIPTION] User {payment.user_id} has no active subscription "
-                    f"(grace_threshold={grace_threshold}). This is a PURCHASE."
-                )
-                
-                # СОЗДАНИЕ: Создаем новую подписку
-                return await self._create_subscription(payment, tariff, now)
+            
+            logger.info(
+                f"[SUBSCRIPTION] Subscription {subscription_id} processed successfully: "
+                f"was_created={was_created}, new_expires_at={new_expires_at}"
+            )
+            
+            return True, None
             
         except Exception as e:
             error_msg = f"Error processing subscription purchase for payment {payment_id}: {e}"
@@ -1755,6 +1714,384 @@ class SubscriptionPurchaseService:
             except:
                 pass
             return False, error_msg
+    
+    def _calculate_referral_bonuses(self, user_id: int, expires_at: int) -> int:
+        """
+        Рассчитать реферальные бонусы для пользователя.
+        
+        Условия для начисления бонуса:
+        1. Реферал должен иметь bonus_issued = 1 в таблице referrals
+        2. Реферал должен иметь completed платежи с amount > 0
+        3. Платежи должны быть до текущего expires_at
+        
+        Формула:
+        - Количество рефералов = COUNT(*) WHERE referrer_id = user_id AND bonus_issued = 1
+        - Реферальные бонусы = bonuses_count * REFERRAL_BONUS_DURATION
+        - REFERRAL_BONUS_DURATION = 30 дней = 2592000 секунд
+        """
+        try:
+            with open_connection(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT COUNT(*)
+                    FROM referrals r
+                    WHERE r.referrer_id = ?
+                      AND r.bonus_issued = 1
+                      AND EXISTS (
+                          SELECT 1 FROM payments p
+                          WHERE p.user_id = r.referred_id
+                            AND p.status = 'completed'
+                            AND p.amount > 0
+                            AND p.created_at <= ?
+                      )
+                """, (user_id, expires_at))
+                
+                bonuses_count = c.fetchone()[0] or 0
+                referral_bonuses_sec = bonuses_count * self.REFERRAL_BONUS_DURATION
+                
+                logger.debug(
+                    f"[SUBSCRIPTION] Referral bonuses for user {user_id}: "
+                    f"{bonuses_count} referrals × {self.REFERRAL_BONUS_DURATION} sec = {referral_bonuses_sec} sec"
+                )
+                
+                return referral_bonuses_sec
+        except Exception as e:
+            logger.error(f"[SUBSCRIPTION] Error calculating referral bonuses for user {user_id}: {e}")
+            return 0  # В случае ошибки возвращаем 0 (без бонусов)
+    
+    def _calculate_subscription_expires_at(
+        self,
+        payments: List[Payment],
+        subscription_created_at: int,
+        user_id: int
+    ) -> int:
+        """
+        Пересчет expires_at на основе ВСЕХ платежей с учетом разных тарифов и реферальных бонусов.
+        
+        Формула:
+        - Базовая дата = max(первый_платеж, created_at)
+        - Суммарная длительность = sum(duration_sec всех платежей) - учитываются разные тарифы
+        - Реферальные бонусы = 30 дней × количество рефералов (bonus_issued=1, с completed платежами)
+        - expires_at = базовая_дата + суммарная_длительность + реферальные_бонусы
+        
+        VIP подписки не пересчитываются (возвращается VIP_EXPIRES_AT).
+        """
+        # VIP подписки не пересчитываются
+        if self.user_repo.is_user_vip(user_id):
+            logger.debug(f"[SUBSCRIPTION] User {user_id} is VIP, returning VIP_EXPIRES_AT")
+            return self.VIP_EXPIRES_AT
+        
+        # Шаг 1: Собираем все completed платежи
+        completed_payments = [p for p in payments if p.status == PaymentStatus.COMPLETED]
+        
+        if not completed_payments:
+            logger.debug(f"[SUBSCRIPTION] No completed payments for subscription, returning created_at")
+            return subscription_created_at
+        
+        # Шаг 2: Базовая дата = первый платеж или created_at (что больше)
+        # Преобразуем created_at из datetime в timestamp (int)
+        first_payment_timestamps = []
+        for p in completed_payments:
+            if p.created_at:
+                if isinstance(p.created_at, datetime):
+                    first_payment_timestamps.append(int(p.created_at.timestamp()))
+                elif isinstance(p.created_at, (int, float)):
+                    first_payment_timestamps.append(int(p.created_at))
+                else:
+                    logger.warning(f"[SUBSCRIPTION] Unexpected created_at type for payment {p.payment_id}: {type(p.created_at)}")
+        
+        if not first_payment_timestamps:
+            return subscription_created_at
+        
+        first_payment_date = min(first_payment_timestamps)
+        base_date = max(first_payment_date, subscription_created_at)
+        
+        # Шаг 3: Суммарная длительность всех платежей (учитываются РАЗНЫЕ тарифы)
+        total_duration_sec = 0
+        for payment in completed_payments:
+            if payment.tariff_id:
+                tariff_row = self.tariff_repo.get_tariff(payment.tariff_id)
+                if tariff_row and tariff_row[2]:  # duration_sec
+                    tariff_duration = tariff_row[2]
+                    total_duration_sec += tariff_duration
+        
+        # Шаг 4: Реферальные бонусы (вычисляем предварительный expires_at для расчета бонусов)
+        # Сначала вычисляем без бонусов, затем используем для расчета реферальных бонусов
+        preliminary_expires_at = base_date + total_duration_sec
+        referral_bonuses_sec = self._calculate_referral_bonuses(user_id, preliminary_expires_at)
+        
+        # Шаг 5: Итоговый expires_at
+        expires_at = base_date + total_duration_sec + referral_bonuses_sec
+        
+        logger.info(
+            f"[SUBSCRIPTION] Calculated expires_at for user {user_id}: "
+            f"base_date={base_date}, total_duration={total_duration_sec} sec, "
+            f"referral_bonuses={referral_bonuses_sec} sec, expires_at={expires_at}"
+        )
+        
+        return expires_at
+    
+    async def _get_or_create_subscription(
+        self,
+        user_id: int,
+        payment: Payment,
+        tariff: Dict[str, Any],
+        now: int
+    ) -> Tuple[Optional[Tuple], bool]:
+        """
+        Получить существующую подписку или создать новую.
+        
+        Returns:
+            (subscription_tuple, was_created: bool)
+            subscription_tuple: (id, user_id, token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified)
+        """
+        from ..utils.renewal_detector import DEFAULT_GRACE_PERIOD
+        
+        grace_threshold = now - DEFAULT_GRACE_PERIOD  # 24 часа назад
+        
+        # Проверяем наличие активной подписки
+        async with open_async_connection(self.db_path) as conn:
+            async with conn.execute(
+                """
+                SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified
+                FROM subscriptions
+                WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_id, grace_threshold)
+            ) as cursor:
+                existing_subscription_row = await cursor.fetchone()
+        
+        if existing_subscription_row:
+            return existing_subscription_row, False  # Подписка существовала
+        
+        # Создаем новую подписку
+        subscription_token = str(uuid.uuid4())
+        
+        # Вычисляем предварительный expires_at (будет пересчитан на основе всех платежей)
+        expires_at = now + tariff['duration_sec']
+        
+        subscription_id = None
+        async with open_async_connection(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Финальная проверка перед созданием (защита от race condition)
+                async with conn.execute(
+                    """
+                    SELECT id FROM subscriptions
+                    WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+                    LIMIT 1
+                    """,
+                    (user_id, grace_threshold)
+                ) as check_cursor:
+                    existing = await check_cursor.fetchone()
+                
+                if existing:
+                    # Подписка уже создана другим процессом
+                    subscription_id = existing[0]
+                    await conn.commit()
+                else:
+                    # Создаем новую подписку
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO subscriptions (user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified, traffic_limit_mb)
+                        VALUES (?, ?, ?, ?, ?, 1, 0, ?)
+                        """,
+                        (user_id, subscription_token, now, expires_at, tariff['id'], tariff.get('traffic_limit_mb', 0) or 0),
+                    )
+                    subscription_id = cursor.lastrowid
+                    await conn.commit()
+            except Exception as e:
+                await conn.rollback()
+                raise e
+        
+        # Получаем созданную подписку
+        async with open_async_connection(self.db_path) as conn:
+            async with conn.execute(
+                """
+                SELECT id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified
+                FROM subscriptions
+                WHERE id = ?
+                """,
+                (subscription_id,)
+            ) as cursor:
+                new_subscription_row = await cursor.fetchone()
+        
+        return new_subscription_row, True  # Подписка создана
+    
+    async def _recalculate_and_update_subscription_expires_at(
+        self,
+        subscription_id: int,
+        payments: List[Payment],
+        subscription_created_at: int,
+        user_id: int
+    ) -> int:
+        """
+        Атомарно пересчитать и обновить expires_at подписки.
+        
+        Использует SQL-транзакцию для предотвращения race conditions.
+        Возвращает новое значение expires_at.
+        """
+        new_expires_at = self._calculate_subscription_expires_at(
+            payments,
+            subscription_created_at,
+            user_id
+        )
+        
+        # Атомарное обновление через SQL
+        async with open_async_connection(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                await conn.execute(
+                    """
+                    UPDATE subscriptions
+                    SET expires_at = ?, last_updated_at = ?, tariff_id = (
+                        SELECT tariff_id FROM payments
+                        WHERE subscription_id = ? AND status = 'completed'
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    )
+                    WHERE id = ?
+                    """,
+                    (new_expires_at, int(time.time()), subscription_id, subscription_id)
+                )
+                await conn.commit()
+            except Exception as e:
+                await conn.rollback()
+                raise e
+        
+        return new_expires_at
+    
+    async def _send_universal_notification(
+        self,
+        payment: Payment,
+        subscription_row: Tuple,
+        tariff: Dict[str, Any],
+        new_expires_at: int,
+        was_created: bool,
+        subscription_id: int
+    ) -> bool:
+        """
+        Отправить универсальное уведомление о подписке (для покупки и продления).
+        
+        Текст уведомления одинаковый для всех случаев:
+        "Подписка обновлена!" + новый срок действия
+        """
+        try:
+            subscription_token = subscription_row[2]
+            subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
+            
+            # Форматируем дату истечения
+            expiry_date_str = datetime.fromtimestamp(new_expires_at).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Универсальное уведомление
+            msg = (
+                f"✅ *Подписка обновлена!*\n\n"
+                f"🔗 *Ссылка (коснитесь, чтобы скопировать):*\n"
+                f"`{subscription_url}`\n\n"
+                f"⏳ *Срок действия:* до {expiry_date_str}\n\n"
+                f"💡 Подписка автоматически обновится в вашем приложении"
+            )
+            
+            logger.info(
+                f"[SUBSCRIPTION] Sending universal notification to user {payment.user_id} "
+                f"for subscription {subscription_id}, was_created={was_created}"
+            )
+            
+            notification_sent = await self._send_notification_simple(payment.user_id, msg)
+            
+            if not notification_sent:
+                logger.warning(
+                    f"[SUBSCRIPTION] Failed to send universal notification to user {payment.user_id} "
+                    f"for subscription {subscription_id}"
+                )
+                return False
+            
+            # Отправляем Outline ключи только при первом платеже (payments_count == 1)
+            if was_created:
+                # Получаем количество completed платежей для подписки
+                async with open_async_connection(self.db_path) as conn:
+                    async with conn.execute(
+                        """
+                        SELECT COUNT(*) FROM payments
+                        WHERE subscription_id = ? AND status = 'completed'
+                        """,
+                        (subscription_id,)
+                    ) as cursor:
+                        payments_count = (await cursor.fetchone())[0] or 0
+                
+                # Отправляем Outline ключи только при первом платеже
+                if payments_count == 1:
+                    await self._send_outline_backup_keys_notification(
+                        payment.user_id,
+                        subscription_id,
+                        tariff,
+                        new_expires_at
+                    )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(
+                f"[SUBSCRIPTION] Error sending universal notification to user {payment.user_id}: {e}",
+                exc_info=True
+            )
+            return False
+    
+    async def _send_outline_backup_keys_notification(
+        self,
+        user_id: int,
+        subscription_id: int,
+        tariff: Dict[str, Any],
+        expires_at: int
+    ) -> None:
+        """
+        Отправить уведомление о запасных Outline ключах (только при первом платеже).
+        """
+        try:
+            now = int(time.time())
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, s.country
+                    FROM keys k
+                    JOIN servers s ON k.server_id = s.id
+                    JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.subscription_id = ? AND k.protocol = 'outline' AND sub.expires_at > ?
+                    ORDER BY s.country, k.created_at
+                    """,
+                    (subscription_id, now)
+                ) as cursor:
+                    outline_keys = await cursor.fetchall()
+            
+            if outline_keys:
+                outline_msg = "🎁 *Также мы подготовили для вас запасные Outline ключи (потребуется скачать другое приложение):*\n\n"
+                
+                for access_url, key_expiry_at, country in outline_keys:
+                    remaining_time = key_expiry_at - now
+                    country_text = f"🌍 *Страна:* {country}\n" if country else ""
+                    outline_msg += (
+                        f"{country_text}"
+                        f"{format_key_message_unified(access_url, 'outline', tariff, remaining_time)}\n\n"
+                    )
+                
+                outline_notification_sent = await self._send_notification_simple(user_id, outline_msg)
+                if outline_notification_sent:
+                    logger.info(
+                        f"[SUBSCRIPTION] Outline backup keys notification sent to user {user_id} "
+                        f"for subscription {subscription_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"[SUBSCRIPTION] Failed to send Outline backup keys notification to user {user_id} "
+                        f"for subscription {subscription_id}"
+                    )
+        except Exception as e:
+            logger.error(
+                f"[SUBSCRIPTION] Error sending Outline backup keys notification for subscription {subscription_id}: {e}",
+                exc_info=True
+            )
     
     async def _send_notification_simple(self, user_id: int, message: str) -> bool:
         """

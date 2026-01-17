@@ -157,10 +157,17 @@ def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
         c.execute("SELECT COUNT(*) FROM subscriptions")
         total = int(c.fetchone()[0])
         
+        # Активные подписки: expires_at > now_ts И is_active = 1
         c.execute("SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? AND is_active = 1", (now_ts,))
         active = int(c.fetchone()[0])
         
-    expired = max(total - active, 0)
+        # Истекшие подписки: expires_at <= now_ts ИЛИ is_active = 0
+        c.execute("""
+            SELECT COUNT(*) FROM subscriptions 
+            WHERE (expires_at <= ? OR is_active = 0)
+        """, (now_ts,))
+        expired = int(c.fetchone()[0])
+        
     return {
         "total": total,
         "active": active,

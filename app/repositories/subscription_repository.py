@@ -791,7 +791,7 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def count_subscriptions(self, query: Optional[str] = None) -> int:
-        """Получить общее количество активных подписок"""
+        """Получить общее количество подписок (всех, не только активных)"""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             if query:
@@ -800,8 +800,7 @@ class SubscriptionRepository:
                 SELECT COUNT(*)
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
-                WHERE s.is_active = 1
-                  AND (CAST(s.id AS TEXT) LIKE ?
+                WHERE (CAST(s.id AS TEXT) LIKE ?
                     OR CAST(s.user_id AS TEXT) LIKE ?
                     OR s.subscription_token LIKE ?
                     OR t.name LIKE ?
@@ -832,7 +831,7 @@ class SubscriptionRepository:
                 """
                 c.execute(sql, (like, like, like, like, like, like, like))
             else:
-                c.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = 1")
+                c.execute("SELECT COUNT(*) FROM subscriptions")
             row = c.fetchone()
             return row[0] if row else 0
 
