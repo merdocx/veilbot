@@ -67,6 +67,7 @@
                     <th>Платежей</th>
                     <th>Рефералов</th>
                     <th>Статус</th>
+                    <th style="width: 120px;">Действия</th>
                 </tr>
             </thead>
             <tbody>
@@ -113,11 +114,23 @@
                                 <span class="badge badge-success">Активна</span>
                             {% endif %}
                         </td>
+                        <td>
+                            <button 
+                                type="button" 
+                                class="btn btn-sm btn-primary fix-btn" 
+                                data-subscription-id="{{ disc.subscription_id }}"
+                                data-csrf-token="{{ csrf_token }}"
+                                title="Исправить расхождение"
+                            >
+                                <span class="material-icons icon-small">build</span>
+                                Исправить
+                            </button>
+                        </td>
                     </tr>
                     {% endfor %}
                 {% else %}
                     <tr>
-                        <td colspan="10" class="text-center" style="padding: 48px;">
+                        <td colspan="11" class="text-center" style="padding: 48px;">
                             <div style="color: #666; font-size: 16px;">
                                 <span class="material-icons" style="font-size: 48px; display: block; margin-bottom: 16px; opacity: 0.5;">check_circle</span>
                                 ✅ Все подписки имеют корректные сроки!
@@ -231,11 +244,83 @@
         });
     }
     
+    function initFixButtons() {
+        const fixButtons = document.querySelectorAll('.fix-btn');
+        
+        fixButtons.forEach(function(btn) {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const subscriptionId = this.getAttribute('data-subscription-id');
+                const csrfToken = this.getAttribute('data-csrf-token');
+                
+                if (!subscriptionId || !csrfToken) {
+                    alert('Ошибка: отсутствуют необходимые данные');
+                    return;
+                }
+                
+                // Подтверждение действия
+                if (!confirm(`Исправить расхождение для подписки #${subscriptionId}?\n\nСрок действия будет обновлен на расчетный на основе всех платежей.`)) {
+                    return;
+                }
+                
+                // Блокируем кнопку и показываем индикатор загрузки
+                const originalHTML = this.innerHTML;
+                this.disabled = true;
+                this.innerHTML = '<span class="material-icons icon-small">hourglass_empty</span> Исправление...';
+                
+                // Отправляем запрос
+                const formData = new FormData();
+                formData.append('csrf_token', csrfToken);
+                
+                fetch(`/subscriptions/discrepancies/fix/${subscriptionId}`, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin'
+                })
+                .then(function(response) {
+                    return response.json();
+                })
+                .then(function(data) {
+                    if (data.success) {
+                        // Показываем сообщение об успехе
+                        alert(`✅ ${data.message}\n\nНовый срок: ${new Date(data.new_expires_at * 1000).toLocaleString('ru-RU')}\nРазница: ${data.diff_days.toFixed(2)} дней`);
+                        
+                        // Перезагружаем страницу через 1 секунду
+                        setTimeout(function() {
+                            window.location.reload();
+                        }, 1000);
+                    } else {
+                        // Показываем ошибку
+                        alert('❌ Ошибка: ' + (data.error || 'Неизвестная ошибка') + '\n\n' + (data.details || ''));
+                        
+                        // Восстанавливаем кнопку
+                        btn.disabled = false;
+                        btn.innerHTML = originalHTML;
+                    }
+                })
+                .catch(function(error) {
+                    console.error('Error fixing discrepancy:', error);
+                    alert('❌ Ошибка при исправлении расхождения: ' + error.message);
+                    
+                    // Восстанавливаем кнопку
+                    btn.disabled = false;
+                    btn.innerHTML = originalHTML;
+                });
+            });
+        });
+    }
+    
     // Инициализация при загрузке DOM
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initRefreshButton);
+        document.addEventListener('DOMContentLoaded', function() {
+            initRefreshButton();
+            initFixButtons();
+        });
     } else {
         initRefreshButton();
+        initFixButtons();
     }
 })();
 </script>

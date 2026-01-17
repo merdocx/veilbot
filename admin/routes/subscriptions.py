@@ -1231,3 +1231,64 @@ async def subscription_discrepancies_page(request: Request):
         </html>
         """
         return HTMLResponse(content=error_html, status_code=500)
+
+
+@router.post("/subscriptions/discrepancies/fix/{subscription_id}")
+async def fix_subscription_discrepancy(request: Request, subscription_id: int, csrf_token: str = Form(...)):
+    """Исправить расхождение в сроке действия подписки"""
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    # Проверка CSRF токена
+    session_csrf = request.session.get("csrf_token")
+    if not session_csrf or session_csrf != csrf_token:
+        return JSONResponse({"error": "Invalid CSRF token"}, status_code=400)
+    
+    try:
+        log_admin_action(request, f"FIX_SUBSCRIPTION_DISCREPANCY_{subscription_id}")
+        
+        # Получаем расхождения и находим нужную подписку
+        discrepancies = _calculate_subscription_discrepancies(DB_PATH)
+        target_disc = None
+        
+        for disc in discrepancies:
+            if disc['subscription_id'] == subscription_id:
+                target_disc = disc
+                break
+        
+        if not target_disc:
+            return JSONResponse({"error": "Subscription discrepancy not found"}, status_code=404)
+        
+        # Исправляем expires_at на расчетный
+        calculated_expires = int(target_disc['calculated_expires'])
+        subscription_repo = SubscriptionRepository(DB_PATH)
+        
+        # Обновляем expires_at подписки
+        subscription_repo.extend_subscription(subscription_id, calculated_expires, target_disc.get('tariff_id'))
+        
+        # Обновляем срок всех связанных ключей
+        updated_keys = subscription_repo.update_subscription_keys_expiry(subscription_id, calculated_expires)
+        
+        logger.info(
+            f"[ADMIN] Fixed subscription {subscription_id} discrepancy: "
+            f"old_expires_at={target_disc['sub_expires_at']}, "
+            f"new_expires_at={calculated_expires}, "
+            f"diff_days={target_disc['diff_days']:.2f}, "
+            f"updated_keys={updated_keys}"
+        )
+        
+        return JSONResponse({
+            "success": True,
+            "message": f"Подписка #{subscription_id} исправлена. Обновлено ключей: {updated_keys}",
+            "subscription_id": subscription_id,
+            "old_expires_at": target_disc['sub_expires_at'],
+            "new_expires_at": calculated_expires,
+            "diff_days": target_disc['diff_days']
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fixing subscription {subscription_id} discrepancy: {e}", exc_info=True)
+        return JSONResponse({
+            "error": "Failed to fix discrepancy",
+            "details": str(e)
+        }, status_code=500)
