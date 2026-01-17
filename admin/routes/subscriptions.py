@@ -1211,11 +1211,28 @@ async def subscription_discrepancies_page(request: Request):
                 'status': 'Истекла' if disc['is_expired'] else 'Активна'
             })
         
+        # Получаем сообщения из сессии
+        success_message = request.session.pop("success_message", None)
+        error_message = request.session.pop("error_message", None)
+        
+        # Также проверяем query параметры для обратной совместимости
+        if not success_message and request.query_params.get("success"):
+            success_message = "Расхождение успешно исправлено"
+        if not error_message and request.query_params.get("error"):
+            if request.query_params.get("error") == "invalid_csrf":
+                error_message = "Ошибка: неверный CSRF токен"
+            elif request.query_params.get("error") == "not_found":
+                error_message = "Ошибка: расхождение не найдено"
+            else:
+                error_message = "Произошла ошибка при исправлении расхождения"
+        
         return templates.TemplateResponse("subscription_discrepancies.html", {
             "request": request,
             "discrepancies": formatted_discrepancies,
             "total": len(formatted_discrepancies),
             "csrf_token": get_csrf_token(request),
+            "success_message": success_message,
+            "error_message": error_message,
         })
     except Exception as e:
         logger.error(f"Error in subscription_discrepancies_page: {e}", exc_info=True)
@@ -1237,12 +1254,12 @@ async def subscription_discrepancies_page(request: Request):
 async def fix_subscription_discrepancy(request: Request, subscription_id: int, csrf_token: str = Form(...)):
     """Исправить расхождение в сроке действия подписки"""
     if not request.session.get("admin_logged_in"):
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return RedirectResponse(url="/login", status_code=303)
     
     # Проверка CSRF токена
     session_csrf = request.session.get("csrf_token")
     if not session_csrf or session_csrf != csrf_token:
-        return JSONResponse({"error": "Invalid CSRF token"}, status_code=400)
+        return RedirectResponse(url="/subscriptions/discrepancies?error=invalid_csrf", status_code=303)
     
     try:
         log_admin_action(request, f"FIX_SUBSCRIPTION_DISCREPANCY_{subscription_id}")
@@ -1257,7 +1274,7 @@ async def fix_subscription_discrepancy(request: Request, subscription_id: int, c
                 break
         
         if not target_disc:
-            return JSONResponse({"error": "Subscription discrepancy not found"}, status_code=404)
+            return RedirectResponse(url="/subscriptions/discrepancies?error=not_found", status_code=303)
         
         # Исправляем expires_at на расчетный
         calculated_expires = int(target_disc['calculated_expires'])
@@ -1277,18 +1294,12 @@ async def fix_subscription_discrepancy(request: Request, subscription_id: int, c
             f"updated_keys={updated_keys}"
         )
         
-        return JSONResponse({
-            "success": True,
-            "message": f"Подписка #{subscription_id} исправлена. Обновлено ключей: {updated_keys}",
-            "subscription_id": subscription_id,
-            "old_expires_at": target_disc['sub_expires_at'],
-            "new_expires_at": calculated_expires,
-            "diff_days": target_disc['diff_days']
-        })
+        # Сохраняем сообщение об успехе в сессии для отображения после редиректа
+        request.session["success_message"] = f"Подписка #{subscription_id} исправлена. Обновлено ключей: {updated_keys}"
+        
+        return RedirectResponse(url="/subscriptions/discrepancies?success=1", status_code=303)
         
     except Exception as e:
         logger.error(f"Error fixing subscription {subscription_id} discrepancy: {e}", exc_info=True)
-        return JSONResponse({
-            "error": "Failed to fix discrepancy",
-            "details": str(e)
-        }, status_code=500)
+        request.session["error_message"] = f"Ошибка при исправлении расхождения: {str(e)}"
+        return RedirectResponse(url="/subscriptions/discrepancies?error=1", status_code=303)

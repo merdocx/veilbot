@@ -4,6 +4,21 @@
 {% block page_title %}Расхождения подписок{% endblock %}
 
 {% block content %}
+<!-- Success/Error Messages -->
+{% if success_message %}
+<div class="alert alert-success" style="margin-bottom: 24px; padding: 16px; background-color: #4caf50; color: white; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+    <span class="material-icons">check_circle</span>
+    <span>{{ success_message }}</span>
+</div>
+{% endif %}
+
+{% if error_message %}
+<div class="alert alert-error" style="margin-bottom: 24px; padding: 16px; background-color: #f44336; color: white; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+    <span class="material-icons">error</span>
+    <span>{{ error_message }}</span>
+</div>
+{% endif %}
+
 <!-- Stats Card -->
 <div class="stats-grid">
     <div class="stat-card">
@@ -115,16 +130,13 @@
                             {% endif %}
                         </td>
                         <td>
-                            <button 
-                                type="button" 
-                                class="btn btn-sm btn-primary fix-btn" 
-                                data-subscription-id="{{ disc.subscription_id }}"
-                                data-csrf-token="{{ csrf_token }}"
-                                title="Исправить расхождение"
-                            >
-                                <span class="material-icons icon-small">build</span>
-                                Исправить
-                            </button>
+                            <form method="post" action="/subscriptions/discrepancies/fix/{{ disc.subscription_id }}" class="d-inline" data-confirm="Исправить расхождение для подписки #{{ disc.subscription_id }}?&#10;&#10;Срок действия будет обновлен на расчетный на основе всех платежей.">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <button type="submit" class="btn btn-sm btn-primary" title="Исправить расхождение">
+                                    <span class="material-icons icon-small">build</span>
+                                    Исправить
+                                </button>
+                            </form>
                         </td>
                     </tr>
                     {% endfor %}
@@ -244,83 +256,13 @@
         });
     }
     
-    function initFixButtons() {
-        const fixButtons = document.querySelectorAll('.fix-btn');
-        
-        fixButtons.forEach(function(btn) {
-            btn.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                
-                const subscriptionId = this.getAttribute('data-subscription-id');
-                const csrfToken = this.getAttribute('data-csrf-token');
-                
-                if (!subscriptionId || !csrfToken) {
-                    alert('Ошибка: отсутствуют необходимые данные');
-                    return;
-                }
-                
-                // Подтверждение действия
-                if (!confirm(`Исправить расхождение для подписки #${subscriptionId}?\n\nСрок действия будет обновлен на расчетный на основе всех платежей.`)) {
-                    return;
-                }
-                
-                // Блокируем кнопку и показываем индикатор загрузки
-                const originalHTML = this.innerHTML;
-                this.disabled = true;
-                this.innerHTML = '<span class="material-icons icon-small">hourglass_empty</span> Исправление...';
-                
-                // Отправляем запрос
-                const formData = new FormData();
-                formData.append('csrf_token', csrfToken);
-                
-                fetch(`/subscriptions/discrepancies/fix/${subscriptionId}`, {
-                    method: 'POST',
-                    body: formData,
-                    credentials: 'same-origin'
-                })
-                .then(function(response) {
-                    return response.json();
-                })
-                .then(function(data) {
-                    if (data.success) {
-                        // Показываем сообщение об успехе
-                        alert(`✅ ${data.message}\n\nНовый срок: ${new Date(data.new_expires_at * 1000).toLocaleString('ru-RU')}\nРазница: ${data.diff_days.toFixed(2)} дней`);
-                        
-                        // Перезагружаем страницу через 1 секунду
-                        setTimeout(function() {
-                            window.location.reload();
-                        }, 1000);
-                    } else {
-                        // Показываем ошибку
-                        alert('❌ Ошибка: ' + (data.error || 'Неизвестная ошибка') + '\n\n' + (data.details || ''));
-                        
-                        // Восстанавливаем кнопку
-                        btn.disabled = false;
-                        btn.innerHTML = originalHTML;
-                    }
-                })
-                .catch(function(error) {
-                    console.error('Error fixing discrepancy:', error);
-                    alert('❌ Ошибка при исправлении расхождения: ' + error.message);
-                    
-                    // Восстанавливаем кнопку
-                    btn.disabled = false;
-                    btn.innerHTML = originalHTML;
-                });
-            });
-        });
-    }
-    
     // Инициализация при загрузке DOM
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function() {
             initRefreshButton();
-            initFixButtons();
         });
     } else {
         initRefreshButton();
-        initFixButtons();
     }
 })();
 </script>
