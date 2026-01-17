@@ -170,9 +170,9 @@ class SubscriptionPurchaseService:
             
             # Получаем все completed платежи для подписки (включая текущий)
             # Используем PaymentRepository для получения платежей
-            async with open_async_connection(self.db_path) as conn:
-                async with conn.execute(
-                    """
+                    async with open_async_connection(self.db_path) as conn:
+                        async with conn.execute(
+                            """
                     SELECT * FROM payments
                     WHERE subscription_id = ? AND status = 'completed'
                     ORDER BY created_at ASC
@@ -229,6 +229,11 @@ class SubscriptionPurchaseService:
                 payment.user_id
             )
             
+            # Обновляем subscription_id в платеже ПЕРЕД пересчетом expires_at
+            # Это необходимо для того, чтобы SQL-подзапрос в _recalculate_and_update_subscription_expires_at
+            # мог найти текущий платеж для получения tariff_id
+            await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
+            
             # Атомарно обновляем expires_at (только если изменился)
             current_expires_at = subscription_row[4]
             if abs(current_expires_at - new_expires_at) > 60:  # Допускаем разницу до 1 минуты
@@ -238,9 +243,6 @@ class SubscriptionPurchaseService:
                     subscription_created_at,
                     payment.user_id
                 )
-            
-            # Обновляем subscription_id в платеже (связывание)
-            await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
             
             # Отправляем универсальное уведомление
             await self._send_universal_notification(payment, subscription_row, tariff, new_expires_at, was_created, subscription_id)
@@ -258,11 +260,11 @@ class SubscriptionPurchaseService:
                     f"may have been updated by another process"
                 )
             
-            logger.info(
+                logger.info(
                 f"[SUBSCRIPTION] Subscription {subscription_id} processed successfully: "
                 f"was_created={was_created}, new_expires_at={new_expires_at}"
-            )
-            
+                )
+                
             return True, None
             
         except Exception as e:
@@ -649,12 +651,12 @@ class SubscriptionPurchaseService:
                         tariff['id'],
                         max_expires_at=MAX_REASONABLE_EXPIRY if use_max_limit else None
                     )
-                    
-                    logger.info(
+                
+                logger.info(
                         f"[SUBSCRIPTION] Subscription {subscription_id} extended atomically: "
                         f"new expires_at={new_expires_at} (added {tariff['duration_sec']}s, "
                         f"previous={existing_expires_at})"
-                    )
+                )
                 
                 # Обновляем лимит трафика подписки из тарифа
                 # ВАЖНО: Обновляем всегда, даже если лимит = 0 (безлимит), чтобы корректно применить новый тариф
@@ -667,10 +669,10 @@ class SubscriptionPurchaseService:
                 # Шаг 2: Продлеваем все ключи подписки
                 # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
                 # Это гарантирует, что при продлении подписки все ключи будут активны
-                # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
-                # ВАЖНО: traffic_limit_mb не обновляется в ключах - лимит управляется через подписку (subscriptions.traffic_limit_mb)
-                # Подписка уже обновлена выше в коде (new_expires_at и traffic_limit_mb), ключи автоматически используют данные из подписки
-                # Не нужно обновлять ключи - они используют данные из подписки
+                    # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
+                    # ВАЖНО: traffic_limit_mb не обновляется в ключах - лимит управляется через подписку (subscriptions.traffic_limit_mb)
+                    # Подписка уже обновлена выше в коде (new_expires_at и traffic_limit_mb), ключи автоматически используют данные из подписки
+                    # Не нужно обновлять ключи - они используют данные из подписки
                 
                 logger.info(
                     f"[SUBSCRIPTION] Extended subscription {subscription_id} - keys automatically use updated subscription data"
