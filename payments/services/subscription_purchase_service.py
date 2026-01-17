@@ -132,15 +132,78 @@ class SubscriptionPurchaseService:
             # КРИТИЧНО: Проверяем subscription_id раньше, чем проверку наличия подписки
             # subscription_id обновляется раньше, чем статус completed
             if payment.subscription_id is not None:
-                # Платеж уже связан с подпиской → это retry webhook
-                logger.info(
-                    f"[SUBSCRIPTION] Payment {payment_id} already linked to subscription {payment.subscription_id}, "
-                    f"this is a retry webhook. Skipping processing."
-                )
-                # Платеж уже обработан, подписка уже создана/продлена
-                # Не нужно повторять обработку, только отправить уведомление (если не отправлено)
-                # TODO: Реализовать send_notification_only_if_needed
-                return True, None
+                subscription_id_retry = payment.subscription_id
+                
+                # Проверяем, есть ли ключи для этой подписки
+                async with open_async_connection(self.db_path) as conn:
+                    async with conn.execute(
+                        """
+                        SELECT COUNT(*) FROM (
+                            SELECT id FROM v2ray_keys WHERE subscription_id = ?
+                            UNION ALL
+                            SELECT id FROM keys WHERE subscription_id = ?
+                        )
+                        """
+                        ,
+                        (subscription_id_retry, subscription_id_retry)
+                    ) as cursor:
+                        keys_count = (await cursor.fetchone())[0] or 0
+                
+                if keys_count > 0:
+                    # Платеж уже связан с подпиской и ключи созданы → это retry webhook
+                    logger.info(
+                        f"[SUBSCRIPTION] Payment {payment_id} already linked to subscription {subscription_id_retry}, "
+                        f"keys exist ({keys_count}). This is a retry webhook. Skipping processing."
+                    )
+                    # Платеж уже обработан, подписка уже создана/продлена, ключи созданы
+                    # Не нужно повторять обработку, только отправить уведомление (если не отправлено)
+                    # TODO: Реализовать send_notification_only_if_needed
+                    return True, None
+                else:
+                    # Платеж связан с подпиской, но ключи НЕ созданы → нужно создать ключи
+                    logger.warning(
+                        f"[SUBSCRIPTION] Payment {payment_id} linked to subscription {subscription_id_retry}, "
+                        f"but NO KEYS found. Creating keys..."
+                    )
+                    # Получаем подписку для создания ключей
+                    subscription_row = await self.subscription_repo.get_subscription_by_id_async(subscription_id_retry)
+                    if not subscription_row:
+                        error_msg = f"Subscription {subscription_id_retry} not found"
+                        logger.error(f"[SUBSCRIPTION] {error_msg}")
+                        return False, error_msg
+                    
+                    # Создаем ключи для существующей подписки, если их нет
+                    logger.warning(
+                        f"[SUBSCRIPTION] Payment {payment_id} linked to subscription {subscription_id_retry}, "
+                        f"but NO KEYS found. Creating keys now..."
+                    )
+                    
+                    # Используем единый метод для создания ключей
+                    created_keys, failed_servers = await self._create_keys_for_subscription(
+                        subscription_id_retry,
+                        payment.user_id,
+                        payment,
+                        tariff,
+                        int(time.time())
+                    )
+                    
+                    if created_keys == 0:
+                        error_msg = f"Failed to create keys for subscription {subscription_id_retry} during retry"
+                        logger.error(f"[SUBSCRIPTION] {error_msg}")
+                        return False, error_msg
+                    
+                    logger.info(
+                        f"[SUBSCRIPTION] Created {created_keys} keys for subscription {subscription_id_retry} during retry"
+                    )
+                    
+                    # Обновляем статус платежа на completed
+                    await self.payment_repo.try_update_status(
+                        payment_id,
+                        PaymentStatus.COMPLETED,
+                        PaymentStatus.PAID
+                    )
+                    
+                    return True, None
             
             # Шаг 6 (НОВАЯ ЛОГИКА): Определяем покупка/продление (упрощенная логика)
             # ВАЖНО: Атомарность обеспечивается через:
@@ -242,6 +305,42 @@ class SubscriptionPurchaseService:
                     subscription_created_at,
                     payment.user_id
                 )
+            
+            # Ключи уже должны быть созданы в _get_or_create_subscription при was_created = True
+            # Но на всякий случай проверяем, есть ли ключи, и создаем их, если их нет
+            # (защита от race condition или если была ошибка при создании)
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT COUNT(*) FROM (
+                        SELECT id FROM v2ray_keys WHERE subscription_id = ?
+                        UNION ALL
+                        SELECT id FROM keys WHERE subscription_id = ?
+                    )
+                    """,
+                    (subscription_id, subscription_id)
+                ) as cursor:
+                    keys_count = (await cursor.fetchone())[0] or 0
+            
+            if keys_count == 0:
+                # Ключи не были созданы (возможно, из-за ошибки или race condition)
+                logger.warning(
+                    f"[SUBSCRIPTION] Subscription {subscription_id} has no keys. "
+                    f"was_created={was_created}. Creating keys now as fallback..."
+                )
+                created_keys, failed_servers = await self._create_keys_for_subscription(
+                    subscription_id,
+                    payment.user_id,
+                    payment,
+                    tariff,
+                    now
+                )
+                
+                if created_keys == 0:
+                    error_msg = f"Failed to create any keys for subscription {subscription_id}"
+                    logger.error(f"[SUBSCRIPTION] {error_msg}")
+                    # НЕ возвращаем ошибку, так как подписка уже создана
+                    # Но логируем для мониторинга
             
             # Отправляем универсальное уведомление
             await self._send_universal_notification(payment, subscription_row, tariff, new_expires_at, was_created, subscription_id)
@@ -1919,7 +2018,271 @@ class SubscriptionPurchaseService:
             ) as cursor:
                 new_subscription_row = await cursor.fetchone()
         
+        # Если подписка была создана, создаем ключи для неё
+        if new_subscription_row:
+            created_keys, failed_servers = await self._create_keys_for_subscription(
+                subscription_id,
+                user_id,
+                payment,
+                tariff,
+                now
+            )
+            
+            if created_keys == 0:
+                logger.error(
+                    f"[SUBSCRIPTION] Failed to create any keys for newly created subscription {subscription_id}, "
+                    f"but subscription was created. This may require manual intervention."
+                )
+                # НЕ удаляем подписку здесь, так как она может быть создана другим процессом
+                # Просто логируем ошибку
+        
         return new_subscription_row, True  # Подписка создана
+    
+    async def _create_keys_for_subscription(
+        self,
+        subscription_id: int,
+        user_id: int,
+        payment: Payment,
+        tariff: Dict[str, Any],
+        now: int
+    ) -> Tuple[int, List[int]]:
+        """
+        Создать ключи для подписки на всех активных серверах.
+        
+        Args:
+            subscription_id: ID подписки
+            user_id: ID пользователя
+            payment: Объект платежа (для получения информации)
+            tariff: Словарь с информацией о тарифе
+            now: Текущее время (timestamp)
+            
+        Returns:
+            Tuple[created_keys_count, failed_servers_list]
+            created_keys_count: Количество успешно созданных ключей
+            failed_servers_list: Список ID серверов, на которых не удалось создать ключи
+        """
+        try:
+            # Получаем все V2Ray серверы
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256
+                    FROM servers
+                    WHERE active = 1 AND protocol = 'v2ray'
+                    ORDER BY id
+                    """
+                ) as cursor:
+                    v2ray_servers = await cursor.fetchall()
+            
+            # Получаем Outline сервер (приоритет серверу с id=8)
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256
+                    FROM servers
+                    WHERE active = 1 AND protocol = 'outline'
+                    ORDER BY CASE WHEN id = 8 THEN 0 ELSE 1 END, id
+                    LIMIT 1
+                    """
+                ) as cursor:
+                    outline_server_row = await cursor.fetchone()
+            
+            created_keys = 0
+            failed_servers = []
+            
+            # Создаем ключи на всех V2Ray серверах
+            for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in v2ray_servers:
+                v2ray_uuid = None
+                protocol_client = None
+                try:
+                    # Генерация email для ключа
+                    key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
+                    
+                    # Создание ключа в зависимости от протокола
+                    if protocol == 'v2ray':
+                        server_config = {
+                            'api_url': api_url,
+                            'api_key': api_key,
+                            'domain': domain,
+                        }
+                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                        user_data = await protocol_client.create_user(key_email, name=server_name)
+                        
+                        if not user_data or not user_data.get('uuid'):
+                            raise Exception("Failed to create user on V2Ray server")
+                        
+                        v2ray_uuid = user_data['uuid']
+                        
+                        # Получение client_config
+                        client_config = await protocol_client.get_user_config(
+                            v2ray_uuid,
+                            {
+                                'domain': domain,
+                                'port': 443,
+                                'email': key_email,
+                            },
+                        )
+                        
+                        # Извлекаем VLESS URL из конфигурации
+                        if 'vless://' in client_config:
+                            lines = client_config.split('\n')
+                            for line in lines:
+                                if line.strip().startswith('vless://'):
+                                    client_config = line.strip()
+                                    break
+                        
+                        # Сохранение V2Ray ключа в БД
+                        async with open_async_connection(self.db_path) as conn:
+                            await conn.execute("PRAGMA foreign_keys = OFF")
+                            try:
+                                # ВАЖНО: expiry_at удалено из v2ray_keys - срок действия берется из subscriptions
+                                # ВАЖНО: traffic_limit_mb не устанавливается - лимит берется из подписки
+                                cursor = await conn.execute(
+                                    """
+                                    INSERT INTO v2ray_keys 
+                                    (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        server_id,
+                                        user_id,
+                                        v2ray_uuid,
+                                        key_email,
+                                        now,
+                                        tariff['id'],
+                                        client_config,
+                                        subscription_id,
+                                    ),
+                                )
+                                await conn.commit()
+                                
+                                # Проверяем, что ключ действительно сохранен
+                                async with conn.execute(
+                                    "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
+                                    (server_id, user_id, subscription_id, v2ray_uuid)
+                                ) as check_cursor:
+                                    if not await check_cursor.fetchone():
+                                        raise Exception(f"Key was not saved to database for server {server_id}")
+                                
+                            finally:
+                                await conn.execute("PRAGMA foreign_keys = ON")
+                    
+                    created_keys += 1
+                    logger.info(
+                        f"[SUBSCRIPTION] Created v2ray key for subscription {subscription_id} on server {server_id} ({server_name})"
+                    )
+                    
+                except Exception as e:
+                    logger.error(
+                        f"[SUBSCRIPTION] Failed to create v2ray key for subscription {subscription_id} "
+                        f"on server {server_id} ({server_name}): {e}",
+                        exc_info=True,
+                    )
+                    # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
+                    if protocol_client and v2ray_uuid:
+                        try:
+                            await protocol_client.delete_user(v2ray_uuid)
+                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned v2ray key on server {server_id}")
+                        except Exception as cleanup_error:
+                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned v2ray key: {cleanup_error}")
+                    failed_servers.append(server_id)
+            
+            # Создаем один Outline ключ (если есть доступный Outline сервер)
+            if outline_server_row:
+                server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 = outline_server_row
+                outline_key_id = None
+                protocol_client = None
+                try:
+                    # Генерация email для ключа
+                    key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
+                    
+                    server_config = {
+                        'api_url': api_url,
+                        'cert_sha256': cert_sha256,
+                    }
+                    protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+                    user_data = await protocol_client.create_user(key_email)
+                    
+                    if not user_data or not user_data.get('id'):
+                        raise Exception("Failed to create user on Outline server")
+                    
+                    outline_key_id = user_data['id']
+                    access_url = user_data['accessUrl']
+                    
+                    # Сохранение Outline ключа в БД
+                    async with open_async_connection(self.db_path) as conn:
+                        await conn.execute("PRAGMA foreign_keys = OFF")
+                        try:
+                            cursor = await conn.execute(
+                                # ВАЖНО: expiry_at удалено из keys - срок действия берется из subscriptions
+                                # ВАЖНО: traffic_limit_mb не устанавливается для ключей с subscription_id - лимит берется из подписки
+                                """
+                                INSERT INTO keys 
+                                (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
+                                VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    server_id,
+                                    user_id,
+                                    access_url,
+                                    outline_key_id,
+                                    now,
+                                    key_email,
+                                    tariff['id'],
+                                    'outline',
+                                    subscription_id,
+                                ),
+                            )
+                            await conn.commit()
+                            
+                            # Проверяем, что ключ действительно сохранен
+                            async with conn.execute(
+                                "SELECT id FROM keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND key_id = ?",
+                                (server_id, user_id, subscription_id, outline_key_id)
+                            ) as check_cursor:
+                                if not await check_cursor.fetchone():
+                                    raise Exception(f"Key was not saved to database for server {server_id}")
+                            
+                        finally:
+                            await conn.execute("PRAGMA foreign_keys = ON")
+                    
+                    created_keys += 1
+                    logger.info(
+                        f"[SUBSCRIPTION] Created outline key for subscription {subscription_id} on server {server_id} ({server_name})"
+                    )
+                    
+                except Exception as e:
+                    logger.error(
+                        f"[SUBSCRIPTION] Failed to create outline key for subscription {subscription_id} "
+                        f"on server {server_id} ({server_name}): {e}",
+                        exc_info=True,
+                    )
+                    # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
+                    if protocol_client and outline_key_id:
+                        try:
+                            await protocol_client.delete_user(outline_key_id)
+                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned outline key on server {server_id}")
+                        except Exception as cleanup_error:
+                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned outline key: {cleanup_error}")
+                    failed_servers.append(server_id)
+            else:
+                logger.info(
+                    f"[SUBSCRIPTION] No active outline server found for subscription {subscription_id}, skipping outline key creation"
+                )
+            
+            logger.info(
+                f"[SUBSCRIPTION] Created keys for subscription {subscription_id}: "
+                f"{created_keys} keys created, {len(failed_servers)} failed"
+            )
+            
+            return created_keys, failed_servers
+            
+        except Exception as e:
+            logger.error(
+                f"[SUBSCRIPTION] Error creating keys for subscription {subscription_id}: {e}",
+                exc_info=True
+            )
+            return 0, failed_servers
     
     async def _recalculate_and_update_subscription_expires_at(
         self,

@@ -75,6 +75,10 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
     offset = (max(page, 1) - 1) * limit
     total = repo.count_users(query=q, vip_filter=vip_filter)
     rows = repo.list_users(query=q, limit=limit, offset=offset, vip_filter=vip_filter)
+    
+    # Получаем бота для получения username пользователей
+    bot = get_bot()
+    
     user_list = []
     for row in rows:
         uid = row[0]
@@ -85,8 +89,19 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
         last_activity = overview.get("last_activity") or None
         if last_activity == 0:
             last_activity = None
+        
+        # Получаем username из таблицы users
+        username = None
+        with open_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM users WHERE user_id = ?", (uid,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                username = row[0]
+        
         user_list.append({
             "user_id": uid,
+            "username": username,
             "email": overview.get("email") or "",
             "referral_count": ref_cnt,
             "last_activity": last_activity,

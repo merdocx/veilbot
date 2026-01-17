@@ -71,6 +71,9 @@
                                 {% endif %}
                                 TG: {{ user.user_id }}
                             </div>
+                            {% if user.username %}
+                                <div class="cell-secondary text-muted">@{{ user.username }}</div>
+                            {% endif %}
                         {% else %}
                             <div class="cell-primary text-muted">—</div>
                         {% endif %}
