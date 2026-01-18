@@ -25,6 +25,50 @@ from bot.services.subscription_traffic_reset import reset_subscription_traffic
 logger = logging.getLogger(__name__)
 
 
+class ServerClientPool:
+    """Упрощенный пул клиентов для переиспользования соединений к серверам"""
+    
+    def __init__(self):
+        self._clients: Dict[int, Any] = {}
+    
+    async def get_client(self, server_id: int, protocol: str, api_url: str, api_key: Optional[str] = None, 
+                        domain: Optional[str] = None, cert_sha256: Optional[str] = None) -> Optional[Any]:
+        """Получить или создать клиент для сервера"""
+        if server_id not in self._clients:
+            try:
+                if protocol == "v2ray":
+                    if not api_url or not api_key:
+                        return None
+                    self._clients[server_id] = ProtocolFactory.create_protocol("v2ray", {
+                        "api_url": api_url,
+                        "api_key": api_key,
+                        "domain": domain,
+                    })
+                elif protocol == "outline":
+                    if not api_url:
+                        return None
+                    self._clients[server_id] = ProtocolFactory.create_protocol("outline", {
+                        "api_url": api_url,
+                        "cert_sha256": cert_sha256 or "",
+                    })
+                else:
+                    return None
+            except Exception as e:
+                logger.warning(f"[SUBSCRIPTION] Не удалось создать клиент для сервера #{server_id}: {e}")
+                return None
+        return self._clients.get(server_id)
+    
+    async def close_all(self):
+        """Закрыть все клиенты"""
+        for server_id, client in self._clients.items():
+            try:
+                if hasattr(client, 'close'):
+                    await client.close()
+            except Exception as e:
+                logger.warning(f"[SUBSCRIPTION] Ошибка закрытия клиента для сервера #{server_id}: {e}")
+        self._clients.clear()
+
+
 class SubscriptionPurchaseService:
     """Сервис для обработки покупки подписки - переписан с нуля по аналогии с ключами"""
     
@@ -254,7 +298,7 @@ class SubscriptionPurchaseService:
             # Используем PaymentRepository для получения платежей
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
-                    """
+                            """
                     SELECT * FROM payments
                     WHERE subscription_id = ? AND status = 'completed'
                     ORDER BY created_at ASC
@@ -341,7 +385,7 @@ class SubscriptionPurchaseService:
             # (защита от race condition или если была ошибка при создании)
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
-                    """
+                            """
                     SELECT COUNT(*) FROM (
                         SELECT id FROM v2ray_keys WHERE subscription_id = ?
                         UNION ALL
@@ -2069,6 +2113,349 @@ class SubscriptionPurchaseService:
         
         return new_subscription_row, True  # Подписка создана
     
+    async def _create_single_v2ray_key(
+        self,
+        server_info: Tuple,
+        subscription_id: int,
+        user_id: int,
+        tariff: Dict[str, Any],
+        now: int,
+        client_pool: Optional[ServerClientPool] = None
+    ) -> Tuple[bool, Optional[int]]:
+        """
+        Создать V2Ray ключ на одном сервере.
+        
+        Returns:
+            Tuple[success, server_id] - success=True если ключ создан, server_id для failed_servers
+        """
+        server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 = server_info
+        v2ray_uuid = None
+        protocol_client = None
+        key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
+        
+        # Retry механизм: до 3 попыток для создания ключа (защита от таймаутов)
+        max_retries = 3
+        retry_delay = 2  # секунды между попытками
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # ОПТИМИЗАЦИЯ: Используем пул клиентов для переиспользования соединений
+                if client_pool:
+                    protocol_client = await client_pool.get_client(server_id, 'v2ray', api_url, api_key, domain)
+                else:
+                    server_config = {
+                        'api_url': api_url,
+                        'api_key': api_key,
+                        'domain': domain,
+                    }
+                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                
+                if not protocol_client:
+                    raise Exception(f"Failed to create protocol client for server {server_id}")
+                
+                # Создание пользователя с retry
+                if attempt > 1:
+                    logger.info(
+                        f"[SUBSCRIPTION] Retry {attempt}/{max_retries} creating v2ray key for subscription {subscription_id} "
+                        f"on server {server_id} ({server_name})"
+                    )
+                    await asyncio.sleep(retry_delay)
+                
+                user_data = await protocol_client.create_user(key_email, name=server_name)
+                
+                if not user_data or not user_data.get('uuid'):
+                    raise Exception("Failed to create user on V2Ray server")
+                
+                v2ray_uuid = user_data['uuid']
+                
+                # Получение client_config
+                client_config = await protocol_client.get_user_config(
+                    v2ray_uuid,
+                    {
+                        'domain': domain,
+                        'port': 443,
+                        'email': key_email,
+                    },
+                )
+                
+                # Извлекаем VLESS URL из конфигурации
+                if 'vless://' in client_config:
+                    lines = client_config.split('\n')
+                    for line in lines:
+                        if line.strip().startswith('vless://'):
+                            client_config = line.strip()
+                            break
+                
+                # Сохранение V2Ray ключа в БД с защитой от race condition
+                async with open_async_connection(self.db_path) as conn:
+                    await conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        await conn.execute("PRAGMA foreign_keys = OFF")
+                        
+                        # Двойная проверка: проверяем существование ключа прямо перед вставкой
+                        async with conn.execute(
+                            """
+                            SELECT id FROM v2ray_keys
+                            WHERE server_id = ? AND subscription_id = ?
+                            LIMIT 1
+                            """
+                        , (server_id, subscription_id)) as check_cursor:
+                            if await check_cursor.fetchone():
+                                logger.warning(
+                                    f"[SUBSCRIPTION] Key for subscription {subscription_id} on server {server_id} "
+                                    f"already exists (race condition), deleting duplicate from server"
+                                )
+                                # Удаляем дубликат с сервера
+                                if protocol_client:
+                                    try:
+                                        await protocol_client.delete_user(v2ray_uuid)
+                                    except Exception as e:
+                                        logger.warning(f"[SUBSCRIPTION] Failed to delete duplicate key from server: {e}")
+                                await conn.commit()
+                                return True, None  # Ключ уже существует, считаем успехом
+                        
+                        # Вставляем ключ только если его еще нет
+                        cursor = await conn.execute(
+                            """
+                            INSERT INTO v2ray_keys 
+                            (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                server_id,
+                                user_id,
+                                v2ray_uuid,
+                                key_email,
+                                now,
+                                tariff['id'],
+                                client_config,
+                                subscription_id,
+                            ),
+                        )
+                        await conn.commit()
+                        
+                        # Проверяем, что ключ действительно сохранен
+                        async with conn.execute(
+                            "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
+                            (server_id, user_id, subscription_id, v2ray_uuid)
+                        ) as verify_cursor:
+                            if not await verify_cursor.fetchone():
+                                raise Exception(f"Key was not saved to database for server {server_id}")
+                    except Exception as db_error:
+                        await conn.rollback()
+                        raise db_error
+                    finally:
+                        await conn.execute("PRAGMA foreign_keys = ON")
+                
+                if attempt > 1:
+                    logger.info(
+                        f"[SUBSCRIPTION] Successfully created v2ray key for subscription {subscription_id} "
+                        f"on server {server_id} ({server_name}) on retry {attempt}"
+                    )
+                else:
+                    logger.info(
+                        f"[SUBSCRIPTION] Created v2ray key for subscription {subscription_id} on server {server_id} ({server_name})"
+                    )
+                
+                    # НЕ закрываем клиент при успехе, если он из пула - пул закроет его сам
+                    # Закрываем только если клиент создан напрямую
+                    if not client_pool and protocol_client:
+                        try:
+                            await protocol_client.close()
+                        except:
+                            pass
+                
+                return True, None
+                
+            except Exception as e:
+                error_msg = str(e)
+                is_timeout = "timeout" in error_msg.lower() or "Timeout" in error_msg
+                
+                if attempt < max_retries and is_timeout:
+                    # Таймаут - повторяем попытку
+                    logger.warning(
+                        f"[SUBSCRIPTION] Timeout creating v2ray key for subscription {subscription_id} "
+                        f"on server {server_id} ({server_name}), attempt {attempt}/{max_retries}. "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    # При retry закрываем клиент (даже из пула), чтобы создать новый
+                    if protocol_client:
+                        try:
+                            await protocol_client.close()
+                        except:
+                            pass
+                    # Удаляем клиент из пула для следующей попытки
+                    if client_pool and server_id in client_pool._clients:
+                        del client_pool._clients[server_id]
+                    protocol_client = None
+                    v2ray_uuid = None
+                    continue
+                else:
+                    # Другая ошибка или последняя попытка - логируем
+                    logger.error(
+                        f"[SUBSCRIPTION] Failed to create v2ray key for subscription {subscription_id} "
+                        f"on server {server_id} ({server_name}), attempt {attempt}/{max_retries}: {e}",
+                        exc_info=True,
+                    )
+                    # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
+                    if protocol_client and v2ray_uuid:
+                        try:
+                            await protocol_client.delete_user(v2ray_uuid)
+                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned v2ray key on server {server_id}")
+                        except Exception as cleanup_error:
+                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned v2ray key: {cleanup_error}")
+                    
+                    # НЕ закрываем клиент при ошибке, если он из пула - пул закроет его сам
+                    # Но при retry закрываем клиент, чтобы создать новый
+                    if not client_pool and protocol_client:
+                        try:
+                            await protocol_client.close()
+                        except:
+                            pass
+                    
+                    return False, server_id  # Возвращаем server_id для failed_servers
+        
+        return False, server_id
+    
+    async def _create_single_outline_key(
+        self,
+        server_info: Tuple,
+        subscription_id: int,
+        user_id: int,
+        tariff: Dict[str, Any],
+        now: int,
+        client_pool: Optional[ServerClientPool] = None
+    ) -> Tuple[bool, Optional[int]]:
+        """
+        Создать Outline ключ на одном сервере.
+        
+        Returns:
+            Tuple[success, server_id] - success=True если ключ создан, server_id для failed_servers
+        """
+        server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 = server_info
+        outline_key_id = None
+        protocol_client = None
+        key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
+        
+        try:
+            # ОПТИМИЗАЦИЯ: Используем пул клиентов для переиспользования соединений
+            if client_pool:
+                protocol_client = await client_pool.get_client(server_id, 'outline', api_url, None, None, cert_sha256)
+            else:
+                server_config = {
+                    'api_url': api_url,
+                    'cert_sha256': cert_sha256,
+                }
+                protocol_client = ProtocolFactory.create_protocol('outline', server_config)
+            
+            if not protocol_client:
+                raise Exception(f"Failed to create protocol client for server {server_id}")
+            user_data = await protocol_client.create_user(key_email)
+            
+            if not user_data or not user_data.get('id'):
+                raise Exception("Failed to create user on Outline server")
+            
+            outline_key_id = user_data['id']
+            access_url = user_data['accessUrl']
+            
+            # Сохранение Outline ключа в БД с защитой от race condition
+            async with open_async_connection(self.db_path) as conn:
+                await conn.execute("BEGIN IMMEDIATE")
+                try:
+                    await conn.execute("PRAGMA foreign_keys = OFF")
+                    
+                    # Двойная проверка: проверяем существование ключа прямо перед вставкой
+                    async with conn.execute(
+                        """
+                        SELECT id FROM keys
+                        WHERE server_id = ? AND subscription_id = ? AND protocol = 'outline'
+                        LIMIT 1
+                        """
+                    , (server_id, subscription_id)) as check_cursor:
+                        if await check_cursor.fetchone():
+                            logger.warning(
+                                f"[SUBSCRIPTION] Outline key for subscription {subscription_id} on server {server_id} "
+                                f"already exists (race condition), deleting duplicate from server"
+                            )
+                            # Удаляем дубликат с сервера
+                            if protocol_client:
+                                try:
+                                    await protocol_client.delete_user(outline_key_id)
+                                except Exception as e:
+                                    logger.warning(f"[SUBSCRIPTION] Failed to delete duplicate outline key from server: {e}")
+                            await conn.commit()
+                            return True, None  # Ключ уже существует, считаем успехом
+                    
+                    # Вставляем ключ только если его еще нет
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO keys 
+                        (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
+                        VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            server_id,
+                            user_id,
+                            access_url,
+                            outline_key_id,
+                            now,
+                            key_email,
+                            tariff['id'],
+                            'outline',
+                            subscription_id,
+                        ),
+                    )
+                    await conn.commit()
+                    
+                    # Проверяем, что ключ действительно сохранен
+                    async with conn.execute(
+                        "SELECT id FROM keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND key_id = ?",
+                        (server_id, user_id, subscription_id, outline_key_id)
+                    ) as verify_cursor:
+                        if not await verify_cursor.fetchone():
+                            raise Exception(f"Key was not saved to database for server {server_id}")
+                except Exception as db_error:
+                    await conn.rollback()
+                    raise db_error
+                finally:
+                    await conn.execute("PRAGMA foreign_keys = ON")
+            
+            logger.info(
+                f"[SUBSCRIPTION] Created outline key for subscription {subscription_id} on server {server_id} ({server_name})"
+            )
+            
+            # НЕ закрываем клиент, если он из пула - пул закроет его сам
+            if not client_pool and protocol_client:
+                try:
+                    await protocol_client.close()
+                except:
+                    pass
+            
+            return True, None
+            
+        except Exception as e:
+            logger.error(
+                f"[SUBSCRIPTION] Failed to create outline key for subscription {subscription_id} "
+                f"on server {server_id} ({server_name}): {e}",
+                exc_info=True,
+            )
+            # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
+            if protocol_client and outline_key_id:
+                try:
+                    await protocol_client.delete_user(outline_key_id)
+                    logger.info(f"[SUBSCRIPTION] Cleaned up orphaned outline key on server {server_id}")
+                except Exception as cleanup_error:
+                    logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned outline key: {cleanup_error}")
+            
+            # НЕ закрываем клиент, если он из пула - пул закроет его сам
+            if not client_pool and protocol_client:
+                try:
+                    await protocol_client.close()
+                except:
+                    pass
+            
+            return False, server_id
+    
     async def _create_keys_for_subscription(
         self,
         subscription_id: int,
@@ -2121,241 +2508,48 @@ class SubscriptionPurchaseService:
             created_keys = 0
             failed_servers = []
             
-            # Создаем ключи на всех V2Ray серверах
-            for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in v2ray_servers:
-                v2ray_uuid = None
-                protocol_client = None
-                key_created = False
-                
-                # Retry механизм: до 3 попыток для создания ключа (защита от таймаутов)
-                max_retries = 3
-                retry_delay = 2  # секунды между попытками
-                
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        # Генерация email для ключа
-                        key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
-                        
-                        # Создание ключа в зависимости от протокола
-                        if protocol == 'v2ray':
-                            server_config = {
-                                'api_url': api_url,
-                                'api_key': api_key,
-                                'domain': domain,
-                            }
-                            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                            
-                            # Создание пользователя с retry
-                            if attempt > 1:
-                                logger.info(
-                                    f"[SUBSCRIPTION] Retry {attempt}/{max_retries} creating v2ray key for subscription {subscription_id} "
-                                    f"on server {server_id} ({server_name})"
-                                )
-                                await asyncio.sleep(retry_delay)
-                            
-                            user_data = await protocol_client.create_user(key_email, name=server_name)
-                            
-                            if not user_data or not user_data.get('uuid'):
-                                raise Exception("Failed to create user on V2Ray server")
-                            
-                            v2ray_uuid = user_data['uuid']
-                            
-                            # Получение client_config
-                            client_config = await protocol_client.get_user_config(
-                                v2ray_uuid,
-                                {
-                                    'domain': domain,
-                                    'port': 443,
-                                    'email': key_email,
-                                },
-                            )
-                            
-                            # Извлекаем VLESS URL из конфигурации
-                            if 'vless://' in client_config:
-                                lines = client_config.split('\n')
-                                for line in lines:
-                                    if line.strip().startswith('vless://'):
-                                        client_config = line.strip()
-                                        break
-                            
-                            # Сохранение V2Ray ключа в БД
-                            async with open_async_connection(self.db_path) as conn:
-                                await conn.execute("PRAGMA foreign_keys = OFF")
-                                try:
-                                    # ВАЖНО: expiry_at удалено из v2ray_keys - срок действия берется из subscriptions
-                                    # ВАЖНО: traffic_limit_mb не устанавливается - лимит берется из подписки
-                                    cursor = await conn.execute(
-                                        """
-                                        INSERT INTO v2ray_keys 
-                                        (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                        """,
-                                        (
-                                            server_id,
-                                            user_id,
-                                            v2ray_uuid,
-                                            key_email,
-                                            now,
-                                            tariff['id'],
-                                            client_config,
-                                            subscription_id,
-                                        ),
-                                    )
-                                    await conn.commit()
-                                    
-                                    # Проверяем, что ключ действительно сохранен
-                                    async with conn.execute(
-                                        "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
-                                        (server_id, user_id, subscription_id, v2ray_uuid)
-                                    ) as check_cursor:
-                                        if not await check_cursor.fetchone():
-                                            raise Exception(f"Key was not saved to database for server {server_id}")
-                                    
-                                finally:
-                                    await conn.execute("PRAGMA foreign_keys = ON")
-                            
-                            key_created = True
-                            created_keys += 1
-                            
-                            if attempt > 1:
-                                logger.info(
-                                    f"[SUBSCRIPTION] Successfully created v2ray key for subscription {subscription_id} "
-                                    f"on server {server_id} ({server_name}) on retry {attempt}"
-                                )
-                            else:
-                                logger.info(
-                                    f"[SUBSCRIPTION] Created v2ray key for subscription {subscription_id} on server {server_id} ({server_name})"
-                                )
-                            break  # Успешно создан, выходим из цикла retry
-                            
-                    except Exception as e:
-                        error_msg = str(e)
-                        is_timeout = "timeout" in error_msg.lower() or "Timeout" in error_msg
-                        
-                        if attempt < max_retries and is_timeout:
-                            # Таймаут - повторяем попытку
-                            logger.warning(
-                                f"[SUBSCRIPTION] Timeout creating v2ray key for subscription {subscription_id} "
-                                f"on server {server_id} ({server_name}), attempt {attempt}/{max_retries}. "
-                                f"Retrying in {retry_delay}s..."
-                            )
-                            # Закрываем клиент перед следующей попыткой
-                            if protocol_client:
-                                try:
-                                    await protocol_client.close()
-                                except:
-                                    pass
-                            protocol_client = None
-                            v2ray_uuid = None
-                            continue
-                        else:
-                            # Другая ошибка или последняя попытка - логируем и добавляем в failed_servers
-                            logger.error(
-                                f"[SUBSCRIPTION] Failed to create v2ray key for subscription {subscription_id} "
-                                f"on server {server_id} ({server_name}), attempt {attempt}/{max_retries}: {e}",
-                                exc_info=True,
-                            )
-                            # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
-                            if protocol_client and v2ray_uuid:
-                                try:
-                                    await protocol_client.delete_user(v2ray_uuid)
-                                    logger.info(f"[SUBSCRIPTION] Cleaned up orphaned v2ray key on server {server_id}")
-                                except Exception as cleanup_error:
-                                    logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned v2ray key: {cleanup_error}")
-                            
-                            # Закрываем клиент при ошибке
-                            if protocol_client:
-                                try:
-                                    await protocol_client.close()
-                                except:
-                                    pass
-                            
-                            if not key_created:
-                                failed_servers.append(server_id)
-                            break  # Выходим из цикла retry
+            # ОПТИМИЗАЦИЯ: Создаем пул клиентов для переиспользования соединений
+            client_pool = ServerClientPool()
             
-            # Создаем один Outline ключ (если есть доступный Outline сервер)
-            if outline_server_row:
-                server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 = outline_server_row
-                outline_key_id = None
-                protocol_client = None
-                try:
-                    # Генерация email для ключа
-                    key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
-                    
-                    server_config = {
-                        'api_url': api_url,
-                        'cert_sha256': cert_sha256,
-                    }
-                    protocol_client = ProtocolFactory.create_protocol('outline', server_config)
-                    user_data = await protocol_client.create_user(key_email)
-                    
-                    if not user_data or not user_data.get('id'):
-                        raise Exception("Failed to create user on Outline server")
-                    
-                    outline_key_id = user_data['id']
-                    access_url = user_data['accessUrl']
-                    
-                    # Сохранение Outline ключа в БД
-                    async with open_async_connection(self.db_path) as conn:
-                        await conn.execute("PRAGMA foreign_keys = OFF")
-                        try:
-                            cursor = await conn.execute(
-                                # ВАЖНО: expiry_at удалено из keys - срок действия берется из subscriptions
-                                # ВАЖНО: traffic_limit_mb не устанавливается для ключей с subscription_id - лимит берется из подписки
-                                """
-                                INSERT INTO keys 
-                                (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
-                                VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    server_id,
-                                    user_id,
-                                    access_url,
-                                    outline_key_id,
-                                    now,
-                                    key_email,
-                                    tariff['id'],
-                                    'outline',
-                                    subscription_id,
-                                ),
-                            )
-                            await conn.commit()
-                            
-                            # Проверяем, что ключ действительно сохранен
-                            async with conn.execute(
-                                "SELECT id FROM keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND key_id = ?",
-                                (server_id, user_id, subscription_id, outline_key_id)
-                            ) as check_cursor:
-                                if not await check_cursor.fetchone():
-                                    raise Exception(f"Key was not saved to database for server {server_id}")
-                            
-                        finally:
-                            await conn.execute("PRAGMA foreign_keys = ON")
-                    
-                    created_keys += 1
+            try:
+                # ОПТИМИЗАЦИЯ: Создаем ключи на всех V2Ray серверах параллельно
+                if v2ray_servers:
+                    v2ray_tasks = [
+                        self._create_single_v2ray_key(server_info, subscription_id, user_id, tariff, now, client_pool)
+                        for server_info in v2ray_servers
+                    ]
+                    v2ray_results = await asyncio.gather(*v2ray_tasks, return_exceptions=True)
+                
+                for result in v2ray_results:
+                    if isinstance(result, Exception):
+                        logger.error(
+                            f"[SUBSCRIPTION] Exception in parallel v2ray key creation: {result}",
+                            exc_info=True
+                        )
+                        # Не можем определить server_id из исключения, пропускаем
+                    elif isinstance(result, tuple):
+                        success, failed_server_id = result
+                        if success:
+                            created_keys += 1
+                        elif failed_server_id:
+                            failed_servers.append(failed_server_id)
+            
+                # Создаем один Outline ключ (если есть доступный Outline сервер)
+                if outline_server_row:
+                    success, failed_server_id = await self._create_single_outline_key(
+                        outline_server_row, subscription_id, user_id, tariff, now, client_pool
+                    )
+                    if success:
+                        created_keys += 1
+                    elif failed_server_id:
+                        failed_servers.append(failed_server_id)
+                else:
                     logger.info(
-                        f"[SUBSCRIPTION] Created outline key for subscription {subscription_id} on server {server_id} ({server_name})"
+                        f"[SUBSCRIPTION] No active outline server found for subscription {subscription_id}, skipping outline key creation"
                     )
-                    
-                except Exception as e:
-                    logger.error(
-                        f"[SUBSCRIPTION] Failed to create outline key for subscription {subscription_id} "
-                        f"on server {server_id} ({server_name}): {e}",
-                        exc_info=True,
-                    )
-                    # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
-                    if protocol_client and outline_key_id:
-                        try:
-                            await protocol_client.delete_user(outline_key_id)
-                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned outline key on server {server_id}")
-                        except Exception as cleanup_error:
-                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned outline key: {cleanup_error}")
-                    failed_servers.append(server_id)
-            else:
-                logger.info(
-                    f"[SUBSCRIPTION] No active outline server found for subscription {subscription_id}, skipping outline key creation"
-                )
+            finally:
+                # Закрываем все клиенты из пула
+                await client_pool.close_all()
             
             logger.info(
                 f"[SUBSCRIPTION] Created keys for subscription {subscription_id}: "
