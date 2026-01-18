@@ -98,6 +98,10 @@
                         <stop offset="0%" stop-color="#1976d2" stop-opacity="0.45"/>
                         <stop offset="100%" stop-color="#1976d2" stop-opacity="0"/>
                     </linearGradient>
+                    <linearGradient id="subscriptionsGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#4caf50" stop-opacity="0.4"/>
+                        <stop offset="100%" stop-color="#4caf50" stop-opacity="0"/>
+                    </linearGradient>
                 </defs>
 
                 <g class="grid-lines" stroke="rgba(148, 163, 184, 0.25)" stroke-width="1">
@@ -115,8 +119,14 @@
 
                 <path d="{{ chart_data.users_fill }}" fill="url(#usersGradient)" stroke="none"/>
                 <path d="{{ chart_data.keys_fill }}" fill="url(#keysGradient)" stroke="none"/>
+                {% if chart_data.subscriptions_fill %}
+                <path d="{{ chart_data.subscriptions_fill }}" fill="url(#subscriptionsGradient)" stroke="none"/>
+                {% endif %}
                 <path d="{{ chart_data.users_path }}" fill="none" stroke="#f57c00" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
                 <path d="{{ chart_data.keys_path }}" fill="none" stroke="#1976d2" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                {% if chart_data.subscriptions_path %}
+                <path d="{{ chart_data.subscriptions_path }}" fill="none" stroke="#4caf50" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                {% endif %}
 
                 <g class="points">
                     {% for point in chart_data.users_points %}
@@ -129,6 +139,13 @@
                             <title>{{ point.label }}: {{ point.value }}</title>
                         </circle>
                     {% endfor %}
+                    {% if chart_data.subscriptions_points %}
+                    {% for point in chart_data.subscriptions_points %}
+                        <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="#fff" stroke="#4caf50" stroke-width="1.5">
+                            <title>{{ point.label }}: {{ point.value }} платных подписок</title>
+                        </circle>
+                    {% endfor %}
+                    {% endif %}
                 </g>
 
                 <g class="x-labels" fill="#475569" font-size="12" font-family="Roboto, sans-serif">
@@ -147,6 +164,10 @@
                 <span class="legend-item">
                     <span class="legend-swatch" style="background:#1976d2"></span>
                     Активные ключи
+                </span>
+                <span class="legend-item">
+                    <span class="legend-swatch" style="background:#4caf50"></span>
+                    Платные подписки
                 </span>
             </div>
         {% else %}

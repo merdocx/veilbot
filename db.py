@@ -423,6 +423,28 @@ def migrate_create_dashboard_metrics_table():
         logging.info("Таблица dashboard_metrics создана/проверена")
     except Exception as e:
         logging.error(f"Ошибка создания таблицы dashboard_metrics: {e}")
+
+
+def migrate_add_paid_subscriptions_to_dashboard_metrics():
+    """Добавление поля paid_subscriptions в таблицу dashboard_metrics"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        # Проверяем, существует ли уже поле
+        cursor.execute("PRAGMA table_info(dashboard_metrics)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'paid_subscriptions' not in columns:
+            cursor.execute("""
+                ALTER TABLE dashboard_metrics 
+                ADD COLUMN paid_subscriptions INTEGER NOT NULL DEFAULT 0
+            """)
+            conn.commit()
+            logging.info("Поле paid_subscriptions добавлено в dashboard_metrics")
+        else:
+            logging.info("Поле paid_subscriptions уже существует в dashboard_metrics")
+    except Exception as e:
+        logging.error(f"Ошибка добавления поля paid_subscriptions: {e}")
     finally:
         conn.close()
 def migrate_create_users_table():
@@ -1476,6 +1498,7 @@ def _run_all_migrations():
     migrate_add_is_vip_to_users()
     migrate_add_is_archived_to_tariffs()
     migrate_add_notification_sent_to_payments()
+    migrate_add_paid_subscriptions_to_dashboard_metrics()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

@@ -33,7 +33,7 @@ async def dashboard(request: Request):
 
     # Пытаемся получить кэшированные данные дашборда
     from app.infra.cache import traffic_cache
-    cache_key = "dashboard_stats_v3"
+    cache_key = "dashboard_stats_v4"  # Обновлен для поддержки paid_subscriptions
     cached_stats = traffic_cache.get(cache_key)
     
     if cached_stats:
@@ -63,27 +63,61 @@ async def dashboard(request: Request):
             server_count = row[3] or 0
             started_users = row[4] or 0
             
+            # Подсчитываем активные платные подписки на конец сегодняшнего дня
+            # Платные подписки - это подписки с небесплатным тарифом (price_rub > 0) и не VIP пользователи
+            # Активные = expires_at > end_of_today_timestamp
+            end_of_today = int(time.mktime(time.strptime(today + " 23:59:59", "%Y-%m-%d %H:%M:%S")))
+            c.execute("""
+                SELECT COUNT(*) FROM subscriptions s
+                JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN users u ON s.user_id = u.user_id
+                WHERE s.expires_at > ?
+                AND t.price_rub > 0
+                AND (u.is_vip IS NULL OR u.is_vip = 0)
+            """, (end_of_today,))
+            paid_subscriptions_today = (c.fetchone()[0] or 0)
+            
             # Сохраняем ежедневные метрики (одна запись в день)
             timestamp = int(time.time())
             c.execute("""
-                INSERT INTO dashboard_metrics (date, active_keys, started_users, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO dashboard_metrics (date, active_keys, started_users, paid_subscriptions, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(date) DO UPDATE SET
                     active_keys = excluded.active_keys,
                     started_users = excluded.started_users,
+                    paid_subscriptions = excluded.paid_subscriptions,
                     updated_at = excluded.updated_at
-            """, (today, active_keys, started_users, timestamp, timestamp))
+            """, (today, active_keys, started_users, paid_subscriptions_today, timestamp, timestamp))
+            
+            # Пересчитываем активные платные подписки для всех дней в истории
+            # Это нужно для заполнения данных после миграции
+            # ВАЖНО: Для сегодняшнего дня всегда используем актуальное значение, не обновляем здесь
+            # (сегодняшний день уже обновлен выше в INSERT ... ON CONFLICT DO UPDATE)
+            # Платные подписки - это подписки с небесплатным тарифом (price_rub > 0) и не VIP пользователи
+            # Активные на конец дня = expires_at > end_of_day_timestamp
+            c.execute("""
+                UPDATE dashboard_metrics
+                SET paid_subscriptions = (
+                    SELECT COUNT(*) FROM subscriptions s
+                    JOIN tariffs t ON s.tariff_id = t.id
+                    LEFT JOIN users u ON s.user_id = u.user_id
+                    WHERE s.expires_at > strftime('%s', dashboard_metrics.date || ' 23:59:59')
+                    AND t.price_rub > 0
+                    AND (u.is_vip IS NULL OR u.is_vip = 0)
+                )
+                WHERE date != ?
+            """, (today,))
             
             # Получаем историю метрик
             c.execute("""
-                SELECT date, active_keys, started_users
+                SELECT date, active_keys, started_users, COALESCE(paid_subscriptions, 0)
                 FROM dashboard_metrics
                 ORDER BY date DESC
                 LIMIT 30
             """)
             rows = c.fetchall()
             metrics = [
-                {"date": r[0], "active_keys": r[1], "started_users": r[2]}
+                {"date": r[0], "active_keys": r[1], "started_users": r[2], "paid_subscriptions": r[3] or 0}
                 for r in rows
             ][::-1]  # chronological order
 
@@ -96,23 +130,24 @@ async def dashboard(request: Request):
                         continue
                     seed_active = random.randint(0, 1000)
                     seed_started = random.randint(0, 1000)
-                    seed_rows.append((seed_date, seed_active, seed_started, timestamp, timestamp))
+                    seed_paid = random.randint(0, 50)
+                    seed_rows.append((seed_date, seed_active, seed_started, seed_paid, timestamp, timestamp))
 
                 if seed_rows:
                     c.executemany("""
-                        INSERT OR IGNORE INTO dashboard_metrics (date, active_keys, started_users, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT OR IGNORE INTO dashboard_metrics (date, active_keys, started_users, paid_subscriptions, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
                     """, seed_rows)
 
                     c.execute("""
-                        SELECT date, active_keys, started_users
+                        SELECT date, active_keys, started_users, COALESCE(paid_subscriptions, 0)
                         FROM dashboard_metrics
                         ORDER BY date DESC
                         LIMIT 30
                     """)
                     rows = c.fetchall()
                     metrics = [
-                        {"date": r[0], "active_keys": r[1], "started_users": r[2]}
+                        {"date": r[0], "active_keys": r[1], "started_users": r[2], "paid_subscriptions": r[3] or 0}
                         for r in rows
                     ][::-1]
             
@@ -142,8 +177,9 @@ def _prepare_chart_data(metrics: list[dict]) -> dict | None:
     dates = [m["date"] for m in metrics]
     started_users = [m["started_users"] for m in metrics]
     active_keys = [m["active_keys"] for m in metrics]
+    paid_subscriptions = [m.get("paid_subscriptions", 0) for m in metrics]
     
-    max_value = max(max(started_users, default=0), max(active_keys, default=0), 10)
+    max_value = max(max(started_users, default=0), max(active_keys, default=0), max(paid_subscriptions, default=0), 10)
     y_step = max(50, math.ceil(max_value / 4 / 50) * 50)
     # Ensure ticks cover the max_value
     tick_values = list(range(0, int(math.ceil(max_value / y_step) * y_step) + y_step, y_step))
@@ -187,6 +223,7 @@ def _prepare_chart_data(metrics: list[dict]) -> dict | None:
     
     users_path, users_fill, users_points = build_path(started_users)
     keys_path, keys_fill, keys_points = build_path(active_keys)
+    subscriptions_path, subscriptions_fill, subscriptions_points = build_path(paid_subscriptions)
     
     label_step = max(1, count // 6)
     x_labels = []
@@ -211,8 +248,11 @@ def _prepare_chart_data(metrics: list[dict]) -> dict | None:
         "users_fill": users_fill,
         "keys_path": keys_path,
         "keys_fill": keys_fill,
+        "subscriptions_path": subscriptions_path,
+        "subscriptions_fill": subscriptions_fill,
         "users_points": users_points,
         "keys_points": keys_points,
+        "subscriptions_points": subscriptions_points,
         "x_labels": x_labels,
         "y_ticks": y_ticks,
         "baseline_y": round(padding["top"] + inner_height, 2),
