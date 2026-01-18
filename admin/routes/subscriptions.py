@@ -177,7 +177,7 @@ def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
 
 
 @router.get("/subscriptions")
-async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q: str | None = None, paid: bool = False):
+async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q: str | None = None, paid: str | None = None):
     """Страница списка подписок"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
@@ -192,7 +192,12 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q
         # Нормализуем параметр поиска
         query_normalized = q.strip() if q and q.strip() else None
         
-        total = subscription_repo.count_subscriptions(query=query_normalized, paid_only=paid)
+        # Преобразуем параметр paid из строки в bool (аналогично vip_filter на странице пользователей)
+        paid_filter_bool = False
+        if paid == "1" or paid == "true":
+            paid_filter_bool = True
+        
+        total = subscription_repo.count_subscriptions(query=query_normalized, paid_only=paid_filter_bool)
         
         # Получаем список активных серверов для выпадающего списка
         all_servers = server_repo.list_servers()
@@ -207,14 +212,14 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q
                 })
         
         offset = (max(page, 1) - 1) * limit
-        rows = subscription_repo.list_subscriptions(query=query_normalized, limit=limit, offset=offset, paid_only=paid)
+        rows = subscription_repo.list_subscriptions(query=query_normalized, limit=limit, offset=offset, paid_only=paid_filter_bool)
         
         now_ts = int(time.time())
         
         # Подсчитываем статистику для всех подписок (с учетом поиска, если есть)
         if query_normalized:
             # Если есть поиск, получаем все подписки, соответствующие поиску, и считаем статистику
-            all_matching_rows = subscription_repo.list_subscriptions(query=query_normalized, limit=999999, offset=0, paid_only=paid)
+            all_matching_rows = subscription_repo.list_subscriptions(query=query_normalized, limit=999999, offset=0, paid_only=paid_filter_bool)
             active_count = 0
             expired_count = 0
             for row in all_matching_rows:
@@ -364,7 +369,7 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q
             "active_servers": active_servers,
             "pages": pages,
             "csrf_token": get_csrf_token(request),
-            "paid_filter": paid,
+            "paid_filter": paid_filter_bool,
             "q": q,
         })
     except Exception as e:
