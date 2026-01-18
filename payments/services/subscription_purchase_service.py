@@ -159,6 +159,24 @@ class SubscriptionPurchaseService:
                     # Платеж уже обработан, подписка уже создана/продлена, ключи созданы
                     # Не нужно повторять обработку, только отправить уведомление (если не отправлено)
                     # TODO: Реализовать send_notification_only_if_needed
+                    
+                    # КРИТИЧНО: Обновляем статус на completed, если он еще не обновлен
+                    # Это важно для retry webhook'ов, которые могут прийти до обновления статуса
+                    update_success = await self.payment_repo.try_update_status(
+                        payment_id,
+                        PaymentStatus.COMPLETED,
+                        PaymentStatus.PAID
+                    )
+                    if update_success:
+                        logger.info(
+                            f"[SUBSCRIPTION] Payment {payment_id} status updated to completed during retry"
+                        )
+                    else:
+                        # Статус уже может быть completed или изменен другим процессом
+                        logger.debug(
+                            f"[SUBSCRIPTION] Payment {payment_id} status update skipped (already completed or changed)"
+                        )
+                    
                     return True, None
                 else:
                     # Платеж связан с подпиской, но ключи НЕ созданы → нужно создать ключи

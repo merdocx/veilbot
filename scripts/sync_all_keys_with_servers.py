@@ -281,9 +281,31 @@ async def sync_all_keys_with_servers(
     logger.info(f"  Серверов в БД: {len(servers)}")
     logger.info(f"  Активных подписок: {len(subscriptions)}")
     
+    # ОПТИМИЗАЦИЯ: Создаем пул клиентов сразу для переиспользования
+    client_pool = ServerClientPool()
+    
     # ========== ЭТАП 2: Удаление ключей для недоступных серверов ==========
     active_servers = [s for s in servers if s["active"]]
     unavailable_by_api = []  # Серверы, недоступные по API, но активные в БД
+    
+    # ОПТИМИЗАЦИЯ: Проверяем доступность через пул клиентов (используя get_all_keys_cached)
+    # Вместо отдельного запроса в check_server_availability используем тот же запрос, который будет использован позже
+    async def check_server_availability_via_pool(server: Dict[str, Any]) -> bool:
+        """Проверить доступность сервера через пул клиентов (оптимизированная версия)"""
+        try:
+            protocol_client = await client_pool.get_client(server)
+            if not protocol_client:
+                return False
+            
+            # Используем get_all_keys_cached - это и проверка доступности, и кэширование для будущего использования
+            protocol = server.get("protocol", "outline")
+            await asyncio.wait_for(
+                client_pool.get_all_keys_cached(server["id"], protocol, protocol_client),
+                timeout=10.0
+            )
+            return True
+        except (asyncio.TimeoutError, Exception):
+            return False
     
     if delete_inactive_server_keys:
         logger.info("\n[ЭТАП 2] Удаление ключей для недоступных серверов...")
@@ -296,30 +318,23 @@ async def sync_all_keys_with_servers(
                 unavailable_server_ids.append(server["id"])
                 logger.info(f"  Сервер #{server['id']} ({server['name']}) неактивен в БД")
         
-        # Проверяем доступность активных серверов по API (только для логирования и фильтрации)
-        # НО НЕ удаляем ключи для временно недоступных серверов!
-        server_availability_tasks = []
-        for server in active_servers:
-            task = check_server_availability(
-                server["protocol"],
-                server["api_url"],
-                server.get("api_key"),
-                server.get("cert_sha256"),
-            )
-            server_availability_tasks.append((server["id"], task))
-        
-        if server_availability_tasks:
+        # ОПТИМИЗАЦИЯ: Проверяем доступность через пул клиентов (один запрос вместо двух)
+        if active_servers:
+            server_availability_tasks = [
+                check_server_availability_via_pool(server)
+                for server in active_servers
+            ]
+            
             availability_results = await asyncio.gather(
-                *[task for _, task in server_availability_tasks],
+                *server_availability_tasks,
                 return_exceptions=True
             )
             
-            for i, (server_id, _) in enumerate(server_availability_tasks):
+            for i, server in enumerate(active_servers):
                 result = availability_results[i]
                 if isinstance(result, Exception) or not result:
-                    unavailable_by_api.append(server_id)
-                    server_name = next((s["name"] for s in servers if s["id"] == server_id), f"Server #{server_id}")
-                    logger.warning(f"  Сервер #{server_id} ({server_name}) временно недоступен по API (ключи сохранены)")
+                    unavailable_by_api.append(server["id"])
+                    logger.warning(f"  Сервер #{server['id']} ({server['name']}) временно недоступен по API (ключи сохранены)")
         
         # Удаляем ключи ТОЛЬКО для серверов с active = 0
         if unavailable_server_ids:
@@ -350,29 +365,23 @@ async def sync_all_keys_with_servers(
         stats["servers_unavailable"] = len(unavailable_server_ids)
     else:
         logger.info("\n[ЭТАП 2] Пропущен (delete_inactive_server_keys=False)")
-        # Все равно проверяем доступность для фильтрации
-        server_availability_tasks = []
-        for server in active_servers:
-            task = check_server_availability(
-                server["protocol"],
-                server["api_url"],
-                server.get("api_key"),
-                server.get("cert_sha256"),
-            )
-            server_availability_tasks.append((server["id"], task))
-        
-        if server_availability_tasks:
+        # ОПТИМИЗАЦИЯ: Все равно проверяем доступность для фильтрации через пул клиентов
+        if active_servers:
+            server_availability_tasks = [
+                check_server_availability_via_pool(server)
+                for server in active_servers
+            ]
+            
             availability_results = await asyncio.gather(
-                *[task for _, task in server_availability_tasks],
+                *server_availability_tasks,
                 return_exceptions=True
             )
             
-            for i, (server_id, _) in enumerate(server_availability_tasks):
+            for i, server in enumerate(active_servers):
                 result = availability_results[i]
                 if isinstance(result, Exception) or not result:
-                    unavailable_by_api.append(server_id)
-                    server_name = next((s["name"] for s in servers if s["id"] == server_id), f"Server #{server_id}")
-                    logger.warning(f"  Сервер #{server_id} ({server_name}) временно недоступен по API (ключи сохранены)")
+                    unavailable_by_api.append(server["id"])
+                    logger.warning(f"  Сервер #{server['id']} ({server['name']}) временно недоступен по API (ключи сохранены)")
     
     # ========== ЭТАП 2.5: Удаление ключей для неактивных подписок ==========
     if delete_inactive_server_keys:
@@ -415,47 +424,119 @@ async def sync_all_keys_with_servers(
             logger.info(f"  Найдено ключей для неактивных подписок: {total_inactive_keys} (V2Ray: {len(inactive_v2ray_keys)}, Outline: {len(inactive_outline_keys)})")
             
             if not dry_run:
-                # Удаляем ключи с серверов и из БД
+                # ОПТИМИЗАЦИЯ: Используем пул клиентов и группируем удаления по серверам
                 deleted_from_servers = 0
                 
-                # Удаляем V2Ray ключи
+                # Создаем пул клиентов для переиспользования
+                client_pool_inactive = ServerClientPool()
+                
+                # Группируем V2Ray ключи по серверам
+                v2ray_keys_by_server: Dict[int, List[Tuple]] = {}
                 for key_row in inactive_v2ray_keys:
                     key_id, sub_id, server_id, v2ray_uuid, api_url, api_key = key_row
-                    try:
-                        if api_url and api_key and v2ray_uuid:
-                            server_config = {
-                                'api_url': api_url,
-                                'api_key': api_key,
-                                'domain': '',
-                            }
-                            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                            try:
-                                deleted = await protocol_client.delete_user(v2ray_uuid)
-                                if deleted:
-                                    deleted_from_servers += 1
-                            finally:
-                                await protocol_client.close()
-                    except Exception as e:
-                        logger.warning(f"    Ошибка удаления V2Ray ключа {v2ray_uuid[:8]}... с сервера: {e}")
+                    if server_id not in v2ray_keys_by_server:
+                        v2ray_keys_by_server[server_id] = []
+                    v2ray_keys_by_server[server_id].append(key_row)
                 
-                # Удаляем Outline ключи
+                # Группируем Outline ключи по серверам
+                outline_keys_by_server: Dict[int, List[Tuple]] = {}
                 for key_row in inactive_outline_keys:
                     key_id, sub_id, server_id, outline_key_id, api_url, cert_sha256 = key_row
+                    if server_id not in outline_keys_by_server:
+                        outline_keys_by_server[server_id] = []
+                    outline_keys_by_server[server_id].append(key_row)
+                
+                # Получаем информацию о серверах для пула клиентов
+                servers_dict = {s["id"]: s for s in servers}
+                
+                # Удаляем V2Ray ключи (группированно по серверам)
+                async def delete_v2ray_keys_for_server(server_id: int, keys: List[Tuple]) -> int:
+                    """Удалить V2Ray ключи для одного сервера"""
+                    server_info = servers_dict.get(server_id)
+                    if not server_info:
+                        return 0
+                    
+                    deleted_count = 0
                     try:
-                        if api_url and outline_key_id:
-                            server_config = {
-                                'api_url': api_url,
-                                'cert_sha256': cert_sha256 or '',
-                            }
-                            protocol_client = ProtocolFactory.create_protocol('outline', server_config)
-                            try:
-                                deleted = await protocol_client.delete_user(outline_key_id)
-                                if deleted:
-                                    deleted_from_servers += 1
-                            except Exception as e:
-                                logger.warning(f"    Ошибка удаления Outline ключа {outline_key_id} с сервера: {e}")
+                        protocol_client = await client_pool_inactive.get_client(server_info)
+                        if not protocol_client:
+                            return 0
+                        
+                        # Параллельно удаляем все ключи этого сервера
+                        async def delete_single_key(key_row: Tuple) -> bool:
+                            async with api_semaphore:
+                                try:
+                                    _, _, _, v2ray_uuid, _, _ = key_row
+                                    if v2ray_uuid:
+                                        deleted = await protocol_client.delete_user(v2ray_uuid)
+                                        return bool(deleted)
+                                except Exception as e:
+                                    logger.warning(f"    Ошибка удаления V2Ray ключа {key_row[3][:8] if key_row[3] else 'N/A'}...: {e}")
+                                return False
+                        
+                        delete_tasks = [delete_single_key(key_row) for key_row in keys]
+                        results = await asyncio.gather(*delete_tasks, return_exceptions=True)
+                        deleted_count = sum(1 for r in results if r is True)
                     except Exception as e:
-                        logger.warning(f"    Ошибка удаления Outline ключа {outline_key_id} с сервера: {e}")
+                        logger.warning(f"    Ошибка при удалении V2Ray ключей для сервера #{server_id}: {e}")
+                    
+                    return deleted_count
+                
+                # Удаляем Outline ключи (группированно по серверам)
+                async def delete_outline_keys_for_server(server_id: int, keys: List[Tuple]) -> int:
+                    """Удалить Outline ключи для одного сервера"""
+                    server_info = servers_dict.get(server_id)
+                    if not server_info:
+                        return 0
+                    
+                    deleted_count = 0
+                    try:
+                        protocol_client = await client_pool_inactive.get_client(server_info)
+                        if not protocol_client:
+                            return 0
+                        
+                        # Параллельно удаляем все ключи этого сервера
+                        async def delete_single_key(key_row: Tuple) -> bool:
+                            async with api_semaphore:
+                                try:
+                                    _, _, _, outline_key_id, _, _ = key_row
+                                    if outline_key_id:
+                                        deleted = await protocol_client.delete_user(outline_key_id)
+                                        return bool(deleted)
+                                except Exception as e:
+                                    logger.warning(f"    Ошибка удаления Outline ключа {key_row[3] if key_row[3] else 'N/A'}: {e}")
+                                return False
+                        
+                        delete_tasks = [delete_single_key(key_row) for key_row in keys]
+                        results = await asyncio.gather(*delete_tasks, return_exceptions=True)
+                        deleted_count = sum(1 for r in results if r is True)
+                    except Exception as e:
+                        logger.warning(f"    Ошибка при удалении Outline ключей для сервера #{server_id}: {e}")
+                    
+                    return deleted_count
+                
+                # Параллельно обрабатываем все серверы
+                v2ray_delete_tasks = [
+                    delete_v2ray_keys_for_server(server_id, keys)
+                    for server_id, keys in v2ray_keys_by_server.items()
+                ]
+                outline_delete_tasks = [
+                    delete_outline_keys_for_server(server_id, keys)
+                    for server_id, keys in outline_keys_by_server.items()
+                ]
+                
+                all_delete_results = await asyncio.gather(
+                    *v2ray_delete_tasks + outline_delete_tasks,
+                    return_exceptions=True
+                )
+                
+                deleted_from_servers = sum(
+                    r for r in all_delete_results
+                    if isinstance(r, int)
+                )
+                
+                # Закрываем пул клиентов
+                await client_pool_inactive.close_all()
                 
                 # Удаляем из БД
                 with get_db_cursor(commit=True) as cursor:
@@ -540,8 +621,7 @@ async def sync_all_keys_with_servers(
     # ОПТИМИЗАЦИЯ: Создаем словарь для быстрого доступа к серверам по ID
     servers_by_id = {s["id"]: s for s in servers}
     
-    # ОПТИМИЗАЦИЯ: Создаем пул клиентов для переиспользования
-    client_pool = ServerClientPool()
+    # ОПТИМИЗАЦИЯ: Используем пул клиентов, созданный ранее на ЭТАПЕ 2
     
     # ОПТИМИЗАЦИЯ: Semaphore для параллельной обработки серверов (до 5 одновременно)
     server_semaphore = asyncio.Semaphore(5)
@@ -636,25 +716,51 @@ async def sync_all_keys_with_servers(
                                             client_config = remove_fragment_from_vless(client_config)
 
                                             # Сохраняем в БД
+                                            # ВАЖНО: Проверяем существование ключа ПЕРЕД вставкой для защиты от race conditions
+                                            # Используем BEGIN IMMEDIATE для атомарной проверки и вставки
                                             if not dry_run:
                                                 with get_db_cursor(commit=True) as cursor:
-                                                    with safe_foreign_keys_off(cursor):
+                                                    # Начинаем IMMEDIATE транзакцию для атомарной проверки и вставки
+                                                    cursor.execute("BEGIN IMMEDIATE")
+                                                    try:
+                                                        # Проверяем существование ключа атомарно перед вставкой
                                                         cursor.execute("""
-                                                            INSERT INTO v2ray_keys
-                                                            (server_id, user_id, v2ray_uuid, email, created_at, expiry_at,
-                                                             tariff_id, client_config, subscription_id)
-                                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                                        """, (
-                                                            server_id,
-                                                            user_id,
-                                                            created_uuid,
-                                                            key_email,
-                                                            now,
-                                                            expires_at,
-                                                            tariff_id,
-                                                            client_config,
-                                                            sub_id,
-                                                        ))
+                                                            SELECT id FROM v2ray_keys
+                                                            WHERE server_id = ? AND subscription_id = ?
+                                                            LIMIT 1
+                                                        """, (server_id, sub_id))
+                                                        if cursor.fetchone():
+                                                            # Ключ уже существует (race condition), удаляем созданный ключ с сервера
+                                                            cursor.execute("ROLLBACK")
+                                                            logger.warning(f"      Ключ для подписки {sub_id} на сервере {server_id} уже существует (race condition), удаляем дубликат с сервера")
+                                                            try:
+                                                                await protocol_client.delete_user(created_uuid)
+                                                            except Exception as e:
+                                                                logger.warning(f"      Не удалось удалить дубликат ключа {created_uuid[:8]}... с сервера: {e}")
+                                                            continue
+                                                        
+                                                        # Вставляем ключ только если его еще нет
+                                                        with safe_foreign_keys_off(cursor):
+                                                            cursor.execute("""
+                                                                INSERT INTO v2ray_keys
+                                                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at,
+                                                                 tariff_id, client_config, subscription_id)
+                                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                            """, (
+                                                                server_id,
+                                                                user_id,
+                                                                created_uuid,
+                                                                key_email,
+                                                                now,
+                                                                expires_at,
+                                                                tariff_id,
+                                                                client_config,
+                                                                sub_id,
+                                                            ))
+                                                        cursor.execute("COMMIT")
+                                                    except Exception as e:
+                                                        cursor.execute("ROLLBACK")
+                                                        raise
 
                                             invalidate_subscription_cache(token)
                                             

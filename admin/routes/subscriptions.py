@@ -11,6 +11,7 @@ import sys
 import os
 import time
 import math
+import asyncio
 from datetime import datetime
 from typing import Optional, Dict, Any
 
@@ -933,7 +934,6 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
         target_server_id = sync_params.server_id if sync_params.server_scope == "single" else None
         
         # Запускаем синхронизацию с таймаутом (10 минут)
-        import asyncio
         try:
             result = await asyncio.wait_for(
                 sync_all_keys_with_servers(
@@ -995,15 +995,6 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
             "success": False,
             "error": error_msg
         }, status_code=500)
-    except asyncio.TimeoutError:
-        error_msg = "Синхронизация превысила максимальное время выполнения (10 минут). Процесс был прерван."
-        logger.error(error_msg)
-        log_admin_action(request, "SYNC_KEYS_TIMEOUT", error_msg)
-        return JSONResponse({
-            "success": False,
-            "error": error_msg,
-            "message": "Синхронизация заняла слишком много времени и была прервана. Попробуйте запустить синхронизацию для конкретного сервера или проверьте доступность серверов."
-        }, status_code=504)
     except Exception as e:
         error_msg = f"Ошибка синхронизации ключей: {str(e)}"
         logger.error(error_msg, exc_info=True)
