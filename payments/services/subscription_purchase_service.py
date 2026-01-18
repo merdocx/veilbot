@@ -180,9 +180,9 @@ class SubscriptionPurchaseService:
                 subscription_id_retry = payment.subscription_id
                 
                 # Проверяем, есть ли ключи для этой подписки
-            async with open_async_connection(self.db_path) as conn:
-                async with conn.execute(
-                    """
+                async with open_async_connection(self.db_path) as conn:
+                    async with conn.execute(
+                        """
                         SELECT COUNT(*) FROM (
                             SELECT id FROM v2ray_keys WHERE subscription_id = ?
                             UNION ALL
@@ -191,7 +191,7 @@ class SubscriptionPurchaseService:
                         """
                         ,
                         (subscription_id_retry, subscription_id_retry)
-                ) as cursor:
+                    ) as cursor:
                         keys_count = (await cursor.fetchone())[0] or 0
                 
                 if keys_count > 0:
@@ -298,7 +298,7 @@ class SubscriptionPurchaseService:
             # Используем PaymentRepository для получения платежей
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
-                            """
+                    """
                     SELECT * FROM payments
                     WHERE subscription_id = ? AND status = 'completed'
                     ORDER BY created_at ASC
@@ -385,7 +385,7 @@ class SubscriptionPurchaseService:
             # (защита от race condition или если была ошибка при создании)
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
-                            """
+                    """
                     SELECT COUNT(*) FROM (
                         SELECT id FROM v2ray_keys WHERE subscription_id = ?
                         UNION ALL

@@ -177,10 +177,11 @@
                 // Очищаем поле ввода
                 freshSearchInput.value = '';
 
-                // Обновляем URL без перезагрузки, сохраняя другие параметры (например, vip_filter)
+                // Обновляем URL без перезагрузки, сохраняя другие параметры (например, vip_filter, paid)
                 const url = new URL(window.location.href);
                 url.searchParams.delete('q');
                 url.searchParams.set('page', '1');
+                // Не удаляем параметр paid при сбросе, если он установлен - пользователь может хотеть сохранить фильтр
                 window.history.pushState({}, '', url.toString());
 
                 // Выполняем поиск с пустым запросом

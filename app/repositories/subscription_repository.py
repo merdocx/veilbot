@@ -688,10 +688,25 @@ class SubscriptionRepository:
                 # Восстанавливаем foreign keys
                 await conn.execute("PRAGMA foreign_keys=ON")
 
-    def list_subscriptions(self, query: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Tuple]:
-        """Получить список всех активных подписок с информацией о ключах"""
+    def list_subscriptions(self, query: Optional[str] = None, limit: int = 50, offset: int = 0, paid_only: bool = False) -> List[Tuple]:
+        """Получить список всех активных подписок с информацией о ключах
+        
+        Args:
+            query: Поисковый запрос
+            limit: Лимит записей
+            offset: Смещение
+            paid_only: Если True, показывать только платные подписки (price_rub > 0, не VIP)
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            
+            # Базовое условие для платных подписок
+            paid_condition = ""
+            if paid_only:
+                paid_condition = """
+                    AND t.price_rub > 0
+                    AND (u.is_vip IS NULL OR u.is_vip = 0)
+                """
             
             if query:
                 like = f"%{query.strip()}%"
@@ -711,6 +726,7 @@ class SubscriptionRepository:
                     s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN users u ON s.user_id = u.user_id
                 LEFT JOIN (
                     SELECT subscription_id, COUNT(*) as v2ray_count
                     FROM v2ray_keys
@@ -723,6 +739,7 @@ class SubscriptionRepository:
                     GROUP BY subscription_id
                 ) ok ON ok.subscription_id = s.id
                 WHERE s.is_active = 1
+                  {paid_condition}
                   AND (CAST(s.id AS TEXT) LIKE ?
                     OR CAST(s.user_id AS TEXT) LIKE ?
                     OR s.subscription_token LIKE ?
@@ -754,6 +771,7 @@ class SubscriptionRepository:
                 ORDER BY s.created_at DESC
                 LIMIT ? OFFSET ?
                 """
+                sql = sql.format(paid_condition=paid_condition)
                 c.execute(sql, (like, like, like, like, like, like, like, limit, offset))
             else:
                 sql = """
@@ -772,6 +790,7 @@ class SubscriptionRepository:
                     s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN users u ON s.user_id = u.user_id
                 LEFT JOIN (
                     SELECT subscription_id, COUNT(*) as v2ray_count
                     FROM v2ray_keys
@@ -784,22 +803,39 @@ class SubscriptionRepository:
                     GROUP BY subscription_id
                 ) ok ON ok.subscription_id = s.id
                 WHERE s.is_active = 1
+                  {paid_condition}
                 ORDER BY s.created_at DESC
                 LIMIT ? OFFSET ?
                 """
+                sql = sql.format(paid_condition=paid_condition)
                 c.execute(sql, (limit, offset))
             return c.fetchall()
 
-    def count_subscriptions(self, query: Optional[str] = None) -> int:
-        """Получить общее количество подписок (всех, не только активных)"""
+    def count_subscriptions(self, query: Optional[str] = None, paid_only: bool = False) -> int:
+        """Получить общее количество подписок (всех, не только активных)
+        
+        Args:
+            query: Поисковый запрос
+            paid_only: Если True, считать только платные подписки (price_rub > 0, не VIP)
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            
+            # Базовое условие для платных подписок
+            paid_condition = ""
+            if paid_only:
+                paid_condition = """
+                    AND t.price_rub > 0
+                    AND (u.is_vip IS NULL OR u.is_vip = 0)
+                """
+            
             if query:
                 like = f"%{query.strip()}%"
                 sql = """
                 SELECT COUNT(*)
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN users u ON s.user_id = u.user_id
                 WHERE (CAST(s.id AS TEXT) LIKE ?
                     OR CAST(s.user_id AS TEXT) LIKE ?
                     OR s.subscription_token LIKE ?
@@ -828,10 +864,23 @@ class SubscriptionRepository:
                           AND p.email != '' 
                           AND p.email NOT LIKE 'user_%@veilbot.com'
                     ))
+                  {paid_condition}
                 """
+                sql = sql.format(paid_condition=paid_condition)
                 c.execute(sql, (like, like, like, like, like, like, like))
             else:
-                c.execute("SELECT COUNT(*) FROM subscriptions")
+                if paid_only:
+                    sql = """
+                    SELECT COUNT(*)
+                    FROM subscriptions s
+                    LEFT JOIN tariffs t ON s.tariff_id = t.id
+                    LEFT JOIN users u ON s.user_id = u.user_id
+                    WHERE t.price_rub > 0
+                      AND (u.is_vip IS NULL OR u.is_vip = 0)
+                    """
+                    c.execute(sql)
+                else:
+                    c.execute("SELECT COUNT(*) FROM subscriptions")
             row = c.fetchone()
             return row[0] if row else 0
 

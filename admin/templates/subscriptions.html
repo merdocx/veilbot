@@ -32,8 +32,12 @@
     <!-- Filters -->
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
-            <form method="get" action="/subscriptions" id="search-form" style="display: flex; gap: 8px; flex: 1;">
-                <input type="text" id="global-search" name="q" value="{{ q }}" placeholder="Поиск по ID подписки, ID пользователя, токену, тарифу или email..." class="filter-input filter-input--grow" data-table-id="subscriptions-table">
+            <form method="get" action="/subscriptions" id="search-form" style="display: flex; gap: 8px; flex: 1; align-items: center;">
+                <input type="text" id="global-search" name="q" value="{{ q or '' }}" placeholder="Поиск по ID подписки, ID пользователя, токену, тарифу или email..." class="filter-input filter-input--grow" data-table-id="subscriptions-table">
+                <label class="filter-checkbox" style="display: flex; align-items: center; gap: 8px; margin-left: 12px; cursor: pointer;">
+                    <input type="checkbox" name="paid" value="1" {% if paid_filter %}checked{% endif %} style="cursor: pointer;">
+                    <span>Платные</span>
+                </label>
                 <input type="hidden" name="page" value="1" id="search-page-input">
                 <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
             </form>
@@ -174,7 +178,7 @@
 {% if pages > 1 %}
 <div class="pagination">
     {% if page > 1 %}
-        <a href="?page={{ page - 1 }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}">
+        <a href="?page={{ page - 1 }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if paid_filter %}&paid=1{% endif %}">
             <span class="material-icons icon-small">chevron_left</span>
         </a>
     {% endif %}
@@ -183,7 +187,7 @@
         {% if p == page %}
             <a href="#" class="active">{{ p }}</a>
         {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
-            <a href="?page={{ p }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ p }}</a>
+            <a href="?page={{ p }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if paid_filter %}&paid=1{% endif %}">{{ p }}</a>
         {% elif p == 4 and page > 5 %}
             <span>...</span>
         {% elif p == pages - 3 and page < pages - 4 %}
@@ -192,7 +196,7 @@
     {% endfor %}
     
     {% if page < pages %}
-        <a href="?page={{ page + 1 }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}">
+        <a href="?page={{ page + 1 }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if paid_filter %}&paid=1{% endif %}">
             <span class="material-icons icon-small">chevron_right</span>
         </a>
     {% endif %}
@@ -317,5 +321,32 @@
 {% block extra_scripts %}
     {{ super() }}
     <script src="/static/js/subscriptions.js?v={{ current_time }}"></script>
+    <script>
+        // Обработчик для чекбокса "Платные"
+        document.addEventListener('DOMContentLoaded', function() {
+            const paidCheckbox = document.querySelector('input[name="paid"]');
+            if (paidCheckbox) {
+                paidCheckbox.addEventListener('change', function() {
+                    const url = new URL(window.location.href);
+                    if (this.checked) {
+                        url.searchParams.set('paid', '1');
+                    } else {
+                        url.searchParams.delete('paid');
+                    }
+                    url.searchParams.delete('page'); // Сбрасываем на первую страницу
+                    
+                    // Сохраняем поисковый запрос, если есть
+                    const qInput = document.querySelector('#global-search');
+                    if (qInput && qInput.value) {
+                        url.searchParams.set('q', qInput.value);
+                    } else {
+                        url.searchParams.delete('q');
+                    }
+                    
+                    window.location.href = url.toString();
+                });
+            }
+        });
+    </script>
 {% endblock %}
 
