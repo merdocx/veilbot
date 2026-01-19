@@ -349,12 +349,25 @@ class SubscriptionPurchaseService:
             # Обновляем subscription_id в платеже ПЕРЕД обновлением expires_at
             await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
             
+            # ВАЖНО: Проверяем VIP статус перед обновлением expires_at
+            # VIP подписки не должны изменяться при продлении
+            is_vip = self.user_repo.is_user_vip(payment.user_id)
+            current_expires_at = subscription_row[4]
+            is_vip_subscription = current_expires_at >= self.VIP_EXPIRES_AT - 86400  # Допускаем разницу до 1 дня
+            
             # Расчет нового expires_at:
             # - Если подписка создана сейчас (was_created = True) - пересчитываем на основе всех платежей
             # - Если подписка уже существовала (was_created = False) - просто продлеваем от текущего expires_at
-            current_expires_at = subscription_row[4]
+            # - Если это VIP подписка - не изменяем expires_at
             
-            if was_created:
+            if is_vip_subscription or is_vip:
+                # VIP подписка - не изменяем expires_at
+                new_expires_at = current_expires_at
+                logger.info(
+                    f"[SUBSCRIPTION] Subscription {subscription_id} is VIP (expires_at={current_expires_at}), "
+                    f"keeping VIP_EXPIRES_AT unchanged"
+                )
+            elif was_created:
                 # Новая подписка - пересчитываем на основе всех платежей
                 new_expires_at = self._calculate_subscription_expires_at(
                     all_payments,
@@ -372,13 +385,34 @@ class SubscriptionPurchaseService:
                     f"tariff_duration={tariff_duration}s, new_expires_at={new_expires_at}"
                 )
             
-            # Атомарно обновляем expires_at (только если изменился)
+            # Атомарно обновляем expires_at и лимит трафика (только если изменился)
             if abs(current_expires_at - new_expires_at) > 60:  # Допускаем разницу до 1 минуты
+                traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
                 await self._update_subscription_expires_at(
                     subscription_id,
                     new_expires_at,
-                    tariff['id']
+                    tariff['id'],
+                    traffic_limit_mb
                 )
+            else:
+                # Даже если expires_at не изменился, обновляем tariff_id и лимит трафика из тарифа (безопасно)
+                traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+                # ВАЖНО: Обновляем tariff_id, даже если expires_at не изменился
+                async with open_async_connection(self.db_path) as conn:
+                    await conn.execute(
+                        """
+                        UPDATE subscriptions
+                        SET tariff_id = ?, last_updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (tariff['id'], int(time.time()), subscription_id)
+                    )
+                    await conn.commit()
+                    logger.info(
+                        f"[SUBSCRIPTION] Updated subscription {subscription_id} tariff_id to {tariff['id']} "
+                        f"(expires_at unchanged in process_subscription_purchase)"
+                    )
+                await self._update_subscription_traffic_limit_safe(subscription_id, traffic_limit_mb)
             
             # Ключи уже должны быть созданы в _get_or_create_subscription при was_created = True
             # Но на всякий случай проверяем, есть ли ключи, и создаем их, если их нет
@@ -771,6 +805,10 @@ class SubscriptionPurchaseService:
             subscription_token = existing_subscription[2]
             existing_expires_at = existing_subscription[4]
             
+            # ВАЖНО: Проверяем VIP статус перед продлением
+            is_vip = self.user_repo.is_user_vip(payment.user_id)
+            is_vip_subscription = existing_expires_at >= self.VIP_EXPIRES_AT - 86400  # Допускаем разницу до 1 дня
+            
             if is_purchase:
                 # Если это покупка, не продлеваем подписку, только отправляем уведомление
                 logger.info(
@@ -778,6 +816,13 @@ class SubscriptionPurchaseService:
                     f"not extending, only sending purchase notification"
                 )
                 new_expires_at = existing_expires_at  # Используем существующий срок
+            elif is_vip_subscription or is_vip:
+                # VIP подписка - не изменяем expires_at
+                logger.info(
+                    f"[SUBSCRIPTION] Subscription {subscription_id} is VIP (expires_at={existing_expires_at}), "
+                    f"not extending, keeping VIP_EXPIRES_AT"
+                )
+                new_expires_at = existing_expires_at
             else:
                 # Продление: увеличиваем срок действия
                 # ВАЖНО: Используем атомарное обновление для предотвращения race conditions
@@ -831,15 +876,11 @@ class SubscriptionPurchaseService:
                         f"previous={existing_expires_at})"
                 )
             
-            # ВАЖНО: Обновляем лимит трафика подписки из тарифа ВСЕГДА
+            # ВАЖНО: Обновляем лимит трафика подписки из тарифа, но сохраняем реферальный бонус
             # Это нужно делать и при покупке (is_purchase=True), и при продлении (is_purchase=False),
             # и при ручной установке срока (is_manually_set=True)
-            # Обновляем всегда, даже если лимит = 0 (безлимит), чтобы корректно применить новый тариф
-            traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
-            await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, traffic_limit_mb)
-            logger.info(
-                f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {traffic_limit_mb} MB"
-            )
+            tariff_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+            await self._update_subscription_traffic_limit_safe(subscription_id, tariff_limit_mb)
 
             # Шаг 2: "Продлеваем" ключи подписки
             # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
@@ -1131,6 +1172,15 @@ class SubscriptionPurchaseService:
                     except Exception as e:
                         logger.error(f"[SUBSCRIPTION] Failed to mark payment {payment.payment_id} as completed: {e}", exc_info=True)
                     return True, None
+            
+            # Шаг 1.5: Обновляем лимит трафика подписки из тарифа
+            # ВАЖНО: Это нужно делать всегда, даже если уведомление уже отправлено
+            traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+            await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, traffic_limit_mb)
+            logger.info(
+                f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {traffic_limit_mb} MB "
+                f"(in _send_purchase_notification_for_existing_subscription)"
+            )
             
             # Шаг 2: Отправляем уведомление о покупке
             # Флаг purchase_notification_sent уже установлен атомарно выше
@@ -2042,13 +2092,27 @@ class SubscriptionPurchaseService:
                 existing_subscription_row = await cursor.fetchone()
         
         if existing_subscription_row:
+            # ВАЖНО: Обновляем лимит трафика для существующей подписки из тарифа (безопасно, сохраняем реферальный бонус)
+            subscription_id = existing_subscription_row[0]
+            traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+            await self._update_subscription_traffic_limit_safe(subscription_id, traffic_limit_mb)
             return existing_subscription_row, False  # Подписка существовала
+        
+        # ВАЖНО: Проверяем VIP статус перед созданием подписки
+        is_vip = self.user_repo.is_user_vip(user_id)
         
         # Создаем новую подписку
         subscription_token = str(uuid.uuid4())
         
         # Вычисляем предварительный expires_at (будет пересчитан на основе всех платежей)
-        expires_at = now + tariff['duration_sec']
+        # ВАЖНО: Для VIP подписок устанавливаем VIP_EXPIRES_AT
+        if is_vip:
+            expires_at = self.VIP_EXPIRES_AT
+            traffic_limit_mb = 0  # VIP = безлимит
+            logger.info(f"[SUBSCRIPTION] Creating VIP subscription for user {user_id}, expires_at={expires_at}")
+        else:
+            expires_at = now + tariff['duration_sec']
+            traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
         
         subscription_id = None
         async with open_async_connection(self.db_path) as conn:
@@ -2076,7 +2140,7 @@ class SubscriptionPurchaseService:
                         INSERT INTO subscriptions (user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified, traffic_limit_mb)
                         VALUES (?, ?, ?, ?, ?, 1, 0, ?)
                         """,
-                        (user_id, subscription_token, now, expires_at, tariff['id'], tariff.get('traffic_limit_mb', 0) or 0),
+                        (user_id, subscription_token, now, expires_at, tariff['id'], traffic_limit_mb),
                     )
                     subscription_id = cursor.lastrowid
                     await conn.commit()
@@ -2580,12 +2644,25 @@ class SubscriptionPurchaseService:
         
         Использует SQL-транзакцию для предотвращения race conditions.
         Возвращает новое значение expires_at.
+        
+        ВАЖНО: Также обновляет tariff_id из последнего платежа и traffic_limit_mb из тарифа.
         """
         new_expires_at = self._calculate_subscription_expires_at(
             payments,
             subscription_created_at,
             user_id
         )
+        
+        # Получаем tariff_id из последнего платежа
+        last_payment = payments[-1] if payments else None
+        tariff_id_from_payment = last_payment.tariff_id if last_payment else None
+        
+        # Получаем лимит трафика из тарифа
+        traffic_limit_mb = 0
+        if tariff_id_from_payment:
+            tariff_row = self.tariff_repo.get_tariff(tariff_id_from_payment)
+            if tariff_row and len(tariff_row) > 4:
+                traffic_limit_mb = tariff_row[4] or 0
         
         # Атомарное обновление через SQL
         async with open_async_connection(self.db_path) as conn:
@@ -2594,34 +2671,88 @@ class SubscriptionPurchaseService:
                 await conn.execute(
                     """
                     UPDATE subscriptions
-                    SET expires_at = ?, last_updated_at = ?, tariff_id = (
+                    SET expires_at = ?, last_updated_at = ?, tariff_id = COALESCE(?, (
                         SELECT tariff_id FROM payments
                         WHERE subscription_id = ? AND status = 'completed'
                         ORDER BY created_at DESC
                         LIMIT 1
-                    )
+                    ))
                     WHERE id = ?
                     """,
-                    (new_expires_at, int(time.time()), subscription_id, subscription_id)
+                    (new_expires_at, int(time.time()), tariff_id_from_payment, subscription_id, subscription_id)
                 )
                 await conn.commit()
             except Exception as e:
                 await conn.rollback()
                 raise e
         
+        # Обновляем лимит трафика безопасно (сохраняем реферальный бонус)
+        if traffic_limit_mb > 0:
+            await self._update_subscription_traffic_limit_safe(subscription_id, traffic_limit_mb)
+        
         return new_expires_at
+    
+    async def _update_subscription_traffic_limit_safe(
+        self,
+        subscription_id: int,
+        tariff_limit_mb: int
+    ) -> None:
+        """
+        Безопасно обновить лимит трафика подписки, сохраняя реферальный бонус.
+        
+        Если текущий лимит больше лимита тарифа, это может быть реферальный бонус - сохраняем его.
+        """
+        # Получаем текущий лимит подписки
+        async with open_async_connection(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT traffic_limit_mb FROM subscriptions WHERE id = ?",
+                (subscription_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                current_limit_mb = row[0] if row and row[0] is not None else None
+        
+        # Определяем новый лимит
+        if current_limit_mb is None:
+            # Лимит не установлен - используем лимит из тарифа
+            new_limit_mb = tariff_limit_mb
+        elif current_limit_mb > tariff_limit_mb and tariff_limit_mb > 0:
+            # Текущий лимит больше лимита тарифа - возможно, это реферальный бонус
+            # Сохраняем текущий лимит, чтобы не потерять бонус
+            new_limit_mb = current_limit_mb
+            logger.info(
+                f"[SUBSCRIPTION] Keeping current traffic limit {current_limit_mb} MB for subscription {subscription_id} "
+                f"(includes bonus, tariff limit is {tariff_limit_mb} MB)"
+            )
+        elif current_limit_mb == 0:
+            # Безлимит (0) - сохраняем безлимит
+            new_limit_mb = 0
+        else:
+            # Текущий лимит <= лимит тарифа - обновляем из тарифа
+            new_limit_mb = tariff_limit_mb
+        
+        await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, new_limit_mb)
+        logger.info(
+            f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {new_limit_mb} MB "
+            f"(tariff limit: {tariff_limit_mb} MB, previous: {current_limit_mb} MB)"
+        )
     
     async def _update_subscription_expires_at(
         self,
         subscription_id: int,
         new_expires_at: int,
-        tariff_id: int
+        tariff_id: int,
+        traffic_limit_mb: int = 0
     ) -> None:
         """
-        Атомарно обновить expires_at и tariff_id подписки (для продления).
+        Атомарно обновить expires_at, tariff_id и traffic_limit_mb подписки (для продления).
         
-        Используется при продлении существующей подписки - просто обновляет expires_at.
+        Используется при продлении существующей подписки - обновляет expires_at и лимит трафика.
+        ВАЖНО: Использует безопасное обновление лимита, сохраняя реферальный бонус.
         """
+        # Безопасно обновляем лимит трафика (сохраняем реферальный бонус)
+        await self._update_subscription_traffic_limit_safe(subscription_id, traffic_limit_mb)
+        
+        # Обновляем expires_at и tariff_id
         async with open_async_connection(self.db_path) as conn:
             await conn.execute("BEGIN IMMEDIATE")
             try:

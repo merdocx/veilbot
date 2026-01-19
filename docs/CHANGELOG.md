@@ -7,6 +7,35 @@
 
 ## [Unreleased]
 
+## [2.4.26] - 2026-01-19
+
+### Исправлено
+- ✅ **Критические исправления процесса покупки и продления подписок**:
+  - Исправлена проблема с обновлением `tariff_id` при продлении подписки (теперь обновляется всегда)
+  - Исправлена проблема с обновлением `tariff_id` в методе `_get_or_create_subscription()` при использовании существующей подписки
+  - Добавлена проверка VIP статуса во всех критических методах:
+    - `process_subscription_purchase()` - VIP подписки не изменяются при продлении
+    - `_extend_subscription()` - VIP подписки сохраняют VIP_EXPIRES_AT
+    - `_get_or_create_subscription()` - VIP пользователи получают VIP подписки
+  - Исправлена подписка #257: установлен правильный тариф из платежа
+  - Реферальный бонус теперь всегда сохраняется при продлении подписки
+
+### Добавлено
+- ✅ **Скрипты для анализа и исправления подписок**:
+  - `scripts/find_subscriptions_9gb_not_100gb.py` - поиск подписок с лимитом 9 ГБ вместо 100 ГБ
+  - `scripts/fix_subscriptions_9gb_to_100gb.py` - исправление подписок с неправильным лимитом
+  - `scripts/analyze_subscription_traffic_limit_issues.py` - анализ проблем с лимитом трафика
+  - `scripts/analyze_subscription_purchase_flow.py` - анализ процесса покупки и продления
+  - `scripts/analyze_vip_and_referral_bonus.py` - анализ учета VIP статуса и реферального бонуса
+
+### Документация
+- ✅ Добавлена документация по анализу и исправлению проблем с подписками:
+  - `docs/SUBSCRIPTION_TRAFFIC_LIMIT_ANALYSIS.md` - анализ проблем с лимитом трафика
+  - `docs/SUBSCRIPTION_TRAFFIC_LIMIT_FIX.md` - описание исправлений лимита трафика
+  - `docs/SUBSCRIPTION_PURCHASE_FLOW_ANALYSIS.md` - анализ процесса покупки и продления
+  - `docs/VIP_AND_REFERRAL_BONUS_ANALYSIS.md` - анализ учета VIP статуса и реферального бонуса
+  - `docs/VIP_AND_REFERRAL_BONUS_FIXES.md` - описание исправлений VIP статуса
+
 ## [2.4.25] - 2026-01-18
 
 ### Исправлено
