@@ -830,14 +830,16 @@ class SubscriptionPurchaseService:
                         f"new expires_at={new_expires_at} (added {tariff['duration_sec']}s, "
                         f"previous={existing_expires_at})"
                 )
-                
-                # Обновляем лимит трафика подписки из тарифа
-                # ВАЖНО: Обновляем всегда, даже если лимит = 0 (безлимит), чтобы корректно применить новый тариф
-                traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
-                await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, traffic_limit_mb)
-                logger.info(
-                    f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {traffic_limit_mb} MB"
-                )
+            
+            # ВАЖНО: Обновляем лимит трафика подписки из тарифа ВСЕГДА
+            # Это нужно делать и при покупке (is_purchase=True), и при продлении (is_purchase=False),
+            # и при ручной установке срока (is_manually_set=True)
+            # Обновляем всегда, даже если лимит = 0 (безлимит), чтобы корректно применить новый тариф
+            traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+            await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, traffic_limit_mb)
+            logger.info(
+                f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {traffic_limit_mb} MB"
+            )
                 
                 # Шаг 2: Продлеваем все ключи подписки
                 # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
