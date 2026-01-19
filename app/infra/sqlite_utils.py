@@ -43,7 +43,9 @@ def apply_pragmas_sync(conn: sqlite3.Connection) -> None:
 
 def open_connection(db_path: Optional[str]) -> sqlite3.Connection:
     path = db_path or os.getenv("DATABASE_PATH", "vpn.db")
-    conn = sqlite3.connect(path)
+    # IMPORTANT: Increase SQLite connect timeout to reduce "database is locked" errors under concurrent writers.
+    # This works together with PRAGMA busy_timeout (applied below) and WAL mode.
+    conn = sqlite3.connect(path, timeout=30)
     apply_pragmas_sync(conn)
     return conn
 
@@ -70,7 +72,9 @@ async def apply_pragmas_async(conn: aiosqlite.Connection) -> None:
 @asynccontextmanager
 async def open_async_connection(db_path: Optional[str]) -> aiosqlite.Connection:
     path = db_path or os.getenv("DATABASE_PATH", "vpn.db")
-    conn = await aiosqlite.connect(path)
+    # IMPORTANT: Increase SQLite connect timeout to reduce "database is locked" errors under concurrent writers.
+    # This works together with PRAGMA busy_timeout (applied below) and WAL mode.
+    conn = await aiosqlite.connect(path, timeout=30)
     await apply_pragmas_async(conn)
     try:
         yield conn
