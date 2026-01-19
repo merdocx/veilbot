@@ -840,20 +840,18 @@ class SubscriptionPurchaseService:
             logger.info(
                 f"[SUBSCRIPTION] Updated subscription {subscription_id} traffic_limit_mb to {traffic_limit_mb} MB"
             )
-                
-                # Шаг 2: Продлеваем все ключи подписки
-                # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
-                # Это гарантирует, что при продлении подписки все ключи будут активны
-                    # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
-                    # ВАЖНО: traffic_limit_mb не обновляется в ключах - лимит управляется через подписку (subscriptions.traffic_limit_mb)
-                    # Подписка уже обновлена выше в коде (new_expires_at и traffic_limit_mb), ключи автоматически используют данные из подписки
-                    # Не нужно обновлять ключи - они используют данные из подписки
-                
-                logger.info(
-                    f"[SUBSCRIPTION] Extended subscription {subscription_id} - keys automatically use updated subscription data"
-                )
-                
-                # Шаг 2.5: Сбрасываем трафик всех ключей подписки при продлении
+
+            # Шаг 2: "Продлеваем" ключи подписки
+            # ВАЖНО: expiry_at удалено из таблиц keys и v2ray_keys - срок действия берется из subscriptions
+            # ВАЖНО: traffic_limit_mb не обновляется в ключах - лимит управляется через подписку (subscriptions.traffic_limit_mb)
+            # Подписка уже обновлена выше (new_expires_at и traffic_limit_mb), ключи автоматически используют данные из подписки.
+            logger.info(
+                f"[SUBSCRIPTION] Extended subscription {subscription_id} - keys automatically use updated subscription data"
+            )
+
+            # Шаг 2.5: Сбрасываем трафик подписки ТОЛЬКО при реальном продлении.
+            # Для is_purchase=True мы не продлеваем подписку и не должны вмешиваться в учёт трафика.
+            if not is_purchase:
                 try:
                     reset_success = await reset_subscription_traffic(subscription_id)
                     if reset_success:
@@ -861,7 +859,10 @@ class SubscriptionPurchaseService:
                     else:
                         logger.warning(f"[SUBSCRIPTION] Failed to reset traffic for subscription {subscription_id}")
                 except Exception as e:
-                    logger.error(f"[SUBSCRIPTION] Error resetting traffic for subscription {subscription_id}: {e}", exc_info=True)
+                    logger.error(
+                        f"[SUBSCRIPTION] Error resetting traffic for subscription {subscription_id}: {e}",
+                        exc_info=True,
+                    )
             
             # Шаг 3: Проверяем, не было ли уже отправлено уведомление
             # ВАЖНО: purchase_notification_sent проверяем ТОЛЬКО для покупки (is_purchase=True)
