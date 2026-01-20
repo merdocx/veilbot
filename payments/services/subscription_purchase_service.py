@@ -386,8 +386,16 @@ class SubscriptionPurchaseService:
                 )
             
             # Атомарно обновляем expires_at и лимит трафика (только если изменился)
+            # ВАЖНО: Всегда получаем traffic_limit_mb из тарифа (не используем or 0, чтобы не потерять значение)
+            traffic_limit_mb = tariff.get('traffic_limit_mb')
+            if traffic_limit_mb is None:
+                # Если в тарифе нет лимита, используем 0
+                traffic_limit_mb = 0
+            else:
+                # Используем значение из тарифа (может быть 0 для безлимита)
+                traffic_limit_mb = int(traffic_limit_mb)
+            
             if abs(current_expires_at - new_expires_at) > 60:  # Допускаем разницу до 1 минуты
-                traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
                 await self._update_subscription_expires_at(
                     subscription_id,
                     new_expires_at,
@@ -396,7 +404,6 @@ class SubscriptionPurchaseService:
                 )
             else:
                 # Даже если expires_at не изменился, обновляем tariff_id и лимит трафика из тарифа (безопасно)
-                traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
                 # ВАЖНО: Обновляем tariff_id, даже если expires_at не изменился
                 async with open_async_connection(self.db_path) as conn:
                     await conn.execute(
@@ -412,6 +419,7 @@ class SubscriptionPurchaseService:
                         f"[SUBSCRIPTION] Updated subscription {subscription_id} tariff_id to {tariff['id']} "
                         f"(expires_at unchanged in process_subscription_purchase)"
                     )
+                # ВАЖНО: Всегда обновляем лимит трафика из тарифа (даже если expires_at не изменился)
                 await self._update_subscription_traffic_limit_safe(subscription_id, traffic_limit_mb)
             
             # Ключи уже должны быть созданы в _get_or_create_subscription при was_created = True
@@ -879,7 +887,12 @@ class SubscriptionPurchaseService:
             # ВАЖНО: Обновляем лимит трафика подписки из тарифа, но сохраняем реферальный бонус
             # Это нужно делать и при покупке (is_purchase=True), и при продлении (is_purchase=False),
             # и при ручной установке срока (is_manually_set=True)
-            tariff_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+            # ВАЖНО: Правильно получаем traffic_limit_mb из тарифа (не используем or 0, чтобы не потерять значение)
+            tariff_limit_mb = tariff.get('traffic_limit_mb')
+            if tariff_limit_mb is None:
+                tariff_limit_mb = 0
+            else:
+                tariff_limit_mb = int(tariff_limit_mb)
             await self._update_subscription_traffic_limit_safe(subscription_id, tariff_limit_mb)
 
             # Шаг 2: "Продлеваем" ключи подписки
@@ -2094,7 +2107,12 @@ class SubscriptionPurchaseService:
         if existing_subscription_row:
             # ВАЖНО: Обновляем лимит трафика для существующей подписки из тарифа (безопасно, сохраняем реферальный бонус)
             subscription_id = existing_subscription_row[0]
-            traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+            # ВАЖНО: Правильно получаем traffic_limit_mb из тарифа (не используем or 0, чтобы не потерять значение)
+            traffic_limit_mb = tariff.get('traffic_limit_mb')
+            if traffic_limit_mb is None:
+                traffic_limit_mb = 0
+            else:
+                traffic_limit_mb = int(traffic_limit_mb)
             await self._update_subscription_traffic_limit_safe(subscription_id, traffic_limit_mb)
             return existing_subscription_row, False  # Подписка существовала
         
@@ -2112,7 +2130,12 @@ class SubscriptionPurchaseService:
             logger.info(f"[SUBSCRIPTION] Creating VIP subscription for user {user_id}, expires_at={expires_at}")
         else:
             expires_at = now + tariff['duration_sec']
-            traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
+            # ВАЖНО: Правильно получаем traffic_limit_mb из тарифа (не используем or 0, чтобы не потерять значение)
+            traffic_limit_mb = tariff.get('traffic_limit_mb')
+            if traffic_limit_mb is None:
+                traffic_limit_mb = 0
+            else:
+                traffic_limit_mb = int(traffic_limit_mb)
         
         subscription_id = None
         async with open_async_connection(self.db_path) as conn:
@@ -2728,7 +2751,13 @@ class SubscriptionPurchaseService:
             new_limit_mb = 0
         else:
             # Текущий лимит <= лимит тарифа - обновляем из тарифа
+            # ВАЖНО: Если текущий лимит меньше лимита тарифа, это может быть ошибка - обновляем
             new_limit_mb = tariff_limit_mb
+            if current_limit_mb is not None and current_limit_mb < tariff_limit_mb:
+                logger.info(
+                    f"[SUBSCRIPTION] Updating traffic limit for subscription {subscription_id} "
+                    f"from {current_limit_mb} MB to {tariff_limit_mb} MB (current < tariff)"
+                )
         
         await self.subscription_repo.update_subscription_traffic_limit_async(subscription_id, new_limit_mb)
         logger.info(
