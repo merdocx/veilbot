@@ -175,11 +175,55 @@ def get_tariff_menu(paid_only: bool = False, payment_method: str = None) -> Repl
     return menu
 
 def get_payment_method_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура выбора способа оплаты"""
+    """
+    Клавиатура выбора способа оплаты
+    Показывает только те способы оплаты, которые доступны хотя бы для одного тарифа
+    """
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(KeyboardButton("💳 Карта РФ/СБП"))
-    keyboard.add(KeyboardButton("💳 Карта РФ / Карта зарубеж / СБП"))
-    keyboard.add(KeyboardButton("₿ Криптовалюта (USDT)"))
+    
+    # Проверяем наличие тарифов с включенными способами оплаты
+    with get_db_cursor() as cursor:
+        # Проверяем YooKassa (Карта РФ/СБП)
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM tariffs
+            WHERE (is_archived IS NULL OR is_archived = 0)
+              AND enable_yookassa = 1
+              AND price_rub > 0
+        """)
+        has_yookassa = cursor.fetchone()[0] > 0
+        
+        # Проверяем Platega (Карта РФ / Карта зарубеж / СБП)
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM tariffs
+            WHERE (is_archived IS NULL OR is_archived = 0)
+              AND enable_platega = 1
+              AND price_rub > 0
+        """)
+        has_platega = cursor.fetchone()[0] > 0
+        
+        # Проверяем CryptoBot (Криптовалюта)
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM tariffs
+            WHERE (is_archived IS NULL OR is_archived = 0)
+              AND enable_cryptobot = 1
+              AND price_crypto_usd IS NOT NULL
+              AND price_crypto_usd > 0
+        """)
+        has_cryptobot = cursor.fetchone()[0] > 0
+    
+    # Показываем только доступные способы оплаты
+    if has_yookassa:
+        keyboard.add(KeyboardButton("💳 Карта РФ/СБП"))
+    
+    if has_platega:
+        keyboard.add(KeyboardButton("💳 Карта РФ / Карта зарубеж / СБП"))
+    
+    if has_cryptobot:
+        keyboard.add(KeyboardButton("₿ Криптовалюта (USDT)"))
+    
     keyboard.add(KeyboardButton("🔙 Назад"))
     return keyboard
 
