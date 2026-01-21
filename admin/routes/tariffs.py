@@ -184,19 +184,27 @@ async def edit_tariff(
     enable_yookassa: int = Form(1),
     enable_platega: int = Form(1),
     enable_cryptobot: int = Form(1),
-    is_archived: int = Form(0),
 ):
     """Обновление тарифа"""
     if not request.session.get("admin_logged_in"):
         return RedirectResponse(url="/login")
     
+    # Получаем значения чекбоксов напрямую из формы
+    # Чекбоксы отправляются только если отмечены, поэтому проверяем наличие поля
+    form_data = await request.form()
+    is_archived_checked = form_data.get("is_archived") == "1"
+    enable_yookassa_checked = form_data.get("enable_yookassa") == "1"
+    enable_platega_checked = form_data.get("enable_platega") == "1"
+    enable_cryptobot_checked = form_data.get("enable_cryptobot") == "1"
+    
     price_crypto = float(price_crypto_usd) if price_crypto_usd and price_crypto_usd != "" else None
 
-    ey = 1 if enable_yookassa else 0
-    ep = 1 if enable_platega else 0
-    ec = 1 if enable_cryptobot else 0
-    ia = 1 if is_archived else 0
+    ey = 1 if enable_yookassa_checked else 0
+    ep = 1 if enable_platega_checked else 0
+    ec = 1 if enable_cryptobot_checked else 0
+    ia = 1 if is_archived_checked else 0
 
+    # ВАЖНО: Всегда передаем is_archived, даже если 0, чтобы обновить значение в БД
     TariffRepository(DATABASE_PATH).update_tariff(
         tariff_id,
         name,
@@ -207,7 +215,7 @@ async def edit_tariff(
         enable_yookassa=ey,
         enable_platega=ep,
         enable_cryptobot=ec,
-        is_archived=ia,
+        is_archived=ia,  # Всегда передаем значение (0 или 1)
     )
     
     # Инвалидируем кэш меню бота

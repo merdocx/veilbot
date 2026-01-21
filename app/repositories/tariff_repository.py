@@ -147,8 +147,11 @@ class TariffRepository:
                 fields.append(("enable_platega", int(enable_platega)))
             if enable_cryptobot is not None:
                 fields.append(("enable_cryptobot", int(enable_cryptobot)))
-            if is_archived is not None:
-                fields.append(("is_archived", int(is_archived)))
+            # ВАЖНО: Всегда обновляем is_archived, даже если значение 0
+            # Это нужно для правильной работы деактивации тарифов
+            # Если значение не передано, используем 0 (не архивирован)
+            is_archived_value = int(is_archived) if is_archived is not None else 0
+            fields.append(("is_archived", is_archived_value))
 
             set_clause = ", ".join(f"{name} = ?" for name, _ in fields)
             values = [value for _, value in fields]
