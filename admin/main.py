@@ -41,7 +41,7 @@ def _init_log_dir() -> str:
 
 # Setup logging
 LOG_DIR = _init_log_dir()
-app = FastAPI(title="VeilBot Admin", version="2.4.26")
+app = FastAPI(title="VeilBot Admin", version="2.4.27")
 
 # Logging setup
 setup_logging("INFO")
