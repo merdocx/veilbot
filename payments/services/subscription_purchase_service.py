@@ -2026,6 +2026,8 @@ class SubscriptionPurchaseService:
         completed_payments = [p for p in payments if p.status == PaymentStatus.COMPLETED]
         
         if not completed_payments:
+            # Если нет завершенных платежей, возвращаем created_at
+            # Это может произойти, если подписка только что создана и платеж еще не обработан
             logger.debug(f"[SUBSCRIPTION] No completed payments for subscription, returning created_at")
             return subscription_created_at
         
@@ -2042,9 +2044,14 @@ class SubscriptionPurchaseService:
                     logger.warning(f"[SUBSCRIPTION] Unexpected created_at type for payment {p.payment_id}: {type(p.created_at)}")
         
         if not first_payment_timestamps:
+            # Если не удалось получить даты платежей, возвращаем created_at
+            # Это может произойти при некорректных данных платежей
             return subscription_created_at
         
         first_payment_date = min(first_payment_timestamps)
+        # Базовая дата = max(первый платеж, created_at подписки)
+        # Если подписка создана с expires_at = now, то subscription_created_at = now
+        # Это гарантирует, что expires_at будет рассчитан от правильной базовой даты
         base_date = max(first_payment_date, subscription_created_at)
         
         # Шаг 3: Суммарная длительность всех платежей (учитываются РАЗНЫЕ тарифы)
@@ -2122,20 +2129,27 @@ class SubscriptionPurchaseService:
         # Создаем новую подписку
         subscription_token = str(uuid.uuid4())
         
-        # Вычисляем предварительный expires_at (будет пересчитан на основе всех платежей)
-        # ВАЖНО: Для VIP подписок устанавливаем VIP_EXPIRES_AT
+        # ВАЖНО: При создании новой подписки устанавливаем expires_at = now
+        # Реальная дата окончания будет пересчитана в process_subscription_purchase()
+        # через _calculate_subscription_expires_at() на основе всех платежей
+        # Это предотвращает двойное добавление длительности тарифа
         if is_vip:
             expires_at = self.VIP_EXPIRES_AT
             traffic_limit_mb = 0  # VIP = безлимит
             logger.info(f"[SUBSCRIPTION] Creating VIP subscription for user {user_id}, expires_at={expires_at}")
         else:
-            expires_at = now + tariff['duration_sec']
+            # Устанавливаем expires_at = now, будет пересчитан в process_subscription_purchase()
+            expires_at = now
             # ВАЖНО: Правильно получаем traffic_limit_mb из тарифа (не используем or 0, чтобы не потерять значение)
             traffic_limit_mb = tariff.get('traffic_limit_mb')
             if traffic_limit_mb is None:
                 traffic_limit_mb = 0
             else:
                 traffic_limit_mb = int(traffic_limit_mb)
+            logger.info(
+                f"[SUBSCRIPTION] Creating new subscription for user {user_id}, "
+                f"expires_at={expires_at} (will be recalculated in process_subscription_purchase)"
+            )
         
         subscription_id = None
         async with open_async_connection(self.db_path) as conn:
