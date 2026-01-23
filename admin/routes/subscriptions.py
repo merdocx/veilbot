@@ -153,6 +153,8 @@ def _format_expiry_remaining(expires_at: int | None, now_ts: int) -> dict:
 
 def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
     """Вычислить статистику подписок для обновления UI"""
+    VIP_EXPIRES_AT = 4102434000  # 01.01.2100 - признак VIP подписки
+    
     with open_connection(db_path) as conn:
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM subscriptions")
@@ -162,17 +164,30 @@ def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
         c.execute("SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? AND is_active = 1", (now_ts,))
         active = int(c.fetchone()[0])
         
-        # Истекшие подписки: expires_at <= now_ts ИЛИ is_active = 0
+        # Платные активные не VIP подписки:
+        # - is_active = 1
+        # - expires_at > now_ts (активные)
+        # - expires_at < VIP_EXPIRES_AT (не VIP)
+        # - Есть хотя бы один completed платеж ИЛИ тариф с price_rub > 0
         c.execute("""
-            SELECT COUNT(*) FROM subscriptions 
-            WHERE (expires_at <= ? OR is_active = 0)
-        """, (now_ts,))
-        expired = int(c.fetchone()[0])
-        
+            SELECT COUNT(DISTINCT s.id)
+            FROM subscriptions s
+            LEFT JOIN payments p ON s.id = p.subscription_id AND p.status = 'completed'
+            LEFT JOIN tariffs t ON s.tariff_id = t.id
+            WHERE s.is_active = 1
+              AND s.expires_at > ?
+              AND s.expires_at < ?
+              AND (
+                  p.id IS NOT NULL
+                  OR (t.price_rub IS NOT NULL AND t.price_rub > 0)
+              )
+        """, (now_ts, VIP_EXPIRES_AT))
+        paid_active_non_vip = int(c.fetchone()[0])
+    
     return {
         "total": total,
         "active": active,
-        "expired": expired,
+        "expired": paid_active_non_vip,  # Используем поле expired для хранения платных активных не VIP подписок
     }
 
 
@@ -221,21 +236,49 @@ async def subscriptions_page(request: Request, page: int = 1, limit: int = 50, q
             # Если есть поиск, получаем все подписки, соответствующие поиску, и считаем статистику
             all_matching_rows = subscription_repo.list_subscriptions(query=query_normalized, limit=999999, offset=0, paid_only=paid_filter_bool)
             active_count = 0
-            expired_count = 0
+            paid_active_non_vip_count = 0
+            VIP_EXPIRES_AT = 4102434000  # 01.01.2100 - признак VIP подписки
+            
+            # Получаем ID подписок для проверки платности
+            subscription_ids = [row[0] for row in all_matching_rows]
+            
+            # Проверяем платность подписок через JOIN с payments и tariffs
+            with open_connection(DB_PATH) as conn:
+                cursor = conn.cursor()
+                if subscription_ids:
+                    placeholders = ','.join('?' * len(subscription_ids))
+                    cursor.execute(f"""
+                        SELECT DISTINCT s.id
+                        FROM subscriptions s
+                        LEFT JOIN payments p ON s.id = p.subscription_id AND p.status = 'completed'
+                        LEFT JOIN tariffs t ON s.tariff_id = t.id
+                        WHERE s.id IN ({placeholders})
+                          AND s.is_active = 1
+                          AND s.expires_at > ?
+                          AND s.expires_at < ?
+                          AND (
+                              p.id IS NOT NULL
+                              OR (t.price_rub IS NOT NULL AND t.price_rub > 0)
+                          )
+                    """, (*subscription_ids, now_ts, VIP_EXPIRES_AT))
+                    paid_active_non_vip_ids = {row[0] for row in cursor.fetchall()}
+                else:
+                    paid_active_non_vip_ids = set()
+            
             for row in all_matching_rows:
-                _, _, _, _, expires_at, _, is_active, _, _, _, _, _ = row
+                sub_id, _, _, _, expires_at, _, is_active, _, _, _, _, _ = row
                 if expires_at and expires_at > 0:
                     is_expired = expires_at <= now_ts
-                    if is_expired or not is_active:
-                        expired_count += 1
-                    else:
+                    if not is_expired and is_active:
                         active_count += 1
-                else:
-                    expired_count += 1
+                        # Проверяем, является ли подписка платной активной не VIP
+                        if sub_id in paid_active_non_vip_ids:
+                            paid_active_non_vip_count += 1
+            
             stats = {
                 "total": total,
                 "active": active_count,
-                "expired": expired_count,
+                "expired": paid_active_non_vip_count,  # Используем поле expired для хранения платных активных не VIP подписок
             }
         else:
             # Если поиска нет, используем стандартную функцию подсчета
