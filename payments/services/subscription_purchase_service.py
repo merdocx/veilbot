@@ -462,6 +462,15 @@ class SubscriptionPurchaseService:
             # Отправляем универсальное уведомление
             await self._send_universal_notification(payment, subscription_row, tariff, new_expires_at, was_created, subscription_id)
             
+            # Отправляем уведомление администратору
+            await self._send_admin_purchase_notification(
+                payment,
+                subscription_id,
+                tariff,
+                new_expires_at,
+                was_created
+            )
+            
             # Атомарно обновляем статус на completed
             update_success = await self.payment_repo.try_update_status(
                 payment_id,
@@ -778,6 +787,16 @@ class SubscriptionPurchaseService:
                 f"[SUBSCRIPTION] Subscription {subscription_id} created as renewal successfully for payment {payment.payment_id}, "
                 f"notification_sent={notification_sent}"
             )
+            
+            # Отправляем уведомление администратору
+            await self._send_admin_purchase_notification(
+                payment,
+                subscription_id,
+                tariff,
+                expires_at,
+                is_new=True  # Это новая подписка (создана как продление бесплатного ключа)
+            )
+            
             return True, None
             
         except Exception as e:
@@ -1125,6 +1144,16 @@ class SubscriptionPurchaseService:
                 f"[SUBSCRIPTION] Subscription {subscription_id} extended successfully for payment {payment.payment_id}, "
                 f"notification_sent={notification_sent}"
             )
+            
+            # Отправляем уведомление администратору
+            await self._send_admin_purchase_notification(
+                payment,
+                subscription_id,
+                tariff,
+                new_expires_at,
+                is_new=False  # Это продление
+            )
+            
             return True, None
             
         except Exception as e:
@@ -1216,6 +1245,16 @@ class SubscriptionPurchaseService:
             notification_sent = await self._send_notification_simple(payment.user_id, msg)
             logger.info(
                 f"[SUBSCRIPTION] Purchase notification send result: {notification_sent} for user {payment.user_id}, subscription {subscription_id}"
+            )
+            
+            # Отправляем уведомление администратору
+            expires_at = existing_subscription[4]  # expires_at из кортежа подписки
+            await self._send_admin_purchase_notification(
+                payment,
+                subscription_id,
+                tariff,
+                expires_at,
+                is_new=True  # Это новая подписка
             )
             
             # Шаг 3: Если уведомление не отправлено, делаем retry
@@ -2979,3 +3018,63 @@ class SubscriptionPurchaseService:
         except Exception as e:
             logger.error(f"[SUBSCRIPTION] Error sending notification to user {user_id}: {e}", exc_info=True)
             return False
+    
+    async def _send_admin_purchase_notification(
+        self,
+        payment: Payment,
+        subscription_id: int,
+        tariff: Dict[str, Any],
+        expires_at: int,
+        is_new: bool
+    ) -> None:
+        """
+        Отправить уведомление администратору о покупке/продлении подписки
+        """
+        try:
+            admin_id = app_settings.ADMIN_ID
+            if not admin_id:
+                logger.debug("[SUBSCRIPTION] ADMIN_ID not set, skipping admin notification")
+                return
+            
+            bot = get_bot_instance()
+            if not bot:
+                logger.warning("[SUBSCRIPTION] Bot instance is None, cannot send admin notification")
+                return
+            
+            # Форматируем дату окончания
+            from datetime import datetime
+            expires_date = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y %H:%M")
+            
+            # Определяем способ оплаты
+            payment_method_map = {
+                "yookassa": "YooKassa",
+                "platega": "Platega",
+                "cryptobot": "CryptoBot"
+            }
+            payment_method = payment_method_map.get(payment.method.value.lower(), payment.method.value)
+            
+            # Формируем сообщение
+            purchase_type = "новая" if is_new else "продление"
+            message = (
+                f"💳 *Покупка подписки*\n\n"
+                f"👤 Пользователь: `{payment.user_id}`\n"
+                f"📋 Подписка: #{subscription_id}\n"
+                f"📦 Тариф: {tariff.get('name', 'N/A')}\n"
+                f"💰 Сумма: {payment.amount} ₽\n"
+                f"💳 Способ оплаты: {payment_method}\n"
+                f"📅 Действует до: {expires_date}\n"
+                f"🔄 Тип: {purchase_type}\n"
+                f"🧾 Платеж: `{payment.payment_id}`"
+            )
+            
+            await safe_send_message(
+                bot,
+                admin_id,
+                message,
+                parse_mode="Markdown",
+                mark_blocked=False
+            )
+            logger.info(f"[SUBSCRIPTION] Admin notification sent for payment {payment.payment_id}")
+            
+        except Exception as e:
+            logger.error(f"[SUBSCRIPTION] Error sending admin notification: {e}", exc_info=True)

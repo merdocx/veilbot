@@ -447,6 +447,28 @@ def migrate_add_paid_subscriptions_to_dashboard_metrics():
         logging.error(f"Ошибка добавления поля paid_subscriptions: {e}")
     finally:
         conn.close()
+
+
+def migrate_create_discrepancy_notifications_table():
+    """Создание таблицы для отслеживания отправленных уведомлений о расхождениях"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS discrepancy_notifications (
+                subscription_id INTEGER PRIMARY KEY,
+                notified_at INTEGER NOT NULL,
+                diff_days REAL NOT NULL,
+                FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_discrepancy_notifications_subscription_id ON discrepancy_notifications(subscription_id)")
+        conn.commit()
+        logging.info("Таблица discrepancy_notifications создана/проверена")
+    except Exception as e:
+        logging.error(f"Ошибка создания таблицы discrepancy_notifications: {e}")
+    finally:
+        conn.close()
 def migrate_create_users_table():
     """Create users table for storing all bot users"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1499,6 +1521,7 @@ def _run_all_migrations():
     migrate_add_is_archived_to_tariffs()
     migrate_add_notification_sent_to_payments()
     migrate_add_paid_subscriptions_to_dashboard_metrics()
+    migrate_create_discrepancy_notifications_table()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

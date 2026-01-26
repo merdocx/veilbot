@@ -1220,6 +1220,88 @@ def _calculate_subscription_discrepancies(db_path: str) -> list:
     return sorted(discrepancies, key=lambda x: abs(x['diff_days']), reverse=True)
 
 
+async def _send_admin_discrepancy_notifications(discrepancies: list) -> None:
+    """
+    Отправить уведомления администратору о новых расхождениях
+    """
+    try:
+        from app.settings import settings
+        from bot.core import get_bot_instance
+        from bot.utils.messaging import safe_send_message
+        from datetime import datetime
+        
+        admin_id = settings.ADMIN_ID
+        if not admin_id:
+            logger.debug("ADMIN_ID not set, skipping discrepancy notifications")
+            return
+        
+        bot = get_bot_instance()
+        if not bot:
+            logger.warning("Bot instance is None, cannot send discrepancy notifications")
+            return
+        
+        # Получаем список уже отправленных уведомлений
+        with open_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT subscription_id FROM discrepancy_notifications")
+            notified_subscription_ids = {row[0] for row in cursor.fetchall()}
+        
+        # Отправляем уведомления только о новых расхождениях
+        new_discrepancies = [d for d in discrepancies if d['subscription_id'] not in notified_subscription_ids]
+        
+        if not new_discrepancies:
+            return
+        
+        # Отправляем уведомление для каждого нового расхождения
+        now = int(time.time())
+        for disc in new_discrepancies:
+            try:
+                # Форматируем даты
+                sub_expires_at = datetime.fromtimestamp(disc['sub_expires_at']).strftime("%d.%m.%Y %H:%M")
+                calculated_expires = datetime.fromtimestamp(disc['calculated_expires']).strftime("%d.%m.%Y %H:%M")
+                
+                message = (
+                    f"⚠️ *Новое расхождение в подписке*\n\n"
+                    f"👤 Пользователь: `{disc['user_id']}`\n"
+                    f"📋 Подписка: #{disc['subscription_id']}\n"
+                    f"📦 Тариф: {disc['tariff_name']}\n"
+                    f"📊 Расхождение: {disc['diff_days']:+.1f} дней\n"
+                    f"📅 Текущий срок: {sub_expires_at}\n"
+                    f"📅 Расчетный срок: {calculated_expires}\n"
+                    f"💳 Платежей: {disc['payments_count']}\n"
+                    f"🎁 Бонусов: {disc['bonuses_count']}"
+                )
+                
+                await safe_send_message(
+                    bot,
+                    admin_id,
+                    message,
+                    parse_mode="Markdown",
+                    mark_blocked=False
+                )
+                
+                # Сохраняем информацию об отправленном уведомлении
+                with open_connection(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO discrepancy_notifications 
+                        (subscription_id, notified_at, diff_days)
+                        VALUES (?, ?, ?)
+                        """,
+                        (disc['subscription_id'], now, disc['diff_days'])
+                    )
+                    conn.commit()
+                
+                logger.info(f"Discrepancy notification sent for subscription {disc['subscription_id']}")
+                
+            except Exception as e:
+                logger.error(f"Error sending discrepancy notification for subscription {disc['subscription_id']}: {e}", exc_info=True)
+                
+    except Exception as e:
+        logger.error(f"Error in _send_admin_discrepancy_notifications: {e}", exc_info=True)
+
+
 @router.get("/subscriptions/discrepancies")
 async def subscription_discrepancies_page(request: Request):
     """Страница расхождений подписок"""
@@ -1230,6 +1312,9 @@ async def subscription_discrepancies_page(request: Request):
         log_admin_action(request, "SUBSCRIPTION_DISCREPANCIES_PAGE_ACCESS")
         
         discrepancies = _calculate_subscription_discrepancies(DB_PATH)
+        
+        # Отправляем уведомления о новых расхождениях
+        await _send_admin_discrepancy_notifications(discrepancies)
         
         # Форматируем данные для шаблона
         formatted_discrepancies = []
