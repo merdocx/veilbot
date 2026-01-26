@@ -53,15 +53,17 @@ async def dashboard(request: Request):
                     (SELECT COUNT(*) FROM v2ray_keys k
                      JOIN subscriptions s ON k.subscription_id = s.id
                      WHERE s.expires_at > ?) as active_v2ray,
+                    (SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? AND is_active = 1) as active_subscriptions,
                     (SELECT COUNT(*) FROM tariffs) as tariff_count,
                     (SELECT COUNT(*) FROM servers) as server_count,
                     (SELECT COUNT(*) FROM users) as started_users
-            """, (now, now))
+            """, (now, now, now))
             row = c.fetchone()
-            active_keys = (row[0] or 0) + (row[1] or 0)
-            tariff_count = row[2] or 0
-            server_count = row[3] or 0
-            started_users = row[4] or 0
+            active_keys = (row[0] or 0) + (row[1] or 0)  # Для отображения в карточке статистики
+            active_subscriptions = row[2] or 0  # Для графика "Динамика по дням"
+            tariff_count = row[3] or 0
+            server_count = row[4] or 0
+            started_users = row[5] or 0
             
             # Подсчитываем активные платные подписки на конец сегодняшнего дня
             # Платные подписки - это подписки с небесплатным тарифом (price_rub > 0) и не VIP пользователи
@@ -78,6 +80,7 @@ async def dashboard(request: Request):
             paid_subscriptions_today = (c.fetchone()[0] or 0)
             
             # Сохраняем ежедневные метрики (одна запись в день)
+            # ВАЖНО: active_keys используется для хранения количества активных подписок в графике
             timestamp = int(time.time())
             c.execute("""
                 INSERT INTO dashboard_metrics (date, active_keys, started_users, paid_subscriptions, created_at, updated_at)
@@ -87,12 +90,24 @@ async def dashboard(request: Request):
                     started_users = excluded.started_users,
                     paid_subscriptions = excluded.paid_subscriptions,
                     updated_at = excluded.updated_at
-            """, (today, active_keys, started_users, paid_subscriptions_today, timestamp, timestamp))
+            """, (today, active_subscriptions, started_users, paid_subscriptions_today, timestamp, timestamp))
             
-            # Пересчитываем активные платные подписки для всех дней в истории
+            # Пересчитываем активные подписки для всех дней в истории
             # Это нужно для заполнения данных после миграции
             # ВАЖНО: Для сегодняшнего дня всегда используем актуальное значение, не обновляем здесь
             # (сегодняшний день уже обновлен выше в INSERT ... ON CONFLICT DO UPDATE)
+            # Активные подписки на конец дня = expires_at > end_of_day_timestamp AND is_active = 1
+            c.execute("""
+                UPDATE dashboard_metrics
+                SET active_keys = (
+                    SELECT COUNT(*) FROM subscriptions s
+                    WHERE s.expires_at > strftime('%s', dashboard_metrics.date || ' 23:59:59')
+                    AND s.is_active = 1
+                )
+                WHERE date != ?
+            """, (today,))
+            
+            # Пересчитываем активные платные подписки для всех дней в истории
             # Платные подписки - это подписки с небесплатным тарифом (price_rub > 0) и не VIP пользователи
             # Активные на конец дня = expires_at > end_of_day_timestamp
             c.execute("""

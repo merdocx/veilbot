@@ -136,7 +136,7 @@
                     {% endfor %}
                     {% for point in chart_data.keys_points %}
                         <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="#fff" stroke="#1976d2" stroke-width="1.5">
-                            <title>{{ point.label }}: {{ point.value }}</title>
+                            <title>{{ point.label }}: {{ point.value }} активных подписок</title>
                         </circle>
                     {% endfor %}
                     {% if chart_data.subscriptions_points %}
@@ -163,7 +163,7 @@
                 </span>
                 <span class="legend-item">
                     <span class="legend-swatch" style="background:#1976d2"></span>
-                    Активные ключи
+                    Активные подписки
                 </span>
                 <span class="legend-item">
                     <span class="legend-swatch" style="background:#4caf50"></span>
