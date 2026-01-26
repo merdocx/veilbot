@@ -90,10 +90,6 @@
         {% if chart_data %}
             <svg class="metrics-chart" viewBox="0 0 {{ chart_data.width }} {{ chart_data.height }}" preserveAspectRatio="none">
                 <defs>
-                    <linearGradient id="usersGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stop-color="#f57c00" stop-opacity="0.4"/>
-                        <stop offset="100%" stop-color="#f57c00" stop-opacity="0"/>
-                    </linearGradient>
                     <linearGradient id="keysGradient" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stop-color="#1976d2" stop-opacity="0.45"/>
                         <stop offset="100%" stop-color="#1976d2" stop-opacity="0"/>
@@ -117,23 +113,16 @@
                     {% endfor %}
                 </g>
 
-                <path d="{{ chart_data.users_fill }}" fill="url(#usersGradient)" stroke="none"/>
                 <path d="{{ chart_data.keys_fill }}" fill="url(#keysGradient)" stroke="none"/>
                 {% if chart_data.subscriptions_fill %}
                 <path d="{{ chart_data.subscriptions_fill }}" fill="url(#subscriptionsGradient)" stroke="none"/>
                 {% endif %}
-                <path d="{{ chart_data.users_path }}" fill="none" stroke="#f57c00" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
                 <path d="{{ chart_data.keys_path }}" fill="none" stroke="#1976d2" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
                 {% if chart_data.subscriptions_path %}
                 <path d="{{ chart_data.subscriptions_path }}" fill="none" stroke="#4caf50" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
                 {% endif %}
 
                 <g class="points">
-                    {% for point in chart_data.users_points %}
-                        <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="#fff" stroke="#f57c00" stroke-width="1.5">
-                            <title>{{ point.label }}: {{ point.value }}</title>
-                        </circle>
-                    {% endfor %}
                     {% for point in chart_data.keys_points %}
                         <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="#fff" stroke="#1976d2" stroke-width="1.5">
                             <title>{{ point.label }}: {{ point.value }} активных подписок</title>
@@ -157,10 +146,6 @@
                 </g>
             </svg>
             <div class="metrics-legend">
-                <span class="legend-item">
-                    <span class="legend-swatch" style="background:#f57c00"></span>
-                    Нажали «Start»
-                </span>
                 <span class="legend-item">
                     <span class="legend-swatch" style="background:#1976d2"></span>
                     Активные подписки

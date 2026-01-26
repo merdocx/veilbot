@@ -190,11 +190,11 @@ def _prepare_chart_data(metrics: list[dict]) -> dict | None:
         return None
     
     dates = [m["date"] for m in metrics]
-    started_users = [m["started_users"] for m in metrics]
     active_keys = [m["active_keys"] for m in metrics]
     paid_subscriptions = [m.get("paid_subscriptions", 0) for m in metrics]
     
-    max_value = max(max(started_users, default=0), max(active_keys, default=0), max(paid_subscriptions, default=0), 10)
+    # Убрали started_users из графика - теперь показываем только активные подписки и платные подписки
+    max_value = max(max(active_keys, default=0), max(paid_subscriptions, default=0), 10)
     y_step = max(50, math.ceil(max_value / 4 / 50) * 50)
     # Ensure ticks cover the max_value
     tick_values = list(range(0, int(math.ceil(max_value / y_step) * y_step) + y_step, y_step))
@@ -236,7 +236,7 @@ def _prepare_chart_data(metrics: list[dict]) -> dict | None:
         fill_path = "M " + " L ".join(fill_commands) + " Z"
         return path, fill_path, points
     
-    users_path, users_fill, users_points = build_path(started_users)
+    # Убрали users_path - больше не показываем "Нажали «Start»" в графике
     keys_path, keys_fill, keys_points = build_path(active_keys)
     subscriptions_path, subscriptions_fill, subscriptions_points = build_path(paid_subscriptions)
     
@@ -259,13 +259,10 @@ def _prepare_chart_data(metrics: list[dict]) -> dict | None:
         "width": width,
         "height": height,
         "padding": padding,
-        "users_path": users_path,
-        "users_fill": users_fill,
         "keys_path": keys_path,
         "keys_fill": keys_fill,
         "subscriptions_path": subscriptions_path,
         "subscriptions_fill": subscriptions_fill,
-        "users_points": users_points,
         "keys_points": keys_points,
         "subscriptions_points": subscriptions_points,
         "x_labels": x_labels,
