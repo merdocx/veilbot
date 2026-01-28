@@ -3028,7 +3028,9 @@ class SubscriptionPurchaseService:
         is_new: bool
     ) -> None:
         """
-        Отправить уведомление администратору о покупке/продлении подписки
+        Отправить уведомление администратору о покупке/продлении подписки.
+        Если get_bot_instance() возвращает None (вебхуки в процессе админки),
+        отправка идёт через Telegram API напрямую.
         """
         try:
             admin_id = app_settings.ADMIN_ID
@@ -3036,24 +3038,19 @@ class SubscriptionPurchaseService:
                 logger.debug("[SUBSCRIPTION] ADMIN_ID not set, skipping admin notification")
                 return
             
-            bot = get_bot_instance()
-            if not bot:
-                logger.warning("[SUBSCRIPTION] Bot instance is None, cannot send admin notification")
+            token = app_settings.TELEGRAM_BOT_TOKEN
+            if not token:
+                logger.warning("[SUBSCRIPTION] TELEGRAM_BOT_TOKEN not set, cannot send admin notification")
                 return
             
-            # Форматируем дату окончания
-            from datetime import datetime
             expires_date = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y %H:%M")
-            
-            # Определяем способ оплаты
             payment_method_map = {
                 "yookassa": "YooKassa",
                 "platega": "Platega",
                 "cryptobot": "CryptoBot"
             }
-            payment_method = payment_method_map.get(payment.method.value.lower(), payment.method.value)
-            
-            # Формируем сообщение
+            _m = (payment.method.value if payment.method else "") or ""
+            payment_method = payment_method_map.get(_m.lower(), _m or "—")
             purchase_type = "новая" if is_new else "продление"
             message = (
                 f"💳 *Покупка подписки*\n\n"
@@ -3067,14 +3064,34 @@ class SubscriptionPurchaseService:
                 f"🧾 Платеж: `{payment.payment_id}`"
             )
             
-            await safe_send_message(
-                bot,
-                admin_id,
-                message,
-                parse_mode="Markdown",
-                mark_blocked=False
-            )
-            logger.info(f"[SUBSCRIPTION] Admin notification sent for payment {payment.payment_id}")
+            bot = get_bot_instance()
+            if bot:
+                await safe_send_message(
+                    bot,
+                    admin_id,
+                    message,
+                    parse_mode="Markdown",
+                    mark_blocked=False
+                )
+                logger.info(f"[SUBSCRIPTION] Admin notification sent for payment {payment.payment_id} (via bot instance)")
+                return
             
+            # fallback: вебхуки обрабатываются в процессе админки, get_bot_instance() == None
+            import aiohttp
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {
+                "chat_id": admin_id,
+                "text": message,
+                "parse_mode": "Markdown",
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        logger.info(f"[SUBSCRIPTION] Admin notification sent for payment {payment.payment_id} (via Telegram API)")
+                    else:
+                        body = await resp.text()
+                        logger.error(
+                            f"[SUBSCRIPTION] Telegram API error {resp.status} for payment {payment.payment_id}: {body}"
+                        )
         except Exception as e:
             logger.error(f"[SUBSCRIPTION] Error sending admin notification: {e}", exc_info=True)

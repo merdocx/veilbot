@@ -406,17 +406,17 @@ async def edit_server(
         new_available = 1 if available_for_purchase else 0
 
         # Если сервер деактивируется (active: 1 -> 0), удаляем все ключи с сервера и из БД
+        # ВАЖНО: Выполняем удаление в фоне, чтобы не блокировать ответ пользователю
         if current_active == 1 and new_active == 0:
-            logging.info(f"Server {server_id} is being deactivated. Deleting all keys from server and database.")
+            logging.info(f"Server {server_id} is being deactivated. Scheduling key deletion in background.")
             # Используем текущие данные сервера из БД для удаления ключей
             current_api_url = current_server[2] if current_server and len(current_server) > 2 else ""
             current_api_key = current_server[9] if current_server and len(current_server) > 9 else ""
             current_cert_sha256 = current_server[3] if current_server and len(current_server) > 3 else ""
-            try:
-                await _delete_all_keys_from_server(server_id, current_protocol, current_api_url, current_api_key, current_cert_sha256)
-            except Exception as e:
-                logging.error(f"Error deleting keys from server {server_id} during deactivation: {e}", exc_info=True)
-                # Продолжаем выполнение даже при ошибке удаления ключей
+            # Запускаем удаление в фоне, чтобы не блокировать ответ
+            asyncio.create_task(
+                _delete_all_keys_from_server(server_id, current_protocol, current_api_url, current_api_key, current_cert_sha256)
+            )
 
         repo.update_server(
             server_id=server_id,
@@ -497,6 +497,7 @@ async def _delete_all_keys_from_server(
                 v2ray_keys = cursor.fetchall()
                 
                 # Удаляем V2Ray ключи с сервера
+                # ВАЖНО: Добавляем таймаут для каждой операции удаления, чтобы не зависать
                 if v2ray_keys and api_url and api_key:
                     protocol_client = None
                     try:
@@ -504,12 +505,20 @@ async def _delete_all_keys_from_server(
                         for key_id, v2ray_uuid, user_id in v2ray_keys:
                             if v2ray_uuid:
                                 try:
-                                    result = await protocol_client.delete_user(v2ray_uuid)
+                                    # Добавляем таймаут 5 секунд на каждое удаление
+                                    result = await asyncio.wait_for(
+                                        protocol_client.delete_user(v2ray_uuid),
+                                        timeout=5.0
+                                    )
                                     if result:
                                         deleted_from_server += 1
                                         logging.info(f"Deleted V2Ray key {v2ray_uuid} from server {server_id}")
                                     else:
                                         errors.append(f"Failed to delete V2Ray key {v2ray_uuid} from server")
+                                except asyncio.TimeoutError:
+                                    error_msg = f"Timeout deleting V2Ray key {v2ray_uuid} from server {server_id}"
+                                    logging.warning(error_msg)
+                                    errors.append(error_msg)
                                 except Exception as e:
                                     error_msg = f"Error deleting V2Ray key {v2ray_uuid}: {e}"
                                     logging.error(error_msg, exc_info=True)
@@ -538,16 +547,32 @@ async def _delete_all_keys_from_server(
                 outline_keys = cursor.fetchall()
                 
                 # Удаляем Outline ключи с сервера
+                # ВАЖНО: Выполняем в отдельном потоке с таймаутом, чтобы не блокировать
                 if outline_keys and api_url and cert_sha256:
                     for key_id, outline_key_id, user_id in outline_keys:
                         if outline_key_id:
                             try:
-                                result = outline_delete_key(api_url, cert_sha256, outline_key_id)
+                                # Выполняем синхронную операцию в отдельном потоке с таймаутом
+                                loop = asyncio.get_event_loop()
+                                result = await asyncio.wait_for(
+                                    loop.run_in_executor(
+                                        None,
+                                        outline_delete_key,
+                                        api_url,
+                                        cert_sha256,
+                                        outline_key_id
+                                    ),
+                                    timeout=5.0
+                                )
                                 if result:
                                     deleted_from_server += 1
                                     logging.info(f"Deleted Outline key {outline_key_id} from server {server_id}")
                                 else:
                                     errors.append(f"Failed to delete Outline key {outline_key_id} from server")
+                            except asyncio.TimeoutError:
+                                error_msg = f"Timeout deleting Outline key {outline_key_id} from server {server_id}"
+                                logging.warning(error_msg)
+                                errors.append(error_msg)
                             except Exception as e:
                                 error_msg = f"Error deleting Outline key {outline_key_id}: {e}"
                                 logging.error(error_msg, exc_info=True)

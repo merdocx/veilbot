@@ -1225,10 +1225,8 @@ async def _send_admin_discrepancy_notifications(discrepancies: list) -> None:
     Отправить уведомления администратору о новых расхождениях
     """
     try:
-        from app.settings import settings
         from bot.core import get_bot_instance
         from bot.utils.messaging import safe_send_message
-        from datetime import datetime
         
         admin_id = settings.ADMIN_ID
         if not admin_id:
@@ -1236,9 +1234,7 @@ async def _send_admin_discrepancy_notifications(discrepancies: list) -> None:
             return
         
         bot = get_bot_instance()
-        if not bot:
-            logger.warning("Bot instance is None, cannot send discrepancy notifications")
-            return
+        # В процессе админки bot всегда None — используем Telegram API через _send_telegram_to_admin
         
         # Получаем список уже отправленных уведомлений
         with open_connection(DB_PATH) as conn:
@@ -1272,13 +1268,24 @@ async def _send_admin_discrepancy_notifications(discrepancies: list) -> None:
                     f"🎁 Бонусов: {disc['bonuses_count']}"
                 )
                 
-                await safe_send_message(
-                    bot,
-                    admin_id,
-                    message,
-                    parse_mode="Markdown",
-                    mark_blocked=False
-                )
+                ok = False
+                if bot:
+                    await safe_send_message(bot, admin_id, message, parse_mode="Markdown", mark_blocked=False)
+                    ok = True
+                else:
+                    import aiohttp
+                    token = settings.TELEGRAM_BOT_TOKEN
+                    if token:
+                        url = f"https://api.telegram.org/bot{token}/sendMessage"
+                        payload = {"chat_id": admin_id, "text": message, "parse_mode": "Markdown"}
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                                    ok = resp.status == 200
+                        except Exception as e:
+                            logger.error(f"Telegram API error for discrepancy {disc['subscription_id']}: {e}")
+                if not ok:
+                    continue
                 
                 # Сохраняем информацию об отправленном уведомлении
                 with open_connection(DB_PATH) as conn:
