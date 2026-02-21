@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block title %}Подписки{% endblock %}
+{% block page_title %}Подписки{% endblock %}
+
+{% from "components/modal.html" import modal %}
+
+{% block content %}
+<!-- Stats Cards -->
+<div class="stats-grid">
+    <div class="stat-card" data-stat="total">
+        <div class="stat-value" data-stat-value>{{ total }}</div>
+        <div class="stat-label">Всего подписок</div>
+    </div>
+    <div class="stat-card" data-stat="active">
+        <div class="stat-value" data-stat-value>{{ active_count }}</div>
+        <div class="stat-label">Активных</div>
+    </div>
+    <div class="stat-card" data-stat="expired">
+        <div class="stat-value" data-stat-value>{{ expired_count }}</div>
+        <div class="stat-label">Платных активных (не VIP)</div>
+    </div>
+</div>
+
+<!-- Subscriptions Table -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Список подписок</h2>
+        <p class="card-subtitle">Управление всеми подписками V2Ray</p>
+    </div>
+
+    <!-- Filters -->
+    <div class="filter-bar">
+        <div class="filter-bar__group flex-1">
+            <form method="get" action="/subscriptions" id="search-form" style="display: flex; gap: 8px; flex: 1; align-items: center;">
+                <input type="text" id="global-search" name="q" value="{{ q or '' }}" placeholder="Поиск по ID подписки, ID пользователя, токену, тарифу или email..." class="filter-input filter-input--grow" data-table-id="subscriptions-table">
+                <select name="paid" id="paid-filter" class="filter-input" style="min-width: 150px;">
+                    <option value="0" {% if not paid_filter %}selected{% endif %}>Все подписки</option>
+                    <option value="1" {% if paid_filter %}selected{% endif %}>Платные</option>
+                </select>
+                <input type="hidden" name="page" value="1" id="search-page-input">
+                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+            </form>
+            <button type="button" class="btn filter-bar__reset" id="reset-search-btn">
+                <span class="material-icons icon-small">clear</span>
+                Сбросить
+            </button>
+        </div>
+        <div class="filter-bar__group">
+            <button type="button" class="btn btn-primary" id="sync-keys-btn" data-action="sync-keys" title="Синхронизировать ключи с серверами">
+                <span class="material-icons icon-small">sync</span>
+                Синхронизировать ключи
+            </button>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-scroll">
+        <table class="material-table table" id="subscriptions-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Ссылка</th>
+                    <th>Пользователь</th>
+                    <th>Ключи</th>
+                    <th>Создана</th>
+                    <th>Истекает</th>
+                    <th class="text-left">Статус</th>
+                    <th>Трафик</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for subscription in subscriptions %}
+                <tr class="subscriptions-table__row"
+                    data-subscription-id="{{ subscription.id }}"
+                    data-status="{{ subscription.status }}"
+                    data-expiry-ts="{{ subscription.expires_at_ts }}"
+                    data-expiry-iso="{{ subscription.expires_at_iso }}"
+                    data-expiry-state="{{ subscription.expiry_state }}">
+                    <td class="subscriptions-table__cell subscriptions-table__cell--id">
+                        <span class="text-muted">#{{ subscription.id }}</span>
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--copy">
+                        {% if subscription.token_full %}
+                        <button class="btn btn-icon" type="button" data-action="copy-subscription" data-subscription-url="https://veil-bot.ru/api/subscription/{{ subscription.token_full }}" data-subscription-id="{{ subscription.id }}" title="Скопировать ссылку подписки">
+                            <span class="material-icons icon-small">content_copy</span>
+                        </button>
+                        {% else %}
+                        <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--user">
+                        <div class="cell-primary">TG: {{ subscription.user_id }}</div>
+                        {% if subscription.user_email and subscription.user_email != "—" %}
+                        <div class="cell-secondary text-muted">{{ subscription.user_email }}</div>
+                        {% endif %}
+                        <div class="cell-secondary text-muted">{{ subscription.tariff_name }}</div>
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--keys">
+                        <div class="cell-primary">{{ subscription.keys_count }} ключей</div>
+                        {% if subscription.subscription_keys %}
+                        <details class="cell-secondary" style="margin-top: 4px;">
+                            <summary style="cursor: pointer; font-size: 0.85em; color: #666;">Показать ключи</summary>
+                            <div style="margin-top: 8px; padding-left: 8px;">
+                                {% for key in subscription.subscription_keys %}
+                                <div style="font-size: 0.8em; margin: 4px 0; padding: 4px; background: #f5f5f5; border-radius: 4px;">
+                                    <div>
+                                        <strong>#{{ key.id }}</strong>
+                                        <span style="text-transform: uppercase; font-size: 0.85em; color: #555;">[{{ key.protocol }}]</span>
+                                        – {{ key.server }} ({{ key.country }})
+                                    </div>
+                                    <div style="color: #666; font-size: 0.9em;">{{ key.identifier }}</div>
+                                    <div style="color: #666; font-size: 0.9em;">Истекает: {{ key.expires_at }}</div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </details>
+                        {% endif %}
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--created">
+                        <div class="cell-primary">{{ subscription.created_at }}</div>
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--expiry" data-subscription-expiry="{{ subscription.expires_at_ts }}">
+                        <div class="cell-primary" data-field="expiry-remaining">{{ subscription.expiry_remaining }}</div>
+                        <div class="cell-secondary" data-field="expiry-display">{{ subscription.expires_at }}</div>
+                        {% if subscription.lifetime_progress is defined %}
+                        <div class="progress-bar" data-progress="{{ (subscription.lifetime_progress * 100)|round(0) }}">
+                            <div class="progress-bar__fill"></div>
+                        </div>
+                        {% else %}
+                        <div class="progress-bar" data-progress="0">
+                            <div class="progress-bar__fill"></div>
+                        </div>
+                        {% endif %}
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--status">
+                        <span class="material-icons status-icon {{ subscription.status_class }}" data-field="status-icon" title="{{ subscription.status }}">
+                            {% if subscription.status == "Активна" %}check_circle{% elif subscription.status == "Неактивна" %}remove_circle{% else %}cancel{% endif %}
+                        </span>
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--traffic traffic-cell {% if subscription.traffic and subscription.traffic['over_limit'] %}traffic-cell--over-limit{% endif %}">
+                        <div class="cell-primary" data-field="traffic-display">{{ subscription.traffic['display'] if subscription.traffic else '—' }}</div>
+                        {% if subscription.traffic and subscription.traffic['limit_display'] != '—' %}
+                            <div class="cell-secondary" data-field="traffic-limit">Лимит: {{ subscription.traffic['limit_display'] }}</div>
+                        {% else %}
+                            <div class="cell-secondary text-muted" data-field="traffic-limit">Лимит не задан</div>
+                        {% endif %}
+                        {% if subscription.traffic and subscription.traffic['usage_percent'] is not none %}
+                            <div class="progress-bar progress-bar--compact" data-progress="{{ (subscription.traffic['usage_percent'] * 100)|round(0) }}">
+                                <div class="progress-bar__fill"></div>
+                            </div>
+                        {% endif %}
+                    </td>
+                    <td class="subscriptions-table__cell subscriptions-table__cell--actions">
+                        <div class="action-buttons">
+                            <button class="btn btn-icon"
+                                    data-action="edit-subscription"
+                                    data-subscription-id="{{ subscription.id }}"
+                                    data-expiry="{{ subscription.expires_at_iso }}"
+                                    data-traffic-limit="{% if subscription.traffic and subscription.traffic['limit_mb'] is not none %}{{ subscription.traffic['limit_mb'] }}{% else %}{% endif %}"
+                                    title="Редактировать">
+                                <span class="material-icons icon-small">edit</span>
+                            </button>
+                            <a href="/subscriptions/delete/{{ subscription.id }}" class="btn btn-icon btn-danger" data-action="delete-subscription" data-subscription-id="{{ subscription.id }}" title="Удалить">
+                                <span class="material-icons icon-small">delete</span>
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Pagination -->
+{% if pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+        <a href="?page={{ page - 1 }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if paid_filter %}&paid=1{% else %}&paid=0{% endif %}">
+            <span class="material-icons icon-small">chevron_left</span>
+        </a>
+    {% endif %}
+    
+    {% for p in range(1, pages + 1) %}
+        {% if p == page %}
+            <a href="#" class="active">{{ p }}</a>
+        {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
+            <a href="?page={{ p }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if paid_filter %}&paid=1{% else %}&paid=0{% endif %}">{{ p }}</a>
+        {% elif p == 4 and page > 5 %}
+            <span>...</span>
+        {% elif p == pages - 3 and page < pages - 4 %}
+            <span>...</span>
+        {% endif %}
+    {% endfor %}
+    
+    {% if page < pages %}
+        <a href="?page={{ page + 1 }}&limit={{ limit }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if paid_filter %}&paid=1{% else %}&paid=0{% endif %}">
+            <span class="material-icons icon-small">chevron_right</span>
+        </a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% call modal("edit-subscription-modal", "Редактировать подписку") %}
+    <form id="editSubscriptionForm" method="post" class="form" data-form="edit-subscription">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <div class="form-field">
+            <label for="new_expiry" class="form-label">Новая дата истечения</label>
+            <input type="datetime-local" id="new_expiry" name="new_expiry" required class="form-input">
+            <div class="form-hint">При изменении срока подписки будут обновлены все связанные ключи.</div>
+        </div>
+        <div class="form-field">
+            <label for="traffic_limit_mb" class="form-label">Лимит трафика (МБ)</label>
+            <input type="number" id="traffic_limit_mb" name="traffic_limit_mb" min="0" step="1" class="form-input" placeholder="Например, 3072">
+            <div class="form-hint">0 или пусто — использовать лимит из тарифа.</div>
+        </div>
+        <div class="form-actions">
+            <button type="button" class="btn" data-modal-close>Отмена</button>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+        </div>
+    </form>
+{% endcall %}
+
+{% call modal("sync-keys-modal", "Настройки синхронизации ключей") %}
+    <form id="syncKeysForm" class="form">
+        <!-- Режим выполнения -->
+        <div class="form-field">
+            <label class="form-label">Режим выполнения</label>
+            <div class="form-radio-group">
+                <label class="form-radio">
+                    <input type="radio" name="dry_run" value="true">
+                    <span>Режим проверки (dry run)</span>
+                </label>
+                <label class="form-radio">
+                    <input type="radio" name="dry_run" value="false" checked>
+                    <span>Реальная синхронизация</span>
+                </label>
+            </div>
+            <div class="form-hint">В режиме проверки изменения не будут применены, только показано что будет сделано.</div>
+        </div>
+
+        <!-- Область синхронизации -->
+        <div class="form-field">
+            <label class="form-label">Область синхронизации</label>
+            <div class="form-radio-group">
+                <label class="form-radio">
+                    <input type="radio" name="server_scope" value="all" checked>
+                    <span>Все серверы</span>
+                </label>
+                <label class="form-radio">
+                    <input type="radio" name="server_scope" value="single">
+                    <span>Один сервер</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Выбор сервера (показывается только если выбран "Один сервер") -->
+        <div class="form-field" id="server-select-field" style="display: none;">
+            <label for="server_id" class="form-label">Выберите сервер</label>
+            <select id="server_id" name="server_id" class="form-input">
+                <option value="">-- Выберите сервер --</option>
+                {% for server in active_servers %}
+                <option value="{{ server.id }}">{{ server.name }} ({{ server.protocol|upper }})</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Типы операций -->
+        <div class="form-field">
+            <label class="form-label">Типы операций</label>
+            <div class="form-checkbox-group">
+                <label class="form-checkbox">
+                    <input type="checkbox" name="create_missing" checked>
+                    <span>Создавать недостающие ключи</span>
+                </label>
+                <label class="form-checkbox">
+                    <input type="checkbox" name="delete_orphaned_on_servers" checked>
+                    <span>Удалять лишние ключи с серверов (которых нет в БД)</span>
+                </label>
+                <label class="form-checkbox">
+                    <input type="checkbox" name="delete_inactive_server_keys" checked>
+                    <span>Удалять ключи для неактивных/удалённых серверов (только из БД)</span>
+                </label>
+                <label class="form-checkbox">
+                    <input type="checkbox" name="sync_configs" checked>
+                    <span>Синхронизировать конфигурации (VLESS / access_url)</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Фильтр по протоколам -->
+        <div class="form-field">
+            <label class="form-label">Протоколы</label>
+            <div class="form-checkbox-group">
+                <label class="form-checkbox">
+                    <input type="checkbox" name="include_v2ray" checked>
+                    <span>V2Ray</span>
+                </label>
+                <label class="form-checkbox">
+                    <input type="checkbox" name="include_outline" checked>
+                    <span>Outline</span>
+                </label>
+            </div>
+            <div class="form-hint" id="protocol-hint" style="display: none; color: #d32f2f;">Необходимо выбрать хотя бы один протокол.</div>
+        </div>
+
+        <div class="form-actions">
+            <button type="button" class="btn" data-modal-close>Отмена</button>
+            <button type="submit" class="btn btn-primary">Запустить синхронизацию</button>
+        </div>
+    </form>
+{% endcall %}
+{% endblock %}
+
+{% block extra_head %}
+    <meta name="csrf-token" content="{{ csrf_token }}">
+{% endblock %}
+
+{% block extra_scripts %}
+    {{ super() }}
+    <script src="/static/js/subscriptions.js?v={{ current_time }}"></script>
+    <script>
+        // Обработчик фильтра "Платные" - отправляет форму при изменении (как на странице пользователей)
+        document.addEventListener('DOMContentLoaded', function() {
+            const paidFilter = document.getElementById('paid-filter');
+            const searchForm = document.getElementById('search-form');
+            
+            function submitOnFilterChange() {
+                const pageInput = document.getElementById('search-page-input');
+                if (pageInput) {
+                    pageInput.value = '1';
+                }
+                if (searchForm) {
+                    if (typeof searchForm.requestSubmit === 'function') {
+                        searchForm.requestSubmit();
+                    } else {
+                        searchForm.submit();
+                    }
+                }
+            }
+            if (paidFilter) {
+                paidFilter.addEventListener('change', submitOnFilterChange);
+            }
+        });
+    </script>
+{% endblock %}
+

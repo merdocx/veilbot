@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+
+{% block title %}Ключи{% endblock %}
+{% block page_title %}Ключи{% endblock %}
+
+{% from "components/modal.html" import modal %}
+
+{% block content %}
+<!-- Stats Cards -->
+<!-- DEBUG: total={{ total }}, active_count={{ active_count }}, expired_count={{ expired_count }}, v2ray_count={{ v2ray_count }} -->
+<div class="stats-grid" data-debug-stats='{"total":{{ total }},"active":{{ active_count }},"expired":{{ expired_count }},"v2ray":{{ v2ray_count }}}'>
+    <div class="stat-card" data-stat="total">
+        <div class="stat-value" data-stat-value>{{ total }}</div>
+        <div class="stat-label">Всего ключей</div>
+    </div>
+    <div class="stat-card" data-stat="active">
+        <div class="stat-value" data-stat-value>{{ active_count }}</div>
+        <div class="stat-label">Активных</div>
+    </div>
+    <div class="stat-card" data-stat="expired">
+        <div class="stat-value" data-stat-value>{{ expired_count }}</div>
+        <div class="stat-label">Истекших</div>
+    </div>
+    <div class="stat-card" data-stat="v2ray">
+        <div class="stat-value" data-stat-value>{{ v2ray_count }}</div>
+        <div class="stat-label">V2Ray</div>
+    </div>
+    <div class="stat-card" data-stat="outline">
+        <div class="stat-value" data-stat-value>{{ outline_count }}</div>
+        <div class="stat-label">Outline</div>
+    </div>
+</div>
+
+<!-- Keys Table -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Выданные ключи</h2>
+        <p class="card-subtitle">Управление всеми выданными ключами</p>
+    </div>
+
+    <!-- Filters -->
+    <div class="filter-bar">
+        <div class="filter-bar__group">
+            <form method="get" action="/keys" id="search-form" style="display: flex; gap: 8px; flex: 1;">
+                <input type="text" id="global-search" name="q" value="{{ search_query }}" placeholder="Поиск по ID, email, ключу, серверу, тарифу, user_id..." class="filter-input" style="flex: 1;" data-server-search="1" data-auto-search="1">
+                <input type="hidden" name="page" value="1" id="search-page-input">
+                {% if email %}<input type="hidden" name="email" value="{{ email }}">{% endif %}
+                {% if user_id %}<input type="hidden" name="user_id" value="{{ user_id }}">{% endif %}
+                {% if server %}<input type="hidden" name="server" value="{{ server }}">{% endif %}
+                {% if protocol %}<input type="hidden" name="protocol" value="{{ protocol }}">{% endif %}
+                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+            </form>
+            <button type="button" class="btn filter-bar__reset" id="reset-search-btn">
+                <span class="material-icons icon-small">clear</span>
+                Сбросить
+            </button>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-scroll">
+        <table class="material-table" id="keys-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Ключ</th>
+                    <th>Email</th>
+                    <th>Сервер</th>
+                    <th>Создан</th>
+                    <th>Истекает</th>
+                    <th class="text-left">Статус</th>
+                    <th>Трафик</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key in keys %}
+                <tr class="keys-table__row"
+                    data-key-id="{{ key.id }}"
+                    data-protocol="{{ key.protocol }}"
+                    data-status="{{ key.status }}"
+                    data-expiry-ts="{{ key.expiry_at }}"
+                    data-expiry-iso="{{ key.expiry_iso }}"
+                    data-server-name="{{ key.server or '' }}">
+                    <td class="keys-table__cell keys-table__cell--id">
+                        <span class="text-muted">#{{ key.id }}</span>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--copy">
+                        <button class="btn btn-icon" type="button" data-action="copy-key" data-key="{{ key.access_url|e }}" data-key-id="{{ key.id }}" title="Скопировать ключ">
+                            <span class="material-icons icon-small">content_copy</span>
+                        </button>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--email">
+                        {% if key.telegram_id %}
+                            <div class="cell-primary" title="{{ key.telegram_id }}">TG: {{ key.telegram_id }}</div>
+                        {% else %}
+                            <div class="cell-primary text-muted">—</div>
+                        {% endif %}
+                        {% if key.email %}
+                            <div class="cell-secondary text-muted" title="{{ key.email }}">{{ key.email }}</div>
+                        {% else %}
+                            <div class="cell-secondary text-muted">—</div>
+                        {% endif %}
+                        <div class="cell-secondary text-muted">{{ key.tariff or '—' }}</div>
+                        {% if key.subscription_id %}
+                        <div class="cell-secondary text-muted">Подписка: #{{ key.subscription_id }}</div>
+                        {% endif %}
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--server">
+                        <div class="cell-primary">{{ key.server or '—' }}</div>
+                        <div class="cell-secondary">
+                            <span class="protocol-badge {{ key.protocol_badge_class }}" title="{{ key.protocol_label }}">
+                                <span class="material-icons icon-small">{{ key.protocol_icon }}</span>
+                                {{ key.protocol_label }}
+                            </span>
+                        </div>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--created">
+                        <div class="cell-primary" data-field="created-display">{{ key.created_display }}</div>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--expiry" data-key-expiry="{{ key.expiry_at }}">
+                        <div class="cell-primary" data-field="expiry-remaining">{{ key.expiry_remaining }}</div>
+                        <div class="cell-secondary" data-field="expiry-display">{{ key.expiry_display }}</div>
+                        <div class="progress-bar" data-progress="{{ (key.lifetime_progress * 100)|round(0) }}">
+                            <div class="progress-bar__fill"></div>
+                        </div>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--status">
+                        <span class="material-icons status-icon {{ key.status_class }}" data-field="status-icon" title="{{ key.status_label }}">{{ key.status_icon }}</span>
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--traffic traffic-cell {% if key.traffic.over_limit %}traffic-cell--over-limit{% endif %}"
+                        data-key-id="{{ key.id }}"
+                        data-traffic-state="{{ key.traffic.state }}"
+                        data-over-limit="{{ 1 if key.traffic.over_limit else 0 }}"
+                        data-over-limit-deadline="{{ key.traffic.over_limit_deadline or '' }}">
+                        <div class="cell-primary" data-field="traffic-display">{{ key.traffic.display }}</div>
+                        {% if key.traffic.limit_display != '—' %}
+                            <div class="cell-secondary" data-field="traffic-limit">Лимит: {{ key.traffic.limit_display }}</div>
+                        {% else %}
+                            <div class="cell-secondary text-muted" data-field="traffic-limit">Лимит не задан</div>
+                        {% endif %}
+                        <div class="cell-secondary traffic-warning {% if not key.traffic.over_limit %}hidden{% endif %}" data-field="traffic-warning">
+                            Превышен лимит. {{ key.traffic.over_limit_deadline_display or '' }}
+                        </div>
+                        {% if key.traffic.usage_percent is not none %}
+                            <div class="progress-bar progress-bar--compact" data-progress="{{ (key.traffic.usage_percent * 100)|round(0) }}">
+                                <div class="progress-bar__fill"></div>
+                            </div>
+                        {% endif %}
+                    </td>
+                    <td class="keys-table__cell keys-table__cell--actions">
+                        <div class="action-buttons">
+                            <a href="/keys/delete/{{ key.id }}" class="btn btn-icon btn-danger" data-action="delete-key" data-key-id="{{ key.id }}" title="Удалить">
+                                <span class="material-icons icon-small">delete</span>
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Pagination -->
+{% if pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+        <a href="?page={{ page - 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if server %}&server={{ server }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
+            <span class="material-icons icon-small">chevron_left</span>
+        </a>
+    {% endif %}
+    
+    {% for p in range(1, pages + 1) %}
+        {% if p == page %}
+            <a href="#" class="active">{{ p }}</a>
+        {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
+            <a href="?page={{ p }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if server %}&server={{ server }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">{{ p }}</a>
+        {% elif p == 4 and page > 5 %}
+            <span>...</span>
+        {% elif p == pages - 3 and page < pages - 4 %}
+            <span>...</span>
+        {% endif %}
+    {% endfor %}
+    
+    {% if page < pages %}
+        <a href="?page={{ page + 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if server %}&server={{ server }}{% endif %}{% if protocol %}&protocol={{ protocol }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
+            <span class="material-icons icon-small">chevron_right</span>
+        </a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+    {{ super() }}
+    <script src="/static/js/keys.js?v=20251111c"></script>
+{% endblock %}

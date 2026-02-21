@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block page_title %}Панель управления{% endblock %}
+
+{% block content %}
+<!-- Stats Overview -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon stat-icon--orange">
+                <span class="material-icons">play_arrow</span>
+            </div>
+            <div>
+                <div class="stat-value">{{ started_users }}</div>
+                <div class="stat-label">Нажали "Start"</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon stat-icon--blue">
+                <span class="material-icons">key</span>
+            </div>
+            <div>
+                <div class="stat-value">{{ active_keys }}</div>
+                <div class="stat-label">Активные ключи</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon stat-icon--green">
+                <span class="material-icons">payment</span>
+            </div>
+            <div>
+                <div class="stat-value">{{ tariff_count }}</div>
+                <div class="stat-label">Тарифы</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon stat-icon--purple">
+                <span class="material-icons">dns</span>
+            </div>
+            <div>
+                <div class="stat-value">{{ server_count }}</div>
+                <div class="stat-label">Серверы</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Быстрые действия</h2>
+    </div>
+    <div class="card-content">
+        <div class="quick-actions">
+            <a href="/cleanup" class="btn btn-warning">
+                <span class="material-icons">cleaning_services</span>
+                Очистить истекшие ключи
+            </a>
+            <a href="/keys" class="btn btn-primary">
+                <span class="material-icons">visibility</span>
+                Просмотреть ключи
+            </a>
+            <a href="/servers" class="btn btn-success">
+                <span class="material-icons">add</span>
+                Добавить сервер
+            </a>
+            <a href="/tariffs" class="btn btn-primary">
+                <span class="material-icons">add_circle</span>
+                Добавить тариф
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Metrics Chart -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Динамика по дням</h2>
+    </div>
+    <div class="card-content">
+        {% if chart_data %}
+            <svg class="metrics-chart" viewBox="0 0 {{ chart_data.width }} {{ chart_data.height }}" preserveAspectRatio="none">
+                <defs>
+                    <linearGradient id="keysGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#1976d2" stop-opacity="0.45"/>
+                        <stop offset="100%" stop-color="#1976d2" stop-opacity="0"/>
+                    </linearGradient>
+                    <linearGradient id="subscriptionsGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#4caf50" stop-opacity="0.4"/>
+                        <stop offset="100%" stop-color="#4caf50" stop-opacity="0"/>
+                    </linearGradient>
+                </defs>
+
+                <g class="grid-lines" stroke="rgba(148, 163, 184, 0.25)" stroke-width="1">
+                    {% for tick in chart_data.y_ticks %}
+                        <line x1="{{ chart_data.padding.left }}" x2="{{ chart_data.width - chart_data.padding.right }}" y1="{{ tick.y }}" y2="{{ tick.y }}" />
+                    {% endfor %}
+                    <line x1="{{ chart_data.padding.left }}" x2="{{ chart_data.width - chart_data.padding.right }}" y1="{{ chart_data.baseline_y }}" y2="{{ chart_data.baseline_y }}" stroke="rgba(148, 163, 184, 0.45)" />
+                </g>
+
+                <g class="y-labels" fill="#64748b" font-size="12" font-family="Roboto, sans-serif">
+                    {% for tick in chart_data.y_ticks %}
+                        <text x="16" y="{{ tick.y + 4 }}">{{ tick.value }}</text>
+                    {% endfor %}
+                </g>
+
+                <path d="{{ chart_data.keys_fill }}" fill="url(#keysGradient)" stroke="none"/>
+                {% if chart_data.subscriptions_fill %}
+                <path d="{{ chart_data.subscriptions_fill }}" fill="url(#subscriptionsGradient)" stroke="none"/>
+                {% endif %}
+                <path d="{{ chart_data.keys_path }}" fill="none" stroke="#1976d2" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                {% if chart_data.subscriptions_path %}
+                <path d="{{ chart_data.subscriptions_path }}" fill="none" stroke="#4caf50" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                {% endif %}
+
+                <g class="points">
+                    {% for point in chart_data.keys_points %}
+                        <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="#fff" stroke="#1976d2" stroke-width="1.5">
+                            <title>{{ point.label }}: {{ point.value }} активных подписок</title>
+                        </circle>
+                    {% endfor %}
+                    {% if chart_data.subscriptions_points %}
+                    {% for point in chart_data.subscriptions_points %}
+                        <circle cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="#fff" stroke="#4caf50" stroke-width="1.5">
+                            <title>{{ point.label }}: {{ point.value }} платных подписок</title>
+                        </circle>
+                    {% endfor %}
+                    {% endif %}
+                </g>
+
+                <g class="x-labels" fill="#475569" font-size="12" font-family="Roboto, sans-serif">
+                    {% for label in chart_data.x_labels %}
+                        {% if label.show %}
+                            <text x="{{ label.x }}" y="{{ chart_data.height - chart_data.padding.bottom + 24 }}" text-anchor="middle">{{ label.text[5:] }}</text>
+                        {% endif %}
+                    {% endfor %}
+                </g>
+            </svg>
+            <div class="metrics-legend">
+                <span class="legend-item">
+                    <span class="legend-swatch" style="background:#1976d2"></span>
+                    Активные подписки
+                </span>
+                <span class="legend-item">
+                    <span class="legend-swatch" style="background:#4caf50"></span>
+                    Платные подписки
+                </span>
+            </div>
+        {% else %}
+            <p class="text-muted">Недостаточно данных для отображения графика.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+

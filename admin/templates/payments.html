@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+
+{% block title %}Платежи{% endblock %}
+{% block page_title %}Платежи{% endblock %}
+
+{% block content %}
+{% set current_status = status or '' %}
+{% set current_preset = preset or '' %}
+
+<!-- Stats Cards -->
+<div class="stats-grid">
+    <button type="button"
+        class="stat-card stat-card--action"
+        data-status-filter=""
+        data-preset-filter=""
+        aria-pressed="{{ 'true' if (current_status == '' and current_preset == '') else 'false' }}"
+        aria-label="Показать все платежи">
+        <div class="stat-value">{{ total_payments_all }}</div>
+        <div class="stat-label">Все платежи</div>
+    </button>
+
+    <button type="button"
+        class="stat-card stat-card--action"
+        data-status-filter="pending"
+        data-preset-filter=""
+        aria-pressed="{{ 'true' if current_status == 'pending' or current_preset == 'pending' else 'false' }}"
+        aria-label="Показать ожидающие платежи">
+        <div class="stat-value">{{ pending_count_all }}</div>
+        <div class="stat-label">Ожидает</div>
+    </button>
+
+    <button type="button"
+        class="stat-card stat-card--action"
+        data-status-filter="paid"
+        data-preset-filter=""
+        aria-pressed="{{ 'true' if current_status == 'paid' else 'false' }}"
+        aria-label="Показать оплаченные платежи">
+        <div class="stat-value">{{ paid_count_all }}</div>
+        <div class="stat-label">Оплачено</div>
+    </button>
+
+    <button type="button"
+        class="stat-card stat-card--action"
+        data-status-filter=""
+        data-preset-filter=""
+        aria-pressed="false"
+        aria-label="Общая сумма по завершенным платежам">
+        <div class="stat-value">
+            {{ (completed_total_amount_rub if completed_total_amount_rub is defined else completed_total_amount) | rub }}
+            {% if completed_total_amount_usd is defined and completed_total_amount_usd %}
+                <div class="text-muted" style="font-size: 12px; margin-top: 2px;">
+                    + ${{ "%.2f"|format(completed_total_amount_usd / 100.0) }}
+                </div>
+            {% endif %}
+        </div>
+        <div class="stat-label">Сумма (completed)</div>
+    </button>
+</div>
+
+<!-- Payments Table -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Платежи</h2>
+        <p class="card-subtitle">Управление платежами и транзакциями</p>
+        <div class="mt-2">
+            <button class="btn btn-primary" data-action="reconcile" data-csrf="{{ csrf_token }}">
+                <span class="material-icons icon-small">sync</span>
+                Реконсиляция
+            </button>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="filter-bar">
+        <div class="filter-bar__group flex-1">
+            <form method="get" action="/payments" id="search-form" style="display: flex; gap: 8px; flex: 1; align-items: center;">
+                <select name="status" id="status-filter" class="filter-input" style="min-width: 180px;">
+                    <option value="">Все статусы</option>
+                    <option value="pending" {% if status == 'pending' %}selected{% endif %}>⏳ Ожидает оплаты</option>
+                    <option value="paid" {% if status == 'paid' %}selected{% endif %}>✅ Оплачен</option>
+                    <option value="completed" {% if status == 'completed' %}selected{% endif %}>✅ Завершен</option>
+                    <option value="failed" {% if status == 'failed' %}selected{% endif %}>❌ Неудачен</option>
+                    <option value="cancelled" {% if status == 'cancelled' %}selected{% endif %}>🚫 Отменен</option>
+                    <option value="refunded" {% if status == 'refunded' %}selected{% endif %}>↩️ Возвращен</option>
+                    <option value="expired" {% if status == 'expired' %}selected{% endif %}>⏰ Истек</option>
+                </select>
+                <input type="text" id="global-search" name="q" value="{{ search_query }}" placeholder="Поиск по ID, payment_id, email, user_id..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
+                <input type="hidden" name="page" value="1" id="search-page-input">
+                {% if user_id %}<input type="hidden" name="user_id" value="{{ user_id }}">{% endif %}
+                {% if tariff_id %}<input type="hidden" name="tariff_id" value="{{ tariff_id }}">{% endif %}
+                {% if provider %}<input type="hidden" name="provider" value="{{ provider }}">{% endif %}
+                {% if protocol %}<input type="hidden" name="protocol" value="{{ protocol }}">{% endif %}
+                {% if country %}<input type="hidden" name="country" value="{{ country }}">{% endif %}
+                {% if preset %}<input type="hidden" name="preset" value="{{ preset }}">{% endif %}
+                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+            </form>
+            <button type="button" class="btn" id="reset-search-btn">
+                <span class="material-icons icon-small">clear</span>
+                Сбросить
+            </button>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-scroll">
+        <table class="material-table" id="payments-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Провайдер</th>
+                    <th>Тариф</th>
+                    <th>Подписка</th>
+                    <th>Пользователь</th>
+                    <th>Сумма</th>
+                    <th>Создан</th>
+                    <th>Статус</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in payments %}
+                <tr>
+                    <td>{{ p.id }}</td>
+                    <td>
+                        {% set prov = (p.provider.value if (p.provider is not none and (p.provider is not string)) else (p.provider or 'yookassa')) %}
+                        <div class="cell-primary">{{ prov|replace('_', ' ')|capitalize }}</div>
+                        <div class="cell-secondary">
+                            <a href="/payments/{{ p.payment_id }}" class="link-plain text-muted" title="Открыть платеж">
+                                ID: {{ p.payment_id|string|truncate(18) }}
+                            </a>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="cell-primary">#{{ p.tariff_id or '—' }}</div>
+                    </td>
+                    <td>
+                        {% if p.subscription_id %}
+                            <div class="cell-primary">
+                                <a href="/subscriptions?q={{ p.subscription_id }}&page=1" class="link-plain" title="Открыть подписку #{{ p.subscription_id }}">
+                                    #{{ p.subscription_id }}
+                                </a>
+                            </div>
+                        {% else %}
+                            <div class="cell-primary text-muted">—</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if p.user_id %}
+                            <div class="cell-primary">TG: {{ p.user_id }}</div>
+                        {% else %}
+                            <div class="cell-primary text-muted">—</div>
+                        {% endif %}
+                        {% if p.email %}
+                            <div class="cell-secondary text-muted" title="{{ p.email }}">{{ p.email }}</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {# currency может быть и строкой ('USD'), и enum-ом с .value #}
+                        {% set currency_value = (p.currency.value if (p.currency is not none and p.currency.value is defined) else (p.currency or 'RUB')) %}
+                        {% if currency_value == 'USD' %}
+                            <div class="cell-primary">${{ "%.2f"|format(p.amount / 100.0) }}</div>
+                        {% else %}
+                            <div class="cell-primary">{{ p.amount|rub }}</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="cell-primary">{{ (p.created_at.timestamp() if p.created_at else 0) | timestamp }}</div>
+                    </td>
+                    <td>
+                        {% set st = (p.status | status_text) %}
+                        <div class="cell-primary">{{ st }}</div>
+                    </td>
+                    <td>
+                        <div class="action-buttons">
+                            <form method="post" action="/payments/{{ p.payment_id }}/recheck" data-action="payments-form" class="d-inline">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <button class="btn btn-primary" title="Перепроверить">
+                                    <span class="material-icons icon-small">refresh</span>
+                                </button>
+                            </form>
+                            <a href="/payments/{{ p.payment_id }}" class="btn" title="Подробнее">
+                                <span class="material-icons icon-small">visibility</span>
+                            </a>
+                            <form method="post" action="/payments/{{ p.payment_id }}/delete" data-action="delete-payment" data-payment-id="{{ p.payment_id }}" class="d-inline">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <button class="btn btn-danger" title="Удалить" type="submit">
+                                    <span class="material-icons icon-small">delete</span>
+                                </button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Pagination -->
+{% if pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+        <a href="?page={{ page - 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
+            <span class="material-icons icon-small">chevron_left</span>
+        </a>
+    {% endif %}
+    
+    {% for p in range(1, pages + 1) %}
+        {% if p == page %}
+            <a href="#" class="active">{{ p }}</a>
+        {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
+            <a href="?page={{ p }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">{{ p }}</a>
+        {% elif p == 4 and page > 5 %}
+            <span>...</span>
+        {% elif p == pages - 3 and page < pages - 4 %}
+            <span>...</span>
+        {% endif %}
+    {% endfor %}
+    
+    {% if page < pages %}
+        <a href="?page={{ page + 1 }}{% if email %}&email={{ email }}{% endif %}{% if user_id %}&user_id={{ user_id }}{% endif %}{% if payment_id %}&payment_id={{ payment_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
+            <span class="material-icons icon-small">chevron_right</span>
+        </a>
+    {% endif %}
+</div>
+{% endif %}
+
+<style>
+/* Уменьшаем ширину столбца "Подписка" в 2 раза */
+#payments-table thead th:nth-child(4),
+#payments-table tbody td:nth-child(4) {
+    width: 80px;
+    min-width: 80px;
+    max-width: 80px;
+}
+
+/* Стили для фильтра по статусу */
+#status-filter {
+    padding: 8px 12px;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background: white;
+    font-size: 14px;
+    cursor: pointer;
+    transition: border-color 0.2s ease;
+}
+
+#status-filter:hover {
+    border-color: #1976d2;
+}
+
+#status-filter:focus {
+    outline: none;
+    border-color: #1976d2;
+    box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.1);
+}
+</style>
+
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/payments.js"></script>
+{% endblock %}
+{% endblock %}

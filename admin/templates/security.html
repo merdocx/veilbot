@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block page_title %}Безопасность{% endblock %}
+
+{% block content %}
+<div class="security-dashboard">
+    <!-- Security Status Overview -->
+    <div class="security-overview">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">
+                    <span class="material-icons">security</span>
+                    Статус безопасности
+                </h2>
+            </div>
+            <div class="card-content">
+                <div class="security-grid">
+                    <div class="security-item">
+                        <div class="security-icon success">
+                            <span class="material-icons">lock</span>
+                        </div>
+                        <div class="security-info">
+                            <div class="security-label">Аутентификация</div>
+                            <div class="security-status">Защищена</div>
+                        </div>
+                    </div>
+                    
+                    <div class="security-item">
+                        <div class="security-icon success">
+                            <span class="material-icons">shield</span>
+                        </div>
+                        <div class="security-info">
+                            <div class="security-label">CSRF Защита</div>
+                            <div class="security-status">Активна</div>
+                        </div>
+                    </div>
+                    
+                    <div class="security-item">
+                        <div class="security-icon success">
+                            <span class="material-icons">encryption</span>
+                        </div>
+                        <div class="security-info">
+                            <div class="security-label">Шифрование БД</div>
+                            <div class="security-status">Активно</div>
+                        </div>
+                    </div>
+                    
+                    <div class="security-item">
+                        <div class="security-icon success">
+                            <span class="material-icons">speed</span>
+                        </div>
+                        <div class="security-info">
+                            <div class="security-label">Ограничение запросов</div>
+                            <div class="security-status">Активно</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Security Events -->
+    <div class="security-events">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">
+                    <span class="material-icons">event</span>
+                    События безопасности
+                </h2>
+            </div>
+            <div class="card-content">
+                <div class="events-list">
+                    {% for event in security_events %}
+                    <div class="event-item {{ event.level }}">
+                        <div class="event-icon">
+                            <span class="material-icons">
+                                {% if event.level == 'warning' %}warning{% elif event.level == 'error' %}error{% else %}info{% endif %}
+                            </span>
+                        </div>
+                        <div class="event-details">
+                            <div class="event-time">{{ event.timestamp }}</div>
+                            <div class="event-message">{{ event.message }}</div>
+                            <div class="event-ip">IP: {{ event.ip }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Security Actions -->
+    <div class="security-actions">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">
+                    <span class="material-icons">settings</span>
+                    Действия безопасности
+                </h2>
+            </div>
+            <div class="card-content">
+                <div class="actions-grid">
+                    <form method="post" action="/security/clear_blocks" data-confirm="Снять все блокировки IP?">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" class="btn btn-warning">
+                            <span class="material-icons">block</span>
+                            Снять блокировки IP
+                        </button>
+                    </form>
+                    
+                    <form method="post" action="/security/rotate_keys" data-confirm="Сгенерировать новые ключи шифрования?">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" class="btn btn-danger">
+                            <span class="material-icons">key</span>
+                            Сменить ключи шифрования
+                        </button>
+                    </form>
+                    
+                    <a href="/security/audit_log" class="btn btn-info">
+                        <span class="material-icons">description</span>
+                        Просмотр логов аудита
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

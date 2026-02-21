@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}VeilBot Admin{% endblock %}</title>
+    
+    <!-- Material Design Icons -->
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS - загружаем ПЕРВЫМ для правильного применения стилей -->
+    <link rel="stylesheet" href="/static/css/material-admin.css?v={{ static_version|string }}" type="text/css" media="all" crossorigin="anonymous">
+    <noscript>
+        <link rel="stylesheet" href="/static/css/material-admin.css?v={{ static_version|string }}" type="text/css">
+    </noscript>
+    
+    <!-- Common JavaScript -->
+    <script type="module" src="/static/js/common.js"></script>
+    <!-- Live Search -->
+    <script src="/static/js/live-search.js"></script>
+    
+    {% block extra_head %}{% endblock %}
+    
+    <!-- Critical inline CSS для немедленного применения базовых стилей -->
+    <style>
+        :root {
+            --primary: #1976d2;
+            --primary-dark: #1565c0;
+            --error: #f44336;
+            --success: #4caf50;
+            --warning: #ff9800;
+            --surface: #ffffff;
+            --background: #fafafa;
+            --text-primary: #212121;
+            --text-secondary: #757575;
+            --divider: #e0e0e0;
+            --shadow: 0 2px 4px rgba(0,0,0,0.1);
+            --shadow-hover: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafa; color: #212121; line-height: 1.5; font-size: 14px; }
+        .app-container { display: flex !important; min-height: 100vh !important; }
+        .sidebar { width: 192px !important; background: #ffffff !important; border-right: 1px solid var(--divider) !important; position: fixed !important; height: 100vh !important; overflow-y: auto !important; z-index: 1000 !important; box-shadow: var(--shadow) !important; }
+        .sidebar-header { padding: 20px 16px !important; border-bottom: 1px solid var(--divider) !important; }
+        .logo { display: flex !important; align-items: center !important; gap: 12px !important; font-size: 18px !important; font-weight: 500 !important; color: var(--text-primary) !important; }
+        .logo .material-icons { font-size: 24px !important; color: var(--primary) !important; }
+        .nav-menu { list-style: none !important; padding: 8px 0 !important; }
+        .nav-item { margin: 4px 8px !important; }
+        .nav-link { display: flex !important; align-items: center !important; gap: 12px !important; padding: 12px 16px !important; color: var(--text-secondary) !important; text-decoration: none !important; border-radius: 8px !important; transition: all 0.2s ease !important; font-size: 14px !important; }
+        .nav-link:hover { background: #f5f5f5 !important; color: var(--text-primary) !important; }
+        .nav-link.active { background: #e3f2fd !important; color: var(--primary) !important; font-weight: 500 !important; }
+        .nav-link .material-icons { font-size: 20px !important; }
+        .main-content { flex: 1 !important; margin-left: 192px !important; min-height: 100vh !important; display: flex !important; flex-direction: column !important; }
+        .top-bar { background: #ffffff !important; border-bottom: 1px solid var(--divider) !important; padding: 16px 24px !important; box-shadow: var(--shadow) !important; }
+        .top-bar-content { display: flex !important; justify-content: space-between !important; align-items: center !important; }
+        .page-title { font-size: 24px !important; font-weight: 400 !important; color: var(--text-primary) !important; margin: 0 !important; }
+        .logout-btn { display: flex !important; align-items: center !important; gap: 8px !important; padding: 8px 16px !important; background: var(--error) !important; color: white !important; text-decoration: none !important; border-radius: 4px !important; font-size: 14px !important; transition: background 0.2s ease !important; }
+        .logout-btn:hover { background: #d32f2f !important; }
+        .content-wrapper { flex: 1 !important; padding: 24px !important; }
+        .card { background: var(--surface) !important; border-radius: 8px !important; box-shadow: var(--shadow) !important; overflow: hidden !important; margin-bottom: 24px !important; }
+        .card-header { padding: 20px 24px !important; border-bottom: 1px solid var(--divider) !important; background: #fafafa !important; }
+        .card-title { font-size: 20px !important; font-weight: 500 !important; color: var(--text-primary) !important; margin: 0 !important; }
+        .card-content { padding: 24px !important; }
+        .btn { display: inline-flex !important; align-items: center !important; gap: 6px !important; padding: 8px 16px !important; border: none !important; border-radius: 4px !important; font-size: 14px !important; font-weight: 500 !important; text-decoration: none !important; cursor: pointer !important; transition: all 0.2s ease !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; }
+        .btn-primary { background: var(--primary) !important; color: white !important; }
+        .btn-primary:hover { background: var(--primary-dark) !important; box-shadow: var(--shadow-hover) !important; }
+        .btn-success { background: var(--success) !important; color: white !important; }
+        .btn-success:hover { background: #388e3c !important; }
+        .btn-warning { background: var(--warning) !important; color: white !important; }
+        .btn-warning:hover { background: #f57c00 !important; }
+        .stats-grid { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)) !important; gap: 16px !important; margin-bottom: 24px !important; }
+        .stat-card { background: var(--surface) !important; padding: 20px !important; border-radius: 8px !important; box-shadow: var(--shadow) !important; }
+        .stat-header { display: flex !important; align-items: center !important; gap: 16px !important; justify-content: center !important; }
+        .stat-icon { width: 48px !important; height: 48px !important; border-radius: 12px !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; color: #fff !important; box-shadow: var(--shadow) !important; }
+        .stat-icon--orange { background: #f57c00 !important; }
+        .stat-icon--blue { background: #1976d2 !important; }
+        .stat-icon--green { background: #2e7d32 !important; }
+        .stat-icon--purple { background: #5e35b1 !important; }
+        .stat-value { font-size: 32px !important; font-weight: 300 !important; color: var(--primary) !important; margin-bottom: 4px !important; }
+        .stat-label { font-size: 14px !important; color: var(--text-secondary) !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; }
+        .quick-actions { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)) !important; gap: 16px !important; }
+        .metrics-chart { width: 100% !important; height: auto !important; display: block !important; }
+        .metrics-legend { margin-top: 1rem !important; display: flex !important; gap: 1.5rem !important; flex-wrap: wrap !important; color: #334155 !important; font-size: 0.875rem !important; font-weight: 500 !important; }
+        .legend-item { display: inline-flex !important; align-items: center !important; gap: 0.5rem !important; }
+        .legend-swatch { width: 12px !important; height: 12px !important; border-radius: 6px !important; display: inline-block !important; box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.08) !important; }
+    </style>
+</head>
+<body>
+    <a href="#main-content" class="skip-link">Пропустить навигацию</a>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="material-icons">vpn_key</span>
+                    <span>VeilBot</span>
+                </div>
+            </div>
+            
+            <ul class="nav-menu">
+                <li class="nav-item">
+                    <a href="/dashboard" class="nav-link">
+                        <span class="material-icons">dashboard</span>
+                        <span>Панель</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/keys" class="nav-link">
+                        <span class="material-icons">key</span>
+                        <span>Ключи</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/subscriptions" class="nav-link">
+                        <span class="material-icons">subscriptions</span>
+                        <span>Подписки</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/subscriptions/discrepancies" class="nav-link">
+                        <span class="material-icons">warning</span>
+                        <span>Расхождения</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/servers" class="nav-link">
+                        <span class="material-icons">dns</span>
+                        <span>Серверы</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/tariffs" class="nav-link">
+                        <span class="material-icons">payment</span>
+                        <span>Тарифы</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/payments" class="nav-link">
+                        <span class="material-icons">receipt_long</span>
+                        <span>Платежи</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/users" class="nav-link">
+                        <span class="material-icons">group</span>
+                        <span>Пользователи</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/webhooks" class="nav-link">
+                        <span class="material-icons">notifications</span>
+                        <span>Вебхуки</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/cleanup" class="nav-link">
+                        <span class="material-icons">cleaning_services</span>
+                        <span>Очистка</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/tools/broadcast" class="nav-link">
+                        <span class="material-icons">campaign</span>
+                        <span>Рассылка</span>
+                    </a>
+                </li>
+            </ul>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content" id="main-content" tabindex="-1">
+            <header class="top-bar">
+                <div class="top-bar-content">
+                    <h1 class="page-title">{% block page_title %}Админ панель{% endblock %}</h1>
+                    <a href="/logout" class="logout-btn">
+                        <span class="material-icons">logout</span>
+                        <span>Выйти</span>
+                    </a>
+                </div>
+            </header>
+
+            <div class="content-wrapper">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+
+    <!-- Navigation highlighting handled by common.js -->
+    
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

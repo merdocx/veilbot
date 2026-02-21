@@ -1,0 +1,162 @@
+# Environment files
+.env
+.env.bot
+.env.local
+.env.production
+.env.*
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+vpn.db*
+*.db.backup
+*.db.*.backup
+
+# Log files
+*.log
+logs/
+admin_audit.log
+bot.log
+country_debug.log
+nohup.out
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Security
+*.key
+*.pem
+*.crt
+*.p12
+secrets/
+keys/
+certificates/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Git
+.git_broken/
+
+# Nginx logs (if copied)
+nginx/*.log
+
+# Backup files
+backup_*.db
+backup_*.sql
+
+# Test files (keep test files for CI/CD, but ignore test outputs)
+*.test
+test_output/
+.coverage
+
+# Documentation builds
+docs/_build/
+docs/build/
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml
+
+# Utility scripts (temporary files)
+check_*.py
+temp_*.py
+debug_*.py
+
+# Development tools
+.pytest_cache/
+.tox/
+.coverage.*
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+node_modules/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/ *.db.backup_*

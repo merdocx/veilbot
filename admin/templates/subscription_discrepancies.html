@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+
+{% block title %}Расхождения подписок{% endblock %}
+{% block page_title %}Расхождения подписок{% endblock %}
+
+{% block content %}
+<!-- Success/Error Messages -->
+{% if success_message %}
+<div class="alert alert-success" style="margin-bottom: 24px; padding: 16px; background-color: #4caf50; color: white; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+    <span class="material-icons">check_circle</span>
+    <span>{{ success_message }}</span>
+</div>
+{% endif %}
+
+{% if error_message %}
+<div class="alert alert-error" style="margin-bottom: 24px; padding: 16px; background-color: #f44336; color: white; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+    <span class="material-icons">error</span>
+    <span>{{ error_message }}</span>
+</div>
+{% endif %}
+
+<!-- Stats Card -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value" data-stat-value>{{ total }}</div>
+        <div class="stat-label">Подписок с расхождениями</div>
+    </div>
+</div>
+
+<!-- Description -->
+<div class="card" style="margin-bottom: 24px;">
+    <div class="card-header">
+        <h2 class="card-title">Описание</h2>
+    </div>
+    <div class="card-body">
+        <p>Эта страница показывает подписки, у которых реальный срок действия отличается от расчетного.</p>
+        <p><strong>Важно:</strong> Показываются только подписки с расхождением более <strong>3 дней</strong>. Подписки с меньшими расхождениями считаются корректными и не отображаются.</p>
+        <p><strong>Формула расчета:</strong></p>
+        <ul>
+            <li>Если подписка создана ДО первого платежа: <code>created_at + сумма(duration_sec всех платежей)</code></li>
+            <li>Если подписка создана ПОСЛЕ первого платежа: <code>первый_платеж + сумма(duration_sec всех платежей)</code></li>
+            <li>Для каждого платежа используется <code>duration_sec</code> тарифа этого платежа (учитываются разные тарифы)</li>
+            <li>+ Реферальные бонусы (30 дней за каждого реферала)</li>
+        </ul>
+        <p><strong>Особенности:</strong></p>
+        <ul>
+            <li>Используется <code>subscription_id</code> для точной связи платежей с конкретными подписками</li>
+            <li>Учитываются разные тарифы в одной подписке (если пользователь продлевал подписку разными тарифами)</li>
+            <li>Показываются только расхождения более 3 дней</li>
+            <li>Естественно истекшие подписки (если оба срока прошли) не показываются, кроме случаев с расхождением >30 дней</li>
+        </ul>
+    </div>
+</div>
+
+<!-- Discrepancies Table -->
+<div class="card">
+    <div class="card-header">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h2 class="card-title">Список расхождений</h2>
+                <p class="card-subtitle">Подписки с некорректными сроками действия</p>
+            </div>
+            <button type="button" id="refresh-btn" class="btn btn-primary" title="Обновить данные" style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons icon-small" id="refresh-icon">refresh</span>
+                <span id="refresh-text">Обновить</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-scroll">
+        <table class="material-table" id="discrepancies-table">
+            <thead>
+                <tr>
+                    <th>User ID</th>
+                    <th>Sub ID</th>
+                    <th>Тариф</th>
+                    <th>Создана</th>
+                    <th>Реальный срок</th>
+                    <th>Расчетный срок</th>
+                    <th>Разница</th>
+                    <th>Платежей</th>
+                    <th>Рефералов</th>
+                    <th>Статус</th>
+                    <th style="width: 120px;">Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if discrepancies %}
+                    {% for disc in discrepancies %}
+                    <tr>
+                        <td>
+                            <a href="/users/{{ disc.user_id }}" class="link">
+                                {{ disc.user_id }}
+                            </a>
+                        </td>
+                        <td>
+                            <a href="/subscriptions?q={{ disc.subscription_id }}" class="link">
+                                #{{ disc.subscription_id }}
+                            </a>
+                        </td>
+                        <td>
+                            <div class="cell-primary">{{ disc.tariff_name }}</div>
+                            <div class="cell-secondary text-muted">ID: {{ disc.tariff_id or 'N/A' }}</div>
+                        </td>
+                        <td>
+                            <div class="cell-primary">{{ disc.sub_created_at }}</div>
+                            <div class="cell-secondary text-muted">Платеж: {{ disc.first_payment_date }}</div>
+                        </td>
+                        <td>
+                            <div class="cell-primary">{{ disc.sub_expires_at }}</div>
+                        </td>
+                        <td>
+                            <div class="cell-primary">{{ disc.calculated_expires }}</div>
+                        </td>
+                        <td>
+                            {% if disc.diff_days > 0 %}
+                                <span class="badge badge-warning">+{{ disc.diff_days_formatted }} дней</span>
+                            {% else %}
+                                <span class="badge badge-error">{{ disc.diff_days_formatted }} дней</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ disc.payments_count }}</td>
+                        <td>{{ disc.bonuses_count }}</td>
+                        <td>
+                            {% if disc.is_expired %}
+                                <span class="badge badge-secondary">Истекла</span>
+                            {% else %}
+                                <span class="badge badge-success">Активна</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <form method="post" action="/subscriptions/discrepancies/fix/{{ disc.subscription_id }}" class="d-inline" data-confirm="Исправить расхождение для подписки #{{ disc.subscription_id }}?&#10;&#10;Срок действия будет обновлен на расчетный на основе всех платежей.">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <button type="submit" class="btn btn-sm btn-primary" title="Исправить расхождение">
+                                    <span class="material-icons icon-small">build</span>
+                                    Исправить
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="11" class="text-center" style="padding: 48px;">
+                            <div style="color: #666; font-size: 16px;">
+                                <span class="material-icons" style="font-size: 48px; display: block; margin-bottom: 16px; opacity: 0.5;">check_circle</span>
+                                ✅ Все подписки имеют корректные сроки!
+                            </div>
+                        </td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+.badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-weight: 500;
+}
+
+.badge-success {
+    background-color: #4caf50;
+    color: white;
+}
+
+.badge-warning {
+    background-color: #ff9800;
+    color: white;
+}
+
+.badge-error {
+    background-color: #f44336;
+    color: white;
+}
+
+.badge-secondary {
+    background-color: #9e9e9e;
+    color: white;
+}
+
+.link {
+    color: #2196f3;
+    text-decoration: none;
+}
+
+.link:hover {
+    text-decoration: underline;
+}
+
+.cell-primary {
+    font-weight: 500;
+}
+
+.cell-secondary {
+    font-size: 0.85em;
+    color: #666;
+    margin-top: 2px;
+}
+
+#refresh-btn {
+    transition: all 0.3s ease;
+}
+
+#refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#refresh-icon.refreshing {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+</style>
+
+<script>
+(function() {
+    'use strict';
+    
+    function initRefreshButton() {
+        const refreshBtn = document.getElementById('refresh-btn');
+        const refreshIcon = document.getElementById('refresh-icon');
+        const refreshText = document.getElementById('refresh-text');
+        
+        if (!refreshBtn || !refreshIcon || !refreshText) {
+            console.warn('Refresh button elements not found');
+            return;
+        }
+        
+        refreshBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // Блокируем кнопку и показываем анимацию
+            refreshBtn.disabled = true;
+            refreshIcon.classList.add('refreshing');
+            refreshText.textContent = 'Обновление...';
+            
+            // Перезагружаем страницу с принудительным обновлением кэша
+            setTimeout(function() {
+                window.location.href = window.location.href.split('?')[0] + '?refresh=' + Date.now();
+            }, 100);
+        });
+    }
+    
+    // Инициализация при загрузке DOM
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() {
+            initRefreshButton();
+        });
+    } else {
+        initRefreshButton();
+    }
+})();
+</script>
+{% endblock %}

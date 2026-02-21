@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}Тарифы{% endblock %}
+{% block page_title %}Тарифы{% endblock %}
+
+{% block content %}
+<!-- Tariffs Table -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Тарифы</h2>
+        <p class="card-subtitle">Управление тарифными планами</p>
+    </div>
+
+    <!-- Filters -->
+    <div class="filter-bar">
+        <div class="filter-bar__group flex-1">
+            <form method="get" action="/tariffs" id="search-form" style="display: flex; gap: 8px; flex: 1;">
+                <input type="text" id="global-search" name="q" value="{{ search_query }}" placeholder="Поиск по ID, названию, цене..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
+                <input type="hidden" name="page" value="1" id="search-page-input">
+                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+            </form>
+            <button type="button" class="btn" id="reset-search-btn">
+                <span class="material-icons icon-small">clear</span>
+                Сбросить
+            </button>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-scroll">
+        <table class="material-table" id="tariffs-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Название</th>
+                    <th>Длительность</th>
+                    <th>Цена</th>
+                    <th>Трафик</th>
+                    <th>Оплата</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in tariffs %}
+                <tr>
+                    <td>{{ t[0] }}</td>
+                    <td>
+                        <div class="cell-primary" title="{{ t[1] }}">{{ t[1] }}</div>
+                    </td>
+                    <td>
+                        {% set duration = t[2] %}
+                        {% if duration >= 86400 %}
+                            <div class="cell-primary">{{ (duration // 86400) }} дн.</div>
+                        {% elif duration >= 3600 %}
+                            <div class="cell-primary">{{ (duration // 3600) }} ч.</div>
+                        {% else %}
+                            <div class="cell-primary">{{ (duration // 60) }} мин.</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="tariff-price">
+                            {% if t[3] == 0 %}
+                                <span class="tariff-price__line">Бесплатно</span>
+                            {% else %}
+                                <span class="tariff-price__line">{{ t[3] }} ₽</span>
+                                {% if t|length > 5 and t[5] and t[5] > 0 %}
+                                    <span class="tariff-price__line">${{ "%.2f"|format(t[5]) }}</span>
+                                {% endif %}
+                            {% endif %}
+                        </div>
+                    </td>
+                    <td>
+                        {% set traffic_limit = t[4] if t|length > 4 else None %}
+                        {% if traffic_limit and traffic_limit > 0 %}
+                            <div class="cell-primary">{{ traffic_limit }} МБ</div>
+                        {% else %}
+                            <div class="cell-primary">Безлимит</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {# t: (id, name, duration_sec, price_rub, traffic_limit_mb, price_crypto_usd, enable_yookassa, enable_platega, enable_cryptobot) #}
+                        {% set price_rub = t[3] %}
+                        {% set price_crypto = t[5] if t|length > 5 else None %}
+                        {% set enable_yookassa = t[6] if t|length > 6 else 1 %}
+                        {% set enable_platega = t[7] if t|length > 7 else 1 %}
+                        {% set enable_cryptobot = t[8] if t|length > 8 else 1 %}
+                        <div class="tariff-price">
+                            {% if price_rub == 0 %}
+                                <span class="tariff-price__line">Бесплатный тариф (оплаты нет)</span>
+                            {% else %}
+                                {% if enable_yookassa %}
+                                    <span class="tariff-price__line">💳 YooKassa</span>
+                                {% endif %}
+                                {% if enable_platega %}
+                                    <span class="tariff-price__line">💳 Platega</span>
+                                {% endif %}
+                                {% if enable_cryptobot and price_crypto and price_crypto > 0 %}
+                                    <span class="tariff-price__line">₿ Crypto (USDT)</span>
+                                {% endif %}
+                                {% if (not enable_yookassa and not enable_platega and (not enable_cryptobot or not price_crypto or price_crypto <= 0)) %}
+                                    <span class="tariff-price__line">Оплата отключена</span>
+                                {% endif %}
+                            {% endif %}
+                        </div>
+                    </td>
+                    <td>
+                        <div class="action-buttons">
+                            <a href="/tariffs/edit/{{ t[0] }}" class="btn btn-primary" title="Редактировать">
+                                <span class="material-icons icon-small">edit</span>
+                            </a>
+                            <a href="/delete_tariff/{{ t[0] }}" class="btn btn-danger" 
+                               data-confirm="Удалить тариф?" title="Удалить">
+                                <span class="material-icons icon-small">delete</span>
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Add Tariff Form -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Добавить новый тариф</h2>
+        <p class="card-subtitle">Создание нового тарифного плана</p>
+    </div>
+    
+    <div class="card-body">
+        <form method="post" action="/add_tariff">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            
+            <div class="form-grid mb-3">
+                <div>
+                    <label for="name" class="form-label">Название тарифа:</label>
+                    <input type="text" id="name" name="name" required class="form-control">
+                </div>
+                
+                <div>
+                    <label for="duration_sec" class="form-label">Длительность (секунды):</label>
+                    <input type="number" id="duration_sec" name="duration_sec" required min="1" class="form-control">
+                    <small class="form-hint">Например: 86400 = 1 день, 2592000 = 30 дней</small>
+                </div>
+                
+                <div>
+                    <label for="traffic_limit_mb" class="form-label">Лимит трафика (МБ):</label>
+                    <input type="number" id="traffic_limit_mb" name="traffic_limit_mb" min="0" class="form-control">
+                    <small class="form-hint">0 = безлимит</small>
+                </div>
+                
+                <div>
+                    <label for="price_rub" class="form-label">Цена (рубли):</label>
+                    <input type="number" id="price_rub" name="price_rub" min="0" value="0" class="form-control">
+                    <small class="form-hint">0 = бесплатный тариф</small>
+                </div>
+                
+                <div>
+                    <label for="price_crypto_usd" class="form-label">Цена в криптовалюте (USD):</label>
+                    <input type="number" id="price_crypto_usd" name="price_crypto_usd" step="0.01" min="0" class="form-control">
+                    <small class="form-hint">Оставьте пустым, если крипто-оплата недоступна для этого тарифа</small>
+                </div>
+            </div>
+
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label">Доступные способы оплаты</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="add_enable_yookassa" name="enable_yookassa" value="1" checked>
+                        <label class="form-check-label" for="add_enable_yookassa">
+                            Разрешить оплату через YooKassa (карта РФ / СБП)
+                        </label>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="add_enable_platega" name="enable_platega" value="1" checked>
+                        <label class="form-check-label" for="add_enable_platega">
+                            Разрешить оплату через Platega (карта РФ / карта зарубеж / СБП)
+                        </label>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="add_enable_cryptobot" name="enable_cryptobot" value="1" checked>
+                        <label class="form-check-label" for="add_enable_cryptobot">
+                            Разрешить оплату криптовалютой (CryptoBot / USDT)
+                        </label>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="justify-end">
+                <button type="submit" class="btn btn-primary">
+                    <span class="material-icons icon-small">add</span>
+                    Добавить тариф
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/tariffs.js?v=20251202"></script>
+{% endblock %}
+{% endblock %}

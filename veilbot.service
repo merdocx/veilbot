@@ -1,0 +1,17 @@
+[Unit]
+Description=VeilBot Telegram VPN Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3.11 -m bot.main
+WorkingDirectory=/root/veilbot
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

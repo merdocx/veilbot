@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block page_title %}Вебхуки{% endblock %}
+{% block content %}
+<div class="table-container">
+  <div class="table-header">
+    <h2>Журнал вебхуков</h2>
+    {% if status %}
+    <div class="status-pill {{ 'status-pill--ok' if status == 'ok' else 'status-pill--error' }} mt-1">
+      {{ 'Replay выполнен' if status == 'ok' else 'Ошибка при повторной обработке' }}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="filter-bar filter-bar--compact">
+    <form method="get" action="/webhooks" id="search-form" class="flex-wrap" style="display: flex; gap: 8px; flex: 1;">
+      <input type="text" name="q" value="{{ search_query }}" placeholder="Поиск по ID, провайдеру, событию, payment_id..." class="form-control" style="flex: 1;" data-server-search="1" data-auto-search="1">
+      <input type="text" name="provider" placeholder="Провайдер" value="{{ filters.provider }}" class="form-control" />
+      <input type="text" name="event" placeholder="Событие" value="{{ filters.event }}" class="form-control" />
+      <input type="text" name="payment_id" placeholder="payment_id" value="{{ payment_id }}" class="form-control" />
+      <input type="hidden" name="page" value="1" id="search-page-input" />
+      <button class="btn btn-primary" type="submit" style="display: none;" id="search-submit-btn">Поиск</button>
+      <button class="btn btn-primary" type="submit">
+        <span class="material-icons icon-small">filter_list</span>
+        Фильтр
+      </button>
+    </form>
+    <button type="button" class="btn" id="reset-search-btn">
+      <span class="material-icons icon-small">clear</span>
+      Сбросить
+    </button>
+  </div>
+
+  <div class="table-scroll mt-2">
+    <table class="material-table material-table--compact" id="webhooks-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Время</th>
+          <th>Провайдер</th>
+          <th>Событие</th>
+          <th>Код</th>
+          <th>IP</th>
+          <th>Payload</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td>{{ log.id }}</td>
+          <td>{{ log.ts | timestamp }}</td>
+          <td>{{ log.provider }}</td>
+          <td>{{ log.event }}</td>
+          <td>{{ log.status_code }}</td>
+          <td>{{ log.ip or '—' }}</td>
+          <td class="payload-cell"><pre class="code">{{ log.payload | pretty_json }}</pre></td>
+          <td>
+            <form method="post" action="/webhooks/{{ log.id }}/replay" data-confirm="Повторно обработать этот вебхук?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
+              <button class="btn btn-primary" type="submit">Replay</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not logs %}
+        <tr><td colspan="8" class="text-center text-muted">Нет записей</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pagination">
+    {% set pages = (total // limit) + (1 if (total % limit) else 0) %}
+    {% if page > 1 %}
+      <a class="btn" href="/webhooks?page={{ page-1 }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">←</a>
+    {% endif %}
+    {% for p in range(1, pages+1) %}
+      {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
+        <a class="btn {% if p==page %}active{% endif %}" href="/webhooks?page={{ p }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">{{ p }}</a>
+      {% elif p == page-3 or p == page+3 %}
+        <span class="text-muted">…</span>
+      {% endif %}
+    {% endfor %}
+    {% if page < pages %}
+      <a class="btn" href="/webhooks?page={{ page+1 }}&limit={{ limit }}&provider={{ filters.provider }}&event={{ filters.event }}&sort_by={{ sort.by }}&sort_order={{ sort.order }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">→</a>
+    {% endif %}
+  </div>
+</div>
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/webhooks.js?v=20251202"></script>
+{% endblock %}
+{% endblock %}
+
+

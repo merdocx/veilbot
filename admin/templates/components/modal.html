@@ -1,0 +1,14 @@
+{% macro modal(id, title, size='md') %}
+<div id="{{ id }}" class="vb-modal" data-modal aria-hidden="true">
+    <div class="vb-modal__backdrop" data-modal-close></div>
+    <div class="vb-modal__dialog vb-modal__dialog--{{ size }}" role="dialog" aria-modal="true" aria-labelledby="{{ id }}-title">
+        <header class="vb-modal__header">
+            <h3 id="{{ id }}-title" class="vb-modal__title">{{ title }}</h3>
+        </header>
+        <div class="vb-modal__body">
+            {{ caller() }}
+        </div>
+    </div>
+</div>
+{% endmacro %}
+

@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+
+{% block page_title %}Пользователь {{ user.user_id }}{% endblock %}
+
+{% block content %}
+<div class="card mb-3">
+  <div class="card-header">
+    <h2 class="card-title">Информация о пользователе</h2>
+  </div>
+  <div class="card-body">
+    <div class="grid-two">
+      <div>
+        <div class="kv-list"><b>User ID</b><span class="vv">{{ user.user_id }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Email</b><span class="vv">{{ user.email or '—' }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Ключей Outline</b><span class="vv">{{ user.outline_count }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Ключей V2Ray</b><span class="vv">{{ user.v2ray_count }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Рефералы</b><span class="vv">{{ user.referrals }}</span></div>
+      </div>
+      <div>
+        <div class="kv-list"><b>Последняя активность</b><span class="vv">{{ user.last_activity|timestamp }}</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Ключи пользователя</h2>
+  </div>
+  <div class="table-scroll">
+    <table class="material-table" id="user-keys-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Ключ</th>
+          <th>Email</th>
+          <th>Сервер</th>
+          <th>Создан</th>
+          <th>Истекает</th>
+          <th class="text-left">Статус</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for k in keys %}
+        {% set protocol_str = k[8] if k[8] else '' %}
+        {% set protocol = protocol_str.lower() if protocol_str else '' %}
+        {% set created_ts = (k[3] or 0) | int %}
+        {% set expiry_ts = (k[4] or 0) | int %}
+        {% set now_ts = (current_time or 0) | int %}
+        {% set is_active = expiry_ts > 0 and expiry_ts > now_ts %}
+        {% set lifetime_total = 0 %}
+        {% if expiry_ts > created_ts %}
+          {% set lifetime_total = expiry_ts - created_ts %}
+        {% endif %}
+        {% set elapsed = 0 %}
+        {% if now_ts > created_ts %}
+          {% set elapsed = now_ts - created_ts %}
+        {% endif %}
+        {% set progress = 0 %}
+        {% if lifetime_total > 0 %}
+          {% set progress_float = (elapsed * 100.0) / lifetime_total %}
+          {% if progress_float > 100 %}
+            {% set progress = 100 %}
+          {% else %}
+            {% set progress = progress_float | int %}
+          {% endif %}
+        {% elif expiry_ts > 0 and now_ts >= expiry_ts %}
+          {% set progress = 100 %}
+        {% endif %}
+        <tr class="keys-table__row" data-key-id="{{ k[0] }}" data-protocol="{{ protocol }}" data-status="{{ 'active' if is_active else 'expired' }}" data-expiry-ts="{{ expiry_ts }}">
+          <td class="keys-table__cell keys-table__cell--id">
+            <span class="text-muted">#{{ k[0] }}</span>
+          </td>
+          <td class="keys-table__cell keys-table__cell--copy">
+            <button class="btn btn-icon" type="button" data-action="copy-key" data-key="{{ (k[2] or '')|e }}" data-key-id="{{ k[0] }}" title="Скопировать ключ">
+              <span class="material-icons icon-small">content_copy</span>
+            </button>
+          </td>
+          <td class="keys-table__cell keys-table__cell--email">
+            {% if k[6] %}
+              <div class="cell-primary" title="{{ k[6] }}">{{ k[6] }}</div>
+            {% else %}
+              <div class="cell-primary text-muted">—</div>
+            {% endif %}
+            <div class="cell-secondary text-muted">{{ k[7] or '—' }}</div>
+          </td>
+          <td class="keys-table__cell keys-table__cell--server">
+            <div class="cell-primary">{{ k[5] or '—' }}</div>
+            <div class="cell-secondary">
+              <span class="protocol-badge {% if protocol == 'outline' %}protocol-badge--outline{% elif protocol == 'v2ray' %}protocol-badge--v2ray{% else %}protocol-badge--neutral{% endif %}" title="{% if protocol == 'outline' %}Outline{% elif protocol == 'v2ray' %}V2Ray{% else %}{{ protocol }}{% endif %}">
+                <span class="material-icons icon-small">{% if protocol == 'outline' %}lock{% elif protocol == 'v2ray' %}security{% else %}help_outline{% endif %}</span>
+                {% if protocol == 'outline' %}Outline{% elif protocol == 'v2ray' %}V2Ray{% else %}{{ protocol or '—' }}{% endif %}
+              </span>
+            </div>
+          </td>
+          <td class="keys-table__cell keys-table__cell--created">
+            <div class="cell-primary">{{ created_ts|timestamp }}</div>
+          </td>
+          <td class="keys-table__cell keys-table__cell--expiry" data-key-expiry="{{ expiry_ts }}">
+            <div class="cell-primary">{{ expiry_ts|timestamp if expiry_ts else '—' }}</div>
+            {% if expiry_ts %}
+            <div class="progress-bar" data-progress="{{ progress }}">
+              <div class="progress-bar__fill"></div>
+            </div>
+            {% endif %}
+          </td>
+          <td class="keys-table__cell keys-table__cell--status">
+            <span class="material-icons status-icon {% if is_active %}status-icon--active{% else %}status-icon--expired{% endif %}" title="{% if is_active %}Активен{% else %}Истёк{% endif %}">
+              {% if is_active %}check_circle{% else %}cancel{% endif %}
+            </span>
+          </td>
+          <td class="keys-table__cell keys-table__cell--actions">
+            <div class="action-buttons">
+              <form method="post" action="/users/keys/{{ k[0] }}/resend" data-user-action="resend" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button class="btn btn-icon" type="submit" title="Отправить ключ">
+                  <span class="material-icons icon-small">send</span>
+                </button>
+              </form>
+              <form method="post" action="/users/keys/{{ k[0] }}/extend" data-user-action="extend" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <input type="number" name="days" value="30" min="1" class="form-control input-inline" style="width: 60px;" />
+                <button class="btn btn-icon" type="submit" title="Продлить">
+                  <span class="material-icons icon-small">schedule</span>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not keys %}
+        <tr><td colspan="8" class="text-center text-muted">Нет ключей</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {% set pages = (total // limit) + (1 if (total % limit) else 0) %}
+  {% if pages > 1 %}
+  <div class="pagination">
+    {% if page > 1 %}
+      <a class="btn" href="/users/{{ user.user_id }}?page={{ page-1 }}&limit={{ limit }}">
+        <span class="material-icons icon-small">chevron_left</span>
+      </a>
+    {% endif %}
+    {% for p in range(1, pages+1) %}
+      {% if p == page %}
+        <a href="#" class="btn active">{{ p }}</a>
+      {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
+        <a class="btn" href="/users/{{ user.user_id }}?page={{ p }}&limit={{ limit }}">{{ p }}</a>
+      {% elif p == 4 and page > 5 %}
+        <span class="text-muted">…</span>
+      {% elif p == pages - 3 and page < pages - 4 %}
+        <span class="text-muted">…</span>
+      {% endif %}
+    {% endfor %}
+    {% if page < pages %}
+      <a class="btn" href="/users/{{ user.user_id }}?page={{ page+1 }}&limit={{ limit }}">
+        <span class="material-icons icon-small">chevron_right</span>
+      </a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="table-container mt-2">
+  <div class="table-header">
+    <h2>Платежи пользователя</h2>
+  </div>
+  <div class="table-scroll">
+    <table class="material-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Payment ID</th>
+          <th>Статус</th>
+          <th>Сумма</th>
+          <th>Провайдер</th>
+          <th>Протокол</th>
+          <th>Email</th>
+          <th>Создан</th>
+          <th>Оплачен</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in payments %}
+        <tr>
+          <td>{{ p.id }}</td>
+          <td><a href="/payments/{{ p.payment_id }}" class="code">{{ p.payment_id }}</a></td>
+          <td>
+            {% set st = (p.status.value if p.status is not string and hasattr(p.status, 'value') else (p.status if p.status is string else '')) %}
+            {% if st == 'paid' or st == 'completed' %}
+              <span class="badge badge-success">оплачен</span>
+            {% elif st == 'pending' %}
+              <span class="badge badge-warning">ожидает</span>
+            {% elif st == 'failed' or st == 'cancelled' or st == 'expired' %}
+              <span class="badge badge-error">ошибка</span>
+            {% elif st == 'refunded' %}
+              <span class="badge badge-neutral">возврат</span>
+            {% else %}
+              <span class="badge badge-neutral">{{ st or 'неизвестно' }}</span>
+            {% endif %}
+          </td>
+          <td>{{ (p.amount or 0) | int | rub }}</td>
+          <td>{{ p.provider }}</td>
+          <td>{{ p.protocol }}</td>
+          <td>{{ p.email or '—' }}</td>
+          <td>{{ p.created_at.timestamp() | int | timestamp }}</td>
+          <td>{{ (p.paid_at.timestamp() if p.paid_at else 0) | int | timestamp }}</td>
+          <td>
+            {% if st == 'paid' %}
+              <form method="post" action="/payments/{{ p.payment_id }}/issue" data-user-payment="issue" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button class="btn" type="submit">Выдать ключ</button>
+              </form>
+            {% elif st == 'pending' %}
+              <form method="post" action="/payments/{{ p.payment_id }}/recheck" data-user-payment="recheck" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button class="btn" type="submit">Перепроверить</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not payments %}
+        <tr><td colspan="10" class="text-center text-muted">Нет платежей</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card mt-2">
+  <div class="card-header">
+    <h2 class="card-title">Рефералы</h2>
+  </div>
+  <div class="table-scroll">
+    <table class="material-table">
+      <thead>
+        <tr>
+          <th>User ID</th>
+          <th>Email</th>
+          <th>Дата приглашения</th>
+          <th>Бонус</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for referral in referrals %}
+        <tr>
+          <td>
+            <div class="cell-primary">
+              <a href="/users/{{ referral.user_id }}" class="code">{{ referral.user_id }}</a>
+            </div>
+          </td>
+          <td>
+            {% if referral.email %}
+              <div class="cell-primary" title="{{ referral.email }}">{{ referral.email }}</div>
+            {% else %}
+              <div class="cell-primary text-muted">—</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if referral.created_at %}
+              <div class="cell-primary">{{ referral.created_at|timestamp }}</div>
+            {% else %}
+              <div class="cell-primary text-muted">—</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if referral.bonus_issued %}
+              <span class="badge badge-success">Выдан</span>
+            {% else %}
+              <span class="badge badge-neutral">Не выдан</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not referrals %}
+        <tr><td colspan="4" class="text-center text-muted">Рефералы отсутствуют</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/userDetail.js"></script>
+{% endblock %}
+
+

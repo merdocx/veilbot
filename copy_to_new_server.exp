@@ -1,0 +1,40 @@
+#!/usr/bin/expect -f
+set timeout 300
+set server "95.142.47.150"
+set user "root"
+set password "5Uq34973rZjA38WB5WQm"
+set source_dir "/root/veilbot/"
+set dest_dir "/root/veilbot/"
+
+# Подключение и создание директории
+spawn ssh -o StrictHostKeyChecking=no $user@$server "mkdir -p $dest_dir && echo 'Directory ready'"
+expect {
+    "password:" {
+        send "$password\r"
+        expect eof
+    }
+    "Connection refused" {
+        puts "Ошибка: соединение отклонено"
+        exit 1
+    }
+    timeout {
+        puts "Ошибка: таймаут подключения"
+        exit 1
+    }
+}
+
+# Копирование через rsync
+spawn rsync -avz --progress --exclude='.git' --exclude='venv' --exclude='__pycache__' --exclude='*.pyc' --exclude='.pytest_cache' --exclude='htmlcov' --exclude='.coverage' --exclude='*.log' $source_dir $user@$server:$dest_dir
+expect {
+    "password:" {
+        send "$password\r"
+        expect {
+            eof { puts "Копирование завершено" }
+            timeout { puts "Таймаут при копировании" }
+        }
+    }
+    timeout {
+        puts "Ошибка: таймаут"
+        exit 1
+    }
+}

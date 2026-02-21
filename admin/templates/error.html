@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Ошибка{% endblock %}
+
+{% block content %}
+<div class="page-hero text-center">
+    <div class="card">
+        <div class="card-body card-body--xl stacked-gap">
+            <div>
+                <span class="material-icons icon-xxl icon-danger">
+                    {% if error_code == 404 %}
+                        search_off
+                    {% elif error_code == 403 %}
+                        lock
+                    {% else %}
+                        error_outline
+                    {% endif %}
+                </span>
+            </div>
+
+            <h1 class="card-title">Ошибка {{ error_code }}</h1>
+
+            <p class="text-lead">
+                {{ error_message }}
+            </p>
+
+            <div class="actions-inline">
+                <a href="/dashboard" class="btn btn-primary">
+                    <span class="material-icons icon-small">dashboard</span>
+                    Вернуться на дашборд
+                </a>
+                <a href="/dashboard" class="btn" data-go-back>
+                    <span class="material-icons icon-small">arrow_back</span>
+                    Назад
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

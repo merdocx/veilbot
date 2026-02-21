@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block page_title %}Редактировать тариф{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Редактировать тариф</h2>
+    </div>
+
+    <div class="card-body">
+        <form method="post" action="/tariffs/edit/{{ tariff.id }}">
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label" for="name">Название тарифа</label>
+                    <input type="text" id="name" name="name" class="form-control" required
+                           value="{{ tariff.name }}" placeholder="Например: 1 день">
+                </div>
+
+                <div>
+                    <label class="form-label" for="duration_sec">Длительность (в секундах)</label>
+                    <input type="number" id="duration_sec" name="duration_sec" class="form-control" required
+                           value="{{ tariff.duration_sec }}" placeholder="86400" min="1">
+                    <small class="form-hint">86400 = 1 день, 3600 = 1 час, 60 = 1 минута</small>
+                </div>
+
+                <div>
+                    <label class="form-label" for="traffic_limit_mb">Лимит трафика (МБ)</label>
+                    <input type="number" id="traffic_limit_mb" name="traffic_limit_mb" class="form-control"
+                           value="{{ tariff.traffic_limit_mb or '' }}" placeholder="0" min="0">
+                    <small class="form-hint">0 = безлимит</small>
+                </div>
+
+                <div>
+                    <label class="form-label" for="price_rub">Цена (₽)</label>
+                    <input type="number" id="price_rub" name="price_rub" class="form-control" required
+                           value="{{ tariff.price_rub }}" placeholder="0" min="0">
+                    <small class="form-hint">0 = бесплатный тариф</small>
+                </div>
+
+                <div>
+                    <label class="form-label" for="price_crypto_usd">Цена в криптовалюте (USD)</label>
+                    <input type="number" id="price_crypto_usd" name="price_crypto_usd" class="form-control" step="0.01"
+                           value="{{ tariff.price_crypto_usd or '' }}" placeholder="" min="0">
+                    <small class="form-hint">Оставьте пустым, если крипто-оплата недоступна для этого тарифа</small>
+                </div>
+            </div>
+
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label">Доступные способы оплаты</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="enable_yookassa" name="enable_yookassa" value="1"
+                               {% if tariff.enable_yookassa %}checked{% endif %}>
+                        <label class="form-check-label" for="enable_yookassa">
+                            Разрешить оплату через YooKassa (карта РФ / СБП)
+                        </label>
+                        <small class="form-hint d-block">Требуется цена в рублях &gt; 0</small>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="enable_platega" name="enable_platega" value="1"
+                               {% if tariff.enable_platega %}checked{% endif %}>
+                        <label class="form-check-label" for="enable_platega">
+                            Разрешить оплату через Platega (карта РФ / карта зарубеж / СБП)
+                        </label>
+                        <small class="form-hint d-block">Требуется цена в рублях &gt; 0</small>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="enable_cryptobot" name="enable_cryptobot" value="1"
+                               {% if tariff.enable_cryptobot %}checked{% endif %}>
+                        <label class="form-check-label" for="enable_cryptobot">
+                            Разрешить оплату криптовалютой (CryptoBot / USDT)
+                        </label>
+                        <small class="form-hint d-block">Требуется указать цену в USD (price_crypto_usd)</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label">Статус тарифа</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="is_archived" name="is_archived" value="1"
+                               {% if tariff.is_archived %}checked{% endif %}>
+                        <label class="form-check-label" for="is_archived">
+                            Архивировать тариф
+                        </label>
+                        <small class="form-hint d-block">Архивные тарифы не отображаются при выборе тарифа при покупке или продлении</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="justify-end">
+                <a href="/tariffs" class="btn">
+                    <span class="material-icons icon-small">cancel</span>
+                    Отмена
+                </a>
+                <button type="submit" class="btn btn-primary">
+                    <span class="material-icons icon-small">save</span>
+                    Сохранить изменения
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

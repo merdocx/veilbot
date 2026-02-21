@@ -1,0 +1,1442 @@
+"""
+API маршруты для подписок V2Ray
+"""
+from fastapi import APIRouter, Request, HTTPException, Form, Body
+from fastapi.responses import PlainTextResponse, RedirectResponse, JSONResponse, HTMLResponse
+from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+import logging
+import sys
+import os
+import time
+import math
+import asyncio
+from datetime import datetime
+from typing import Optional, Dict, Any
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from bot.services.subscription_service import SubscriptionService, validate_subscription_token
+from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.user_repository import UserRepository
+from app.repositories.server_repository import ServerRepository
+from app.settings import settings
+from app.infra.sqlite_utils import open_connection
+from app.infra.foreign_keys import safe_foreign_keys_off
+from vpn_protocols import V2RayProtocol
+from ..middleware.audit import log_admin_action
+from ..dependencies.csrf import get_csrf_token
+from ..dependencies.templates import templates
+from scripts.sync_all_keys_with_servers import sync_all_keys_with_servers
+from bot.services.subscription_traffic_reset import reset_subscription_traffic
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+DATABASE_PATH = settings.DATABASE_PATH
+DB_PATH = DATABASE_PATH
+
+# Rate limiter для подписок (60 запросов в минуту на токен)
+# Используем токен как ключ для rate limiting
+def get_token_for_rate_limit(request: Request):
+    """Получить токен из path params для rate limiting"""
+    token = request.path_params.get("token")
+    if token:
+        return token
+    return get_remote_address(request)
+
+limiter = Limiter(key_func=get_token_for_rate_limit)
+
+
+def _format_bytes(num_bytes: Optional[float]) -> str:
+    """Format raw bytes into a human-readable string."""
+    if num_bytes is None:
+        return "—"
+    if num_bytes <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    idx = min(int(math.log(num_bytes, 1024)), len(units) - 1)
+    normalized = num_bytes / (1024 ** idx)
+    return f"{normalized:.2f} {units[idx]}"
+
+
+def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    return max(min_value, min(max_value, value))
+
+
+def _format_timestamp(ts: int | None) -> str:
+    """Форматировать timestamp в читаемый формат"""
+    if not ts or ts == 0:
+        return "—"
+    try:
+        dt = datetime.fromtimestamp(ts)
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except (ValueError, OSError):
+        return "—"
+
+
+def _format_duration_components(total_seconds: int) -> Dict[str, int]:
+    """
+    Разбивает интервал в секундах на компоненты:
+    годы, месяцы (30 дней), дни, часы, минуты.
+    Логика синхронизирована со страницей ключей (keys.py).
+    """
+    seconds = abs(int(total_seconds))
+    units = {
+        "years": 365 * 24 * 3600,
+        "months": 30 * 24 * 3600,
+        "days": 24 * 3600,
+        "hours": 3600,
+        "minutes": 60,
+    }
+    result: Dict[str, int] = {
+        "years": 0,
+        "months": 0,
+        "days": 0,
+        "hours": 0,
+        "minutes": 0,
+    }
+    for name, unit_seconds in units.items():
+        count, seconds = divmod(seconds, unit_seconds)
+        result[name] = int(count)
+    return result
+
+
+def _format_expiry_remaining(expires_at: int | None, now_ts: int) -> dict:
+    """
+    Форматировать оставшееся время до истечения подписки.
+    
+    Использует ту же схему, что и страница ключей:
+    годы, месяцы, дни, часы и минуты (максимум 3 компонента).
+    """
+    if not expires_at:
+        return {"label": "—", "state": "unknown"}
+
+    delta = int(expires_at - now_ts)
+    components = _format_duration_components(delta)
+
+    parts: list[str] = []
+    labels = {
+        "years": "г",
+        "months": "мес",
+        "days": "д",
+        "hours": "ч",
+        "minutes": "мин",
+    }
+
+    for key, suffix in labels.items():
+        value = components.get(key, 0)
+        if value:
+            parts.append(f"{value} {suffix}")
+
+    if not parts:
+        parts.append("< 1 мин")
+
+    label = " ".join(parts[:3])
+
+    if delta > 0:
+        return {
+            "label": f"Через {label}",
+            "state": "upcoming",
+        }
+    if delta < 0:
+        return {
+            "label": f"Просрочен {label} назад",
+            "state": "expired",
+        }
+
+    return {
+        "label": "Истекает прямо сейчас",
+        "state": "now",
+    }
+
+
+def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
+    """Вычислить статистику подписок для обновления UI"""
+    VIP_EXPIRES_AT = 4102434000  # 01.01.2100 - признак VIP подписки
+    
+    with open_connection(db_path) as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM subscriptions")
+        total = int(c.fetchone()[0])
+        
+        # Активные подписки: expires_at > now_ts И is_active = 1
+        c.execute("SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? AND is_active = 1", (now_ts,))
+        active = int(c.fetchone()[0])
+        
+        # Платные активные не VIP подписки:
+        # - is_active = 1
+        # - expires_at > now_ts (активные)
+        # - expires_at < VIP_EXPIRES_AT (не VIP)
+        # - Есть хотя бы один completed платеж ИЛИ тариф с price_rub > 0
+        c.execute("""
+            SELECT COUNT(DISTINCT s.id)
+            FROM subscriptions s
+            LEFT JOIN payments p ON s.id = p.subscription_id AND p.status = 'completed'
+            LEFT JOIN tariffs t ON s.tariff_id = t.id
+            WHERE s.is_active = 1
+              AND s.expires_at > ?
+              AND s.expires_at < ?
+              AND (
+                  p.id IS NOT NULL
+                  OR (t.price_rub IS NOT NULL AND t.price_rub > 0)
+              )
+        """, (now_ts, VIP_EXPIRES_AT))
+        paid_active_non_vip = int(c.fetchone()[0])
+    
+    return {
+        "total": total,
+        "active": active,
+        "expired": paid_active_non_vip,  # Используем поле expired для хранения платных активных не VIP подписок
+    }
+
+
+@router.get("/subscriptions")
+async def subscriptions_page(
+    request: Request,
+    page: int = 1,
+    limit: int = 50,
+    q: str | None = None,
+    paid: str | None = None,
+):
+    """Страница списка подписок (всегда показываются все подписки — и активные, и неактивные)."""
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login")
+
+    try:
+        log_admin_action(request, "SUBSCRIPTIONS_PAGE_ACCESS")
+
+        subscription_repo = SubscriptionRepository(DB_PATH)
+        user_repo = UserRepository(DB_PATH)
+        server_repo = ServerRepository(DB_PATH)
+
+        # Нормализуем параметр поиска
+        query_normalized = q.strip() if q and q.strip() else None
+
+        # Преобразуем параметр paid из строки в bool (аналогично vip_filter на странице пользователей)
+        paid_filter_bool = False
+        if paid == "1" or paid == "true":
+            paid_filter_bool = True
+
+        # Всегда показывать все подписки (и активные, и неактивные)
+        include_inactive = True
+        now_ts = int(time.time())
+        offset = (max(page, 1) - 1) * limit
+
+        def _load_subscriptions_page_sync():
+            total = subscription_repo.count_subscriptions(
+                query=query_normalized,
+                paid_only=paid_filter_bool,
+                include_inactive=include_inactive,
+            )
+            all_servers = server_repo.list_servers()
+            rows = subscription_repo.list_subscriptions(
+                query=query_normalized,
+                limit=limit,
+                offset=offset,
+                paid_only=paid_filter_bool,
+                include_inactive=include_inactive,
+            )
+            if query_normalized:
+                filter_stats = subscription_repo.get_subscription_filter_stats(
+                    query=query_normalized,
+                    paid_only=paid_filter_bool,
+                    include_inactive=include_inactive,
+                    now_ts=now_ts,
+                )
+                stats = {"total": total, "active": filter_stats["active"], "expired": filter_stats["expired"]}
+            else:
+                stats = _compute_subscription_stats(DB_PATH, now_ts)
+            sub_ids = [row[0] for row in rows]
+            traffic_sums_map = subscription_repo.get_all_subscriptions_traffic_sum(sub_ids) if sub_ids else {}
+            traffic_limits_map = subscription_repo.get_subscription_traffic_limits_batch(sub_ids) if sub_ids else {}
+            return total, all_servers, rows, stats, traffic_sums_map, traffic_limits_map
+
+        total, all_servers, rows, stats, traffic_sums_map, traffic_limits_map = await asyncio.to_thread(
+            _load_subscriptions_page_sync
+        )
+        active_servers = []
+        for server_row in all_servers:
+            server_id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, access_level = server_row
+            if active:
+                active_servers.append({
+                    "id": server_id,
+                    "name": name or f"Server #{server_id}",
+                    "protocol": (protocol or "outline").lower(),
+                })
+        
+        # Формируем модели для отображения
+        subscription_models = []
+        
+        for row in rows:
+            (
+                sub_id, user_id, token, created_at, expires_at, tariff_id,
+                is_active, last_updated_at, notified, tariff_name, keys_count, traffic_limit_mb
+            ) = row
+            
+            # Обработка None значений
+            created_at = created_at if created_at is not None else 0
+            expires_at = expires_at if expires_at is not None else 0
+            
+            # Получаем email пользователя
+            user_email = ""
+            with open_connection(DB_PATH) as conn:
+                cursor = conn.cursor()
+                user_email = UserRepository._resolve_user_email(cursor, user_id)
+            
+            # Формируем информацию об истечении
+            expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
+            is_expired = expires_at > 0 and expires_at <= now_ts
+            lifetime_total = max(expires_at - created_at, 0) if expires_at > 0 and created_at > 0 else 0
+            elapsed = max(now_ts - created_at, 0) if created_at > 0 else 0
+            lifetime_progress = 0.0
+            if lifetime_total > 0:
+                lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
+            elif expires_at > 0 and now_ts >= expires_at:
+                lifetime_progress = 1.0
+            
+            # Получаем список ключей подписки
+            keys_list = subscription_repo.get_subscription_keys_list(sub_id)
+            keys_info = []
+            for key_row in keys_list:
+                (
+                    key_id,
+                    protocol,
+                    identifier,
+                    email,
+                    key_created_at,
+                    key_expires_at,
+                    server_name,
+                    country,
+                    traffic_limit_mb,
+                    traffic_usage_bytes,
+                ) = key_row
+                keys_info.append({
+                    "id": key_id,
+                    "protocol": protocol,
+                    "identifier": identifier[:8] + "..." if identifier else "—",
+                    "email": email or "—",
+                    "server": server_name or "—",
+                    "country": country or "—",
+                    "created_at": _format_timestamp(key_created_at),
+                    "expires_at": _format_timestamp(key_expires_at),
+                })
+            
+            # Вычисляем трафик подписки (из batch-словарей)
+            traffic_usage_bytes = traffic_sums_map.get(sub_id, 0)
+            traffic_limit_bytes = traffic_limits_map.get(sub_id, 0)
+
+            traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
+            traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
+
+            # Переводим эффективный лимит в МБ для отображения/редактирования
+            effective_limit_mb = None
+            if traffic_limit_bytes and traffic_limit_bytes > 0:
+                try:
+                    effective_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
+                except (TypeError, ValueError, OverflowError):
+                    effective_limit_mb = None
+
+            usage_percent = None
+            over_limit = False
+            if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
+                usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
+                over_limit = traffic_usage_bytes > traffic_limit_bytes
+
+            traffic_info = {
+                "display": traffic_display,
+                "limit_display": traffic_limit_display,
+                "limit_mb": effective_limit_mb,
+                "usage_percent": usage_percent,
+                "over_limit": over_limit,
+            }
+            
+            # Формируем модель подписки для шаблона
+            subscription_model = {
+                "id": sub_id,
+                "user_id": user_id,
+                "user_email": user_email or "—",
+                "token": (token[:16] + "..." if len(token) > 16 else token) if token else "—",
+                "token_full": token or "",
+                "created_at": _format_timestamp(created_at) if created_at > 0 else "—",
+                "created_at_ts": created_at,
+                "expires_at": _format_timestamp(expires_at) if expires_at > 0 else "—",
+                "expires_at_ts": expires_at,
+                "expires_at_iso": datetime.fromtimestamp(expires_at).strftime("%Y-%m-%dT%H:%M") if expires_at > 0 else "",
+                "expiry_remaining": expiry_info["label"],
+                "expiry_state": expiry_info["state"],
+                "lifetime_progress": lifetime_progress,
+                "tariff_id": tariff_id,
+                "tariff_name": tariff_name or "—",
+                "is_active": bool(is_active),
+                "status": "Неактивна" if not is_active else ("Активна" if not is_expired else "Истекла"),
+                "status_class": "status-inactive" if not is_active else ("status-active" if not is_expired else "status-expired"),
+                "keys_count": keys_count or 0,
+                "subscription_keys": keys_info,
+                "traffic": traffic_info,
+                "traffic_limit_mb": effective_limit_mb,
+            }
+            
+            subscription_models.append(subscription_model)
+        
+        pages = (total + limit - 1) // limit if total > 0 else 1
+        
+        return templates.TemplateResponse("subscriptions.html", {
+            "request": request,
+            "subscriptions": subscription_models,
+            "current_time": now_ts,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "active_count": stats["active"],
+            "expired_count": stats["expired"],
+            "active_servers": active_servers,
+            "pages": pages,
+            "csrf_token": get_csrf_token(request),
+            "paid_filter": paid_filter_bool,
+            "q": q,
+        })
+    except Exception as e:
+        logger.error(f"Error in subscriptions_page: {e}", exc_info=True)
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Traceback: {error_details}")
+        # Возвращаем простую страницу с ошибкой
+        error_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Ошибка</title></head>
+        <body>
+            <h1>Ошибка при загрузке подписок</h1>
+            <p>{str(e)}</p>
+            <p><a href="/subscriptions">Попробовать снова</a></p>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=error_html, status_code=500)
+
+
+@router.post("/subscriptions/edit/{subscription_id}")
+async def edit_subscription_route(request: Request, subscription_id: int):
+    """Редактирование срока действия подписки и всех связанных ключей"""
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    form = await request.form()
+    
+    # Логируем все поля формы для отладки
+    form_dict = dict(form)
+    logger.info(f"Edit subscription {subscription_id}: form fields: {list(form_dict.keys())}")
+    logger.info(f"Edit subscription {subscription_id}: all form values: {dict(form)}")
+    
+    new_expiry_str = form.get("new_expiry")
+    traffic_limit_str = form.get("traffic_limit_mb")
+    
+    # Обработка даты из формы
+    if not new_expiry_str:
+        if _is_json_request(request):
+            return JSONResponse({"error": "new_expiry is required"}, status_code=400)
+        return RedirectResponse(url="/subscriptions", status_code=303)
+    
+    try:
+        # Парсим datetime-local format (YYYY-MM-DDTHH:mm) в timestamp
+        dt = datetime.strptime(new_expiry_str, "%Y-%m-%dT%H:%M")
+        new_expiry = int(dt.timestamp())
+    except ValueError:
+        if _is_json_request(request):
+            return JSONResponse({"error": "Invalid date format"}, status_code=400)
+        return RedirectResponse(url="/subscriptions", status_code=303)
+    
+    # Обработка лимита трафика из формы
+    new_limit: int | None = None
+    traffic_limit_present = "traffic_limit_mb" in form_dict
+    
+    if traffic_limit_present:
+        # Обычная обработка лимита трафика из формы
+        traffic_limit_str = form.get("traffic_limit_mb")
+        if traffic_limit_str is not None:
+            trimmed = traffic_limit_str.strip()
+            if trimmed == "":
+                new_limit = 0
+            else:
+                try:
+                    new_limit = int(trimmed)
+                except ValueError:
+                    if _is_json_request(request):
+                        return JSONResponse({"error": "traffic_limit_mb must be an integer"}, status_code=400)
+                    return RedirectResponse(url="/subscriptions", status_code=303)
+                if new_limit < 0:
+                    if _is_json_request(request):
+                        return JSONResponse({"error": "traffic_limit_mb must be >= 0"}, status_code=400)
+                    return RedirectResponse(url="/subscriptions", status_code=303)
+        else:
+            new_limit = 0
+    
+    logger.info(f"Edit subscription {subscription_id}: new_expiry={new_expiry}, traffic_limit_mb={new_limit}")
+    
+    try:
+        subscription_repo = SubscriptionRepository(DB_PATH)
+        subscription = subscription_repo.get_subscription_by_id(subscription_id)
+        
+        if not subscription:
+            if _is_json_request(request):
+                return JSONResponse({"error": "Subscription not found"}, status_code=404)
+            return RedirectResponse(url="/subscriptions", status_code=303)
+        
+        # Обновляем подписку: expiry и traffic_limit_mb
+        current_tariff_id = subscription[5] if subscription and len(subscription) > 5 else None
+        
+        logger.info(f"Updating subscription {subscription_id}: expiry={new_expiry}, traffic_limit_mb={new_limit}")
+        
+        # Обновляем expiry
+        subscription_repo.extend_subscription(subscription_id, new_expiry, tariff_id=current_tariff_id)
+        
+        # Обновляем лимит трафика (если указан)
+        if new_limit is not None:
+            subscription_repo.update_subscription_traffic_limit(subscription_id, new_limit)
+        
+        # Проверяем, что значение действительно сохранилось
+        check_sub = subscription_repo.get_subscription_by_id(subscription_id)
+        if check_sub:
+            check_limit = check_sub[-1] if len(check_sub) > 11 else None
+            logger.info(f"Verified subscription {subscription_id} traffic_limit_mb in DB: {check_limit}")
+        
+        # Обновляем срок всех связанных ключей
+        updated_keys = subscription_repo.update_subscription_keys_expiry(subscription_id, new_expiry)
+        
+        log_action_msg = f"Subscription ID: {subscription_id}, new expiry: {new_expiry}, updated {updated_keys} keys"
+        if new_limit is not None:
+            log_action_msg += f", traffic_limit_mb: {new_limit}"
+        log_admin_action(
+            request,
+            "EDIT_SUBSCRIPTION",
+            log_action_msg
+        )
+        
+        # Пользовательское сообщение с учетом новой логики лимитов трафика:
+        # лимит трафика управляется на уровне подписки, поэтому не упоминаем количество ключей.
+        user_message = "Подписка успешно обновлена."
+        if traffic_limit_present and new_limit is not None:
+            user_message += f" Новый лимит трафика: {new_limit} МБ."
+        
+        if _is_json_request(request):
+            try:
+                # Возвращаем обновленные данные подписки для обновления UI
+                now_ts = int(time.time())
+                subscription_updated = subscription_repo.get_subscription_by_id(subscription_id)
+                
+                if not subscription_updated:
+                    logger.error(f"Subscription {subscription_id} not found after update")
+                    return JSONResponse({
+                        "message": user_message,
+                        "subscription_id": subscription_id,
+                        "error": "Subscription data not found",
+                    })
+                
+                # Распаковываем данные подписки
+                (
+                    sub_id, user_id, token, created_at, expires_at, tariff_id,
+                    is_active, last_updated_at, notified, tariff_name, keys_count, traffic_limit_mb
+                ) = subscription_updated
+                
+                # Формируем expiry_info
+                expiry_info = _format_expiry_remaining(expires_at if expires_at > 0 else None, now_ts)
+                is_expired = expires_at > 0 and expires_at <= now_ts
+                lifetime_total = max(expires_at - created_at, 0) if expires_at > 0 and created_at > 0 else 0
+                elapsed = max(now_ts - created_at, 0) if created_at > 0 else 0
+                lifetime_progress = 0.0
+                if lifetime_total > 0:
+                    lifetime_progress = max(0.0, min(1.0, elapsed / lifetime_total))
+                elif expires_at > 0 and now_ts >= expires_at:
+                    lifetime_progress = 1.0
+                
+                # Формируем traffic_info
+                traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
+                traffic_limit_bytes = subscription_repo.get_subscription_traffic_limit(sub_id)
+
+                traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
+                traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
+
+                effective_limit_mb = None
+                if traffic_limit_bytes and traffic_limit_bytes > 0:
+                    try:
+                        effective_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
+                    except (TypeError, ValueError, OverflowError):
+                        effective_limit_mb = None
+
+                usage_percent = None
+                over_limit = False
+                if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
+                    try:
+                        usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
+                        over_limit = traffic_usage_bytes > traffic_limit_bytes
+                    except (TypeError, ValueError):
+                        pass
+
+                traffic_info = {
+                    "display": traffic_display,
+                    "limit_display": traffic_limit_display,
+                    "limit_mb": effective_limit_mb,
+                    "usage_percent": usage_percent,
+                    "over_limit": over_limit,
+                }
+                
+                # Формируем данные подписки для ответа
+                subscription_data = {
+                    "id": sub_id,
+                    "expires_at": _format_timestamp(new_expiry),
+                    "expires_at_ts": new_expiry,
+                    "expires_at_iso": datetime.fromtimestamp(new_expiry).strftime("%Y-%m-%dT%H:%M") if new_expiry else "",
+                    "expiry_remaining": expiry_info["label"],
+                    "expiry_state": expiry_info["state"],
+                    "lifetime_progress": lifetime_progress,
+                    "status": "Активна" if (is_active and not is_expired) else "Истекла",
+                    "status_class": "status-active" if (is_active and not is_expired) else "status-expired",
+                    "traffic": traffic_info,
+                    "traffic_limit_mb": effective_limit_mb,
+                }
+                
+                return JSONResponse({
+                    "message": user_message,
+                    "subscription_id": subscription_id,
+                    "subscription": subscription_data,
+                })
+            except Exception as e:
+                logger.error(f"Error building subscription response: {e}", exc_info=True)
+                # Возвращаем хотя бы базовый ответ
+                return JSONResponse({
+                    "message": user_message,
+                    "subscription_id": subscription_id,
+                    "error": f"Error building response: {str(e)}",
+                })
+        
+        return RedirectResponse(url="/subscriptions", status_code=303)
+    
+    except ValueError as e:
+        logging.error(f"Error parsing expiry date: {e}")
+        if _is_json_request(request):
+            return JSONResponse({"error": "Invalid date format"}, status_code=400)
+        return RedirectResponse(url="/subscriptions", status_code=303)
+    except Exception as e:
+        logging.error(f"Error editing subscription {subscription_id}: {e}", exc_info=True)
+        if _is_json_request(request):
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return RedirectResponse(url="/subscriptions", status_code=303)
+
+
+async def _delete_subscription_internal(request: Request, subscription_id: int) -> Dict[str, Any]:
+    """Внутренняя функция для удаления подписки"""
+    subscription_repo = SubscriptionRepository(DB_PATH)
+    subscription = subscription_repo.get_subscription_by_id(subscription_id)
+    
+    if not subscription:
+        raise ValueError(f"Subscription {subscription_id} not found")
+    
+    logging.info(f"Deleting subscription {subscription_id}")
+    
+    # Получаем все ключи подписки для удаления
+    subscription_keys = subscription_repo.get_subscription_keys_for_deletion(subscription_id)
+    
+    # Удаляем ключи через API (V2Ray и Outline)
+    deleted_v2ray_count = 0
+    deleted_outline_count = 0
+    for key_data in subscription_keys:
+        if not isinstance(key_data, (tuple, list)) or len(key_data) < 4:
+            logging.warning(f"Invalid key data structure: {key_data} for subscription {subscription_id}")
+            continue
+        
+        key_id, api_url, api_key_or_cert, protocol = key_data[0], key_data[1], key_data[2], key_data[3]
+        
+        if not key_id or not api_url:
+            continue
+        
+        if protocol == 'v2ray':
+            # Удаляем V2Ray ключ
+            if api_key_or_cert:
+                protocol_client = None
+                try:
+                    log_admin_action(
+                        request,
+                        "V2RAY_DELETE_ATTEMPT",
+                        f"Attempting to delete key {key_id} from server {api_url} for subscription {subscription_id}"
+                    )
+                    protocol_client = V2RayProtocol(api_url, api_key_or_cert)
+                    result = await protocol_client.delete_user(key_id)
+                    if result:
+                        deleted_v2ray_count += 1
+                        log_admin_action(
+                            request,
+                            "V2RAY_DELETE_SUCCESS",
+                            f"Successfully deleted key {key_id} for subscription {subscription_id}"
+                        )
+                    else:
+                        log_admin_action(
+                            request,
+                            "V2RAY_DELETE_FAILED",
+                            f"Failed to delete key {key_id} for subscription {subscription_id}"
+                        )
+                except Exception as e:
+                    logging.error(f"Error deleting V2Ray key {key_id}: {e}", exc_info=True)
+                    log_admin_action(
+                        request,
+                        "V2RAY_DELETE_ERROR",
+                        f"Failed to delete key {key_id} for subscription {subscription_id}: {str(e)}"
+                    )
+                finally:
+                    if protocol_client:
+                        try:
+                            await protocol_client.close()
+                        except Exception as close_error:
+                            logging.warning(f"Error closing protocol client: {close_error}")
+        
+        elif protocol == 'outline':
+            # Удаляем Outline ключ
+            if api_key_or_cert:  # cert_sha256 для Outline
+                try:
+                    log_admin_action(
+                        request,
+                        "OUTLINE_DELETE_ATTEMPT",
+                        f"Attempting to delete key {key_id} from server {api_url} for subscription {subscription_id}"
+                    )
+                    from outline import delete_key
+                    result = delete_key(api_url, api_key_or_cert, key_id)
+                    if result:
+                        deleted_outline_count += 1
+                        log_admin_action(
+                            request,
+                            "OUTLINE_DELETE_SUCCESS",
+                            f"Successfully deleted key {key_id} for subscription {subscription_id}"
+                        )
+                    else:
+                        log_admin_action(
+                            request,
+                            "OUTLINE_DELETE_FAILED",
+                            f"Failed to delete key {key_id} for subscription {subscription_id}"
+                        )
+                except Exception as e:
+                    logging.error(f"Error deleting Outline key {key_id}: {e}", exc_info=True)
+                    log_admin_action(
+                        request,
+                        "OUTLINE_DELETE_ERROR",
+                        f"Failed to delete key {key_id} for subscription {subscription_id}: {str(e)}"
+                    )
+    
+    # Удаляем ключи из БД
+    deleted_keys_count = subscription_repo.delete_subscription_keys(subscription_id)
+    
+    # Инвалидируем кэш подписки перед удалением
+    try:
+        # subscription[2] - это subscription_token согласно структуре get_subscription_by_id
+        # Структура: (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified, tariff_name, keys_count, traffic_limit_mb)
+        if len(subscription) > 2 and subscription[2]:
+            token = subscription[2]
+            from bot.services.subscription_service import invalidate_subscription_cache
+            invalidate_subscription_cache(token)
+            logging.info(f"Invalidated cache for subscription {subscription_id} with token {token[:8]}...")
+    except (IndexError, TypeError) as e:
+        logging.error(f"Error accessing subscription token for {subscription_id}: {e}, subscription: {subscription}", exc_info=True)
+    except Exception as e:
+        logging.error(f"Error invalidating subscription cache: {e}", exc_info=True)
+        # Не прерываем выполнение, если не удалось инвалидировать кэш
+    
+    # Физически удаляем подписку из БД
+    with open_connection(DB_PATH) as conn:
+        c = conn.cursor()
+        with safe_foreign_keys_off(c):
+            c.execute("DELETE FROM subscriptions WHERE id = ?", (subscription_id,))
+        conn.commit()
+    
+    log_admin_action(
+        request,
+        "DELETE_SUBSCRIPTION",
+        f"Subscription ID: {subscription_id}, deleted {deleted_keys_count} keys from DB, {deleted_v2ray_count} V2Ray + {deleted_outline_count} Outline from servers, subscription removed from DB"
+    )
+    
+    logging.info(f"Successfully deleted subscription {subscription_id} from database")
+    return {
+        "subscription_id": subscription_id,
+        "deleted_keys_count": deleted_keys_count,
+        "deleted_v2ray_count": deleted_v2ray_count,
+        "deleted_outline_count": deleted_outline_count,
+    }
+
+
+@router.get("/subscriptions/delete/{subscription_id}")
+async def delete_subscription_route(request: Request, subscription_id: int):
+    """Удаление подписки и всех связанных ключей (GET для обратной совместимости)"""
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/login")
+    
+    try:
+        await _delete_subscription_internal(request, subscription_id)
+    except ValueError as e:
+        logging.warning(f"Subscription {subscription_id} not found for deletion: {e}")
+        log_admin_action(request, "SUBSCRIPTION_DELETE_NOT_FOUND", f"Subscription {subscription_id} not found")
+    except Exception as e:
+        logging.error(f"Error deleting subscription {subscription_id}: {e}", exc_info=True)
+        log_admin_action(request, "SUBSCRIPTION_DELETE_ERROR", f"Failed to delete subscription {subscription_id}: {str(e)}")
+    
+    return RedirectResponse("/subscriptions", status_code=303)
+
+
+@router.delete("/api/subscriptions/{subscription_id}")
+async def delete_subscription_api(request: Request, subscription_id: int):
+    """API endpoint для удаления подписки"""
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    try:
+        result = await _delete_subscription_internal(request, subscription_id)
+        now_ts = int(time.time())
+        stats = _compute_subscription_stats(DB_PATH, now_ts)
+        return JSONResponse({
+            "message": "Подписка удалена",
+            "subscription_id": subscription_id,
+            "stats": stats,
+        })
+    except ValueError:
+        return JSONResponse({"error": "Subscription not found"}, status_code=404)
+    except Exception as e:
+        logging.error(f"Error deleting subscription {subscription_id}: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/api/subscriptions/{subscription_id}/reset-traffic")
+async def reset_subscription_traffic_api(request: Request, subscription_id: int):
+    """API: обнулить трафик подписки и связанных ключей (на сервере V2Ray и в БД)."""
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    try:
+        success = await reset_subscription_traffic(subscription_id)
+        return JSONResponse({
+            "message": "Трафик обнулён" if success else "Сброс на сервере не выполнен (БД обновлена)",
+            "subscription_id": subscription_id,
+            "server_reset_ok": success,
+        })
+    except Exception as e:
+        logger.error(f"Error resetting traffic for subscription {subscription_id}: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+def _is_json_request(request: Request) -> bool:
+    """Проверить, является ли запрос JSON запросом"""
+    accept = request.headers.get("accept", "")
+    return "application/json" in accept or request.headers.get("content-type", "").startswith("application/json")
+
+
+def _safe_header_value(value: str | None) -> str | None:
+    """Возвращает значение заголовка, совместимое с ISO-8859-1.
+    
+    Если строка содержит не-ASCII символы, они будут отброшены. 
+    Если после фильтрации строка пустая, возвращаем None.
+    """
+    if not value:
+        return None
+    try:
+        value.encode("latin-1")
+        return value
+    except UnicodeEncodeError:
+        safe_value = value.encode("ascii", "ignore").decode("ascii").strip()
+        return safe_value or None
+
+
+@router.get("/api/subscription/{token}", response_class=PlainTextResponse)
+@limiter.limit("60/minute")
+async def get_subscription(request: Request, token: str):
+    """
+    Получить подписку V2Ray по токену
+    
+    Returns:
+        Base64-кодированная строка с VLESS URL или ошибка
+    """
+    try:
+        # Валидация токена
+        if not validate_subscription_token(token):
+            logger.warning(f"Invalid subscription token format: {token[:8]}...")
+            raise HTTPException(status_code=400, detail="Invalid token format")
+
+        # Инвалидируем кэш перед генерацией, чтобы всегда получать свежие данные
+        # Это гарантирует, что названия серверов будут актуальными
+        from bot.services.subscription_service import invalidate_subscription_cache, _subscription_cache
+        invalidate_subscription_cache(token)
+        # Также очищаем внутренний кэш для гарантии
+        cache_key = f"subscription:{token}"
+        _subscription_cache.delete(cache_key)
+
+        # Генерация подписки
+        service = SubscriptionService()
+        package = await service.generate_subscription_package(token)
+        content = package["content"] if package else None
+        
+        # Логируем для отладки
+        if content:
+            import base64
+            from urllib.parse import unquote
+            try:
+                decoded = base64.b64decode(content).decode('utf-8')
+                lines = decoded.split('\n')
+                for line in lines[:2]:  # Проверяем первые 2 сервера
+                    if '#' in line:
+                        fragment = line.split('#')[-1]
+                        decoded_name = unquote(fragment)
+                        logger.info(f"Subscription {token[:8]}... contains server: {decoded_name}")
+                    else:
+                        logger.warning(f"Subscription {token[:8]}... server URL missing fragment!")
+            except Exception as e:
+                logger.error(f"Error checking subscription content: {e}")
+
+        if content is None:
+            logger.warning(f"Subscription not found or expired for token {token[:8]}...")
+            raise HTTPException(status_code=404, detail="Subscription not found or expired")
+
+        metadata = (package or {}).get("metadata", {}) if package else {}
+        userinfo_header = None
+        title_header = None
+        if metadata:
+            usage_bytes = metadata.get("traffic_usage_bytes") or 0
+            limit_bytes = metadata.get("traffic_limit_bytes") or 0
+            expires_ts = metadata.get("expires_at") or 0
+            # Формат заголовка Subscription-Userinfo согласно спецификации v2ray
+            # Стандартный формат: upload=<bytes>; download=<bytes>; total=<bytes>; expire=<timestamp>
+            # Примечание: В приложении v2raytun отображение использованного трафика не работает (показывает 0),
+            # хотя лимит трафика (total) отображается правильно. Это похоже на проблему/ограничение самого v2raytun.
+            # В других приложениях (например, v2rayNG) все работает корректно.
+            # Формат корректен по спецификации v2ray и оставлен как стандартный.
+            userinfo_header = f"upload=0; download={usage_bytes}; total={limit_bytes}; expire={expires_ts}"
+            # Устанавливаем Profile-Title с названием "Vee VPN", чтобы избежать использования названия сервера
+            subscription_title = metadata.get("subscription_title") or "Vee VPN"
+            # URL-кодируем название для безопасного использования в заголовке
+            from urllib.parse import quote
+            title_header = quote(subscription_title, safe='')
+
+        response_headers = {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+        if userinfo_header:
+            response_headers["Subscription-Userinfo"] = userinfo_header
+        if title_header:
+            # Устанавливаем Profile-Title, чтобы приложение использовало его вместо названия сервера
+            response_headers["Profile-Title"] = title_header
+
+        return PlainTextResponse(
+            content=content,
+            headers=response_headers,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating subscription for token {token[:8]}...: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+class SyncKeysRequest(BaseModel):
+    """Модель запроса для синхронизации ключей"""
+    dry_run: bool = False
+    server_scope: str = "all"  # "all" или "single"
+    server_id: Optional[int] = None
+    create_missing: bool = True
+    delete_orphaned_on_servers: bool = True
+    delete_inactive_server_keys: bool = True
+    sync_configs: bool = True
+    include_v2ray: bool = True
+    include_outline: bool = True
+
+
+@router.post("/subscriptions/sync-keys")
+async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest = Body(...)):
+    """Синхронизация всех ключей V2Ray с серверами"""
+    if not request.session.get("admin_logged_in"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    # Валидация параметров
+    if not sync_params.include_v2ray and not sync_params.include_outline:
+        return JSONResponse({
+            "success": False,
+            "error": "Необходимо выбрать хотя бы один протокол (V2Ray или Outline)"
+        }, status_code=400)
+    
+    if sync_params.server_scope == "single" and not sync_params.server_id:
+        return JSONResponse({
+            "success": False,
+            "error": "Необходимо выбрать сервер при выборе 'Один сервер'"
+        }, status_code=400)
+    
+    try:
+        log_admin_action(
+            request, 
+            "SYNC_KEYS_START", 
+            f"Starting key synchronization: dry_run={sync_params.dry_run}, "
+            f"server_scope={sync_params.server_scope}, server_id={sync_params.server_id}, "
+            f"create_missing={sync_params.create_missing}, "
+            f"delete_orphaned={sync_params.delete_orphaned_on_servers}, "
+            f"delete_inactive={sync_params.delete_inactive_server_keys}, "
+            f"sync_configs={sync_params.sync_configs}, "
+            f"v2ray={sync_params.include_v2ray}, outline={sync_params.include_outline}"
+        )
+        
+        # Определяем server_id для функции
+        target_server_id = sync_params.server_id if sync_params.server_scope == "single" else None
+
+        def _run_sync_in_thread() -> dict:
+            """Запуск синхронизации в отдельном потоке с собственным event loop, чтобы не блокировать worker."""
+            return asyncio.run(
+                sync_all_keys_with_servers(
+                    dry_run=sync_params.dry_run,
+                    server_id=target_server_id,
+                    create_missing=sync_params.create_missing,
+                    delete_orphaned_on_servers=sync_params.delete_orphaned_on_servers,
+                    delete_inactive_server_keys=sync_params.delete_inactive_server_keys,
+                    sync_configs=sync_params.sync_configs,
+                    include_v2ray=sync_params.include_v2ray,
+                    include_outline=sync_params.include_outline,
+                )
+            )
+
+        # Запускаем синхронизацию в executor с таймаутом (10 минут), чтобы не блокировать event loop
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_run_sync_in_thread),
+                timeout=600.0,  # 10 минут максимум
+            )
+        except asyncio.TimeoutError:
+            error_msg = "Синхронизация превысила максимальное время выполнения (10 минут). Процесс был прерван."
+            logger.error(error_msg)
+            log_admin_action(request, "SYNC_KEYS_TIMEOUT", error_msg)
+            return JSONResponse({
+                "success": False,
+                "error": error_msg,
+                "message": "Синхронизация заняла слишком много времени и была прервана. Попробуйте запустить синхронизацию для конкретного сервера или проверьте доступность серверов."
+            }, status_code=504)
+        
+        log_admin_action(
+            request,
+            "SYNC_KEYS_COMPLETE",
+            f"Key synchronization completed: v2ray_created={result.get('v2ray_keys_created', 0)}, "
+            f"v2ray_configs_updated={result.get('v2ray_configs_updated', 0)}, "
+            f"outline_created={result.get('outline_keys_created', 0)}, "
+            f"outline_configs_updated={result.get('outline_configs_updated', 0)}, "
+            f"keys_deleted_from_servers={result.get('keys_deleted_from_servers', 0)}, "
+            f"errors={result.get('errors', 0)}"
+        )
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Синхронизация ключей завершена",
+            "stats": {
+                "servers_processed": result.get("servers_processed", 0),
+                "servers_unavailable": result.get("servers_unavailable", 0),
+                "keys_deleted_from_db": result.get("keys_deleted_from_db", 0),
+                "keys_deleted_from_servers": result.get("keys_deleted_from_servers", 0),
+                "v2ray_keys_created": result.get("v2ray_keys_created", 0),
+                "v2ray_configs_updated": result.get("v2ray_configs_updated", 0),
+                "outline_keys_created": result.get("outline_keys_created", 0),
+                "outline_configs_updated": result.get("outline_configs_updated", 0),
+                "outline_keys_removed": result.get("outline_keys_removed", 0),
+                "errors": result.get("errors", 0),
+                "duration_seconds": result.get("duration_seconds", 0),
+                "error_details": result.get("error_details", []),
+            }
+        })
+    except ImportError as e:
+        error_msg = f"Ошибка импорта модуля синхронизации: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        log_admin_action(request, "SYNC_KEYS_ERROR", error_msg)
+        return JSONResponse({
+            "success": False,
+            "error": error_msg
+        }, status_code=500)
+    except Exception as e:
+        error_msg = f"Ошибка синхронизации ключей: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        import traceback
+        traceback_str = traceback.format_exc()
+        logger.error(f"Traceback: {traceback_str}")
+        log_admin_action(request, "SYNC_KEYS_ERROR", error_msg)
+        return JSONResponse({
+            "success": False,
+            "error": error_msg,
+            "details": str(e) if len(str(e)) < 200 else str(e)[:200] + "..."
+        }, status_code=500)
+
+
+def _calculate_subscription_discrepancies(db_path: str) -> list:
+    """
+    Рассчитать расхождения между реальными и расчетными сроками подписок
+    
+    Формула расчета:
+    - Если подписка создана ДО первого платежа: created_at + (количество_платежей × duration_sec)
+    - Если подписка создана ПОСЛЕ первого платежа: первый_платеж + (количество_платежей × duration_sec)
+    - + Реферальные бонусы (30 дней за каждого реферала)
+    
+    ВАЖНО:
+    - Использует subscription_id для точной связи платежей с конкретными подписками
+    - Это решает проблему смешивания платежей разных подписок (если старая подписка истекла и удалена)
+    - Для обратной совместимости: если платежи без subscription_id, использует fallback по tariff_id
+    
+    ОГРАНИЧЕНИЕ:
+    - Текущая формула не учитывает разные тарифы в одной подписке (если пользователь продлевал
+      подписку разными тарифами, например: сначала на 1 день, потом на 1 месяц).
+      В этом случае используется duration_sec текущего тарифа подписки для всех платежей.
+    """
+    from app.repositories.tariff_repository import TariffRepository
+    from payments.utils.renewal_detector import DEFAULT_GRACE_PERIOD
+    
+    VIP_EXPIRES_AT = 4102434000  # 01.01.2100
+    REFERRAL_BONUS_DURATION = 30 * 24 * 3600  # 30 дней
+    now = int(time.time())
+    FREE_V2RAY_TARIFF_ID = settings.FREE_V2RAY_TARIFF_ID
+    
+    discrepancies = []
+    
+    with open_connection(db_path) as conn:
+        cursor = conn.cursor()
+        
+        # Получаем всех не VIP пользователей с активными подписками
+        cursor.execute('''
+            SELECT DISTINCT s.user_id, s.id as subscription_id, s.created_at, s.expires_at, s.tariff_id,
+                   u.is_vip, t.name as tariff_name, t.duration_sec, t.price_rub
+            FROM subscriptions s
+            JOIN users u ON s.user_id = u.user_id
+            LEFT JOIN tariffs t ON s.tariff_id = t.id
+            WHERE u.is_vip = 0 AND s.is_active = 1 AND s.expires_at < ?
+            ORDER BY s.user_id, s.created_at
+        ''', (VIP_EXPIRES_AT,))
+        
+        subscriptions = cursor.fetchall()
+        
+        for user_id, sub_id, sub_created_at, sub_expires_at, tariff_id, is_vip, tariff_name, duration_sec, price_rub in subscriptions:
+            if duration_sec is None:
+                continue
+            
+            # Получаем платежи для ЭТОЙ конкретной подписки
+            # Сначала пытаемся найти платежи с subscription_id (новые платежи)
+            cursor.execute('''
+                SELECT id, payment_id, created_at, status, amount, subscription_id, tariff_id
+                FROM payments
+                WHERE subscription_id = ?
+                  AND status = 'completed'
+                  AND protocol = 'v2ray'
+                  AND metadata LIKE '%subscription%'
+                ORDER BY created_at ASC
+            ''', (sub_id,))
+            
+            payments = cursor.fetchall()
+            
+            # Если платежей с subscription_id нет, используем fallback для старых платежей
+            # (платежи без subscription_id, но с нужным tariff_id и в временных рамках подписки)
+            if not payments:
+                # Fallback: платежи без subscription_id, но близко по времени к созданию подписки
+                # Берем платежи в диапазоне ±7 дней от created_at подписки
+                GRACE_WINDOW = 7 * 24 * 3600  # 7 дней
+                window_start = sub_created_at - GRACE_WINDOW
+                window_end = sub_expires_at + GRACE_WINDOW
+                
+                cursor.execute('''
+                    SELECT id, payment_id, created_at, status, amount, subscription_id, tariff_id
+                    FROM payments
+                    WHERE user_id = ? 
+                      AND tariff_id = ?
+                      AND status = 'completed'
+                      AND protocol = 'v2ray'
+                      AND metadata LIKE '%subscription%'
+                      AND (subscription_id IS NULL OR subscription_id = 0)
+                      AND created_at >= ?
+                      AND created_at <= ?
+                    ORDER BY created_at ASC
+                ''', (user_id, tariff_id or 4, window_start, window_end))
+                
+                payments = cursor.fetchall()
+            
+            if not payments:
+                continue
+            
+            first_payment_date = payments[0][2]
+            days_before = (sub_created_at - first_payment_date) / 86400
+            
+            # ВАЖНО: Суммируем duration_sec каждого тарифа из платежей, а не используем duration_sec подписки
+            # Это учитывает случаи, когда пользователь продлевал подписку разными тарифами
+            total_duration_sec = 0
+            tariff_repo = TariffRepository(db_path)
+            
+            for payment in payments:
+                payment_tariff_id = payment[6] if len(payment) > 6 else tariff_id
+                if payment_tariff_id:
+                    tariff_row = tariff_repo.get_tariff(payment_tariff_id)
+                    if tariff_row and tariff_row[2]:  # duration_sec
+                        total_duration_sec += tariff_row[2]
+                    elif duration_sec:  # Fallback на duration_sec подписки
+                        total_duration_sec += duration_sec
+            
+            # Правильный расчет с учетом разных тарифов
+            if days_before > 1:
+                # Подписка создана ДО платежа (возможно бесплатная) - считаем от created_at + сумма duration_sec платежей
+                calculated_expires = sub_created_at + total_duration_sec
+            else:
+                # Платеж был ДО создания подписки - считаем от первого платежа + сумма duration_sec платежей
+                calculated_expires = first_payment_date + total_duration_sec
+            
+            # Учитываем реферальные бонусы
+            cursor.execute('''
+                SELECT COUNT(*)
+                FROM referrals r
+                WHERE r.referrer_id = ?
+                  AND r.bonus_issued = 1
+                  AND EXISTS (
+                      SELECT 1 FROM payments p
+                      WHERE p.user_id = r.referred_id
+                        AND p.status = 'completed'
+                        AND p.amount > 0
+                        AND p.created_at <= ?
+                  )
+            ''', (user_id, sub_expires_at))
+            
+            bonuses_count = cursor.fetchone()[0] or 0
+            calculated_expires += (bonuses_count * REFERRAL_BONUS_DURATION)
+            
+            diff_days = (sub_expires_at - calculated_expires) / 86400
+            
+            # Учитываем только значительные расхождения (>3 дня)
+            if abs(diff_days) > 3:
+                # Не учитываем естественно истекшие подписки (если оба срока прошли)
+                is_naturally_expired = calculated_expires < now and sub_expires_at < now
+                if not is_naturally_expired or abs(diff_days) > 30:
+                    discrepancies.append({
+                        'user_id': user_id,
+                        'subscription_id': sub_id,
+                        'tariff_name': tariff_name or 'N/A',
+                        'tariff_id': tariff_id,
+                        'sub_created_at': sub_created_at,
+                        'sub_expires_at': sub_expires_at,
+                        'calculated_expires': calculated_expires,
+                        'diff_days': diff_days,
+                        'payments_count': len(payments),
+                        'first_payment_date': first_payment_date,
+                        'bonuses_count': bonuses_count,
+                        'days_before_payment': days_before,
+                        'is_expired': sub_expires_at < now,
+                        'calc_is_expired': calculated_expires < now
+                    })
+    
+    return sorted(discrepancies, key=lambda x: abs(x['diff_days']), reverse=True)
+
+
+async def _send_admin_discrepancy_notifications(discrepancies: list) -> None:
+    """
+    Отправить уведомления администратору о новых расхождениях
+    """
+    try:
+        from bot.core import get_bot_instance
+        from bot.utils.messaging import safe_send_message
+        
+        admin_id = settings.ADMIN_ID
+        if not admin_id:
+            logger.debug("ADMIN_ID not set, skipping discrepancy notifications")
+            return
+        
+        bot = get_bot_instance()
+        # В процессе админки bot всегда None — используем Telegram API через _send_telegram_to_admin
+        
+        # Получаем список уже отправленных уведомлений
+        with open_connection(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT subscription_id FROM discrepancy_notifications")
+            notified_subscription_ids = {row[0] for row in cursor.fetchall()}
+        
+        # Отправляем уведомления только о новых расхождениях
+        new_discrepancies = [d for d in discrepancies if d['subscription_id'] not in notified_subscription_ids]
+        
+        if not new_discrepancies:
+            return
+        
+        # Отправляем уведомление для каждого нового расхождения
+        now = int(time.time())
+        for disc in new_discrepancies:
+            try:
+                # Форматируем даты
+                sub_expires_at = datetime.fromtimestamp(disc['sub_expires_at']).strftime("%d.%m.%Y %H:%M")
+                calculated_expires = datetime.fromtimestamp(disc['calculated_expires']).strftime("%d.%m.%Y %H:%M")
+                
+                message = (
+                    f"⚠️ *Новое расхождение в подписке*\n\n"
+                    f"👤 Пользователь: `{disc['user_id']}`\n"
+                    f"📋 Подписка: #{disc['subscription_id']}\n"
+                    f"📦 Тариф: {disc['tariff_name']}\n"
+                    f"📊 Расхождение: {disc['diff_days']:+.1f} дней\n"
+                    f"📅 Текущий срок: {sub_expires_at}\n"
+                    f"📅 Расчетный срок: {calculated_expires}\n"
+                    f"💳 Платежей: {disc['payments_count']}\n"
+                    f"🎁 Бонусов: {disc['bonuses_count']}"
+                )
+                
+                ok = False
+                if bot:
+                    await safe_send_message(bot, admin_id, message, parse_mode="Markdown", mark_blocked=False)
+                    ok = True
+                else:
+                    import aiohttp
+                    token = settings.TELEGRAM_BOT_TOKEN
+                    if token:
+                        url = f"https://api.telegram.org/bot{token}/sendMessage"
+                        payload = {"chat_id": admin_id, "text": message, "parse_mode": "Markdown"}
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                                    ok = resp.status == 200
+                        except Exception as e:
+                            logger.error(f"Telegram API error for discrepancy {disc['subscription_id']}: {e}")
+                if not ok:
+                    continue
+                
+                # Сохраняем информацию об отправленном уведомлении
+                with open_connection(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO discrepancy_notifications 
+                        (subscription_id, notified_at, diff_days)
+                        VALUES (?, ?, ?)
+                        """,
+                        (disc['subscription_id'], now, disc['diff_days'])
+                    )
+                    conn.commit()
+                
+                logger.info(f"Discrepancy notification sent for subscription {disc['subscription_id']}")
+                
+            except Exception as e:
+                logger.error(f"Error sending discrepancy notification for subscription {disc['subscription_id']}: {e}", exc_info=True)
+                
+    except Exception as e:
+        logger.error(f"Error in _send_admin_discrepancy_notifications: {e}", exc_info=True)
+
+
+@router.get("/subscriptions/discrepancies")
+async def subscription_discrepancies_page(request: Request):
+    """Страница расхождений подписок"""
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login")
+    
+    try:
+        log_admin_action(request, "SUBSCRIPTION_DISCREPANCIES_PAGE_ACCESS")
+        # Тяжёлый расчёт в executor, чтобы не блокировать worker
+        discrepancies = await asyncio.to_thread(_calculate_subscription_discrepancies, DB_PATH)
+        
+        # Отправляем уведомления о новых расхождениях
+        await _send_admin_discrepancy_notifications(discrepancies)
+        
+        # Форматируем данные для шаблона
+        formatted_discrepancies = []
+        for disc in discrepancies:
+            formatted_discrepancies.append({
+                'user_id': disc['user_id'],
+                'subscription_id': disc['subscription_id'],
+                'tariff_name': disc['tariff_name'],
+                'tariff_id': disc['tariff_id'],
+                'sub_created_at': _format_timestamp(disc['sub_created_at']),
+                'sub_expires_at': _format_timestamp(disc['sub_expires_at']),
+                'calculated_expires': _format_timestamp(disc['calculated_expires']),
+                'first_payment_date': _format_timestamp(disc['first_payment_date']),
+                'diff_days': disc['diff_days'],
+                'diff_days_formatted': f"{disc['diff_days']:+.1f}",
+                'payments_count': disc['payments_count'],
+                'bonuses_count': disc['bonuses_count'],
+                'days_before_payment': f"{disc['days_before_payment']:+.1f}",
+                'is_expired': disc['is_expired'],
+                'status': 'Истекла' if disc['is_expired'] else 'Активна'
+            })
+        
+        # Получаем сообщения из сессии
+        success_message = request.session.pop("success_message", None)
+        error_message = request.session.pop("error_message", None)
+        
+        # Также проверяем query параметры для обратной совместимости
+        if not success_message and request.query_params.get("success"):
+            success_message = "Расхождение успешно исправлено"
+        if not error_message and request.query_params.get("error"):
+            if request.query_params.get("error") == "invalid_csrf":
+                error_message = "Ошибка: неверный CSRF токен"
+            elif request.query_params.get("error") == "not_found":
+                error_message = "Ошибка: расхождение не найдено"
+            else:
+                error_message = "Произошла ошибка при исправлении расхождения"
+        
+        return templates.TemplateResponse("subscription_discrepancies.html", {
+            "request": request,
+            "discrepancies": formatted_discrepancies,
+            "total": len(formatted_discrepancies),
+            "csrf_token": get_csrf_token(request),
+            "success_message": success_message,
+            "error_message": error_message,
+        })
+    except Exception as e:
+        logger.error(f"Error in subscription_discrepancies_page: {e}", exc_info=True)
+        error_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Ошибка</title></head>
+        <body>
+            <h1>Ошибка при загрузке расхождений</h1>
+            <p>{str(e)}</p>
+            <p><a href="/subscriptions">Вернуться к подпискам</a></p>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=error_html, status_code=500)
+
+
+@router.post("/subscriptions/discrepancies/fix/{subscription_id}")
+async def fix_subscription_discrepancy(request: Request, subscription_id: int, csrf_token: str = Form(...)):
+    """Исправить расхождение в сроке действия подписки"""
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login", status_code=303)
+    
+    # Проверка CSRF токена
+    session_csrf = request.session.get("csrf_token")
+    if not session_csrf or session_csrf != csrf_token:
+        return RedirectResponse(url="/subscriptions/discrepancies?error=invalid_csrf", status_code=303)
+    
+    try:
+        log_admin_action(request, f"FIX_SUBSCRIPTION_DISCREPANCY_{subscription_id}")
+        # Тяжёлый расчёт в executor
+        discrepancies = await asyncio.to_thread(_calculate_subscription_discrepancies, DB_PATH)
+        target_disc = None
+        
+        for disc in discrepancies:
+            if disc['subscription_id'] == subscription_id:
+                target_disc = disc
+                break
+        
+        if not target_disc:
+            return RedirectResponse(url="/subscriptions/discrepancies?error=not_found", status_code=303)
+        
+        # Исправляем expires_at на расчетный
+        calculated_expires = int(target_disc['calculated_expires'])
+        subscription_repo = SubscriptionRepository(DB_PATH)
+        
+        # Обновляем expires_at подписки
+        subscription_repo.extend_subscription(subscription_id, calculated_expires, target_disc.get('tariff_id'))
+        
+        # Обновляем срок всех связанных ключей
+        updated_keys = subscription_repo.update_subscription_keys_expiry(subscription_id, calculated_expires)
+        
+        logger.info(
+            f"[ADMIN] Fixed subscription {subscription_id} discrepancy: "
+            f"old_expires_at={target_disc['sub_expires_at']}, "
+            f"new_expires_at={calculated_expires}, "
+            f"diff_days={target_disc['diff_days']:.2f}, "
+            f"updated_keys={updated_keys}"
+        )
+        
+        # Сохраняем сообщение об успехе в сессии для отображения после редиректа
+        request.session["success_message"] = f"Подписка #{subscription_id} исправлена. Обновлено ключей: {updated_keys}"
+        
+        return RedirectResponse(url="/subscriptions/discrepancies?success=1", status_code=303)
+        
+    except Exception as e:
+        logger.error(f"Error fixing subscription {subscription_id} discrepancy: {e}", exc_info=True)
+        request.session["error_message"] = f"Ошибка при исправлении расхождения: {str(e)}"
+        return RedirectResponse(url="/subscriptions/discrepancies?error=1", status_code=303)

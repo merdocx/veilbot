@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block page_title %}Очистка истекших подписок{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Результаты очистки</h2>
+    </div>
+    <div class="card-content">
+        
+        {% if error %}
+        <div class="alert alert--danger mb-3">
+            <div class="inline-flex icon-danger-text">
+                <span class="material-icons">error</span>
+                <strong>Ошибка очистки</strong>
+            </div>
+            <p class="icon-danger-text mt-1 mb-0">{{ error }}</p>
+        </div>
+        {% endif %}
+        
+        {% if errors %}
+        <div class="alert alert--warning mb-3">
+            <div class="inline-flex icon-warning-text">
+                <span class="material-icons">warning</span>
+                <strong>Предупреждения</strong>
+            </div>
+            <ul class="icon-warning-text mt-1 pl-4">
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        
+        <div class="grid-two mb-3">
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon stat-icon--warning">
+                        <span class="material-icons">search</span>
+                    </div>
+                    <div>
+                        <div class="stat-value">{{ expired_count }}</div>
+                        <div class="stat-label">Истекших подписок</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon stat-icon--green">
+                        <span class="material-icons">how_to_reg</span>
+                    </div>
+                    <div>
+                        <div class="stat-value">{{ deleted_subscriptions or 0 }}</div>
+                        <div class="stat-label">Удалено подписок</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon stat-icon--purple">
+                        <span class="material-icons">security</span>
+                    </div>
+                    <div>
+                        <div class="stat-value">{{ deleted_from_v2ray or 0 }}</div>
+                        <div class="stat-label">Удалено V2Ray-ключей</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon stat-icon--blue">
+                        <span class="material-icons">storage</span>
+                    </div>
+                    <div>
+                        <div class="stat-value">{{ deleted_keys_from_db or 0 }}</div>
+                        <div class="stat-label">Удалено ключей из БД</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        {% if deleted_subscriptions and deleted_subscriptions > 0 %}
+        <div class="alert alert--success mb-3">
+            <div class="inline-flex icon-success-text">
+                <span class="material-icons">check_circle</span>
+                <strong>Очистка завершена успешно!</strong>
+            </div>
+            <p class="icon-success-text mt-1 mb-0">
+                Удалено {{ deleted_subscriptions }} истекших подписок
+                и {{ deleted_keys_from_db or 0 }} связанных ключей.
+            </p>
+        </div>
+        {% else %}
+        <div class="alert alert--warning mb-3">
+            <div class="inline-flex icon-warning-text">
+                <span class="material-icons">info</span>
+                <strong>Нет истекших подписок</strong>
+            </div>
+            <p class="icon-warning-text mt-1 mb-0">Все подписки в системе активны и не требуют очистки.</p>
+        </div>
+        {% endif %}
+    </div>
+    
+    <div class="card-actions">
+        <form method="post" action="/cleanup" class="d-inline" data-confirm="Выполнить очистку истекших подписок и связанных ключей?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-warning">
+                <span class="material-icons">cleaning_services</span>
+                Выполнить очистку
+            </button>
+        </form>
+        <a href="/dashboard" class="btn btn-primary">
+            <span class="material-icons">dashboard</span>
+            Вернуться к панели
+        </a>
+        <a href="/keys" class="btn btn-success">
+            <span class="material-icons">visibility</span>
+            Просмотреть ключи
+        </a>
+    </div>
+</div>
+{% endblock %} 

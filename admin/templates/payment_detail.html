@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block page_title %}Платеж {{ payment.payment_id if payment else '' }}{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Детали платежа</h2>
+  </div>
+  <div class="card-body">
+    {% if error %}
+      <div class="card alert alert--danger">
+        <div class="card-body">
+          {{ error }}
+        </div>
+      </div>
+    {% else %}
+      <div class="grid-two">
+        <div>
+          <h3 class="section-title">Основное</h3>
+          <ul class="kv-list">
+            <li><b>ID:</b> {{ payment.id }}</li>
+            <li><b>Payment ID:</b> {{ payment.payment_id }}</li>
+            <li><b>User ID:</b> {{ payment.user_id }}</li>
+            <li><b>Tariff ID:</b> {{ payment.tariff_id }}</li>
+            <li><b>Сумма:</b> {{ payment.amount|rub }}</li>
+            <li><b>Статус:</b>
+                {% set st = payment.status %}
+                {% if st == 'paid' %}
+                    <span class="material-icons icon-lg icon-success" title="Оплачен">check_circle</span>
+                {% elif st == 'pending' %}
+                    <span class="material-icons icon-lg icon-warning" title="Ожидает">schedule</span>
+                {% elif st in ['failed','cancelled','expired'] %}
+                    <span class="material-icons icon-lg icon-danger" title="{{ st }}">cancel</span>
+                {% else %}
+                    <span class="material-icons icon-lg icon-muted" title="{{ st }}">help_outline</span>
+                {% endif %}
+            </li>
+            <li><b>Email:</b> {{ payment.email or '—' }}</li>
+            <li><b>Страна:</b> {{ payment.country or '—' }}</li>
+            <li><b>Протокол:</b>
+                {% if payment.protocol == 'outline' %}
+                    <span class="material-icons icon-lg icon-primary" title="Outline">lock</span>
+                {% elif payment.protocol == 'v2ray' %}
+                    <span class="material-icons icon-lg icon-primary" title="V2Ray">security</span>
+                {% else %}
+                    {{ payment.protocol or '—' }}
+                {% endif %}
+            </li>
+            <li><b>Создан:</b> {{ payment.created_at.timestamp() if payment.created_at else 0 | timestamp }}</li>
+            <li><b>Оплачен:</b> {{ payment.paid_at.timestamp() if payment.paid_at else 0 | timestamp }}</li>
+          </ul>
+        </div>
+        <div>
+          <h3 class="section-title">Действия</h3>
+          <div class="stack-actions">
+            <form method="post" action="/payments/{{ payment.payment_id }}/recheck" data-payment-detail="recheck">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="btn btn-primary" type="submit">
+                <span class="material-icons icon-small">refresh</span>
+                Перепроверить статус
+              </button>
+            </form>
+            {% if payment.status != 'refunded' %}
+            <form method="post" action="/payments/{{ payment.payment_id }}/refund" data-payment-detail="refund">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <label class="form-label">Сумма (копейки)</label>
+              <input type="number" name="amount" class="form-control" value="{{ payment.amount }}">
+              <label class="form-label">Причина</label>
+              <input type="text" name="reason" class="form-control" value="Возврат">
+              <button class="btn btn-danger" type="submit">
+                <span class="material-icons icon-small">undo</span>
+                Возврат
+              </button>
+            </form>
+            {% endif %}
+            <form method="post" action="/payments/{{ payment.payment_id }}/delete" data-payment-detail="delete" data-payment-id="{{ payment.payment_id }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="btn btn-danger" type="submit">
+                <span class="material-icons icon-small">delete</span>
+                Удалить платеж
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <h3 class="section-title">Метаданные</h3>
+      <pre class="code-block">{{ payment.metadata | tojson(indent=2) }}</pre>
+
+      <h3 class="section-title">Данные провайдера</h3>
+      <pre class="code-block">{% if provider_info %}{{ provider_info | tojson(indent=2) }}{% else %}—{% endif %}</pre>
+    {% endif %}
+  </div>
+</div>
+
+{% block extra_scripts %}
+    {{ super() }}
+    <script type="module" src="/static/js/paymentDetail.js"></script>
+{% endblock %}
+{% endblock %}
+
+

@@ -1,0 +1,19 @@
+"""
+Обработчики сообщений и callback-запросов бота
+"""
+from .start import register_start_handler
+from .keys import register_keys_handler
+from .purchase import register_purchase_handlers
+from .renewal import register_renewal_handlers
+from .common import register_common_handlers
+from .subscriptions import register_subscription_handlers
+
+__all__ = [
+    'register_start_handler',
+    'register_keys_handler',
+    'register_purchase_handlers',
+    'register_renewal_handlers',
+    'register_common_handlers',
+    'register_subscription_handlers'
+]
+
