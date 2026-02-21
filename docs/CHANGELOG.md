@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+## [2.4.38] - 2026-02-21
+
+### Исправлено
+- **Колонка expiry_at удалена из таблиц keys и v2ray_keys**: убраны все обращения к колонке в INSERT/SELECT; срок действия ключей берётся из `subscriptions.expires_at` через JOIN. Исправлены: background_tasks.py, get_user_info.py, purchase.py; миграции в db.py (migrate_add_server_cascade_to_keys, migrate_fix_v2ray_keys_foreign_keys) пересоздают таблицы без expiry_at.
+
 ## [2.4.37] - 2026-02-21
 
 ### Исправлено

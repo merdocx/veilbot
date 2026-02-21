@@ -8,8 +8,8 @@ import sys
 import os
 from pathlib import Path
 
-# Добавляем корневую директорию в путь
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Добавляем корневую директорию проекта в путь (scripts/archive -> scripts -> корень)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from app.settings import settings
 

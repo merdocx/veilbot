@@ -78,6 +78,7 @@ class Settings(BaseSettings):
 
     FREE_V2RAY_TARIFF_ID: int = Field(default=2, description="ID бесплатного тарифа для авто-выдачи V2Ray")
     FREE_V2RAY_COUNTRY: str = Field(default="Нидерланды", description="Страна для авто-выдачи V2Ray ключей")
+    OUTLINE_SERVER_ID: int = Field(default=8, description="ID сервера Outline для создания ключей подписок (в sync и админке)")
 
     # Admin CORS
     ADMIN_ALLOWED_ORIGINS: list[str] | str = Field(default_factory=list)

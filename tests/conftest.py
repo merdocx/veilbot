@@ -101,7 +101,6 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             server_id INTEGER,
             user_id INTEGER,
             access_url TEXT,
-            expiry_at INTEGER,
             key_id TEXT,
             created_at INTEGER,
             email TEXT,
@@ -119,14 +118,13 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
         )
     """)
     
-    # Таблица v2ray_keys
+    # Таблица v2ray_keys (expiry берётся из subscriptions через JOIN, колонки expiry_at нет)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS v2ray_keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             server_id INTEGER,
             user_id INTEGER,
             v2ray_uuid TEXT,
-            expiry_at INTEGER,
             created_at INTEGER,
             email TEXT,
             tariff_id INTEGER,

@@ -905,8 +905,8 @@ class SubscriptionPurchaseService:
                             cursor = await conn.execute(
                                 """
                                 INSERT INTO v2ray_keys 
-                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id, traffic_limit_mb)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id, traffic_limit_mb)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     server_id,
@@ -914,7 +914,6 @@ class SubscriptionPurchaseService:
                                     v2ray_uuid,
                                     key_email,
                                     now,
-                                    expires_at,
                                     tariff['id'],
                                     client_config,
                                     subscription_id,
@@ -3482,7 +3481,7 @@ class SubscriptionPurchaseService:
                 logger.warning(f"[SUBSCRIPTION] Failed to send notification to user {user_id} after retries")
                 return False
 
-            token = getattr(app_settings, "TELEGRAM_BOT_TOKEN", None) or getattr(app_settings, "BOT_TOKEN", None)
+            token = app_settings.TELEGRAM_BOT_TOKEN
             if not token:
                 logger.warning(f"[SUBSCRIPTION] No bot token for API fallback, cannot send to user {user_id}")
                 return False

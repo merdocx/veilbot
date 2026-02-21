@@ -23,9 +23,8 @@ echo ""
 
 cd "$PROJECT_ROOT"
 
-# Запускаем синхронизацию с удалением лишних ключей
-python3 "$PROJECT_ROOT/scripts/sync_all_keys_with_servers.py" \
-    --delete-orphaned \
+# Запускаем синхронизацию (используем python3.11 — в нём установлены зависимости)
+python3.11 "$PROJECT_ROOT/scripts/sync_all_keys_with_servers.py" \
     2>&1 | tee -a "$LOG_FILE"
 
 SYNC_EXIT_CODE=${PIPESTATUS[0]}

@@ -175,16 +175,15 @@ async def test_create_new_key_prompts_for_country(temp_db, mock_message, monkeyp
     )
     cursor.execute(
         """
-        INSERT INTO keys (id, server_id, user_id, access_url, expiry_at, key_id,
+        INSERT INTO keys (id, server_id, user_id, access_url, key_id,
                           created_at, email, tariff_id, protocol)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             1,
             1,
             999,
             "ss://old",
-            now - 90000,  # истёк >24 часов назад
             "old-key",
             now - 200000,
             "old@example.com",

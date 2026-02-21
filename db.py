@@ -56,7 +56,6 @@ def init_db():
         email TEXT,
         level INTEGER DEFAULT 0,
         created_at INTEGER,
-        expiry_at INTEGER,
         tariff_id INTEGER,
         client_config TEXT DEFAULT NULL,
         notified INTEGER DEFAULT 0,
@@ -833,7 +832,6 @@ def migrate_add_server_cascade_to_keys():
                 server_id INTEGER,
                 user_id INTEGER,
                 access_url TEXT,
-                expiry_at INTEGER,
                 traffic_limit_mb INTEGER,
                 notified INTEGER DEFAULT 0,
                 key_id TEXT,
@@ -848,11 +846,11 @@ def migrate_add_server_cascade_to_keys():
         cursor.execute(
             """
             INSERT INTO keys_new (
-                id, server_id, user_id, access_url, expiry_at, traffic_limit_mb,
+                id, server_id, user_id, access_url, traffic_limit_mb,
                 notified, key_id, created_at, email, tariff_id, protocol
             )
             SELECT
-                id, server_id, user_id, access_url, expiry_at, traffic_limit_mb,
+                id, server_id, user_id, access_url, traffic_limit_mb,
                 notified, key_id, created_at, email, tariff_id, protocol
             FROM keys
             """
@@ -862,7 +860,6 @@ def migrate_add_server_cascade_to_keys():
 
         index_statements = [
             "CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_keys_expiry_at ON keys(expiry_at)",
             "CREATE INDEX IF NOT EXISTS idx_keys_server_id ON keys(server_id)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_keys_user_keyid ON keys(user_id, key_id)",
             "CREATE INDEX IF NOT EXISTS idx_keys_created_at ON keys(created_at)",
@@ -1374,7 +1371,6 @@ def migrate_fix_v2ray_keys_foreign_keys():
                 email TEXT,
                 level INTEGER DEFAULT 0,
                 created_at INTEGER,
-                expiry_at INTEGER,
                 tariff_id INTEGER,
                 client_config TEXT DEFAULT NULL,
                 notified INTEGER DEFAULT 0,
@@ -1393,13 +1389,13 @@ def migrate_fix_v2ray_keys_foreign_keys():
             """
             INSERT INTO v2ray_keys_new (
                 id, server_id, user_id, v2ray_uuid, email, level,
-                created_at, expiry_at, tariff_id, client_config, notified,
+                created_at, tariff_id, client_config, notified,
                 traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at,
                 traffic_over_limit_notified, subscription_id
             )
             SELECT
                 id, server_id, user_id, v2ray_uuid, email, level,
-                created_at, expiry_at, tariff_id, client_config, notified,
+                created_at, tariff_id, client_config, notified,
                 traffic_limit_mb, traffic_usage_bytes, traffic_over_limit_at,
                 traffic_over_limit_notified, subscription_id
             FROM v2ray_keys
@@ -1410,7 +1406,6 @@ def migrate_fix_v2ray_keys_foreign_keys():
 
         index_statements = [
             "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_expiry_at ON v2ray_keys(expiry_at)",
             "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_server_id ON v2ray_keys(server_id)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_v2ray_user_uuid ON v2ray_keys(user_id, v2ray_uuid)",
             "CREATE INDEX IF NOT EXISTS idx_v2ray_keys_created_at ON v2ray_keys(created_at)",

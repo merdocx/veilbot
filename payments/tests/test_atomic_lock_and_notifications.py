@@ -222,19 +222,26 @@ class TestRenewalDetection:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Создаем таблицы
+        # Создаем таблицы (expiry берётся из subscriptions через JOIN)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                expires_at INTEGER
+            )
+        """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS keys (
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER,
-                expiry_at INTEGER
+                subscription_id INTEGER
             )
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS v2ray_keys (
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER,
-                expiry_at INTEGER
+                subscription_id INTEGER
             )
         """)
         
@@ -242,10 +249,14 @@ class TestRenewalDetection:
         now = int(time.time())
         future_expiry = now + 86400  # Истекает через день
         
-        # Создаем активный ключ
+        # Подписка с активным сроком и ключ, привязанный к ней
         cursor.execute(
-            "INSERT INTO keys (user_id, expiry_at) VALUES (?, ?)",
-            (user_id, future_expiry)
+            "INSERT INTO subscriptions (id, user_id, expires_at) VALUES (?, ?, ?)",
+            (1, user_id, future_expiry)
+        )
+        cursor.execute(
+            "INSERT INTO keys (user_id, subscription_id) VALUES (?, ?)",
+            (user_id, 1)
         )
         conn.commit()
         

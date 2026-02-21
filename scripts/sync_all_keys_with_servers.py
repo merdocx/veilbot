@@ -619,14 +619,14 @@ async def sync_all_keys_with_servers(
             s for s in servers_for_creation
             if s["protocol"] == "outline"
         ]
-        # Для синхронизации используем сервер №8 если он активен и available_for_purchase = 1
-        # Проверка access_level будет выполняться для каждого пользователя индивидуально
+        # Для синхронизации используем Outline-сервер с ID из настроек (по умолчанию 8), если он активен и available_for_purchase = 1
+        outline_server_id_conf = settings.OUTLINE_SERVER_ID
         outline_server_8 = next(
-            (s for s in outline_servers_all if s["id"] == 8),
+            (s for s in outline_servers_all if s["id"] == outline_server_id_conf),
             None
         )
         logger.info(f"  Outline серверов для создания ключей (active + available_for_purchase): {len(outline_servers_all)}")
-        logger.info(f"  Outline сервер №8 в списке для создания: {outline_server_8 is not None}")
+        logger.info(f"  Outline сервер (id={outline_server_id_conf}) в списке для создания: {outline_server_8 is not None}")
     
     if unavailable_by_api:
         logger.info(f"  ⚠️  Обнаружено {len(unavailable_by_api)} серверов с медленным API (проверка доступности не прошла)")
@@ -820,20 +820,19 @@ async def sync_all_keys_with_servers(
                                                                 logger.warning(f"      Не удалось удалить дубликат ключа {created_uuid[:8]}... с сервера: {e}")
                                                             continue
                                                         
-                                                        # Вставляем ключ только если его еще нет
+                                                        # Вставляем ключ только если его еще нет (expiry берётся из subscriptions через JOIN)
                                                         with safe_foreign_keys_off(cursor):
                                                             cursor.execute("""
                                                                 INSERT INTO v2ray_keys
-                                                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at,
+                                                                (server_id, user_id, v2ray_uuid, email, created_at,
                                                                  tariff_id, client_config, subscription_id)
-                                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                                             """, (
                                                                 server_id,
                                                                 user_id,
                                                                 created_uuid,
                                                                 key_email,
                                                                 now,
-                                                                expires_at,
                                                                 tariff_id,
                                                                 client_config,
                                                                 sub_id,
@@ -1292,13 +1291,13 @@ async def sync_all_keys_with_servers(
                     if not protocol_client:
                         logger.warning(f"    Сервер №8 ({server_name}): не удалось создать клиент")
                     else:
-                        # Получаем существующие Outline ключи подписок на сервере №8
+                        # Получаем существующие Outline ключи подписок на Outline-сервере (id из настроек)
                         with get_db_cursor() as cursor:
                             cursor.execute("""
                                 SELECT subscription_id, key_id
                                 FROM keys
-                                WHERE server_id = 8 AND subscription_id IS NOT NULL
-                            """)
+                                WHERE server_id = ? AND subscription_id IS NOT NULL
+                            """, (outline_server_id_conf,))
                             existing_keys = {row[0]: row[1] for row in cursor.fetchall()}
                         
                         # Находим подписки без ключей и фильтруем по access_level
@@ -1369,17 +1368,16 @@ async def sync_all_keys_with_servers(
                                             with safe_foreign_keys_off(cursor):
                                                 cursor.execute("""
                                                     INSERT INTO keys
-                                                    (server_id, user_id, key_id, access_url, email, created_at, expiry_at,
+                                                    (server_id, user_id, key_id, access_url, email, created_at,
                                                      tariff_id, subscription_id, protocol)
-                                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'outline')
+                                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'outline')
                                                 """, (
-                                                    8,
+                                                    server_id,
                                                     user_id,
                                                     key_id,
                                                     access_url,
                                                     key_email,
                                                     now,
-                                                    expires_at,
                                                     tariff_id,
                                                     sub_id,
                                                 ))
@@ -1391,10 +1389,10 @@ async def sync_all_keys_with_servers(
                                     
                                 except asyncio.TimeoutError:
                                     stats["errors"] += 1
-                                    error_msg = f"Таймаут создания Outline ключа для подписки {sub_id} (сервер №8 медленно отвечает)"
+                                    error_msg = f"Таймаут создания Outline ключа для подписки {sub_id} (сервер #{server_id} медленно отвечает)"
                                     stats["errors_details"].append({
                                         "type": "outline_create_timeout",
-                                        "server_id": 8,
+                                        "server_id": server_id,
                                         "subscription_id": sub_id,
                                         "error": error_msg,
                                     })
@@ -1406,7 +1404,7 @@ async def sync_all_keys_with_servers(
                                     error_msg = f"Ошибка создания Outline ключа для подписки {sub_id}: {e}"
                                     stats["errors_details"].append({
                                         "type": "outline_create",
-                                        "server_id": 8,
+                                        "server_id": server_id,
                                         "subscription_id": sub_id,
                                         "error": error_msg,
                                     })
@@ -1418,10 +1416,10 @@ async def sync_all_keys_with_servers(
                     
                 except Exception as e:
                     stats["errors"] += 1
-                    error_msg = f"Ошибка обработки сервера №8: {e}"
+                    error_msg = f"Ошибка обработки Outline-сервера #{server_id}: {e}"
                     stats["errors_details"].append({
                         "type": "outline_server_8",
-                        "server_id": 8,
+                        "server_id": server_id,
                         "error": error_msg,
                     })
                     logger.error(f"    ✗ {error_msg}")
@@ -1434,15 +1432,16 @@ async def sync_all_keys_with_servers(
         logger.info("  [4.2] Удаление Outline ключей подписок с других серверов...")
         
         with get_db_cursor() as cursor:
+            outline_id = settings.OUTLINE_SERVER_ID
             cursor.execute("""
                 SELECT id, server_id, key_id, subscription_id
                 FROM keys
-                WHERE subscription_id IS NOT NULL AND server_id != 8 AND protocol = 'outline'
-            """)
+                WHERE subscription_id IS NOT NULL AND server_id != ? AND protocol = 'outline'
+            """, (outline_id,))
             keys_to_remove = cursor.fetchall()
         
         if keys_to_remove:
-            logger.info(f"    Найдено {len(keys_to_remove)} Outline ключей подписок на серверах, отличных от №8")
+            logger.info(f"    Найдено {len(keys_to_remove)} Outline ключей подписок на серверах, отличных от Outline-сервера (id={outline_id})")
             
             for key_row in keys_to_remove:
                 key_db_id, server_id, key_id, sub_id = key_row
@@ -1753,7 +1752,7 @@ async def sync_all_keys_with_servers(
     logger.info(f"  Обновлено V2Ray конфигураций: {stats['v2ray_configs_updated']}")
     logger.info(f"  Создано Outline ключей: {stats['outline_keys_created']}")
     logger.info(f"  Обновлено Outline конфигураций: {stats['outline_configs_updated']}")
-    logger.info(f"  Удалено Outline ключей (не с сервера №8): {stats['outline_keys_removed']}")
+    logger.info(f"  Удалено Outline ключей (не с Outline-сервера): {stats['outline_keys_removed']}")
     logger.info(f"  Ошибок: {stats['errors']}")
     logger.info(f"  Время выполнения: {stats['duration_seconds']:.2f} сек")
     logger.info("=" * 60)

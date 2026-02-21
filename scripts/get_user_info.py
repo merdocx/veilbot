@@ -182,7 +182,7 @@ def get_user_info(user_id: int):
     with open_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT k.id, k.v2ray_uuid, k.email, k.created_at, k.expiry_at,
+            SELECT k.id, k.v2ray_uuid, k.email, k.created_at, COALESCE(sub.expires_at, 0) as expiry_at,
                    k.server_id, k.tariff_id, k.subscription_id, k.traffic_limit_mb,
                    k.traffic_usage_bytes, k.notified,
                    s.name as server_name, t.name as tariff_name,

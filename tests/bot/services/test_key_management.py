@@ -222,16 +222,19 @@ class TestKeyManagement:
             VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (1, 12345, "token-1", now, expiry_at + duration, None))
         
-        # Создаем ключ, привязанный к подписке
+        # Создаем ключ, привязанный к подписке (expiry берётся из subscriptions)
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url, email, subscription_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test", "old@example.com", 1))
+            INSERT INTO keys (id, user_id, access_url, email, subscription_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (1, 12345, "ss://test", "old@example.com", 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ
-        mock_cursor.execute("SELECT id, expiry_at FROM keys WHERE id = ?", (1,))
-        existing_key = mock_cursor.fetchone()
+        # Получаем ключ: id и expiry из подписки для передачи в функцию
+        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        key_row = mock_cursor.fetchone()
+        mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
+        sub_expiry = mock_cursor.fetchone()[0]
+        existing_key = (key_row[0], sub_expiry)
         
         # Продлеваем с новым email
         extend_existing_key(mock_cursor, existing_key, duration, email=email)
@@ -254,16 +257,19 @@ class TestKeyManagement:
             VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (1, 12345, "token-1", now, expiry_at + duration, None))
         
-        # Создаем ключ, привязанный к подписке
+        # Создаем ключ, привязанный к подписке (expiry берётся из subscriptions)
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url, tariff_id, subscription_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test", 1, 1))
+            INSERT INTO keys (id, user_id, access_url, tariff_id, subscription_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (1, 12345, "ss://test", 1, 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ
-        mock_cursor.execute("SELECT id, expiry_at FROM keys WHERE id = ?", (1,))
-        existing_key = mock_cursor.fetchone()
+        # Получаем ключ: id и expiry из подписки для передачи в функцию
+        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        key_row = mock_cursor.fetchone()
+        mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
+        sub_expiry = mock_cursor.fetchone()[0]
+        existing_key = (key_row[0], sub_expiry)
         
         # Продлеваем с новым tariff_id
         extend_existing_key(mock_cursor, existing_key, duration, tariff_id=tariff_id)
@@ -287,16 +293,19 @@ class TestKeyManagement:
             VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (1, 12345, "token-1", now, expiry_at + duration, None))
         
-        # Создаем ключ, привязанный к подписке
+        # Создаем ключ, привязанный к подписке (expiry берётся из subscriptions)
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, expiry_at, access_url, email, tariff_id, subscription_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (1, 12345, expiry_at, "ss://test", "old@example.com", 1, 1))
+            INSERT INTO keys (id, user_id, access_url, email, tariff_id, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (1, 12345, "ss://test", "old@example.com", 1, 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ
-        mock_cursor.execute("SELECT id, expiry_at FROM keys WHERE id = ?", (1,))
-        existing_key = mock_cursor.fetchone()
+        # Получаем ключ: id и expiry из подписки для передачи в функцию
+        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        key_row = mock_cursor.fetchone()
+        mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
+        sub_expiry = mock_cursor.fetchone()[0]
+        existing_key = (key_row[0], sub_expiry)
         
         # Продлеваем с новыми данными
         extend_existing_key(mock_cursor, existing_key, duration, email=email, tariff_id=tariff_id)

@@ -798,8 +798,8 @@ class SubscriptionService:
                                     cursor.execute(
                                         """
                                         INSERT INTO v2ray_keys 
-                                        (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                         """,
                                         (
                                             server_id,
@@ -807,7 +807,6 @@ class SubscriptionService:
                                             v2ray_uuid,
                                             key_email,
                                             now,
-                                            new_expires_at,
                                             tariff_id,
                                             client_config,
                                             existing_id,
@@ -1017,8 +1016,8 @@ class SubscriptionService:
                             cursor.execute(
                                 """
                                 INSERT INTO v2ray_keys 
-                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     server_id,
@@ -1026,7 +1025,6 @@ class SubscriptionService:
                                     v2ray_uuid,
                                     key_email,
                                     now,
-                                    expires_at,
                                     tariff_id,
                                     client_config,
                                     subscription_id,

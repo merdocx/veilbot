@@ -613,10 +613,10 @@ async def process_pending_paid_payments() -> None:
                             cursor.execute(
                                 """
                                 INSERT INTO v2ray_keys (
-                                    server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config,
+                                    server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config,
                                     traffic_limit_mb, traffic_usage_bytes
                                 )
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
                                 """,
                                 (
                                     server_dict["id"],
@@ -624,7 +624,6 @@ async def process_pending_paid_payments() -> None:
                                     user_data["uuid"],
                                     email or f"user_{user_id}@veilbot.com",
                                     now,
-                                    expiry,
                                     tariff_id,
                                     config,
                                     traffic_limit_mb,
@@ -1757,15 +1756,14 @@ async def create_keys_for_new_server(server_id: int) -> None:
                         try:
                             cursor.execute("""
                                 INSERT INTO v2ray_keys 
-                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """, (
                                 server_id,
                                 user_id,
                                 v2ray_uuid,
                                 key_email,
                                 int(time.time()),
-                                expires_at,
                                 tariff_id,
                                 client_config,
                                 subscription_id,
@@ -1808,14 +1806,12 @@ async def create_keys_for_new_server(server_id: int) -> None:
                         try:
                             cursor.execute("""
                                 INSERT INTO keys 
-                                (server_id, user_id, access_url, expiry_at, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
-                                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                                (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
+                                VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
                             """, (
                                 server_id,
                                 user_id,
                                 access_url,
-                                expires_at,
-                                0,  # traffic_limit_mb
                                 outline_key_id,
                                 int(time.time()),
                                 key_email,
@@ -2042,15 +2038,14 @@ async def _create_subscription_key_on_server(
                         try:
                             cursor.execute("""
                                 INSERT OR IGNORE INTO v2ray_keys 
-                                (server_id, user_id, v2ray_uuid, email, created_at, expiry_at, tariff_id, client_config, subscription_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """, (
                                 server_id,
                                 user_id,
                                 v2ray_uuid,
                                 key_email,
                                 now,
-                                expires_at,
                                 tariff_id,
                                 client_config,
                                 subscription_id,

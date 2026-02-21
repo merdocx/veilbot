@@ -27,11 +27,11 @@ class TestBackgroundTasks:
         now = int(time.time())
         grace_threshold = now - 86400  # 24 часа назад
         
-        # Outline ключ, истекший более 24 часов назад
+        # Outline ключ, истекший более 24 часов назад (expiry в схеме берётся из subscriptions)
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, key_id, expiry_at, server_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (1, 12345, "outline_key_1", grace_threshold - 100, 1))
+            INSERT INTO keys (id, user_id, key_id, server_id)
+            VALUES (?, ?, ?, ?)
+        """, (1, 12345, "outline_key_1", 1))
         
         # Добавляем сервер
         mock_cursor.execute("""
@@ -74,9 +74,9 @@ class TestBackgroundTasks:
         # Добавляем 95 активных ключей
         for i in range(95):
             mock_cursor.execute("""
-                INSERT INTO keys (id, user_id, expiry_at)
-                VALUES (?, ?, ?)
-            """, (i + 1, 1000 + i, now + 86400))
+                INSERT INTO keys (id, user_id)
+                VALUES (?, ?)
+            """, (i + 1, 1000 + i))
         mock_cursor.connection.commit()
         
         # Запускаем функцию
@@ -112,9 +112,9 @@ class TestBackgroundTasks:
         # Добавляем 50 активных ключей
         for i in range(50):
             mock_cursor.execute("""
-                INSERT INTO keys (id, user_id, expiry_at)
-                VALUES (?, ?, ?)
-            """, (i + 1, 1000 + i, now + 86400))
+                INSERT INTO keys (id, user_id)
+                VALUES (?, ?)
+            """, (i + 1, 1000 + i))
         mock_cursor.connection.commit()
         
         # Запускаем функцию
