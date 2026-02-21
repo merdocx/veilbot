@@ -1,6 +1,7 @@
 """
 Маршруты для дашборда администратора
 """
+import asyncio
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 import time
@@ -12,7 +13,7 @@ import math
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.settings import settings
-from app.infra.sqlite_utils import open_connection
+from app.infra.sqlite_utils import open_connection, retry_db_operation
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.templates import templates
@@ -21,6 +22,122 @@ from fastapi.responses import RedirectResponse
 router = APIRouter()
 
 DATABASE_PATH = settings.DATABASE_PATH
+
+
+def _fetch_dashboard_stats_readonly():
+    """Только SELECT — не держит write-lock, быстрее при конкуренции с ботом. Для отдачи страницы."""
+    now = int(time.time())
+    today = time.strftime("%Y-%m-%d")
+    with open_connection(DATABASE_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT 
+                (SELECT COUNT(*) FROM keys k
+                 JOIN subscriptions s ON k.subscription_id = s.id
+                 WHERE s.expires_at > ?) as active_outline,
+                (SELECT COUNT(*) FROM v2ray_keys k
+                 JOIN subscriptions s ON k.subscription_id = s.id
+                 WHERE s.expires_at > ?) as active_v2ray,
+                (SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? AND is_active = 1) as active_subscriptions,
+                (SELECT COUNT(*) FROM tariffs) as tariff_count,
+                (SELECT COUNT(*) FROM servers) as server_count,
+                (SELECT COUNT(*) FROM users) as started_users
+        """, (now, now, now))
+        row = c.fetchone()
+        active_keys = (row[0] or 0) + (row[1] or 0)
+        tariff_count = row[3] or 0
+        server_count = row[4] or 0
+        started_users = row[5] or 0
+
+        c.execute("""
+            SELECT date, active_keys, started_users, COALESCE(paid_subscriptions, 0)
+            FROM dashboard_metrics
+            ORDER BY date DESC
+            LIMIT 30
+        """)
+        rows = c.fetchall()
+        metrics = [
+            {"date": r[0], "active_keys": r[1], "started_users": r[2], "paid_subscriptions": r[3] or 0}
+            for r in rows
+        ][::-1]
+
+    chart_data = _prepare_chart_data(metrics)
+    return (active_keys, tariff_count, server_count, started_users, metrics, chart_data)
+
+
+def _apply_dashboard_metrics_writes():
+    """Обновление dashboard_metrics (INSERT/UPDATE). Вызывается в фоне, при locked — не критично."""
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        now = int(time.time())
+        today = time.strftime("%Y-%m-%d")
+        end_of_today = int(time.mktime(time.strptime(today + " 23:59:59", "%Y-%m-%d %H:%M:%S")))
+        timestamp = now
+        with open_connection(DATABASE_PATH) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? AND is_active = 1
+            """, (now,))
+            active_subscriptions = (c.fetchone()[0] or 0)
+            c.execute("""
+                SELECT COUNT(*) FROM users
+            """)
+            started_users = (c.fetchone()[0] or 0)
+            c.execute("""
+                SELECT COUNT(*) FROM subscriptions s
+                JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN users u ON s.user_id = u.user_id
+                WHERE s.expires_at > ? AND t.price_rub > 0 AND (u.is_vip IS NULL OR u.is_vip = 0)
+            """, (end_of_today,))
+            paid_subscriptions_today = (c.fetchone()[0] or 0)
+
+            c.execute("""
+                INSERT INTO dashboard_metrics (date, active_keys, started_users, paid_subscriptions, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    active_keys = excluded.active_keys,
+                    started_users = excluded.started_users,
+                    paid_subscriptions = excluded.paid_subscriptions,
+                    updated_at = excluded.updated_at
+            """, (today, active_subscriptions, started_users, paid_subscriptions_today, timestamp, timestamp))
+            c.execute("""
+                UPDATE dashboard_metrics
+                SET active_keys = (
+                    SELECT COUNT(*) FROM subscriptions s
+                    WHERE s.expires_at > strftime('%s', dashboard_metrics.date || ' 23:59:59')
+                    AND s.is_active = 1
+                )
+                WHERE date != ?
+            """, (today,))
+            c.execute("""
+                UPDATE dashboard_metrics
+                SET paid_subscriptions = (
+                    SELECT COUNT(*) FROM subscriptions s
+                    JOIN tariffs t ON s.tariff_id = t.id
+                    LEFT JOIN users u ON s.user_id = u.user_id
+                    WHERE s.expires_at > strftime('%s', dashboard_metrics.date || ' 23:59:59')
+                    AND t.price_rub > 0 AND (u.is_vip IS NULL OR u.is_vip = 0)
+                )
+                WHERE date != ?
+            """, (today,))
+            c.execute("SELECT date FROM dashboard_metrics")
+            existing_dates = {r[0] for r in c.fetchall()}
+            if len(existing_dates) < 30:
+                seed_rows = []
+                for days_ago in range(29, -1, -1):
+                    seed_date = time.strftime("%Y-%m-%d", time.localtime(time.time() - days_ago * 86400))
+                    if seed_date in existing_dates:
+                        continue
+                    seed_rows.append((seed_date, random.randint(0, 1000), random.randint(0, 1000), random.randint(0, 50), timestamp, timestamp))
+                if seed_rows:
+                    c.executemany("""
+                        INSERT OR IGNORE INTO dashboard_metrics (date, active_keys, started_users, paid_subscriptions, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, seed_rows)
+            conn.commit()
+    except Exception as e:
+        log.warning("Dashboard metrics write skipped: %s", e)
 
 
 @router.get("/dashboard")
@@ -39,138 +156,26 @@ async def dashboard(request: Request):
     if cached_stats:
         active_keys, tariff_count, server_count, started_users, metrics, chart_data = cached_stats
     else:
-        # Вычисляем статистику - объединенный запрос для оптимизации
-        now = int(time.time())
-        today = time.strftime("%Y-%m-%d")
-        with open_connection(DATABASE_PATH) as conn:
-            c = conn.cursor()
-            # Объединяем все COUNT запросы в один
-            c.execute("""
-                SELECT 
-                    (SELECT COUNT(*) FROM keys k
-                     JOIN subscriptions s ON k.subscription_id = s.id
-                     WHERE s.expires_at > ?) as active_outline,
-                    (SELECT COUNT(*) FROM v2ray_keys k
-                     JOIN subscriptions s ON k.subscription_id = s.id
-                     WHERE s.expires_at > ?) as active_v2ray,
-                    (SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? AND is_active = 1) as active_subscriptions,
-                    (SELECT COUNT(*) FROM tariffs) as tariff_count,
-                    (SELECT COUNT(*) FROM servers) as server_count,
-                    (SELECT COUNT(*) FROM users) as started_users
-            """, (now, now, now))
-            row = c.fetchone()
-            active_keys = (row[0] or 0) + (row[1] or 0)  # Для отображения в карточке статистики
-            active_subscriptions = row[2] or 0  # Для графика "Динамика по дням"
-            tariff_count = row[3] or 0
-            server_count = row[4] or 0
-            started_users = row[5] or 0
-            
-            # Подсчитываем активные платные подписки на конец сегодняшнего дня
-            # Платные подписки - это подписки с небесплатным тарифом (price_rub > 0) и не VIP пользователи
-            # Активные = expires_at > end_of_today_timestamp
-            end_of_today = int(time.mktime(time.strptime(today + " 23:59:59", "%Y-%m-%d %H:%M:%S")))
-            c.execute("""
-                SELECT COUNT(*) FROM subscriptions s
-                JOIN tariffs t ON s.tariff_id = t.id
-                LEFT JOIN users u ON s.user_id = u.user_id
-                WHERE s.expires_at > ?
-                AND t.price_rub > 0
-                AND (u.is_vip IS NULL OR u.is_vip = 0)
-            """, (end_of_today,))
-            paid_subscriptions_today = (c.fetchone()[0] or 0)
-            
-            # Сохраняем ежедневные метрики (одна запись в день)
-            # ВАЖНО: active_keys используется для хранения количества активных подписок в графике
-            timestamp = int(time.time())
-            c.execute("""
-                INSERT INTO dashboard_metrics (date, active_keys, started_users, paid_subscriptions, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(date) DO UPDATE SET
-                    active_keys = excluded.active_keys,
-                    started_users = excluded.started_users,
-                    paid_subscriptions = excluded.paid_subscriptions,
-                    updated_at = excluded.updated_at
-            """, (today, active_subscriptions, started_users, paid_subscriptions_today, timestamp, timestamp))
-            
-            # Пересчитываем активные подписки для всех дней в истории
-            # Это нужно для заполнения данных после миграции
-            # ВАЖНО: Для сегодняшнего дня всегда используем актуальное значение, не обновляем здесь
-            # (сегодняшний день уже обновлен выше в INSERT ... ON CONFLICT DO UPDATE)
-            # Активные подписки на конец дня = expires_at > end_of_day_timestamp AND is_active = 1
-            c.execute("""
-                UPDATE dashboard_metrics
-                SET active_keys = (
-                    SELECT COUNT(*) FROM subscriptions s
-                    WHERE s.expires_at > strftime('%s', dashboard_metrics.date || ' 23:59:59')
-                    AND s.is_active = 1
-                )
-                WHERE date != ?
-            """, (today,))
-            
-            # Пересчитываем активные платные подписки для всех дней в истории
-            # Платные подписки - это подписки с небесплатным тарифом (price_rub > 0) и не VIP пользователи
-            # Активные на конец дня = expires_at > end_of_day_timestamp
-            c.execute("""
-                UPDATE dashboard_metrics
-                SET paid_subscriptions = (
-                    SELECT COUNT(*) FROM subscriptions s
-                    JOIN tariffs t ON s.tariff_id = t.id
-                    LEFT JOIN users u ON s.user_id = u.user_id
-                    WHERE s.expires_at > strftime('%s', dashboard_metrics.date || ' 23:59:59')
-                    AND t.price_rub > 0
-                    AND (u.is_vip IS NULL OR u.is_vip = 0)
-                )
-                WHERE date != ?
-            """, (today,))
-            
-            # Получаем историю метрик
-            c.execute("""
-                SELECT date, active_keys, started_users, COALESCE(paid_subscriptions, 0)
-                FROM dashboard_metrics
-                ORDER BY date DESC
-                LIMIT 30
-            """)
-            rows = c.fetchall()
-            metrics = [
-                {"date": r[0], "active_keys": r[1], "started_users": r[2], "paid_subscriptions": r[3] or 0}
-                for r in rows
-            ][::-1]  # chronological order
-
-            if len(metrics) < 30:
-                existing_dates = {entry["date"] for entry in metrics}
-                seed_rows = []
-                for days_ago in range(29, -1, -1):
-                    seed_date = time.strftime("%Y-%m-%d", time.localtime(time.time() - days_ago * 86400))
-                    if seed_date in existing_dates:
-                        continue
-                    seed_active = random.randint(0, 1000)
-                    seed_started = random.randint(0, 1000)
-                    seed_paid = random.randint(0, 50)
-                    seed_rows.append((seed_date, seed_active, seed_started, seed_paid, timestamp, timestamp))
-
-                if seed_rows:
-                    c.executemany("""
-                        INSERT OR IGNORE INTO dashboard_metrics (date, active_keys, started_users, paid_subscriptions, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, seed_rows)
-
-                    c.execute("""
-                        SELECT date, active_keys, started_users, COALESCE(paid_subscriptions, 0)
-                        FROM dashboard_metrics
-                        ORDER BY date DESC
-                        LIMIT 30
-                    """)
-                    rows = c.fetchall()
-                    metrics = [
-                        {"date": r[0], "active_keys": r[1], "started_users": r[2], "paid_subscriptions": r[3] or 0}
-                        for r in rows
-                    ][::-1]
-            
-            conn.commit()
-        
-        chart_data = _prepare_chart_data(metrics)
-        # Кэш на 60 секунд
-        traffic_cache.set(cache_key, (active_keys, tariff_count, server_count, started_users, metrics, chart_data), ttl=60)
+        loop = asyncio.get_event_loop()
+        try:
+            # Сначала только чтение (SELECT) — не конкурирует за write-lock с ботом, страница грузится быстрее
+            active_keys, tariff_count, server_count, started_users, metrics, chart_data = await loop.run_in_executor(
+                None,
+                lambda: retry_db_operation(
+                    _fetch_dashboard_stats_readonly,
+                    max_attempts=5,
+                    initial_delay=0.15,
+                    operation_name="dashboard_stats_readonly",
+                ),
+            )
+            traffic_cache.set(cache_key, (active_keys, tariff_count, server_count, started_users, metrics, chart_data), ttl=60)
+            # Обновление метрик в фоне — не блокируем ответ
+            loop.run_in_executor(None, _apply_dashboard_metrics_writes)
+        except Exception:
+            # При блокировке БД отдаём нули, чтобы страница хотя бы открылась
+            active_keys = tariff_count = server_count = started_users = 0
+            metrics = []
+            chart_data = _prepare_chart_data(metrics)
 
     metrics_json = json.dumps(metrics, ensure_ascii=False)
     return templates.TemplateResponse("dashboard.html", {

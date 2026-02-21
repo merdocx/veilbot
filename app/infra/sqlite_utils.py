@@ -21,7 +21,7 @@ def apply_pragmas_sync(conn: sqlite3.Connection) -> None:
     - WAL journal mode (persistent setting per database file)
     - NORMAL synchronous (balanced durability/perf for WAL)
     - foreign_keys ON (per-connection)
-    - busy_timeout 30000 ms (increased from 15000 to reduce lock errors)
+    - busy_timeout 5000 ms (короткий — не блокировать event loop при конкуренции)
     """
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -36,7 +36,8 @@ def apply_pragmas_sync(conn: sqlite3.Connection) -> None:
     except Exception:
         pass
     try:
-        conn.execute("PRAGMA busy_timeout=30000")
+        # 5s — быстрее освобождаем event loop при конкуренции бот/админка
+        conn.execute("PRAGMA busy_timeout=5000")
     except Exception:
         pass
 
@@ -49,9 +50,8 @@ def open_connection(db_path: Optional[str]) -> sqlite3.Connection:
         if not path:
             from app.settings import settings
             path = settings.DATABASE_PATH
-    # IMPORTANT: Increase SQLite connect timeout to reduce "database is locked" errors under concurrent writers.
-    # This works together with PRAGMA busy_timeout (applied below) and WAL mode.
-    conn = sqlite3.connect(path, timeout=30)
+    # Короткий timeout (5s) — при конкуренции бот/админка не блокируем надолго
+    conn = sqlite3.connect(path, timeout=5)
     apply_pragmas_sync(conn)
     return conn
 
@@ -70,7 +70,7 @@ async def apply_pragmas_async(conn: aiosqlite.Connection) -> None:
     except Exception:
         pass
     try:
-        await conn.execute("PRAGMA busy_timeout=30000")
+        await conn.execute("PRAGMA busy_timeout=5000")
     except Exception:
         pass
 
@@ -85,8 +85,7 @@ async def open_async_connection(db_path: Optional[str]) -> aiosqlite.Connection:
             from app.settings import settings
             path = settings.DATABASE_PATH
     # IMPORTANT: Increase SQLite connect timeout to reduce "database is locked" errors under concurrent writers.
-    # This works together with PRAGMA busy_timeout (applied below) and WAL mode.
-    conn = await aiosqlite.connect(path, timeout=30)
+    conn = await aiosqlite.connect(path, timeout=5)
     await apply_pragmas_async(conn)
     try:
         yield conn
