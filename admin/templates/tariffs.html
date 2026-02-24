@@ -28,15 +28,28 @@
 
     <!-- Table -->
     <div class="table-scroll">
-        <table class="material-table" id="tariffs-table">
+        <table class="material-table tariffs-table-cols" id="tariffs-table" style="table-layout: fixed; width: 100%;">
+            <colgroup>
+                <col style="width: 3%">
+                <col style="width: 14%">
+                <col style="width: 7%">
+                <col style="width: 9%">
+                <col style="width: 7%">
+                <col style="width: 18%">
+                <col style="width: 6%">
+                <col style="width: 8%">
+                <col style="width: 8%">
+            </colgroup>
             <thead>
                 <tr>
                     <th>ID</th>
                     <th>Название</th>
-                    <th>Длительность</th>
+                    <th>Длит.</th>
                     <th>Цена</th>
                     <th>Трафик</th>
                     <th>Оплата</th>
+                    <th>Архив.</th>
+                    <th>Подписок</th>
                     <th>Действия</th>
                 </tr>
             </thead>
@@ -102,6 +115,17 @@
                                 {% endif %}
                             {% endif %}
                         </div>
+                    </td>
+                    <td>
+                        {% set is_archived = t[9] if t|length > 9 else 0 %}
+                        {% if is_archived %}
+                            <span class="badge badge-warning" title="Архивный тариф — не показывается в боте">Да</span>
+                        {% else %}
+                            <span class="text-muted">Нет</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="cell-primary">{{ (active_counts or {}).get(t[0], 0) }}</div>
                     </td>
                     <td>
                         <div class="action-buttons">

@@ -2947,7 +2947,7 @@ async def sync_subscription_keys_with_active_servers() -> None:
     
     await _run_periodic(
         "sync_subscription_keys_with_active_servers",
-        interval_seconds=3600,  # 1 час
+        interval_seconds=900,  # 15 минут
         job=job,
         max_backoff=10800,  # до 3 часов при повторяющихся ошибках
     )

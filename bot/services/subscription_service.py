@@ -1,6 +1,7 @@
 """
 Сервис для работы с подписками V2Ray
 """
+import asyncio
 import uuid
 import base64
 import time
@@ -17,7 +18,7 @@ from vpn_protocols import (
     add_server_name_to_vless,
     remove_fragment_from_vless,
 )
-from app.infra.sqlite_utils import get_db_cursor
+from app.infra.sqlite_utils import get_db_cursor, retry_db_operation
 from app.infra.foreign_keys import safe_foreign_keys_off
 from config import SUPPORT_USERNAME
 
@@ -31,6 +32,21 @@ except Exception:  # pragma: no cover - fallback for startup issues/tests
 logger = logging.getLogger(__name__)
 
 BYTES_IN_GB = 1024 ** 3
+
+# Признаки временной ошибки при вызове V2Ray API (retry при создании ключа)
+def _is_retryable_key_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    if "504" in msg or "502" in msg or "503" in msg or "gateway" in msg:
+        return True
+    if "timeout" in msg or "timed out" in msg:
+        return True
+    try:
+        import aiohttp
+        if isinstance(exc, (asyncio.TimeoutError, aiohttp.ClientError, ConnectionError)):
+            return True
+    except Exception:
+        pass
+    return False
 
 # Кэш для подписок (TTL 5 минут)
 _subscription_cache = SimpleCache()
@@ -190,6 +206,58 @@ def _normalize_support_username() -> Optional[str]:
     if not username:
         return None
     return f"@{username.lstrip('@')}"
+
+
+def _fetch_servers_for_new_subscription(user_id: int, subscription_id: int) -> list:
+    """Возвращает список 6-кортежей (server_id, name, api_url, api_key, domain, v2ray_path) для создания ключей. Используется с retry_db_operation."""
+    from app.repositories.user_repository import UserRepository
+    user_repo = UserRepository()
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, name, api_url, api_key, domain, v2ray_path, COALESCE(access_level, 'all') as access_level
+            FROM servers
+            WHERE protocol = 'v2ray' AND active = 1
+            ORDER BY id
+        """)
+        servers_raw = cursor.fetchall()
+        now_ts = int(time.time())
+        cursor.execute("""
+            SELECT COUNT(*) FROM subscriptions
+            WHERE (user_id = ? AND is_active = 1 AND expires_at > ?)
+               OR (id = ? AND user_id = ? AND is_active = 1)
+        """, (user_id, now_ts, subscription_id, user_id))
+        has_active_subscription = cursor.fetchone()[0] > 0
+    is_vip = user_repo.is_user_vip(user_id)
+    servers = []
+    for server in servers_raw:
+        server_access_level = server[6] if len(server) > 6 else 'all'
+        if server_access_level == 'all':
+            servers.append(server[:6])
+        elif server_access_level == 'vip' and is_vip:
+            servers.append(server[:6])
+        elif server_access_level == 'paid' and (is_vip or has_active_subscription):
+            servers.append(server[:6])
+    return servers
+
+
+def _insert_v2ray_key_for_subscription(
+    server_id: int, user_id: int, v2ray_uuid: str, key_email: str, now: int,
+    tariff_id: int, client_config: Optional[str], subscription_id: int,
+) -> None:
+    """Вставляет одну запись в v2ray_keys. Вызывается через retry_db_operation при database is locked."""
+    with get_db_cursor(commit=True) as cursor:
+        cursor.connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            cursor.execute(
+                """
+                INSERT INTO v2ray_keys
+                (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (server_id, user_id, v2ray_uuid, key_email, now, tariff_id, client_config, subscription_id),
+            )
+        finally:
+            cursor.connection.execute("PRAGMA foreign_keys = ON")
 
 
 class SubscriptionService:
@@ -923,41 +991,13 @@ class SubscriptionService:
                 traffic_limit_mb=traffic_limit_mb,
             )
 
-            # Создание ключей на всех активных V2Ray серверах с учетом access_level
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT id, name, api_url, api_key, domain, v2ray_path, COALESCE(access_level, 'all') as access_level
-                    FROM servers
-                    WHERE protocol = 'v2ray' AND active = 1
-                    ORDER BY id
-                    """,
-                )
-                servers_raw = cursor.fetchall()
-                
-                # Фильтруем серверы по доступности для пользователя
-                servers = []
-                user_repo = UserRepository()
-                is_vip = user_repo.is_user_vip(user_id)
-                now_ts = int(time.time())
-                
-                # Проверяем активную подписку для доступа к серверам с access_level='paid'.
-                # Учитываем и текущую подписку (subscription_id): она только что создана и уже в БД.
-                cursor.execute("""
-                    SELECT COUNT(*) FROM subscriptions
-                    WHERE (user_id = ? AND is_active = 1 AND expires_at > ?)
-                       OR (id = ? AND user_id = ? AND is_active = 1)
-                """, (user_id, now_ts, subscription_id, user_id))
-                has_active_subscription = cursor.fetchone()[0] > 0
-                
-                for server in servers_raw:
-                    server_access_level = server[6] if len(server) > 6 else 'all'
-                    if server_access_level == 'all':
-                        servers.append(server[:6])  # Без access_level
-                    elif server_access_level == 'vip' and is_vip:
-                        servers.append(server[:6])
-                    elif server_access_level == 'paid' and (is_vip or has_active_subscription):
-                        servers.append(server[:6])
+            # Создание ключей на всех активных V2Ray серверах с учетом access_level (с retry при database is locked)
+            servers = retry_db_operation(
+                lambda: _fetch_servers_for_new_subscription(user_id, subscription_id),
+                max_attempts=5,
+                initial_delay=0.15,
+                operation_name="fetch_servers_for_subscription",
+            )
 
             created_keys = 0
             failed_servers = []
@@ -965,100 +1005,99 @@ class SubscriptionService:
             for server_id, server_name, api_url, api_key, domain, v2ray_path in servers:
                 protocol_client = None
                 v2ray_uuid = None
-                try:
-                    # Генерация email для ключа
-                    key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
+                for attempt in range(1, 4):
+                    try:
+                        # Генерация email для ключа
+                        key_email = f"{user_id}_subscription_{subscription_id}@veilbot.com"
 
-                    # Создание ключа через V2Ray API с названием сервера
-                    server_config = {
-                        'api_url': api_url,
-                        'api_key': api_key,
-                        'domain': domain,
-                    }
-                    protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                    # Передаем название сервера вместо email для name в V2Ray API
-                    user_data = await protocol_client.create_user(key_email, name=server_name)
+                        # Создание ключа через V2Ray API с названием сервера
+                        server_config = {
+                            'api_url': api_url,
+                            'api_key': api_key,
+                            'domain': domain,
+                        }
+                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                        # Передаем название сервера вместо email для name в V2Ray API
+                        user_data = await protocol_client.create_user(key_email, name=server_name)
 
-                    if not user_data or not user_data.get('uuid'):
-                        raise Exception("Failed to create user on V2Ray server")
+                        if not user_data or not user_data.get('uuid'):
+                            raise Exception("Failed to create user on V2Ray server")
 
-                    v2ray_uuid = user_data['uuid']
+                        v2ray_uuid = user_data['uuid']
 
-                    # Получение client_config
-                    # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
-                    client_config = user_data.get('client_config')
-                    if not client_config:
-                        # Если client_config нет в ответе, запрашиваем через get_user_config
-                        logger.debug(f"client_config not in create_user response, fetching via get_user_config")
-                        client_config = await protocol_client.get_user_config(
-                            v2ray_uuid,
-                            {
-                                'domain': domain,
-                                'port': 443,
-                                'email': key_email,
-                            },
+                        # Получение client_config
+                        # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+                        client_config = user_data.get('client_config')
+                        if not client_config:
+                            # Если client_config нет в ответе, запрашиваем через get_user_config
+                            logger.debug(f"client_config not in create_user response, fetching via get_user_config")
+                            client_config = await protocol_client.get_user_config(
+                                v2ray_uuid,
+                                {
+                                    'domain': domain,
+                                    'port': 443,
+                                    'email': key_email,
+                                },
+                            )
+
+                        # Извлекаем VLESS URL из конфигурации
+                        if client_config and 'vless://' in client_config:
+                            lines = client_config.split('\n')
+                            for line in lines:
+                                if line.strip().startswith('vless://'):
+                                    client_config = line.strip()
+                                    break
+
+                        # Сохранение ключа в БД (с retry при database is locked)
+                        retry_db_operation(
+                            lambda: _insert_v2ray_key_for_subscription(
+                                server_id, user_id, v2ray_uuid, key_email, now,
+                                tariff_id, client_config, subscription_id,
+                            ),
+                            max_attempts=5,
+                            initial_delay=0.15,
+                            operation_name="insert_v2ray_key",
                         )
 
-                    # Извлекаем VLESS URL из конфигурации
-                    if client_config and 'vless://' in client_config:
-                        lines = client_config.split('\n')
-                        for line in lines:
-                            if line.strip().startswith('vless://'):
-                                client_config = line.strip()
-                                break
-
-                    # Сохранение ключа в БД
-                    # Временно отключаем проверку внешних ключей из-за несоответствия структуры users(id) vs users(user_id)
-                    with get_db_cursor(commit=True) as cursor:
-                        # Отключаем проверку внешних ключей для этой операции
-                        cursor.connection.execute("PRAGMA foreign_keys = OFF")
-                        try:
-                            cursor.execute(
-                                """
-                                INSERT INTO v2ray_keys 
-                                (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    server_id,
-                                    user_id,
-                                    v2ray_uuid,
-                                    key_email,
-                                    now,
-                                    tariff_id,
-                                    client_config,
-                                    subscription_id,
-                                ),
+                        created_keys += 1
+                        if attempt > 1:
+                            logger.info(
+                                f"Created key for subscription {subscription_id} on server {server_id} after retry"
                             )
-                        finally:
-                            # Включаем обратно проверку внешних ключей
-                            cursor.connection.execute("PRAGMA foreign_keys = ON")
+                        else:
+                            logger.info(
+                                f"Created key for subscription {subscription_id} on server {server_id}"
+                            )
+                        await protocol_client.close()
+                        break
 
-                    created_keys += 1
-                    logger.info(
-                        f"Created key for subscription {subscription_id} on server {server_id}"
-                    )
-                    await protocol_client.close()
-
-                except Exception as e:
-                    logger.error(
-                        f"Failed to create key for subscription {subscription_id} "
-                        f"on server {server_id}: {e}",
-                        exc_info=True,
-                    )
-                    # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
-                    if v2ray_uuid and protocol_client:
-                        try:
-                            await protocol_client.delete_user(v2ray_uuid)
-                            logger.info(f"Cleaned up orphaned key on server {server_id}")
-                        except Exception as cleanup_error:
-                            logger.error(f"Failed to cleanup orphaned key: {cleanup_error}")
-                    elif protocol_client:
-                        try:
-                            await protocol_client.close()
-                        except Exception:
-                            pass
-                    failed_servers.append(server_id)
+                    except Exception as e:
+                        # Если ключ был создан на сервере, но не сохранен в БД — удаляем с сервера перед retry
+                        if v2ray_uuid and protocol_client:
+                            try:
+                                await protocol_client.delete_user(v2ray_uuid)
+                                logger.info(f"Cleaned up orphaned key on server {server_id}")
+                            except Exception as cleanup_error:
+                                logger.error(f"Failed to cleanup orphaned key: {cleanup_error}")
+                        if protocol_client:
+                            try:
+                                await protocol_client.close()
+                            except Exception:
+                                pass
+                        if not _is_retryable_key_error(e) or attempt == 3:
+                            logger.error(
+                                f"Failed to create key for subscription {subscription_id} "
+                                f"on server {server_id}: {e}",
+                                exc_info=True,
+                            )
+                            failed_servers.append(server_id)
+                            break
+                        logger.warning(
+                            f"Retry {attempt}/3 for subscription {subscription_id} on server {server_id}: {e}"
+                        )
+                        await asyncio.sleep(2 + attempt)
+                        protocol_client = None
+                        v2ray_uuid = None
 
             # Проверяем, были ли созданы ключи. Подписку не деактивируем — ключи можно
             # доставить позже (повтор, скрипт или админ). Возвращаем результат с created_keys=0.

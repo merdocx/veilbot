@@ -283,231 +283,242 @@ class V2RayProtocol(VPNProtocol):
             logger.debug(f"V2Ray API URL: {self.api_url}/keys")
             logger.debug(f"V2Ray headers present: {list(self.headers.keys())}")
             logger.debug(f"V2Ray key data: {key_data}")
-                
-            async with session.post(
-                f"{self.api_url}/keys",
-                headers=self.headers,
-                json=key_data
-            ) as response:
-                response_text = await response.text()
-                logger.debug(f"V2Ray create response status: {response.status}")
-                logger.debug(f"V2Ray create response text: {response_text}")
-                
-                if response.status in (200, 201):
-                    try:
-                        result = await response.json()
-                        
-                        # Проверяем, что результат - это словарь, а не список
-                        if isinstance(result, list):
-                            if len(result) > 0:
-                                # Если это список с одним элементом, берем первый
-                                result = result[0]
-                            else:
-                                # Если API возвращает пустой список, попробуем альтернативный подход
-                                print(f"V2Ray API returned empty list, trying alternative approach...")
-                                # Попробуем создать ключ с другими параметрами
-                                alternative_key_data = {
-                                    "name": email,
-                                    "email": email
-                                }
-                                
-                                async with session.post(
-                                    f"{self.api_url}/keys",
-                                    headers=self.headers,
-                                    json=alternative_key_data
-                                ) as alt_response:
-                                    alt_response_text = await alt_response.text()
-                                    logger.debug(f"Alternative V2Ray create response status: {alt_response.status}")
-                                    logger.debug(f"Alternative V2Ray create response text: {alt_response_text}")
-                                    
-                                    if alt_response.status in (200, 201):
-                                        alt_result = await alt_response.json()
-                                        if isinstance(alt_result, list) and len(alt_result) > 0:
-                                            result = alt_result[0]
-                                        elif isinstance(alt_result, dict):
-                                            result = alt_result
-                                        else:
-                                            raise Exception(f"V2Ray API still returned empty response - {alt_response_text}")
-                                    else:
-                                        raise Exception(f"V2Ray API alternative request failed: {alt_response.status} - {alt_response_text}")
-                        
-                        # Валидация ответа сервера
-                        # API возвращает key_id (integer) или id (string) для обратной совместимости
-                        key_id = result.get('key_id') or result.get('id')
-                        if not key_id:
-                            raise Exception(f"V2Ray API did not return key_id or id - {response_text}")
-                        
-                        uuid_value = result.get('uuid')
-                        
-                        logger.info(f"Successfully created V2Ray key {key_id} with UUID {uuid_value}")
-                        
-                        # Извлекаем все параметры из ответа API (API версия 2.3.7)
-                        # ВАЖНО: Сохраняем все параметры из ответа, не генерируем самостоятельно!
-                        short_id = result.get('short_id')
-                        sni = result.get('sni')
-                        port = result.get('port')
-                        
-                        if short_id:
-                            logger.info(f"Key {key_id} has short_id from API: {short_id}")
-                        if sni:
-                            logger.info(f"Key {key_id} has SNI from API: {sni}")
-                        if port:
-                            logger.info(f"Key {key_id} has port from API: {port}")
-                        
-                        # РЕКОМЕНДУЕТСЯ: Получить готовый VLESS URL через /api/keys/{key_id}/link
-                        # Согласно API документации, это лучший способ, так как:
-                        # - Все параметры гарантированно правильные
-                        # - Short ID совпадает с БД
-                        # - Public key правильный
-                        # - SNI правильный
-                        client_config = None
-                        
-                        # Сначала пробуем получить готовый URL через эндпоинт link
+
+            for attempt in range(3):
+                retry_after = False
+                async with session.post(
+                    f"{self.api_url}/keys",
+                    headers=self.headers,
+                    json=key_data
+                ) as response:
+                    response_text = await response.text()
+                    logger.debug(f"V2Ray create response status: {response.status}")
+                    logger.debug(f"V2Ray create response text: {response_text}")
+
+                    if response.status in (200, 201):
                         try:
-                            logger.info(f"Fetching ready VLESS URL via GET /api/keys/{key_id}/link")
-                            config_url = f"{self.api_url}/keys/{key_id}/link"
-                            
-                            async with session.get(
-                                    config_url,
-                                    headers=self.headers
-                                ) as config_response:
-                                if config_response.status == 200:
-                                    config_result = await config_response.json()
-                                    
-                                    # Извлекаем vless_link из ответа API
-                                    client_config = config_result.get('vless_link') or config_result.get('client_config') or config_result.get('vless_url')
-                                    
-                                    if client_config:
-                                        # Извлекаем VLESS URL из многострочного формата, если нужно
-                                        if 'vless://' in client_config:
-                                            lines = client_config.split('\n')
-                                            for line in lines:
-                                                if line.strip().startswith('vless://'):
-                                                    client_config = line.strip()
-                                                    break
-
-                                        # Проверяем наличие ключевых параметров
-                                        if 'sni=' in client_config and 'sid=' in client_config:
-                                            logger.info(f"✅ Got ready VLESS URL with SNI and short_id from /api/keys/{key_id}/link")
-                                        else:
-                                            logger.warning(f"⚠️  VLESS URL from /api/keys/{key_id}/link missing SNI or short_id")
-
-                                        logger.info(f"✅ Successfully obtained ready VLESS URL via /api/keys/{key_id}/link")
-                                    else:
-                                        logger.warning(f"⚠️  /api/keys/{key_id}/link returned empty vless_link")
-                                else:
-                                    logger.warning(f"⚠️  Failed to get link via /api/keys/{key_id}/link: status {config_response.status}")
-                        except Exception as config_error:
-                            logger.warning(f"⚠️  Error getting link via /api/keys/{key_id}/link: {config_error}")
+                            result = await response.json()
                         
-                        # Если не получилось получить через config эндпоинт, пробуем синхронизацию и повтор
-                        if not client_config:
-                            logger.info(f"Config not obtained, trying sync and retry...")
+                            # Проверяем, что результат - это словарь, а не список
+                            if isinstance(result, list):
+                                if len(result) > 0:
+                                    # Если это список с одним элементом, берем первый
+                                    result = result[0]
+                                else:
+                                    # Если API возвращает пустой список, попробуем альтернативный подход
+                                    print(f"V2Ray API returned empty list, trying alternative approach...")
+                                    # Попробуем создать ключ с другими параметрами
+                                    alternative_key_data = {
+                                        "name": email,
+                                        "email": email
+                                    }
+                                
+                                    async with session.post(
+                                        f"{self.api_url}/keys",
+                                        headers=self.headers,
+                                        json=alternative_key_data
+                                    ) as alt_response:
+                                        alt_response_text = await alt_response.text()
+                                        logger.debug(f"Alternative V2Ray create response status: {alt_response.status}")
+                                        logger.debug(f"Alternative V2Ray create response text: {alt_response_text}")
+                                    
+                                        if alt_response.status in (200, 201):
+                                            alt_result = await alt_response.json()
+                                            if isinstance(alt_result, list) and len(alt_result) > 0:
+                                                result = alt_result[0]
+                                            elif isinstance(alt_result, dict):
+                                                result = alt_result
+                                            else:
+                                                raise Exception(f"V2Ray API still returned empty response - {alt_response_text}")
+                                        else:
+                                            raise Exception(f"V2Ray API alternative request failed: {alt_response.status} - {alt_response_text}")
+                        
+                            # Валидация ответа сервера
+                            # API возвращает key_id (integer) или id (string) для обратной совместимости
+                            key_id = result.get('key_id') or result.get('id')
+                            if not key_id:
+                                raise Exception(f"V2Ray API did not return key_id or id - {response_text}")
+                        
+                            uuid_value = result.get('uuid')
+                        
+                            logger.info(f"Successfully created V2Ray key {key_id} with UUID {uuid_value}")
+                        
+                            # Извлекаем все параметры из ответа API (API версия 2.3.7)
+                            # ВАЖНО: Сохраняем все параметры из ответа, не генерируем самостоятельно!
+                            short_id = result.get('short_id')
+                            sni = result.get('sni')
+                            port = result.get('port')
+                        
+                            if short_id:
+                                logger.info(f"Key {key_id} has short_id from API: {short_id}")
+                            if sni:
+                                logger.info(f"Key {key_id} has SNI from API: {sni}")
+                            if port:
+                                logger.info(f"Key {key_id} has port from API: {port}")
+                        
+                            # РЕКОМЕНДУЕТСЯ: Получить готовый VLESS URL через /api/keys/{key_id}/link
+                            # Согласно API документации, это лучший способ, так как:
+                            # - Все параметры гарантированно правильные
+                            # - Short ID совпадает с БД
+                            # - Public key правильный
+                            # - SNI правильный
+                            client_config = None
+                        
+                            # Сначала пробуем получить готовый URL через эндпоинт link
                             try:
-                                sync_success = await self.sync_xray_config(timeout=5.0)
-                                if sync_success:
-                                    logger.info(f"Sync successful, retrying link fetch...")
-                                    # Повторная попытка после синхронизации
-                                    async with session.get(
-                                            f"{self.api_url}/keys/{key_id}/link",
-                                            headers=self.headers
-                                        ) as retry_response:
-                                        if retry_response.status == 200:
-                                            retry_result = await retry_response.json()
-                                            client_config = retry_result.get('vless_link') or retry_result.get('client_config') or retry_result.get('vless_url')
-                                            
-                                            if client_config and 'vless://' in client_config:
+                                logger.info(f"Fetching ready VLESS URL via GET /api/keys/{key_id}/link")
+                                config_url = f"{self.api_url}/keys/{key_id}/link"
+                            
+                                async with session.get(
+                                        config_url,
+                                        headers=self.headers
+                                    ) as config_response:
+                                    if config_response.status == 200:
+                                        config_result = await config_response.json()
+                                    
+                                        # Извлекаем vless_link из ответа API
+                                        client_config = config_result.get('vless_link') or config_result.get('client_config') or config_result.get('vless_url')
+                                    
+                                        if client_config:
+                                            # Извлекаем VLESS URL из многострочного формата, если нужно
+                                            if 'vless://' in client_config:
                                                 lines = client_config.split('\n')
                                                 for line in lines:
                                                     if line.strip().startswith('vless://'):
                                                         client_config = line.strip()
-                                                        if 'sni=' in client_config and 'sid=' in client_config:
-                                                            logger.info(f"✅ Got ready VLESS URL after sync and retry")
                                                         break
-                            except Exception as retry_error:
-                                logger.warning(f"Error during sync and retry: {retry_error}")
+
+                                            # Проверяем наличие ключевых параметров
+                                            if 'sni=' in client_config and 'sid=' in client_config:
+                                                logger.info(f"✅ Got ready VLESS URL with SNI and short_id from /api/keys/{key_id}/link")
+                                            else:
+                                                logger.warning(f"⚠️  VLESS URL from /api/keys/{key_id}/link missing SNI or short_id")
+
+                                            logger.info(f"✅ Successfully obtained ready VLESS URL via /api/keys/{key_id}/link")
+                                        else:
+                                            logger.warning(f"⚠️  /api/keys/{key_id}/link returned empty vless_link")
+                                    else:
+                                        logger.warning(f"⚠️  Failed to get link via /api/keys/{key_id}/link: status {config_response.status}")
+                            except Exception as config_error:
+                                logger.warning(f"⚠️  Error getting link via /api/keys/{key_id}/link: {config_error}")
                         
-                        # Если все еще нет client_config, пробуем извлечь из ответа создания (fallback)
-                        if not client_config:
-                            logger.warning(f"No vless_link obtained via /api/keys/{key_id}/link, trying fallback from create response")
-                            vless_url = result.get('vless_url')
-                            if not vless_url and isinstance(result.get('key'), dict):
-                                vless_url = result['key'].get('vless_url')
-                            if isinstance(vless_url, str) and vless_url.strip():
-                                client_config = vless_url.strip()
+                            # Если не получилось получить через config эндпоинт, пробуем синхронизацию и повтор
+                            if not client_config:
+                                logger.info(f"Config not obtained, trying sync and retry...")
+                                try:
+                                    sync_success = await self.sync_xray_config(timeout=5.0)
+                                    if sync_success:
+                                        logger.info(f"Sync successful, retrying link fetch...")
+                                        # Повторная попытка после синхронизации
+                                        async with session.get(
+                                                f"{self.api_url}/keys/{key_id}/link",
+                                                headers=self.headers
+                                            ) as retry_response:
+                                            if retry_response.status == 200:
+                                                retry_result = await retry_response.json()
+                                                client_config = retry_result.get('vless_link') or retry_result.get('client_config') or retry_result.get('vless_url')
+                                            
+                                                if client_config and 'vless://' in client_config:
+                                                    lines = client_config.split('\n')
+                                                    for line in lines:
+                                                        if line.strip().startswith('vless://'):
+                                                            client_config = line.strip()
+                                                            if 'sni=' in client_config and 'sid=' in client_config:
+                                                                logger.info(f"✅ Got ready VLESS URL after sync and retry")
+                                                            break
+                                except Exception as retry_error:
+                                    logger.warning(f"Error during sync and retry: {retry_error}")
+                        
+                            # Если все еще нет client_config, пробуем извлечь из ответа создания (fallback)
+                            if not client_config:
+                                logger.warning(f"No vless_link obtained via /api/keys/{key_id}/link, trying fallback from create response")
+                                vless_url = result.get('vless_url')
+                                if not vless_url and isinstance(result.get('key'), dict):
+                                    vless_url = result['key'].get('vless_url')
+                                if isinstance(vless_url, str) and vless_url.strip():
+                                    client_config = vless_url.strip()
                             
-                            if result.get('client_config'):
-                                client_config = result['client_config']
-                                if 'vless://' in client_config:
-                                    lines = client_config.split('\n')
-                                    for line in lines:
-                                        if line.strip().startswith('vless://'):
-                                            client_config = line.strip()
-                                            break
-                            elif result.get('key') and isinstance(result.get('key'), dict) and result['key'].get('client_config'):
-                                client_config = result['key']['client_config']
-                                if 'vless://' in client_config:
-                                    lines = client_config.split('\n')
-                                    for line in lines:
-                                        if line.strip().startswith('vless://'):
-                                            client_config = line.strip()
-                                            break
+                                if result.get('client_config'):
+                                    client_config = result['client_config']
+                                    if 'vless://' in client_config:
+                                        lines = client_config.split('\n')
+                                        for line in lines:
+                                            if line.strip().startswith('vless://'):
+                                                client_config = line.strip()
+                                                break
+                                elif result.get('key') and isinstance(result.get('key'), dict) and result['key'].get('client_config'):
+                                    client_config = result['key']['client_config']
+                                    if 'vless://' in client_config:
+                                        lines = client_config.split('\n')
+                                        for line in lines:
+                                            if line.strip().startswith('vless://'):
+                                                client_config = line.strip()
+                                                break
                         
-                        # Если все еще нет, используем get_user_config как последний fallback
-                        if not client_config:
-                            logger.warning(f"No client_config found anywhere, using get_user_config as last resort")
-                            try:
-                                # Используем get_user_config с параметрами из ответа API
-                                server_config = {
-                                    'domain': None,  # Будет получен из конфигурации
-                                    'port': port,
-                                    'email': email
-                                }
-                                client_config = await self.get_user_config(uuid_value, server_config, max_retries=3, retry_delay=1.0)
-                            except Exception as fallback_error:
-                                logger.error(f"Failed to get config via get_user_config fallback: {fallback_error}")
-                                # Не прерываем выполнение - ключ создан, просто нет конфигурации
+                            # Если все еще нет, используем get_user_config как последний fallback
+                            if not client_config:
+                                logger.warning(f"No client_config found anywhere, using get_user_config as last resort")
+                                try:
+                                    # Используем get_user_config с параметрами из ответа API
+                                    server_config = {
+                                        'domain': None,  # Будет получен из конфигурации
+                                        'port': port,
+                                        'email': email
+                                    }
+                                    client_config = await self.get_user_config(uuid_value, server_config, max_retries=3, retry_delay=1.0)
+                                except Exception as fallback_error:
+                                    logger.error(f"Failed to get config via get_user_config fallback: {fallback_error}")
+                                    # Не прерываем выполнение - ключ создан, просто нет конфигурации
                         
-                        if client_config and isinstance(client_config, str):
-                            client_config = client_config.strip()
+                            if client_config and isinstance(client_config, str):
+                                client_config = client_config.strip()
                         
-                        # Вызываем синхронизацию для гарантии применения ключа
-                        # Согласно документации API, ключ автоматически применяется при создании,
-                        # но дополнительная синхронизация гарантирует применение
-                        # Запускаем синхронизацию в фоне, чтобы не блокировать создание ключа
-                        async def sync_in_background():
-                            try:
-                                sync_success = await self.sync_xray_config(timeout=5.0)
-                                if sync_success:
-                                    logger.debug(f"Successfully synchronized Xray config via HandlerService API after creating key {key_id} (UUID: {uuid_value})")
-                                # Не логируем предупреждения для неудачной синхронизации, так как это не критично
-                            except Exception as sync_error:
-                                # Не прерываем выполнение, если синхронизация не удалась
-                                logger.debug(f"Xray config sync failed for key {key_id}: {sync_error} (non-critical)")
+                            # Вызываем синхронизацию для гарантии применения ключа
+                            # Согласно документации API, ключ автоматически применяется при создании,
+                            # но дополнительная синхронизация гарантирует применение
+                            # Запускаем синхронизацию в фоне, чтобы не блокировать создание ключа
+                            async def sync_in_background():
+                                try:
+                                    sync_success = await self.sync_xray_config(timeout=5.0)
+                                    if sync_success:
+                                        logger.debug(f"Successfully synchronized Xray config via HandlerService API after creating key {key_id} (UUID: {uuid_value})")
+                                    # Не логируем предупреждения для неудачной синхронизации, так как это не критично
+                                except Exception as sync_error:
+                                    # Не прерываем выполнение, если синхронизация не удалась
+                                    logger.debug(f"Xray config sync failed for key {key_id}: {sync_error} (non-critical)")
                         
-                        # Запускаем синхронизацию в фоне без ожидания
-                        import asyncio
-                        asyncio.create_task(sync_in_background())
+                            # Запускаем синхронизацию в фоне без ожидания
+                            import asyncio
+                            asyncio.create_task(sync_in_background())
                         
-                        # API возвращает key_id (integer) согласно документации
-                        # Сохраняем для обратной совместимости и как id, и как key_id
-                        return {
-                            'id': key_id,
-                            'key_id': key_id,  # Добавляем key_id для соответствия документации
-                            'uuid': uuid_value,
-                            'name': email,
-                            'created_at': result.get('created_at'),
-                            'is_active': result.get('is_active', True),
-                            'port': port,  # Порт из ответа API
-                            'short_id': short_id,  # Short ID из ответа API (НЕ генерируем самостоятельно!)
-                            'sni': sni,  # SNI из ответа API
-                            'client_config': client_config  # Готовый VLESS URL из /api/keys/{key_id}/link (РЕКОМЕНДУЕТСЯ)
-                        }
-                    except Exception as parse_error:
-                        raise Exception(f"Failed to parse V2Ray API response: {parse_error} - Response: {response_text}")
-                else:
-                    raise Exception(f"V2Ray API error: {response.status} - {response_text}")
-                        
+                            # API возвращает key_id (integer) согласно документации
+                            # Сохраняем для обратной совместимости и как id, и как key_id
+                            return {
+                                'id': key_id,
+                                'key_id': key_id,  # Добавляем key_id для соответствия документации
+                                'uuid': uuid_value,
+                                'name': email,
+                                'created_at': result.get('created_at'),
+                                'is_active': result.get('is_active', True),
+                                'port': port,  # Порт из ответа API
+                                'short_id': short_id,  # Short ID из ответа API (НЕ генерируем самостоятельно!)
+                                'sni': sni,  # SNI из ответа API
+                                'client_config': client_config  # Готовый VLESS URL из /api/keys/{key_id}/link (РЕКОМЕНДУЕТСЯ)
+                            }
+                        except Exception as parse_error:
+                            raise Exception(f"Failed to parse V2Ray API response: {parse_error} - Response: {response_text}")
+                    elif response.status in (502, 503, 504) and attempt < 2:
+                        logger.warning(
+                            f"V2Ray API returned {response.status}, retry {attempt + 1}/3 in 2s"
+                        )
+                        retry_after = True
+                    else:
+                        raise Exception(f"V2Ray API error: {response.status} - {response_text}")
+                if retry_after:
+                    await asyncio.sleep(2)
+                    continue
+                break
+
         except Exception as e:
             logger.error(f"Error creating V2Ray user: {e}")
             raise

@@ -22,6 +22,21 @@ router = APIRouter()
 DATABASE_PATH = settings.DATABASE_PATH
 
 
+def _get_active_subscription_counts_by_tariff(db_path: str) -> dict:
+    """Возвращает {tariff_id: count} активных подписок по тарифам."""
+    import time
+    from app.infra.sqlite_utils import open_connection
+    now = int(time.time())
+    with open_connection(db_path) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT tariff_id, COUNT(*) FROM subscriptions
+            WHERE is_active = 1 AND expires_at > ?
+            GROUP BY tariff_id
+        """, (now,))
+        return {row[0]: row[1] for row in c.fetchall() if row[0] is not None}
+
+
 @router.get("/tariffs")
 async def tariffs_page(request: Request, q: str | None = None):
     """Страница списка тарифов"""
@@ -30,9 +45,11 @@ async def tariffs_page(request: Request, q: str | None = None):
     
     search_query = q.strip() if q and q.strip() else None
     tariffs = TariffRepository(DATABASE_PATH).list_tariffs(search_query=search_query)
+    active_counts = _get_active_subscription_counts_by_tariff(DATABASE_PATH)
     return templates.TemplateResponse("tariffs.html", {
-        "request": request, 
+        "request": request,
         "tariffs": tariffs,
+        "active_counts": active_counts,
         "search_query": search_query or "",
         "csrf_token": get_csrf_token(request)
     })

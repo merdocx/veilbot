@@ -711,18 +711,8 @@ async def sync_all_keys_with_servers(
                                             skipped_count += 1
                                             skipped_reasons["no_vip"] += 1
                                     elif server_access_level == 'paid':
-                                        # Для 'paid': доступны VIP пользователи И пользователи с платными подписками (price > 0)
-                                        is_vip = user_repo.is_user_vip(user_id)
-                                        if is_vip:
-                                            missing_subscriptions.append(sub)
-                                        else:
-                                            # Проверяем, является ли текущая подписка платной (цена > 0)
-                                            is_paid_subscription = sub.get("price_rub", 0) > 0
-                                            if is_paid_subscription:
-                                                missing_subscriptions.append(sub)
-                                            else:
-                                                skipped_count += 1
-                                                skipped_reasons["no_active_subscription"] += 1
+                                        # Для 'paid': доступны VIP и пользователи с любой активной подпиской (выборка уже по активным)
+                                        missing_subscriptions.append(sub)
                             
                             if skipped_count > 0:
                                 logger.info(
@@ -1323,17 +1313,8 @@ async def sync_all_keys_with_servers(
                                     else:
                                         skipped_count += 1
                                 elif server_access_level == 'paid':
-                                    # Для 'paid': доступны VIP пользователи И пользователи с платными подписками (price > 0)
-                                    is_vip = user_repo.is_user_vip(user_id)
-                                    if is_vip:
-                                        missing_subscriptions.append(sub)
-                                    else:
-                                        # Проверяем, является ли текущая подписка платной (цена > 0)
-                                        is_paid_subscription = sub.get("price_rub", 0) > 0
-                                        if is_paid_subscription:
-                                            missing_subscriptions.append(sub)
-                                        else:
-                                            skipped_count += 1
+                                    # Для 'paid': доступны пользователи с любой активной подпиской (выборка уже по активным)
+                                    missing_subscriptions.append(sub)
                         
                         if skipped_count > 0:
                             logger.debug(f"    Сервер №8 ({server_name}): пропущено {skipped_count} подписок из-за access_level={server_access_level}")
