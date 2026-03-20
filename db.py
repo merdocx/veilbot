@@ -946,6 +946,51 @@ def migrate_add_subscription_id_to_keys():
     finally:
         conn.close()
 
+
+def migrate_add_traffic_baseline_to_v2ray_keys():
+    """Добавление колонки traffic_baseline_bytes в v2ray_keys для учета дельты трафика."""
+    import logging
+
+    logging.info("Миграция: добавление колонки traffic_baseline_bytes в v2ray_keys")
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    cursor = conn.cursor()
+    try:
+        # Проверяем, существует ли колонка traffic_baseline_bytes
+        cursor.execute("PRAGMA table_info(v2ray_keys)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if "traffic_baseline_bytes" in columns:
+            logging.info("Колонка traffic_baseline_bytes уже существует в v2ray_keys, пропускаем миграцию")
+            return
+
+        # Добавляем колонку с дефолтным значением 0
+        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_baseline_bytes INTEGER DEFAULT 0")
+        conn.commit()
+        logging.info("Колонка traffic_baseline_bytes добавлена в v2ray_keys")
+
+        # Инициализируем baseline текущим накопленным usage, чтобы начать отсчет от нуля
+        try:
+            cursor.execute(
+                "UPDATE v2ray_keys SET traffic_baseline_bytes = COALESCE(traffic_usage_bytes, 0)"
+            )
+            conn.commit()
+            logging.info(
+                "Колонка traffic_baseline_bytes инициализирована значениями traffic_usage_bytes для существующих ключей"
+            )
+        except Exception as init_err:
+            logging.error(
+                "Ошибка инициализации traffic_baseline_bytes из traffic_usage_bytes: %s",
+                init_err,
+                exc_info=True,
+            )
+            conn.rollback()
+    except Exception as e:
+        logging.error("Ошибка миграции добавления traffic_baseline_bytes в v2ray_keys: %s", e, exc_info=True)
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 def migrate_add_subscription_traffic_limits():
     """Добавление полей для контроля трафика подписок"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1559,6 +1604,7 @@ def _run_all_migrations():
     migrate_add_paid_subscriptions_to_dashboard_metrics()
     migrate_create_discrepancy_notifications_table()
     migrate_add_access_level_to_servers()
+    migrate_add_traffic_baseline_to_v2ray_keys()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

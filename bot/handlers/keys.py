@@ -9,7 +9,7 @@ from config import PROTOCOLS
 from vpn_protocols import format_duration
 from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
-from app.repositories.subscription_repository import SubscriptionRepository
+from bot.services.subscription_service import SubscriptionService
 
 def _format_bytes_short(num_bytes: Optional[float]) -> str:
     """Форматирование байт в читаемый вид."""
@@ -143,14 +143,11 @@ async def handle_my_keys_btn(message: types.Message):
         time_info = f"⏳ Осталось времени: {remaining_str} (до {expiry_date})"
         
         # Получаем информацию о трафике
-        repo = SubscriptionRepository()
-        traffic_usage_bytes = repo.get_subscription_traffic_sum(subscription_info['id'])
-        traffic_limit_bytes = repo.get_subscription_traffic_limit(subscription_info['id'])
+        traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_info['id'])
         
         # Форматируем информацию о трафике
-        if traffic_limit_bytes and traffic_limit_bytes > 0:
-            remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
-            remaining_traffic_formatted = _format_bytes_short(remaining_bytes)
+        if not traffic_state.is_unlimited:
+            remaining_traffic_formatted = _format_bytes_short(traffic_state.remaining_bytes)
             traffic_info = f"📊 Осталось трафика: {remaining_traffic_formatted}"
         else:
             traffic_info = "📊 Осталось трафика: без ограничений"
@@ -189,18 +186,15 @@ async def handle_my_keys_btn(message: types.Message):
         remaining_line = "📊 Осталось трафика: без ограничений"
         subscription_id = key.get('subscription_id')
         if subscription_id:
-            repo = SubscriptionRepository()
-            traffic_usage_bytes = repo.get_subscription_traffic_sum(subscription_id)
-            traffic_limit_bytes = repo.get_subscription_traffic_limit(subscription_id)
+            traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_id)
             
-            if traffic_limit_bytes and traffic_limit_bytes > 0:
-                remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
+            if not traffic_state.is_unlimited:
                 remaining_line = (
-                    f"📊 Осталось трафика: {_format_bytes_short(remaining_bytes)} из "
-                    f"{_format_bytes_short(traffic_limit_bytes)}"
+                    f"📊 Осталось трафика: {_format_bytes_short(traffic_state.remaining_bytes)} из "
+                    f"{_format_bytes_short(traffic_state.limit_bytes)}"
                 )
-            elif traffic_usage_bytes:
-                remaining_line = f"📊 Израсходовано: {_format_bytes_short(traffic_usage_bytes)}"
+            elif traffic_state.usage_bytes:
+                remaining_line = f"📊 Израсходовано: {_format_bytes_short(traffic_state.usage_bytes)}"
         
         # Получаем ссылки на приложения в зависимости от протокола
         if key['protocol'] == 'outline':

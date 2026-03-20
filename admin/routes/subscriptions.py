@@ -551,26 +551,25 @@ async def edit_subscription_route(request: Request, subscription_id: int):
                 elif expires_at > 0 and now_ts >= expires_at:
                     lifetime_progress = 1.0
                 
-                # Формируем traffic_info
-                traffic_usage_bytes = subscription_repo.get_subscription_traffic_sum(sub_id)
-                traffic_limit_bytes = subscription_repo.get_subscription_traffic_limit(sub_id)
+                # Формируем traffic_info через единый сервис трафика
+                traffic_state = SubscriptionService().get_subscription_traffic_state(sub_id)
 
-                traffic_display = _format_bytes(traffic_usage_bytes) if traffic_usage_bytes is not None else "—"
-                traffic_limit_display = _format_bytes(traffic_limit_bytes) if traffic_limit_bytes and traffic_limit_bytes > 0 else "—"
+                traffic_display = _format_bytes(traffic_state.usage_bytes) if traffic_state.usage_bytes is not None else "—"
+                traffic_limit_display = _format_bytes(traffic_state.limit_bytes) if traffic_state.limit_bytes and traffic_state.limit_bytes > 0 else "—"
 
                 effective_limit_mb = None
-                if traffic_limit_bytes and traffic_limit_bytes > 0:
+                if traffic_state.limit_bytes and traffic_state.limit_bytes > 0:
                     try:
-                        effective_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
+                        effective_limit_mb = int(traffic_state.limit_bytes / (1024 * 1024))
                     except (TypeError, ValueError, OverflowError):
                         effective_limit_mb = None
 
                 usage_percent = None
                 over_limit = False
-                if traffic_usage_bytes is not None and traffic_limit_bytes and traffic_limit_bytes > 0:
+                if traffic_state.limit_bytes and traffic_state.limit_bytes > 0:
                     try:
-                        usage_percent = _clamp(traffic_usage_bytes / traffic_limit_bytes, 0.0, 1.0)
-                        over_limit = traffic_usage_bytes > traffic_limit_bytes
+                        usage_percent = _clamp(traffic_state.usage_bytes / traffic_state.limit_bytes, 0.0, 1.0)
+                        over_limit = traffic_state.usage_bytes > traffic_state.limit_bytes
                     except (TypeError, ValueError):
                         pass
 

@@ -1475,6 +1475,9 @@ async def wait_for_payment_with_protocol(
                                 # Статус уже изменился другим процессом
                                 logging.info(f"Payment {payment_id} status already changed (not pending), skipping")
                                 return
+                            # КРИТИЧНО: Коммитим сразу, чтобы process_subscription_purchase (отдельное соединение)
+                            # увидел статус paid. Без этого он видит pending и возвращает ошибку.
+                            cursor.connection.commit()
                         
                         payment_user_id = payment_data[1]
                         email = payment_data[2]
@@ -1844,6 +1847,9 @@ async def wait_for_crypto_payment(
                         
                         if payment_status != "paid":
                             cursor.execute("UPDATE payments SET status = 'paid' WHERE payment_id = ?", (str(invoice_id),))
+                            # КРИТИЧНО: Коммитим сразу, чтобы process_subscription_purchase (отдельное соединение)
+                            # увидел статус paid. Без этого он видит pending и возвращает ошибку.
+                            cursor.connection.commit()
                         
                         payment_user_id = payment_data[1]
                         email = payment_data[2] if payment_data[2] else None
@@ -1931,9 +1937,76 @@ async def wait_for_crypto_payment(
                                 # Платеж уже помечен как completed в SubscriptionPurchaseService
                                 # Уведомление уже отправлено, не отправляем повторно
                             else:
+                                # КРИТИЧНО: Проверяем, действительно ли подписка не создана перед отправкой ошибки
+                                # Если подписка уже создана, но уведомление не отправлено - это не критическая ошибка,
+                                # фоновая задача повторит отправку уведомления
+                                subscription_exists = False
+                                with get_db_cursor() as check_cursor:
+                                    check_cursor.execute(
+                                        """
+                                        SELECT id FROM subscriptions 
+                                        WHERE user_id = ? AND is_active = 1 
+                                        ORDER BY created_at DESC LIMIT 1
+                                        """,
+                                        (user_id,)
+                                    )
+                                    if check_cursor.fetchone():
+                                        subscription_exists = True
+                                
+                                if subscription_exists:
+                                    logging.warning(
+                                        f"Subscription purchase failed via wait_for_crypto_payment "
+                                        f"for crypto payment {invoice_id}, user {user_id}: {error_msg}, "
+                                        f"but subscription exists. Will retry notification via background task."
+                                    )
+                                    # Подписка создана, но уведомление не отправлено - фоновая задача повторит
+                                    # НЕ отправляем сообщение об ошибке пользователю
+                                else:
+                                    logging.error(
+                                        f"Failed to process subscription purchase via wait_for_crypto_payment "
+                                        f"for crypto payment {invoice_id}, user {user_id}: {error_msg}"
+                                    )
+                                    if message:
+                                        try:
+                                            await message.answer(
+                                                "❌ Произошла ошибка при создании подписки. Обратитесь в поддержку.",
+                                                reply_markup=main_menu
+                                            )
+                                        except Exception:
+                                            pass
+                                # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
+                        except Exception as exc:
+                            # КРИТИЧНО: Проверяем, действительно ли подписка не создана перед отправкой ошибки
+                            subscription_exists = False
+                            try:
+                                with get_db_cursor() as check_cursor:
+                                    check_cursor.execute(
+                                        """
+                                        SELECT id FROM subscriptions 
+                                        WHERE user_id = ? AND is_active = 1 
+                                        ORDER BY created_at DESC LIMIT 1
+                                        """,
+                                        (user_id,)
+                                    )
+                                    if check_cursor.fetchone():
+                                        subscription_exists = True
+                            except Exception:
+                                pass
+                            
+                            if subscription_exists:
+                                logging.warning(
+                                    f"Exception processing subscription purchase via wait_for_crypto_payment "
+                                    f"for crypto payment {invoice_id}, user {user_id}: {exc}, "
+                                    f"but subscription exists. Will retry notification via background task.",
+                                    exc_info=True
+                                )
+                                # Подписка создана, но произошла ошибка - фоновая задача повторит
+                                # НЕ отправляем сообщение об ошибке пользователю
+                            else:
                                 logging.error(
-                                    f"Failed to process subscription purchase via wait_for_crypto_payment "
-                                    f"for crypto payment {invoice_id}, user {user_id}: {error_msg}"
+                                    f"Exception processing subscription purchase via wait_for_crypto_payment "
+                                    f"for crypto payment {invoice_id}, user {user_id}: {exc}",
+                                    exc_info=True
                                 )
                                 if message:
                                     try:
@@ -1943,21 +2016,6 @@ async def wait_for_crypto_payment(
                                         )
                                     except Exception:
                                         pass
-                                # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
-                        except Exception as exc:
-                            logging.error(
-                                f"Exception processing subscription purchase via wait_for_crypto_payment "
-                                f"for crypto payment {invoice_id}, user {user_id}: {exc}",
-                                exc_info=True
-                            )
-                            if message:
-                                try:
-                                    await message.answer(
-                                        "❌ Произошла ошибка при создании подписки. Обратитесь в поддержку.",
-                                        reply_markup=main_menu
-                                    )
-                                except Exception:
-                                    pass
                             # НЕ помечаем платеж как completed при ошибке, чтобы повторить попытку
                     else:
                         # Логика продления: если for_renewal=True, функция create_new_key_flow_with_protocol

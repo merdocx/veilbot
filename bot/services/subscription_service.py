@@ -7,7 +7,7 @@ import base64
 import time
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, NamedTuple
 
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.infra.cache import SimpleCache
@@ -32,6 +32,20 @@ except Exception:  # pragma: no cover - fallback for startup issues/tests
 logger = logging.getLogger(__name__)
 
 BYTES_IN_GB = 1024 ** 3
+
+
+class SubscriptionTrafficState(NamedTuple):
+    """
+    Состояние трафика подписки.
+
+    Используется как единый формат для UI/бота/админки.
+    """
+
+    usage_bytes: int
+    limit_bytes: int
+    remaining_bytes: int
+    usage_percent: float
+    is_unlimited: bool
 
 # Признаки временной ошибки при вызове V2Ray API (retry при создании ключа)
 def _is_retryable_key_error(exc: BaseException) -> bool:
@@ -263,6 +277,36 @@ def _insert_v2ray_key_for_subscription(
 class SubscriptionService:
     def __init__(self, db_path: Optional[str] = None):
         self.repository = SubscriptionRepository(db_path)
+
+    def get_subscription_traffic_state(self, subscription_id: int) -> SubscriptionTrafficState:
+        """
+        Вернуть полное состояние трафика подписки.
+
+        Основано на агрегированном usage по ключам (v2ray_keys.traffic_usage_bytes),
+        который обновляется как max(0, total_bytes - traffic_baseline_bytes) в фоновой задаче.
+        """
+        usage_bytes = self.repository.get_subscription_traffic_sum(subscription_id)
+        limit_bytes = self.repository.get_subscription_traffic_limit(subscription_id)
+
+        is_unlimited = limit_bytes == 0
+        if is_unlimited:
+            remaining_bytes = 0
+            usage_percent = 0.0
+        else:
+            remaining_bytes = max(0, limit_bytes - (usage_bytes or 0))
+            usage_percent = (
+                min(100.0, max(0.0, (usage_bytes / limit_bytes) * 100.0))
+                if limit_bytes > 0
+                else 0.0
+            )
+
+        return SubscriptionTrafficState(
+            usage_bytes=int(usage_bytes or 0),
+            limit_bytes=int(limit_bytes or 0),
+            remaining_bytes=int(remaining_bytes),
+            usage_percent=float(usage_percent),
+            is_unlimited=is_unlimited,
+        )
 
     async def generate_subscription_content(self, token: str) -> Optional[str]:
         package = await self.generate_subscription_package(token)
@@ -756,7 +800,7 @@ class SubscriptionService:
             
             await self.repository.extend_subscription_async(existing_id, new_expires_at)
             
-            # Продлеваем все ключи подписки на серверах (v2ray и outline)
+            # Продлеваем все ключи подписки на серверах (v2ray и outline — только логирование для legacy Outline)
             # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
             # Это гарантирует, что при продлении подписки все ключи будут активны
             with get_db_cursor(commit=True) as cursor:
@@ -767,26 +811,25 @@ class SubscriptionService:
                 v2ray_keys_extended = cursor.fetchone()[0] or 0
                 cursor.execute("SELECT COUNT(*) FROM keys WHERE subscription_id = ? AND protocol = 'outline'", (existing_id,))
                 outline_keys_extended = cursor.fetchone()[0] or 0
-                keys_extended = v2ray_keys_extended + outline_keys_extended
                 logger.info(
                     f"Extended {v2ray_keys_extended} V2Ray keys and {outline_keys_extended} Outline keys "
                     f"for subscription {existing_id} to {new_expires_at}"
                 )
             
-            # Если ключей нет, создаем их на всех активных серверах
+            # Если нет V2Ray ключей, создаём их на всех активных V2Ray серверах (Outline больше не выдаём)
             created_keys = 0
             failed_servers = []
-            if keys_extended == 0:
+            if v2ray_keys_extended == 0:
                 logger.info(
-                    f"No keys found for subscription {existing_id}, creating keys on all active servers"
+                    f"No V2Ray keys for subscription {existing_id}, creating keys on all active V2Ray servers"
                 )
                 with get_db_cursor() as cursor:
                     cursor.execute(
                         """
                         SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256, COALESCE(access_level, 'all') as access_level
                         FROM servers
-                        WHERE active = 1 AND (protocol = 'v2ray' OR protocol = 'outline')
-                        ORDER BY protocol, id
+                        WHERE active = 1 AND protocol = 'v2ray'
+                        ORDER BY id
                         """,
                     )
                     servers_raw = cursor.fetchall()
@@ -815,146 +858,94 @@ class SubscriptionService:
                 for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in servers:
                     protocol_client = None
                     v2ray_uuid = None
-                    outline_key_id = None
                     try:
                         # Генерация email для ключа
                         key_email = f"{user_id}_subscription_{existing_id}@veilbot.com"
 
-                        if protocol == 'v2ray':
-                            # Создание ключа через V2Ray API с названием сервера
-                            server_config = {
-                                'api_url': api_url,
-                                'api_key': api_key,
-                                'domain': domain,
-                            }
-                            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                            # Передаем название сервера вместо email для name в V2Ray API
-                            user_data = await protocol_client.create_user(key_email, name=server_name)
+                        # Создание ключа через V2Ray API с названием сервера
+                        server_config = {
+                            'api_url': api_url,
+                            'api_key': api_key,
+                            'domain': domain,
+                        }
+                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                        user_data = await protocol_client.create_user(key_email, name=server_name)
 
-                            if not user_data or not user_data.get('uuid'):
-                                raise Exception("Failed to create user on V2Ray server")
+                        if not user_data or not user_data.get('uuid'):
+                            raise Exception("Failed to create user on V2Ray server")
 
-                            v2ray_uuid = user_data['uuid']
+                        v2ray_uuid = user_data['uuid']
 
-                            # Получение client_config
-                            # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
-                            client_config = user_data.get('client_config')
-                            if not client_config:
-                                # Если client_config нет в ответе, запрашиваем через get_user_config
-                                logger.debug(f"client_config not in create_user response, fetching via get_user_config")
-                                client_config = await protocol_client.get_user_config(
-                                    v2ray_uuid,
-                                    {
-                                        'domain': domain,
-                                        'port': 443,
-                                        'email': key_email,
-                                    },
-                                )
-
-                            # Извлекаем VLESS URL из конфигурации
-                            if client_config and 'vless://' in client_config:
-                                lines = client_config.split('\n')
-                                for line in lines:
-                                    if line.strip().startswith('vless://'):
-                                        client_config = line.strip()
-                                        break
-
-                            # Сохранение V2Ray ключа в БД
-                            with get_db_cursor(commit=True) as cursor:
-                                cursor.connection.execute("PRAGMA foreign_keys = OFF")
-                                try:
-                                    cursor.execute(
-                                        """
-                                        INSERT INTO v2ray_keys 
-                                        (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                        """,
-                                        (
-                                            server_id,
-                                            user_id,
-                                            v2ray_uuid,
-                                            key_email,
-                                            now,
-                                            tariff_id,
-                                            client_config,
-                                            existing_id,
-                                        ),
-                                    )
-                                finally:
-                                    cursor.connection.execute("PRAGMA foreign_keys = ON")
-                        
-                        elif protocol == 'outline':
-                            # Создание ключа через Outline API
-                            server_config = {
-                                'api_url': api_url,
-                                'cert_sha256': cert_sha256,
-                            }
-                            protocol_client = ProtocolFactory.create_protocol('outline', server_config)
-                            user_data = await protocol_client.create_user(key_email)
-
-                            if not user_data or not user_data.get('id'):
-                                raise Exception("Failed to create user on Outline server")
-
-                            outline_key_id = user_data['id']
-                            access_url = user_data['accessUrl']
-
-                            # Сохранение Outline ключа в БД
-                            with get_db_cursor(commit=True) as cursor:
-                                cursor.connection.execute("PRAGMA foreign_keys = OFF")
-                                try:
-                                    # ВАЖНО: expiry_at удалено из keys - срок действия берется из subscriptions
-                                    # ВАЖНО: traffic_limit_mb не устанавливается для ключей с subscription_id - лимит берется из подписки
-                                    cursor.execute(
-                                        """
-                                        INSERT INTO keys 
-                                        (server_id, user_id, access_url, traffic_limit_mb, notified, key_id, created_at, email, tariff_id, protocol, subscription_id)
-                                        VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
-                                        """,
-                                        (
-                                            server_id,
-                                            user_id,
-                                            access_url,
-                                            outline_key_id,
-                                            now,
-                                            key_email,
-                                            tariff_id,
-                                            'outline',
-                                            existing_id,
-                                        ),
-                                    )
-                                finally:
-                                    cursor.connection.execute("PRAGMA foreign_keys = ON")
-                        else:
-                            logger.warning(
-                                f"Unknown protocol {protocol} for server {server_id}, skipping"
+                        # Получение client_config
+                        client_config = user_data.get('client_config')
+                        if not client_config:
+                            logger.debug(
+                                "client_config not in create_user response, fetching via get_user_config"
                             )
-                            continue
+                            client_config = await protocol_client.get_user_config(
+                                v2ray_uuid,
+                                {
+                                    'domain': domain,
+                                    'port': 443,
+                                    'email': key_email,
+                                },
+                            )
+
+                        # Извлекаем VLESS URL из конфигурации
+                        if client_config and 'vless://' in client_config:
+                            lines = client_config.split('\n')
+                            for line in lines:
+                                if line.strip().startswith('vless://'):
+                                    client_config = line.strip()
+                                    break
+
+                        # Сохранение V2Ray ключа в БД
+                        with get_db_cursor(commit=True) as cursor:
+                            cursor.connection.execute("PRAGMA foreign_keys = OFF")
+                            try:
+                                cursor.execute(
+                                    """
+                                    INSERT INTO v2ray_keys 
+                                    (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        server_id,
+                                        user_id,
+                                        v2ray_uuid,
+                                        key_email,
+                                        now,
+                                        tariff_id,
+                                        client_config,
+                                        existing_id,
+                                    ),
+                                )
+                            finally:
+                                cursor.connection.execute("PRAGMA foreign_keys = ON")
 
                         created_keys += 1
                         logger.info(
-                            f"Created {protocol} key for subscription {existing_id} on server {server_id}"
+                            f"Created v2ray key for subscription {existing_id} on server {server_id}"
                         )
                         if protocol_client:
                             await protocol_client.close()
 
                     except Exception as e:
                         logger.error(
-                            f"Failed to create {protocol} key for subscription {existing_id} "
+                            f"Failed to create v2ray key for subscription {existing_id} "
                             f"on server {server_id}: {e}",
                             exc_info=True,
                         )
-                        # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
                         if protocol_client:
                             try:
-                                if protocol == 'v2ray' and v2ray_uuid:
+                                if v2ray_uuid:
                                     await protocol_client.delete_user(v2ray_uuid)
-                                elif protocol == 'outline' and outline_key_id:
-                                    await protocol_client.delete_user(outline_key_id)
                                 await protocol_client.close()
                             except Exception as cleanup_error:
                                 logger.error(f"Failed to cleanup orphaned key: {cleanup_error}")
                         failed_servers.append(server_id)
             
+            keys_extended = v2ray_keys_extended + outline_keys_extended
             logger.info(
                 f"Extended existing subscription {existing_id} for user {user_id}: "
                 f"{existing_expires_at} -> {new_expires_at} (+{duration_sec} sec), "

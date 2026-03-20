@@ -15,17 +15,22 @@ def _reset_subscription_traffic_sync_db(subscription_id: int) -> None:
     """Синхронное обновление трафика в БД (вызывать из executor, чтобы не блокировать loop)."""
     try:
         with get_db_cursor(commit=True) as cursor:
+            # Сдвигаем baseline на текущий накопленный трафик и обнуляем usage.
+            # Это позволяет считать трафик как дельту total_bytes - baseline,
+            # даже если API V2Ray не обнуляет счетчик трафика.
             cursor.execute(
                 """
                 UPDATE v2ray_keys
-                SET traffic_usage_bytes = 0
+                SET traffic_baseline_bytes = COALESCE(traffic_baseline_bytes, 0) + COALESCE(traffic_usage_bytes, 0),
+                    traffic_usage_bytes = 0
                 WHERE subscription_id = ?
                 """,
-                (subscription_id,)
+                (subscription_id,),
             )
             keys_updated = cursor.rowcount
             logger.info(
-                "[TRAFFIC RESET] Updated traffic_usage_bytes to 0 for %s keys in DB (all keys, regardless of server reset status)",
+                "[TRAFFIC RESET] Updated traffic_baseline_bytes and zeroed traffic_usage_bytes for %s keys in DB "
+                "(all keys, regardless of server reset status)",
                 keys_updated,
             )
     except Exception as e:

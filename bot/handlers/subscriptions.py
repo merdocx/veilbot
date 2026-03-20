@@ -25,7 +25,6 @@ from bot.payment_messages import (
 )
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService
-from app.repositories.subscription_repository import SubscriptionRepository
 from vpn_protocols import format_duration
 from validators import input_validator, ValidationError, is_valid_email
 
@@ -55,15 +54,12 @@ async def format_subscription_info(subscription_data: tuple, server_count: int =
     
     subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
     
-    # Получаем информацию о трафике
-    repo = SubscriptionRepository()
-    traffic_usage_bytes = repo.get_subscription_traffic_sum(subscription_id)
-    traffic_limit_bytes = repo.get_subscription_traffic_limit(subscription_id)
+    # Получаем информацию о трафике через единый сервис
+    traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_id)
     
     # Форматируем информацию о трафике
-    if traffic_limit_bytes and traffic_limit_bytes > 0:
-        remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
-        remaining_traffic_formatted = format_bytes(remaining_bytes)
+    if not traffic_state.is_unlimited:
+        remaining_traffic_formatted = format_bytes(traffic_state.remaining_bytes)
         traffic_info = f"📊 Осталось трафика: {remaining_traffic_formatted}"
     else:
         traffic_info = "📊 Осталось трафика: без ограничений"
@@ -118,15 +114,12 @@ async def format_subscription_short_info(subscription_data: tuple) -> str:
     remaining_str = format_duration(remaining_time)
     time_info = f"⏳ Осталось времени: {remaining_str} (до {expiry_date})"
     
-    # Получаем информацию о трафике
-    repo = SubscriptionRepository()
-    traffic_usage_bytes = repo.get_subscription_traffic_sum(subscription_id)
-    traffic_limit_bytes = repo.get_subscription_traffic_limit(subscription_id)
+    # Получаем информацию о трафике через единый сервис
+    traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_id)
     
     # Форматируем информацию о трафике
-    if traffic_limit_bytes and traffic_limit_bytes > 0:
-        remaining_bytes = max(0, traffic_limit_bytes - (traffic_usage_bytes or 0))
-        remaining_traffic_formatted = format_bytes(remaining_bytes)
+    if not traffic_state.is_unlimited:
+        remaining_traffic_formatted = format_bytes(traffic_state.remaining_bytes)
         traffic_info = f"📊 Осталось трафика: {remaining_traffic_formatted}"
     else:
         traffic_info = "📊 Осталось трафика: без ограничений"

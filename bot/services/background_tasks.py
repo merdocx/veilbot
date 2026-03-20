@@ -156,6 +156,7 @@ async def auto_delete_expired_keys() -> None:
             v2ray_deleted = 0
             for _, v2ray_uuid, api_url, api_key in expired_v2ray_keys:
                 if v2ray_uuid and api_url and api_key:
+                    protocol_client = None
                     try:
                         from vpn_protocols import V2RayProtocol
 
@@ -165,6 +166,13 @@ async def auto_delete_expired_keys() -> None:
                         logging.warning(
                             "Failed to delete V2Ray key %s from server: %s", v2ray_uuid, exc
                         )
+                    finally:
+                        if protocol_client:
+                            try:
+                                await protocol_client.close()
+                            except Exception:
+                                # Best-effort close; не ломаем периодическую задачу из-за ошибки закрытия
+                                pass
 
             try:
                 with safe_foreign_keys_off(cursor):
@@ -957,17 +965,21 @@ async def monitor_subscription_traffic_limits() -> None:
         subscriptions = []
         traffic_sums = {}
         
-        # Получить все активные (не истекшие) ключи V2Ray (sync DB — в executor, чтобы не блокировать loop)
+        # Получить все активные (не истекшие) ключи V2Ray (sync DB — в executor, чтобы не блокировать loop).
+        # Здесь формируется единственный источник правды по usage: traffic_usage_bytes в v2ray_keys
+        # всегда интерпретируется как max(0, total_bytes - traffic_baseline_bytes).
         def read_active_keys():
             with get_db_cursor() as cursor:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT 
                         k.id,
                         k.v2ray_uuid,
                         k.server_id,
                         k.subscription_id,
                         IFNULL(s.api_url, '') AS api_url,
-                        IFNULL(s.api_key, '') AS api_key
+                        IFNULL(s.api_key, '') AS api_key,
+                        IFNULL(k.traffic_baseline_bytes, 0) AS traffic_baseline_bytes
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     JOIN subscriptions sub ON k.subscription_id = sub.id
@@ -975,7 +987,9 @@ async def monitor_subscription_traffic_limits() -> None:
                       AND s.protocol = 'v2ray'
                       AND s.api_url IS NOT NULL
                       AND s.api_key IS NOT NULL
-                """, (now,))
+                    """,
+                    (now,),
+                )
                 return cursor.fetchall()
         
         active_keys = await asyncio.to_thread(
@@ -1003,7 +1017,9 @@ async def monitor_subscription_traffic_limits() -> None:
         tasks_with_keys: list[tuple[int, asyncio.Task]] = []
         
         for key_row in active_keys:
-            key_id, v2ray_uuid, server_id, subscription_id, api_url, api_key = key_row
+            # В выборке 7 столбцов (включая traffic_baseline_bytes), поэтому распаковываем все,
+            # даже если baseline напрямую здесь не используется.
+            key_id, v2ray_uuid, server_id, subscription_id, api_url, api_key, _traffic_baseline_bytes = key_row
             if not api_url or not api_key:
                 logging.warning(
                     "[TRAFFIC] Missing API credentials for server %s, skipping key %s",
@@ -1043,17 +1059,33 @@ async def monitor_subscription_traffic_limits() -> None:
                     subscription_ids_in_reset_window,
                 )
         
+        # Хелпер для расчёта эффективного usage с учётом baseline и окна защиты.
+        def _compute_effective_usage(subscription_id: int, api_value: int, baseline_bytes: int) -> int:
+            """
+            Рассчитывает эффективный usage ключа:
+            - сначала дельта max(0, api_value - baseline_bytes),
+            - затем, если подписка в окне после сброса и дельта слишком большая, считает такое значение устаревшим и возвращает 0.
+            """
+            effective_raw = max(0, api_value - baseline_bytes)
+            if (
+                subscription_id in subscription_ids_in_reset_window
+                and effective_raw > TRAFFIC_RESET_STALE_THRESHOLD_BYTES
+            ):
+                return 0
+            return effective_raw
+
         # Шаг 3: Выполняем все записи в БД (одна транзакция для всех обновлений ключей)
         key_updates = []
         for key_row in active_keys:
-            key_id, subscription_id = key_row[0], key_row[3]
+            key_id = key_row[0]
+            subscription_id = key_row[3]
+            baseline_bytes = key_row[6] if len(key_row) > 6 else 0
             api_value = usage_map.get(key_id) if key_id in usage_map else None
             if api_value is None:
                 continue
-            if subscription_id in subscription_ids_in_reset_window and api_value > TRAFFIC_RESET_STALE_THRESHOLD_BYTES:
-                key_updates.append((0, key_id))
-            else:
-                key_updates.append((api_value, key_id))
+
+            effective = _compute_effective_usage(subscription_id, api_value, baseline_bytes)
+            key_updates.append((effective, key_id))
         
         logging.info(f"[TRAFFIC] Updating traffic for {len(key_updates)} keys")
         if key_updates:
@@ -1074,13 +1106,16 @@ async def monitor_subscription_traffic_limits() -> None:
         # Сумма трафика по подпискам из актуального usage_map (в окне после сброса — значения выше порога считаем устаревшими, иначе новый трафик)
         subscription_usage_from_api: Dict[int, int] = {}
         for key_row in active_keys:
-            key_id, subscription_id = key_row[0], key_row[3]
+            key_id = key_row[0]
+            subscription_id = key_row[3]
+            baseline_bytes = key_row[6] if len(key_row) > 6 else 0
             api_val = usage_map.get(key_id, 0)
-            if subscription_id in subscription_ids_in_reset_window and api_val > TRAFFIC_RESET_STALE_THRESHOLD_BYTES:
-                effective = 0
-            else:
-                effective = api_val
-            subscription_usage_from_api[subscription_id] = subscription_usage_from_api.get(subscription_id, 0) + effective
+
+            effective = _compute_effective_usage(subscription_id, api_val, baseline_bytes)
+
+            subscription_usage_from_api[subscription_id] = (
+                subscription_usage_from_api.get(subscription_id, 0) + effective
+            )
         
         # Проверить превышение лимитов только для подписок
         warn_notifications = []

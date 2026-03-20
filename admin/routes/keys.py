@@ -244,12 +244,11 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     traffic_limit_bytes: Optional[float] = None
     
     if subscription_id:
-        # Подписка: лимит хранится на уровне подписки
-        from app.repositories.subscription_repository import SubscriptionRepository
-        from app.settings import settings
-        sub_repo = SubscriptionRepository(settings.DATABASE_PATH)
-        traffic_limit_bytes = sub_repo.get_subscription_traffic_limit(subscription_id)
-        if traffic_limit_bytes and traffic_limit_bytes > 0:
+        # Подписка: лимит и использование берутся из единого сервиса трафика
+        from bot.services.subscription_service import SubscriptionService
+        traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_id)
+        traffic_limit_bytes = float(traffic_state.limit_bytes or 0)
+        if traffic_limit_bytes > 0:
             traffic_limit_mb = int(traffic_limit_bytes / (1024 * 1024))
     else:
         # Legacy-режим без подписки: используем лимит из traffic_limit_mb колонки
@@ -286,13 +285,15 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     over_limit_state = None
     if traffic_info["bytes"] is not None and traffic_limit_bytes:
         usage_percent = _clamp(traffic_info["bytes"] / traffic_limit_bytes, 0.0, 1.0)
-        # Для определения превышения лимита нужно суммировать трафик всех ключей подписки
-        # Здесь просто показываем использование текущего ключа
+        # Для определения превышения лимита нужно использовать usage подписки целиком,
+        # а не только usage конкретного ключа
         if subscription_id:
-            sub_repo = SubscriptionRepository(settings.DATABASE_PATH)
-            subscription_traffic_sum = sub_repo.get_subscription_traffic_sum(subscription_id)
-            if subscription_traffic_sum is not None:
-                over_limit = subscription_traffic_sum > traffic_limit_bytes
+            from bot.services.subscription_service import SubscriptionService
+            traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_id)
+            over_limit = (
+                traffic_state.limit_bytes > 0
+                and traffic_state.usage_bytes > traffic_state.limit_bytes
+            )
 
     expiry_remaining = _format_expiry_remaining(expiry_at, now_ts)
 

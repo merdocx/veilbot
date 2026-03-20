@@ -83,12 +83,13 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
             subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
             msg = (
                 f"✅ *Подписка успешно создана!*\n\n"
-                f"🔗 *Ссылка подписки:*\n"
+                f"🔗 *Ссылка подписки (коснитесь, чтобы скопировать):*\n"
                 f"`{subscription_url}`\n\n"
                 f"⏳ *Срок действия:* {format_duration(tariff.get('duration_sec', 0))}\n\n"
+                f"📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n\n"
                 f"💡 *Как использовать:*\n"
-                f"1. Откройте приложение V2Ray\n"
-                f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
+                f"1. Откройте приложение\n"
+                f"2. Нажмите \"+\" → \"Добавить из буфера\" или \"Импорт подписки\"\n"
                 f"3. Вставьте ссылку выше\n"
                 f"4. Все серверы будут добавлены автоматически\n\n"
                 f"📄 [Публичная оферта](https://veil-bot.ru/static/oferta.html)\n"
@@ -116,26 +117,6 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
                     reply_markup=main_menu,
                 )
 
-        outline_result = result.get("outline_key") or {}
-        outline_status = outline_result.get("status")
-        if outline_status == "issued" and outline_result.get("access_url"):
-            outline_tariff = outline_result.get("tariff") or tariff or {}
-            outline_msg = (
-                "🎁 *Также мы подготовили для вас запасной Outline ключ (потребуется скачать другое приложение):*\n\n"
-                f"{format_key_message_unified(outline_result['access_url'], 'outline', outline_tariff)}"
-            )
-            await message.answer(
-                outline_msg,
-                reply_markup=main_menu,
-                disable_web_page_preview=True,
-                parse_mode="Markdown",
-            )
-        elif outline_status == "no_server":
-            await message.answer(
-                "⚠️ Не удалось автоматически создать Outline ключ — нет доступных серверов. "
-                "Вы сможете получить его позже через «Получить доступ».",
-                reply_markup=main_menu,
-            )
     else:
         if status == "no_server":
             logging.info("No free V2Ray servers available for user %s", user_id)

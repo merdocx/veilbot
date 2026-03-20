@@ -1070,7 +1070,14 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def get_subscription_traffic_sum(self, subscription_id: int) -> int:
-        """Получить суммарный трафик всех ключей подписки"""
+        """
+        Получить суммарный трафик всех ключей подписки.
+
+        ВАЖНО: это единственный источник правды по использованному трафику подписки.
+        Значение основано на `v2ray_keys.traffic_usage_bytes`, которое обновляется
+        как `max(0, total_bytes - traffic_baseline_bytes)` в фоновой задаче
+        monitor_subscription_traffic_limits.
+        """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
