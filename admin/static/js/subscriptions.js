@@ -449,60 +449,60 @@
                 }
 
                 const stats = data.stats || {};
-                const totalKeys = stats.total_keys || 0;
-                const updated = stats.updated || 0;
-                const unchanged = stats.unchanged || 0;
-                const failed = stats.failed || 0;
                 const serversProcessed = stats.servers_processed || 0;
-                const missingPairs = stats.missing_pairs_total || 0;
-                const missingCreated = stats.missing_keys_created || 0;
-                const missingFailed = stats.missing_keys_failed || 0;
-                const missingServers = stats.missing_keys_servers || 0;
+                const serversUnavailable = stats.servers_unavailable || 0;
+                const keysDeletedDb = stats.keys_deleted_from_db || 0;
+                const keysDeletedRemote = stats.keys_deleted_from_servers || 0;
+                const v2rayCreated = stats.v2ray_keys_created || 0;
+                const v2rayConfigsUpdated = stats.v2ray_configs_updated || 0;
+                const errorCount = stats.errors || 0;
+                const durationSec = stats.duration_seconds != null ? Number(stats.duration_seconds) : null;
                 const errorDetails = stats.error_details || [];
-                
-                // Формируем детальное сообщение об успешной синхронизации
-                let message = '✅ Синхронизация ключей завершена успешно! ';
-                message += `Обработано ключей: ${totalKeys}, обновлено: ${updated}, без изменений: ${unchanged}`;
-                if (failed > 0) {
-                    message += `, ошибок: ${failed}`;
+                const dryRun = data.dry_run === true;
+
+                let message = dryRun
+                    ? '🔍 Режим проверки (dry run): изменения на серверах и в БД не применялись.\n\n'
+                    : '';
+                message += '✅ Синхронизация ключей завершена.\n';
+                message += `Создано ключей: ${v2rayCreated}, обновлено VLESS-конфигов: ${v2rayConfigsUpdated}.\n`;
+                message += `Удалено из БД: ${keysDeletedDb}, с серверов (API): ${keysDeletedRemote}.\n`;
+                message += `Серверов в этапе создания (обработано): ${serversProcessed}`;
+                if (serversUnavailable > 0) {
+                    message += `, недоступных по БД (inactive): ${serversUnavailable}`;
                 }
-                message += `. Серверов: ${serversProcessed}`;
-                if (missingPairs > 0) {
-                    message += `. Недостающих ключей найдено: ${missingPairs}, создано: ${missingCreated}`;
-                    if (missingFailed > 0) {
-                        message += `, ошибок при создании: ${missingFailed}`;
-                    }
-                    if (missingServers > 0) {
-                        message += `. Серверов с недостающими ключами: ${missingServers}`;
-                    }
+                if (durationSec != null && !Number.isNaN(durationSec)) {
+                    message += `.\nВремя: ${durationSec.toFixed(1)} с`;
                 }
-                
-                // Добавляем детали ошибок, если они есть
-                if (failed > 0 && errorDetails.length > 0) {
-                    message += '\n\n❌ Детали ошибок:\n';
-                    errorDetails.slice(0, 10).forEach((error, index) => {
-                        const keyInfo = error.key_id ? `Ключ #${error.key_id}` : 'Неизвестный ключ';
-                        const uuidInfo = error.v2ray_uuid ? ` (UUID: ${error.v2ray_uuid.substring(0, 8)}...)` : '';
-                        const serverInfo = error.server_name ? ` [${error.server_name}]` : '';
-                        message += `${index + 1}. ${keyInfo}${uuidInfo}${serverInfo}: ${error.error}\n`;
+                if (errorCount > 0) {
+                    message += `.\n⚠️ Ошибок при обработке: ${errorCount}`;
+                }
+
+                if (errorDetails.length > 0) {
+                    message += '\n\nДетали (до 10):\n';
+                    errorDetails.slice(0, 10).forEach((err, index) => {
+                        const typeInfo = err.type ? `[${err.type}] ` : '';
+                        const sid = err.server_id != null ? `сервер #${err.server_id}` : '';
+                        const sub = err.subscription_id != null ? `подписка #${err.subscription_id}` : '';
+                        const scope = [sid, sub].filter(Boolean).join(', ');
+                        const text = err.error || err.message || JSON.stringify(err);
+                        message += `${index + 1}. ${typeInfo}${scope ? `${scope}: ` : ''}${text}\n`;
                     });
                     if (errorDetails.length > 10) {
-                        message += `... и еще ${errorDetails.length - 10} ошибок`;
+                        message += `… и ещё ${errorDetails.length - 10} записей (см. логи сервера).`;
                     }
                 }
-                
-                // Показываем уведомление с увеличенным временем отображения
-                const notificationTime = failed > 0 ? 15000 : 5000; // Больше времени, если есть ошибки
-                notify(message, failed > 0 ? 'warning' : 'success', notificationTime);
+
+                const notificationTime = errorCount > 0 ? 15000 : 6000;
+                notify(message, errorCount > 0 ? 'warning' : 'success', notificationTime);
                 
                 // Восстанавливаем кнопку с индикацией успеха
                 syncButton.innerHTML = '<span class="material-icons icon-small">check_circle</span> Синхронизировано';
                 syncButton.classList.add('btn-success');
                 
-                // Обновляем страницу через 3 секунды, чтобы пользователь успел увидеть уведомление
+                const reloadDelay = (errorCount > 0 || errorDetails.length > 0) ? 8500 : 4000;
                 setTimeout(() => {
                     window.location.reload();
-                }, 3000);
+                }, reloadDelay);
             } catch (error) {
                 console.error('[VeilBot][subscriptions] Sync keys error:', error);
                 let errorMessage = 'Неизвестная ошибка';

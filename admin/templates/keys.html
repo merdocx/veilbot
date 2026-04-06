@@ -104,12 +104,6 @@
                     </td>
                     <td class="keys-table__cell keys-table__cell--server">
                         <div class="cell-primary">{{ key.server or '—' }}</div>
-                        <div class="cell-secondary">
-                            <span class="protocol-badge {{ key.protocol_badge_class }}" title="{{ key.protocol_label }}">
-                                <span class="material-icons icon-small">{{ key.protocol_icon }}</span>
-                                {{ key.protocol_label }}
-                            </span>
-                        </div>
                     </td>
                     <td class="keys-table__cell keys-table__cell--created">
                         <div class="cell-primary" data-field="created-display">{{ key.created_display }}</div>

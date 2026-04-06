@@ -5,7 +5,6 @@ import time
 from typing import Optional
 from aiogram import Dispatcher, types
 from app.infra.sqlite_utils import get_db_cursor
-from config import PROTOCOLS
 from vpn_protocols import format_duration
 from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
@@ -34,8 +33,6 @@ async def handle_my_keys_btn(message: types.Message):
     """
     user_id = message.from_user.id
     now = int(time.time())
-    
-    all_keys = []
     
     # Получаем активную подписку V2Ray
     subscription_info = None
@@ -86,39 +83,6 @@ async def handle_my_keys_btn(message: types.Message):
                 'server_count': server_count,
                 'traffic_limit': traffic_limit,
             }
-    
-    with get_db_cursor() as cursor:
-        # Отдельные V2Ray-ключи (vless), если есть сохранённый client_config
-        if subscription_info:
-            cursor.execute("""
-                SELECT k.client_config, COALESCE(sub.expires_at, 0) as expiry_at, s.country, k.subscription_id
-                FROM v2ray_keys k
-                JOIN servers s ON k.server_id = s.id
-                JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND sub.expires_at > ? AND k.subscription_id = ?
-                  AND k.client_config IS NOT NULL AND TRIM(k.client_config) != ''
-            """, (user_id, now, subscription_info['id']))
-        else:
-            cursor.execute("""
-                SELECT k.client_config, COALESCE(sub.expires_at, 0) as expiry_at, s.country, k.subscription_id
-                FROM v2ray_keys k
-                JOIN servers s ON k.server_id = s.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND (sub.expires_at > ? OR sub.expires_at IS NULL)
-                  AND k.client_config IS NOT NULL AND TRIM(k.client_config) != ''
-            """, (user_id, now))
-        v2ray_rows = cursor.fetchall()
-
-    for key_row in v2ray_rows:
-        client_config, exp, country, sub_id = key_row
-        all_keys.append({
-            'type': 'v2ray',
-            'config': client_config,
-            'expiry': exp,
-            'protocol': 'v2ray',
-            'country': country,
-            'subscription_id': sub_id,
-        })
 
     # Формируем сообщение
     msg = ""
@@ -157,49 +121,12 @@ async def handle_my_keys_btn(message: types.Message):
             f"3. Вставьте ссылку выше\n"
             f"4. Все серверы будут добавлены автоматически\n\n"
         )
-        
-        if all_keys:
-            msg += "─────────────────────\n\n"
-    
-    if not all_keys and not subscription_info:
+
+    if not subscription_info:
         main_menu = get_main_menu(user_id)
         await message.answer("У вас нет активных ключей.", reply_markup=main_menu)
         return
-    
-    if all_keys:
-        msg += "*Отдельные ключи серверов (V2Ray):*\n\n"
-    
-    for key in all_keys:
-        remaining_seconds = key['expiry'] - now
-        time_str = format_duration(remaining_seconds)
-        
-        protocol_info = PROTOCOLS['v2ray']
-        
-        # Вся информация о трафике берется из подписки
-        remaining_line = "📊 Осталось трафика: без ограничений"
-        subscription_id = key.get('subscription_id')
-        if subscription_id:
-            traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_id)
-            
-            if not traffic_state.is_unlimited:
-                remaining_line = (
-                    f"📊 Осталось трафика: {_format_bytes_short(traffic_state.remaining_bytes)} из "
-                    f"{_format_bytes_short(traffic_state.limit_bytes)}"
-                )
-            elif traffic_state.usage_bytes:
-                remaining_line = f"📊 Израсходовано: {_format_bytes_short(traffic_state.usage_bytes)}"
-        
-        app_links = "📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)"
-            
-        msg += (
-            f"{protocol_info['icon']} *{protocol_info['name']}*\n"
-            f"🌍 Страна: {key['country']}\n"
-            f"`{key['config']}`\n"
-            f"⏳ Осталось времени: {time_str}\n"
-            f"{remaining_line}\n"
-            f"{app_links}\n\n"
-        )
-    
+
     main_menu = get_main_menu(user_id)
     await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
 

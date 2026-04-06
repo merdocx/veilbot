@@ -8,6 +8,7 @@ import asyncio
 import logging
 import time
 import urllib.parse
+from collections import defaultdict
 from typing import List, Tuple, Dict, Any, Optional, Set
 
 # Добавляем корневую директорию проекта в путь
@@ -17,6 +18,7 @@ from app.infra.sqlite_utils import get_db_cursor
 from app.infra.foreign_keys import safe_foreign_keys_off
 from vpn_protocols import ProtocolFactory, normalize_vless_host, remove_fragment_from_vless
 from bot.services.subscription_service import invalidate_subscription_cache
+from bot.services.subscription_server_groups import iter_sync_work_items, pick_best_server_by_free_slots
 
 logging.basicConfig(
     level=logging.INFO,
@@ -128,6 +130,202 @@ async def check_server_availability(
         return False
 
 
+def _server_row_to_dict_for_pool(row: Tuple[Any, ...]) -> Dict[str, Any]:
+    """Строка SELECT servers (расширенная) -> dict для пула клиентов и pick_best."""
+    return {
+        "id": row[0],
+        "name": row[1] or f"Server #{row[0]}",
+        "protocol": row[2] or "v2ray",
+        "api_url": row[3],
+        "api_key": row[4],
+        "cert_sha256": row[5],
+        "domain": row[6],
+        "active": bool(row[7]),
+        "access_level": row[8] or "all",
+        "available_for_purchase": bool(row[9]) if len(row) > 9 else True,
+        "max_keys": int(row[10]) if len(row) > 10 and row[10] is not None else 0,
+        "subscription_group_id": (row[11] or "") if len(row) > 11 else "",
+    }
+
+
+async def dedupe_duplicate_subscription_group_keys(
+    *,
+    dry_run: bool,
+    server_scope_id: Optional[int],
+    servers_by_id: Dict[int, Dict[str, Any]],
+    client_pool: ServerClientPool,
+    api_semaphore: asyncio.Semaphore,
+    stats: Dict[str, Any],
+) -> None:
+    """
+    Если у одной подписки несколько V2Ray-ключей в одной subscription_group_id,
+    оставляем один — на сервере с максимумом свободных слотов (как при создании),
+    остальные удаляем с API и из БД.
+    """
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+            SELECT k.subscription_id,
+                   COALESCE(NULLIF(TRIM(s.subscription_group_id), ''), '') as gid,
+                   COUNT(*) as cnt
+            FROM v2ray_keys k
+            JOIN servers s ON k.server_id = s.id
+            WHERE k.subscription_id IS NOT NULL
+              AND COALESCE(NULLIF(TRIM(s.subscription_group_id), ''), '') != ''
+            GROUP BY k.subscription_id, gid
+            HAVING COUNT(*) > 1
+        """)
+        dup_groups = list(cursor.fetchall())
+
+    if not dup_groups:
+        logger.info("    Дубликатов по группам не найдено")
+        return
+
+    logger.info(f"    Найдено {len(dup_groups)} пар (подписка + группа) с лишними ключами")
+
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT server_id, COUNT(*) FROM v2ray_keys GROUP BY server_id")
+        key_counts: Dict[int, int] = {int(row[0]): int(row[1]) for row in cursor.fetchall()}
+
+    local_servers = dict(servers_by_id)
+
+    def get_server_dict(sid: int) -> Optional[Dict[str, Any]]:
+        if sid in local_servers:
+            return local_servers[sid]
+        with get_db_cursor() as cu:
+            cu.execute(
+                """
+                SELECT id, name, protocol, api_url, api_key, cert_sha256, domain,
+                       active, COALESCE(access_level, 'all') as access_level,
+                       COALESCE(available_for_purchase, 1) as available_for_purchase,
+                       max_keys,
+                       COALESCE(NULLIF(TRIM(subscription_group_id), ''), '') as subscription_group_id
+                FROM servers WHERE id = ?
+                """,
+                (sid,),
+            )
+            row = cu.fetchone()
+        if not row:
+            return None
+        d = _server_row_to_dict_for_pool(row)
+        local_servers[sid] = d
+        return d
+
+    tokens_cache: Dict[int, str] = {}
+
+    def get_subscription_token(subscription_id: int) -> Optional[str]:
+        if subscription_id in tokens_cache:
+            return tokens_cache[subscription_id]
+        with get_db_cursor() as cu:
+            cu.execute(
+                "SELECT subscription_token FROM subscriptions WHERE id = ?",
+                (subscription_id,),
+            )
+            r = cu.fetchone()
+        tok = (r[0] if r else None) or None
+        if tok:
+            tokens_cache[subscription_id] = tok
+        return tok
+
+    for sub_id, gid, _cnt in sorted(dup_groups, key=lambda x: (x[0], x[1])):
+        with get_db_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT k.id, k.server_id, k.v2ray_uuid
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                WHERE k.subscription_id = ?
+                  AND COALESCE(NULLIF(TRIM(s.subscription_group_id), ''), '') = ?
+                """,
+                (sub_id, gid),
+            )
+            key_rows = cursor.fetchall()
+
+        if server_scope_id is not None:
+            involved = {int(r[1]) for r in key_rows}
+            if server_scope_id not in involved:
+                continue
+
+        unique_server_ids = sorted({int(r[1]) for r in key_rows})
+        candidates: List[Dict[str, Any]] = []
+        for sid in unique_server_ids:
+            sd = get_server_dict(sid)
+            if sd:
+                candidates.append(sd)
+        if not candidates:
+            logger.warning(
+                f"    Подписка {sub_id}, группа {gid}: нет данных серверов — пропуск"
+            )
+            continue
+
+        keeper = pick_best_server_by_free_slots(
+            candidates,
+            get_id=lambda x: x["id"],
+            get_max_keys=lambda x: x.get("max_keys") or 0,
+            key_counts=key_counts,
+        )
+        if keeper is None:
+            continue
+        keeper_id = int(keeper["id"])
+
+        to_remove = [r for r in key_rows if int(r[1]) != keeper_id]
+        if not to_remove:
+            continue
+
+        logger.info(
+            f"    Подписка {sub_id}, группа «{gid}»: оставляем сервер #{keeper_id}, "
+            f"удаляем {len(to_remove)} дубликат(ов)"
+        )
+
+        if dry_run:
+            continue
+
+        by_srv: Dict[int, List[Tuple[Any, ...]]] = defaultdict(list)
+        for row in to_remove:
+            by_srv[int(row[1])].append(row)
+
+        for srv_id, rows in by_srv.items():
+            srv = get_server_dict(srv_id)
+            if not srv or (srv.get("protocol") or "").lower() != "v2ray":
+                continue
+            protocol_client = await client_pool.get_client(srv)
+            if not protocol_client:
+                continue
+
+            async def delete_dup(row: Tuple[Any, ...]) -> bool:
+                _kid, _sid, v2ray_uuid = row[0], row[1], row[2]
+                if not v2ray_uuid:
+                    return False
+                async with api_semaphore:
+                    try:
+                        return bool(await protocol_client.delete_user(v2ray_uuid.strip()))
+                    except Exception as e:
+                        logger.warning(f"      Не удалось удалить UUID на сервере #{srv_id}: {e}")
+                        return False
+
+            results = await asyncio.gather(
+                *[delete_dup(r) for r in rows],
+                return_exceptions=True,
+            )
+            deleted_ok = sum(1 for r in results if r is True)
+            stats["keys_deleted_from_servers"] += deleted_ok
+
+            key_ids = [int(r[0]) for r in rows]
+            placeholders = ",".join("?" * len(key_ids))
+            with get_db_cursor(commit=True) as cursor:
+                with safe_foreign_keys_off(cursor):
+                    cursor.execute(
+                        f"DELETE FROM v2ray_keys WHERE id IN ({placeholders})",
+                        key_ids,
+                    )
+                    stats["keys_deleted_from_db"] += cursor.rowcount
+
+            key_counts[srv_id] = max(0, key_counts.get(srv_id, 0) - len(rows))
+
+        tok = get_subscription_token(int(sub_id))
+        if tok:
+            invalidate_subscription_cache(tok)
+
+
 async def sync_all_keys_with_servers(
     dry_run: bool = False,
     server_id: Optional[int] = None,
@@ -143,7 +341,8 @@ async def sync_all_keys_with_servers(
     Алгоритм:
     1. Подготовка данных
     2. Удаление ключей для недоступных серверов (active = 0) при delete_inactive_server_keys=True
-    3. Синхронизация V2Ray (если include_v2ray=True): создание, удаление сирот, синхронизация VLESS.
+    3. Синхронизация V2Ray (если include_v2ray=True): дедупликация по группам серверов,
+       создание недостающих ключей, удаление сирот, синхронизация VLESS.
 
     Args:
         dry_run: Если True, только показывает что будет обновлено, не изменяет БД
@@ -188,7 +387,9 @@ async def sync_all_keys_with_servers(
             cursor.execute("""
                 SELECT id, name, protocol, api_url, api_key, cert_sha256, domain,
                        active, COALESCE(access_level, 'all') as access_level,
-                       COALESCE(available_for_purchase, 1) as available_for_purchase
+                       COALESCE(available_for_purchase, 1) as available_for_purchase,
+                       max_keys,
+                       COALESCE(NULLIF(TRIM(subscription_group_id), ''), '') as subscription_group_id
                 FROM servers
                 WHERE id = ?
             """, (server_id,))
@@ -196,7 +397,9 @@ async def sync_all_keys_with_servers(
             cursor.execute("""
                 SELECT id, name, protocol, api_url, api_key, cert_sha256, domain,
                        active, COALESCE(access_level, 'all') as access_level,
-                       COALESCE(available_for_purchase, 1) as available_for_purchase
+                       COALESCE(available_for_purchase, 1) as available_for_purchase,
+                       max_keys,
+                       COALESCE(NULLIF(TRIM(subscription_group_id), ''), '') as subscription_group_id
                 FROM servers
                 WHERE active = 1
             """)
@@ -215,6 +418,8 @@ async def sync_all_keys_with_servers(
             "active": bool(row[7]),
             "access_level": row[8] or 'all',
             "available_for_purchase": bool(row[9]) if len(row) > 9 else True,
+            "max_keys": int(row[10]) if len(row) > 10 and row[10] is not None else 0,
+            "subscription_group_id": (row[11] or "") if len(row) > 11 else "",
         })
     
     # Получаем активные подписки с информацией о тарифе (для проверки платности)
@@ -496,24 +701,74 @@ async def sync_all_keys_with_servers(
         if include_v2ray:
             logger.info("\n[ЭТАП 3] Синхронизация V2Ray ключей...")
             
-            # 3.1. Создание недостающих ключей (с проверкой access_level для каждого пользователя)
+            # 3.0 Дубликаты: несколько ключей одной подписки в одной группе серверов
+            logger.info("  [3.0] Дедупликация ключей по группам серверов...")
+            await dedupe_duplicate_subscription_group_keys(
+                dry_run=dry_run,
+                server_scope_id=server_id,
+                servers_by_id=servers_by_id,
+                client_pool=client_pool,
+                api_semaphore=api_semaphore,
+                stats=stats,
+            )
+            
+            # 3.1. Создание недостающих ключей (access_level + группы subscription_group_id)
             if create_missing:
                 logger.info("  [3.1] Создание недостающих ключей...")
                 
-                # Импортируем UserRepository для проверки доступности
                 from app.repositories.user_repository import UserRepository
                 user_repo = UserRepository()
                 
-                async def process_server_create_keys(server: Dict[str, Any]) -> None:
-                    """Обработать один сервер: создать недостающие ключи"""
+                sub_coverage: Dict[int, Tuple[Set[int], Set[str]]] = {}
+                with get_db_cursor() as cursor:
+                    cursor.execute("""
+                        SELECT k.subscription_id, k.server_id,
+                               COALESCE(NULLIF(TRIM(s.subscription_group_id), ''), '') as gid
+                        FROM v2ray_keys k
+                        JOIN servers s ON k.server_id = s.id
+                        WHERE k.subscription_id IS NOT NULL
+                    """)
+                    for sub_id, srv_id, gid in cursor.fetchall():
+                        if sub_id not in sub_coverage:
+                            sub_coverage[sub_id] = (set(), set())
+                        ss, gg = sub_coverage[sub_id]
+                        g = (gid or "").strip()
+                        if g:
+                            gg.add(g)
+                        else:
+                            ss.add(int(srv_id))
+                    cursor.execute("SELECT server_id, COUNT(*) FROM v2ray_keys GROUP BY server_id")
+                    key_counts = {row[0]: row[1] for row in cursor.fetchall()}
+                
+                work_items = iter_sync_work_items(
+                    subscriptions,
+                    v2ray_servers_all,
+                    sub_coverage,
+                    key_counts,
+                    is_user_vip=user_repo.is_user_vip,
+                )
+                logger.info(
+                    f"    Задач на создание ключей (с учётом групп серверов): {len(work_items)}"
+                )
+                
+                work_by_server: Dict[int, List[Tuple[Dict[str, Any], Dict[str, Any]]]] = defaultdict(list)
+                for server, subscription in work_items:
+                    work_by_server[server["id"]].append((server, subscription))
+                
+                async def process_server_create_keys_batch(
+                    _server_id: int,
+                    pairs: List[Tuple[Dict[str, Any], Dict[str, Any]]],
+                ) -> None:
                     async with server_semaphore:
+                        server = pairs[0][0]
                         server_id = server["id"]
                         server_name = server["name"]
                         server_access_level = server.get("access_level", "all")
-                        logger.info(f"    Сервер #{server_id} ({server_name}): access_level={server_access_level}")
-                        
+                        logger.info(
+                            f"    Сервер #{server_id} ({server_name}): access_level={server_access_level}, "
+                            f"создание ключей: {len(pairs)}"
+                        )
                         try:
-                            # ОПТИМИЗАЦИЯ: Используем пул клиентов
                             protocol_client = await client_pool.get_client(server)
                             if not protocol_client:
                                 reason = []
@@ -529,192 +784,125 @@ async def sync_all_keys_with_servers(
                                     "; ".join(reason)
                                 )
                                 return
-
-                            # Получаем существующие ключи для этого сервера
-                            with get_db_cursor() as cursor:
-                                cursor.execute("""
-                                    SELECT subscription_id, v2ray_uuid
-                                    FROM v2ray_keys
-                                    WHERE server_id = ? AND subscription_id IS NOT NULL
-                                """, (server_id,))
-                                existing_keys = {row[0]: row[1] for row in cursor.fetchall()}
                             
-                            # Находим подписки без ключей на этом сервере и фильтруем по access_level
-                            missing_subscriptions = []
-                            skipped_count = 0
-                            skipped_reasons = {"access_level": 0, "no_vip": 0, "no_active_subscription": 0}
-                            
-                            total_subscriptions_without_keys = sum(1 for sub in subscriptions if sub["id"] not in existing_keys)
-                            logger.debug(f"    Сервер #{server_id} ({server_name}): найдено {total_subscriptions_without_keys} подписок без ключей на этом сервере")
-                            
-                            for sub in subscriptions:
-                                if sub["id"] not in existing_keys:
-                                    # Проверяем доступность сервера для пользователя
-                                    user_id = sub["user_id"]
-                                    
-                                    if server_access_level == 'all':
-                                        missing_subscriptions.append(sub)
-                                    elif server_access_level == 'vip':
-                                        is_vip = user_repo.is_user_vip(user_id)
-                                        if is_vip:
-                                            missing_subscriptions.append(sub)
-                                        else:
-                                            skipped_count += 1
-                                            skipped_reasons["no_vip"] += 1
-                                    elif server_access_level == 'paid':
-                                        # Для 'paid': доступны VIP и пользователи с любой активной подпиской (выборка уже по активным)
-                                        missing_subscriptions.append(sub)
-                            
-                            if skipped_count > 0:
-                                logger.info(
-                                    f"    Сервер #{server_id} ({server_name}): пропущено {skipped_count} подписок (access_level={server_access_level}), "
-                                    f"к созданию {len(missing_subscriptions)} ключей. "
-                                    f"Причины: VIP={skipped_reasons['no_vip']}, нет активной подписки={skipped_reasons['no_active_subscription']}"
-                                )
-                            elif server_access_level in ("vip", "paid") and not missing_subscriptions:
-                                logger.info(
-                                    f"    Сервер #{server_id} ({server_name}): по access_level={server_access_level} подходящих подписок нет, создано 0 ключей"
-                                )
-                            elif total_subscriptions_without_keys > 0 and len(missing_subscriptions) == 0:
-                                logger.warning(
-                                    f"    Сервер #{server_id} ({server_name}): найдено {total_subscriptions_without_keys} подписок без ключей, "
-                                    f"но ни одна не прошла фильтрацию по access_level={server_access_level}"
-                                )
-                            
-                            if missing_subscriptions:
-                                logger.info(f"    Сервер #{server_id} ({server_name}): создаем {len(missing_subscriptions)} ключей (access_level={server_access_level})")
+                            for srv, subscription in pairs:
+                                sub_id = subscription["id"]
+                                user_id = subscription["user_id"]
+                                token = subscription["subscription_token"]
+                                tariff_id = subscription["tariff_id"]
+                                key_email = f"{user_id}_subscription_{sub_id}@veilbot.com"
                                 
-                                for subscription in missing_subscriptions:
-                                    sub_id = subscription["id"]
-                                    user_id = subscription["user_id"]
-                                    token = subscription["subscription_token"]
-                                    expires_at = subscription["expires_at"]
-                                    tariff_id = subscription["tariff_id"]
-                                    key_email = f"{user_id}_subscription_{sub_id}@veilbot.com"
-
-                                    try:
-                                        # Создаем ключ на сервере с таймаутом
-                                        async with api_semaphore:
-                                            # Увеличиваем таймаут до 60 секунд для медленных серверов
-                                            user_data = await asyncio.wait_for(
-                                                protocol_client.create_user(key_email, name=server_name),
-                                                timeout=60.0  # Таймаут 60 секунд для создания ключа
-                                            )
-                                            if not user_data or not user_data.get("uuid"):
-                                                raise RuntimeError("V2Ray сервер не вернул uuid при создании пользователя")
-
-                                            created_uuid = user_data["uuid"]
-
-                                            # Получаем client_config с таймаутом
-                                            # Увеличиваем таймаут до 60 секунд для медленных серверов
-                                            client_config = await asyncio.wait_for(
-                                                protocol_client.get_user_config(
-                                                    created_uuid,
-                                                    {
-                                                        # `app.settings.Settings` не имеет поля `domain`.
-                                                        # Если домен не задан у сервера, используем основной домен проекта.
-                                                        "domain": (server.get("domain") or "").strip() or "veil-bot.ru",
-                                                        "port": 443,
-                                                        "email": key_email,
-                                                    },
-                                                ),
-                                                timeout=60.0  # Таймаут 60 секунд для получения конфигурации
-                                            )
-
-                                            # Извлекаем VLESS URL
-                                            if "vless://" in client_config:
-                                                for line in client_config.split("\n"):
-                                                    candidate = line.strip()
-                                                    if candidate.startswith("vless://"):
-                                                        client_config = candidate
-                                                        break
-
-                                            # Нормализуем конфигурацию
-                                            client_config = normalize_vless_host(
-                                                client_config,
-                                                server.get("domain"),
-                                                server["api_url"] or "",
-                                            )
-                                            client_config = remove_fragment_from_vless(client_config)
-
-                                            # Сохраняем в БД
-                                            # ВАЖНО: Проверяем существование ключа ПЕРЕД вставкой для защиты от race conditions
-                                            # Используем BEGIN IMMEDIATE для атомарной проверки и вставки
-                                            if not dry_run:
-                                                with get_db_cursor(commit=True) as cursor:
-                                                    # Начинаем IMMEDIATE транзакцию для атомарной проверки и вставки
-                                                    cursor.execute("BEGIN IMMEDIATE")
-                                                    try:
-                                                        # Проверяем существование ключа атомарно перед вставкой
-                                                        cursor.execute("""
-                                                            SELECT id FROM v2ray_keys
-                                                            WHERE server_id = ? AND subscription_id = ?
-                                                            LIMIT 1
-                                                        """, (server_id, sub_id))
-                                                        if cursor.fetchone():
-                                                            # Ключ уже существует (race condition), удаляем созданный ключ с сервера
-                                                            cursor.execute("ROLLBACK")
-                                                            logger.warning(f"      Ключ для подписки {sub_id} на сервере {server_id} уже существует (race condition), удаляем дубликат с сервера")
-                                                            try:
-                                                                await protocol_client.delete_user(created_uuid)
-                                                            except Exception as e:
-                                                                logger.warning(f"      Не удалось удалить дубликат ключа {created_uuid[:8]}... с сервера: {e}")
-                                                            continue
-                                                        
-                                                        # Вставляем ключ только если его еще нет (expiry берётся из subscriptions через JOIN)
-                                                        with safe_foreign_keys_off(cursor):
-                                                            cursor.execute("""
-                                                                INSERT INTO v2ray_keys
-                                                                (server_id, user_id, v2ray_uuid, email, created_at,
-                                                                 tariff_id, client_config, subscription_id)
-                                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                                            """, (
-                                                                server_id,
-                                                                user_id,
-                                                                created_uuid,
-                                                                key_email,
-                                                                now,
-                                                                tariff_id,
-                                                                client_config,
-                                                                sub_id,
-                                                            ))
-                                                        cursor.execute("COMMIT")
-                                                    except Exception as e:
+                                try:
+                                    async with api_semaphore:
+                                        user_data = await asyncio.wait_for(
+                                            protocol_client.create_user(key_email, name=server_name),
+                                            timeout=60.0
+                                        )
+                                        if not user_data or not user_data.get("uuid"):
+                                            raise RuntimeError("V2Ray сервер не вернул uuid при создании пользователя")
+                                        
+                                        created_uuid = user_data["uuid"]
+                                        
+                                        client_config = await asyncio.wait_for(
+                                            protocol_client.get_user_config(
+                                                created_uuid,
+                                                {
+                                                    "domain": (server.get("domain") or "").strip() or "veil-bot.ru",
+                                                    "port": 443,
+                                                    "email": key_email,
+                                                },
+                                            ),
+                                            timeout=60.0
+                                        )
+                                        
+                                        if "vless://" in client_config:
+                                            for line in client_config.split("\n"):
+                                                candidate = line.strip()
+                                                if candidate.startswith("vless://"):
+                                                    client_config = candidate
+                                                    break
+                                        
+                                        client_config = normalize_vless_host(
+                                            client_config,
+                                            server.get("domain"),
+                                            server["api_url"] or "",
+                                        )
+                                        client_config = remove_fragment_from_vless(client_config)
+                                        
+                                        if not dry_run:
+                                            with get_db_cursor(commit=True) as cursor:
+                                                cursor.execute("BEGIN IMMEDIATE")
+                                                try:
+                                                    cursor.execute("""
+                                                        SELECT id FROM v2ray_keys
+                                                        WHERE server_id = ? AND subscription_id = ?
+                                                        LIMIT 1
+                                                    """, (server_id, sub_id))
+                                                    if cursor.fetchone():
                                                         cursor.execute("ROLLBACK")
-                                                        raise
-
-                                            invalidate_subscription_cache(token)
-                                            
-                                            stats["v2ray_keys_created"] += 1
-                                            logger.debug(f"      Создан ключ для подписки {sub_id}")
-                                            
-                                    except asyncio.TimeoutError:
-                                        stats["errors"] += 1
-                                        error_msg = f"Таймаут создания ключа для подписки {sub_id} (сервер #{server_id} медленно отвечает)"
-                                        stats["errors_details"].append({
-                                            "type": "v2ray_create_timeout",
-                                            "server_id": server_id,
-                                            "subscription_id": sub_id,
-                                            "error": error_msg,
-                                        })
-                                        logger.warning(f"      ⏱️  {error_msg}")
-                                        if len(stats["errors_details"]) >= 50:
-                                            break
-                                    except Exception as e:
-                                        stats["errors"] += 1
-                                        error_msg = f"Ошибка создания ключа для подписки {sub_id}: {e}"
-                                        stats["errors_details"].append({
-                                            "type": "v2ray_create",
-                                            "server_id": server_id,
-                                            "subscription_id": sub_id,
-                                            "error": error_msg,
-                                        })
-                                        logger.error(f"      ✗ {error_msg}")
-                                        if len(stats["errors_details"]) >= 50:
-                                            break
-                            
-                            stats["servers_processed"] += 1
-                            
+                                                        logger.warning(
+                                                            f"      Ключ для подписки {sub_id} на сервере {server_id} уже есть (race), удаляем дубликат на сервере"
+                                                        )
+                                                        try:
+                                                            await protocol_client.delete_user(created_uuid)
+                                                        except Exception as e:
+                                                            logger.warning(
+                                                                f"      Не удалось удалить дубликат ключа {created_uuid[:8]}...: {e}"
+                                                            )
+                                                        continue
+                                                    
+                                                    with safe_foreign_keys_off(cursor):
+                                                        cursor.execute("""
+                                                            INSERT INTO v2ray_keys
+                                                            (server_id, user_id, v2ray_uuid, email, created_at,
+                                                             tariff_id, client_config, subscription_id)
+                                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                                        """, (
+                                                            server_id,
+                                                            user_id,
+                                                            created_uuid,
+                                                            key_email,
+                                                            now,
+                                                            tariff_id,
+                                                            client_config,
+                                                            sub_id,
+                                                        ))
+                                                    cursor.execute("COMMIT")
+                                                except Exception:
+                                                    cursor.execute("ROLLBACK")
+                                                    raise
+                                        
+                                        invalidate_subscription_cache(token)
+                                        stats["v2ray_keys_created"] += 1
+                                        logger.debug(f"      Создан ключ для подписки {sub_id}")
+                                
+                                except asyncio.TimeoutError:
+                                    stats["errors"] += 1
+                                    error_msg = (
+                                        f"Таймаут создания ключа для подписки {sub_id} (сервер #{server_id} медленно отвечает)"
+                                    )
+                                    stats["errors_details"].append({
+                                        "type": "v2ray_create_timeout",
+                                        "server_id": server_id,
+                                        "subscription_id": sub_id,
+                                        "error": error_msg,
+                                    })
+                                    logger.warning(f"      ⏱️  {error_msg}")
+                                    if len(stats["errors_details"]) >= 50:
+                                        break
+                                except Exception as e:
+                                    stats["errors"] += 1
+                                    error_msg = f"Ошибка создания ключа для подписки {sub_id}: {e}"
+                                    stats["errors_details"].append({
+                                        "type": "v2ray_create",
+                                        "server_id": server_id,
+                                        "subscription_id": sub_id,
+                                        "error": error_msg,
+                                    })
+                                    logger.error(f"      ✗ {error_msg}")
+                                    if len(stats["errors_details"]) >= 50:
+                                        break
+                        
                         except Exception as e:
                             stats["errors"] += 1
                             error_msg = f"Ошибка обработки сервера #{server_id}: {e}"
@@ -725,10 +913,13 @@ async def sync_all_keys_with_servers(
                             })
                             logger.error(f"    ✗ {error_msg}")
                 
-                # ОПТИМИЗАЦИЯ: Параллельная обработка серверов (до 5 одновременно)
                 if v2ray_servers_all:
-                    create_tasks = [process_server_create_keys(server) for server in v2ray_servers_all]
-                    await asyncio.gather(*create_tasks, return_exceptions=True)
+                    batch_tasks = [
+                        process_server_create_keys_batch(sid, plist)
+                        for sid, plist in work_by_server.items()
+                    ]
+                    await asyncio.gather(*batch_tasks, return_exceptions=True)
+                    stats["servers_processed"] += len(v2ray_servers_all)
             else:
                 logger.info("  [3.1] Пропущено (create_missing=False)")
             

@@ -56,7 +56,7 @@
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
             <form method="get" action="/servers" id="search-form" class="filter-form">
-                <input type="text" id="global-search" name="q" value="{{ search_query }}" placeholder="Поиск по ID, названию, стране, протоколу..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
+                <input type="text" id="global-search" name="q" value="{{ search_query }}" placeholder="Поиск по ID, названию, стране..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
                 <input type="hidden" name="page" value="1" id="search-page-input">
                 <button type="submit" class="btn btn-primary hidden" id="search-submit-btn">Поиск</button>
             </form>
@@ -74,7 +74,6 @@
                 <col class="servers-col--id">
                 <col class="servers-col--name">
                 <col class="servers-col--group">
-                <col class="servers-col--protocol">
                 <col class="servers-col--keys">
                 <col class="servers-col--max">
                 <col class="servers-col--status">
@@ -87,7 +86,6 @@
                     <th>ID</th>
                     <th>Название</th>
                     <th class="servers-table__th-group">Группа подписки</th>
-                    <th>Протокол</th>
                     <th>Ключей</th>
                     <th>Макс.</th>
                     <th>Статус</th>
@@ -114,12 +112,6 @@
                         {% else %}
                         <span class="text-muted">—</span>
                         {% endif %}
-                    </td>
-                    <td class="servers-table__cell servers-table__cell--protocol">
-                        <span class="protocol-badge {{ server.protocol_badge_class }}">
-                            <span class="material-icons icon-small">{{ server.protocol_icon }}</span>
-                            {{ server.protocol_label }}
-                        </span>
                     </td>
                     <td class="servers-table__cell servers-table__cell--keys">
                         {% if server.keys_total %}

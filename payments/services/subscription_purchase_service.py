@@ -21,6 +21,10 @@ from bot.core import get_bot_instance
 from bot.utils import safe_send_message
 from bot.keyboards import get_main_menu
 from bot.services.subscription_traffic_reset import reset_subscription_traffic
+from bot.services.subscription_server_groups import (
+    compute_targets_purchase_sql_rows,
+    filter_servers_by_access_sql_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2668,11 +2672,14 @@ class SubscriptionPurchaseService:
             failed_servers_list: Список ID серверов, на которых не удалось создать ключи
         """
         try:
-            # Получаем все V2Ray серверы с access_level
+            # Получаем все V2Ray серверы: access_level, max_keys, subscription_group_id (группы дедупликации)
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     """
-                    SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256, COALESCE(access_level, 'all') as access_level
+                    SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256,
+                           COALESCE(access_level, 'all') as access_level,
+                           max_keys,
+                           COALESCE(NULLIF(TRIM(subscription_group_id), ''), '') as subscription_group_id
                     FROM servers
                     WHERE active = 1 AND protocol = 'v2ray'
                     ORDER BY id
@@ -2680,8 +2687,6 @@ class SubscriptionPurchaseService:
                 ) as cursor:
                     v2ray_servers_raw = await cursor.fetchall()
             
-            # Фильтруем серверы по доступности для пользователя
-            v2ray_servers = []
             user_repo = UserRepository(self.db_path)
             is_vip = user_repo.is_user_vip(user_id)
             now_ts = now
@@ -2701,14 +2706,35 @@ class SubscriptionPurchaseService:
                 ) as cursor:
                     has_active_subscription = (await cursor.fetchone())[0] > 0
             
-            for server in v2ray_servers_raw:
-                server_access_level = server[8] if len(server) > 8 else 'all'
-                if server_access_level == 'all':
-                    v2ray_servers.append(server[:8])  # Без access_level
-                elif server_access_level == 'vip' and is_vip:
-                    v2ray_servers.append(server[:8])
-                elif server_access_level == 'paid' and (is_vip or has_active_subscription):
-                    v2ray_servers.append(server[:8])
+            filtered_rows = filter_servers_by_access_sql_rows(
+                v2ray_servers_raw,
+                is_vip=is_vip,
+                has_active_subscription=has_active_subscription,
+            )
+            
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    "SELECT server_id, COUNT(*) FROM v2ray_keys GROUP BY server_id"
+                ) as cursor:
+                    key_counts = {row[0]: row[1] for row in await cursor.fetchall()}
+            
+            async with open_async_connection(self.db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT k.server_id, COALESCE(NULLIF(TRIM(s.subscription_group_id), ''), '') as gid
+                    FROM v2ray_keys k
+                    JOIN servers s ON k.server_id = s.id
+                    WHERE k.subscription_id = ?
+                    """,
+                    (subscription_id,),
+                ) as cursor:
+                    existing_key_rows = await cursor.fetchall()
+            
+            v2ray_servers = compute_targets_purchase_sql_rows(
+                filtered_rows,
+                existing_key_rows=existing_key_rows,
+                key_counts=key_counts,
+            )
             
             created_keys = 0
             failed_servers = []
@@ -2717,7 +2743,7 @@ class SubscriptionPurchaseService:
             client_pool = ServerClientPool()
             
             try:
-                # ОПТИМИЗАЦИЯ: Создаем ключи на всех V2Ray серверах параллельно
+                # ОПТИМИЗАЦИЯ: Создаем ключи параллельно (один ключ на группу серверов, выбор сервера по max_keys)
                 if v2ray_servers:
                     v2ray_tasks = [
                         self._create_single_v2ray_key(server_info, subscription_id, user_id, tariff, now, client_pool)

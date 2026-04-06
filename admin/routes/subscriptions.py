@@ -1002,6 +1002,7 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
         return JSONResponse({
             "success": True,
             "message": "Синхронизация ключей завершена",
+            "dry_run": sync_params.dry_run,
             "stats": {
                 "servers_processed": result.get("servers_processed", 0),
                 "servers_unavailable": result.get("servers_unavailable", 0),
@@ -1011,7 +1012,8 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
                 "v2ray_configs_updated": result.get("v2ray_configs_updated", 0),
                 "errors": result.get("errors", 0),
                 "duration_seconds": result.get("duration_seconds", 0),
-                "error_details": result.get("error_details", []),
+                # Скрипт sync_all_keys_with_servers заполняет errors_details
+                "error_details": (result.get("errors_details") or result.get("error_details") or []),
             }
         })
     except ImportError as e:
