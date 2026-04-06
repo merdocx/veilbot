@@ -64,7 +64,7 @@ async def test_process_subscription_purchase_wrong_protocol(monkeypatch):
         metadata={"key_type": "subscription"},
     )
     payment.status = PaymentStatus.PAID
-    payment.protocol = "v2ray"
+    payment.protocol = "outline"
 
     service = SubscriptionPurchaseService(db_path=":memory:")
     service.payment_repo = FakePaymentRepo(payment=payment)
