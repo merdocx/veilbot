@@ -10,6 +10,7 @@ from vpn_protocols import format_duration
 from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService
+from bot.utils.subscription_links import subscription_mirror_fallback_markdown
 
 def _format_bytes_short(num_bytes: Optional[float]) -> str:
     """Форматирование байт в читаемый вид."""
@@ -87,43 +88,34 @@ async def handle_my_keys_btn(message: types.Message):
             }
     
     with get_db_cursor() as cursor:
-        # Получаем Outline ключи с информацией о стране
-        # ВАЖНО: Показываем только ключи, связанные с активной подпиской
-        # Если есть активная подписка, показываем только её ключи
-        # Если подписки нет, показываем все активные outline ключи
-        # ВАЖНО: Вся информация о трафике и времени берется из подписки, не из ключа
+        # Отдельные V2Ray-ключи (vless), если есть сохранённый client_config
         if subscription_info:
-            # Есть активная подписка - показываем только её outline ключи
             cursor.execute("""
-                SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, k.protocol, s.country, k.subscription_id
-                FROM keys k
+                SELECT k.client_config, COALESCE(sub.expires_at, 0) as expiry_at, s.country, k.subscription_id
+                FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
                 JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.user_id = ? AND sub.expires_at > ? AND k.subscription_id = ?
+                  AND k.client_config IS NOT NULL AND TRIM(k.client_config) != ''
             """, (user_id, now, subscription_info['id']))
         else:
-            # Нет активной подписки - показываем все активные outline ключи
             cursor.execute("""
-                SELECT k.access_url, COALESCE(sub.expires_at, 0) as expiry_at, k.protocol, s.country, k.subscription_id
-                FROM keys k
+                SELECT k.client_config, COALESCE(sub.expires_at, 0) as expiry_at, s.country, k.subscription_id
+                FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
                 LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.user_id = ? AND (sub.expires_at > ? OR sub.expires_at IS NULL)
+                  AND k.client_config IS NOT NULL AND TRIM(k.client_config) != ''
             """, (user_id, now))
-        outline_keys = cursor.fetchall()
-    
-    # Добавляем Outline ключи
-    for key_row in outline_keys:
-        if len(key_row) == 6:
-            access_url, exp, protocol, country, sub_id = key_row
-        else:
-            access_url, exp, protocol, country, sub_id = key_row
-        
+        v2ray_rows = cursor.fetchall()
+
+    for key_row in v2ray_rows:
+        client_config, exp, country, sub_id = key_row
         all_keys.append({
-            'type': 'outline',
-            'config': access_url,
+            'type': 'v2ray',
+            'config': client_config,
             'expiry': exp,
-            'protocol': protocol or 'outline',
+            'protocol': 'v2ray',
             'country': country,
             'subscription_id': sub_id,
         })
@@ -155,6 +147,7 @@ async def handle_my_keys_btn(message: types.Message):
         msg += (
             f"📋 *Ваша подписка (коснитесь, чтобы скопировать):*\n\n"
             f"🔗 `{subscription_url}`\n\n"
+            f"{subscription_mirror_fallback_markdown(subscription_info['token'])}"
             f"{time_info}\n\n"
             f"{traffic_info}\n\n"
             f"📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n\n"
@@ -174,13 +167,13 @@ async def handle_my_keys_btn(message: types.Message):
         return
     
     if all_keys:
-        msg += "*Запасные ключи (потребуется скачать другое приложение):*\n\n"
+        msg += "*Отдельные ключи серверов (V2Ray):*\n\n"
     
     for key in all_keys:
         remaining_seconds = key['expiry'] - now
         time_str = format_duration(remaining_seconds)
         
-        protocol_info = PROTOCOLS[key['protocol']]
+        protocol_info = PROTOCOLS['v2ray']
         
         # Вся информация о трафике берется из подписки
         remaining_line = "📊 Осталось трафика: без ограничений"
@@ -196,11 +189,7 @@ async def handle_my_keys_btn(message: types.Message):
             elif traffic_state.usage_bytes:
                 remaining_line = f"📊 Израсходовано: {_format_bytes_short(traffic_state.usage_bytes)}"
         
-        # Получаем ссылки на приложения в зависимости от протокола
-        if key['protocol'] == 'outline':
-            app_links = "📱 [App Store](https://apps.apple.com/app/outline-app/id1356177741) | [Google Play](https://play.google.com/store/apps/details?id=org.outline.android.client)"
-        else:  # v2ray
-            app_links = "📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)"
+        app_links = "📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)"
             
         msg += (
             f"{protocol_info['icon']} *{protocol_info['name']}*\n"

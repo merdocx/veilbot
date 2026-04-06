@@ -38,7 +38,7 @@ class InputValidator:
     @staticmethod
     def validate_protocol(protocol: str) -> bool:
         """Валидация VPN протокола"""
-        valid_protocols = ['outline', 'v2ray']
+        valid_protocols = ['v2ray']
         return protocol.lower() in valid_protocols
     
     @staticmethod
@@ -156,13 +156,11 @@ class DatabaseValidator:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 # Проверяем наличие ключей у пользователя
-                cursor.execute("""
-                    SELECT COUNT(*) FROM keys WHERE user_id = ?
-                    UNION ALL
-                    SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?
-                """, (user_id, user_id))
-                results = cursor.fetchall()
-                return any(count > 0 for count in results)
+                cursor.execute(
+                    "SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?",
+                    (user_id,),
+                )
+                return cursor.fetchone()[0] > 0
         except Exception:
             return False
     
@@ -186,15 +184,12 @@ class DatabaseValidator:
         except Exception:
             return False
     
-    def validate_key_exists(self, key_id: str, protocol: str = 'outline') -> bool:
+    def validate_key_exists(self, key_id: str, protocol: str = 'v2ray') -> bool:
         """Проверка существования ключа"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                if protocol == 'outline':
-                    cursor.execute("SELECT COUNT(*) FROM keys WHERE key_id = ?", (key_id,))
-                else:
-                    cursor.execute("SELECT COUNT(*) FROM v2ray_keys WHERE v2ray_uuid = ?", (key_id,))
+                cursor.execute("SELECT COUNT(*) FROM v2ray_keys WHERE v2ray_uuid = ?", (key_id,))
                 return cursor.fetchone()[0] > 0
         except Exception:
             return False
@@ -222,15 +217,11 @@ class BusinessLogicValidator:
                 thirty_days_ago = int((datetime.now() - timedelta(days=30)).timestamp())
                 
                 cursor.execute("""
-                    SELECT COUNT(*) FROM keys 
-                    WHERE user_id = ? AND created_at > ? AND tariff_id = 1
-                    UNION ALL
                     SELECT COUNT(*) FROM v2ray_keys 
                     WHERE user_id = ? AND created_at > ? AND tariff_id = 1
-                """, (user_id, thirty_days_ago, user_id, thirty_days_ago))
+                """, (user_id, thirty_days_ago))
                 
-                results = cursor.fetchall()
-                total_free_keys = sum(count for count in results)
+                total_free_keys = cursor.fetchone()[0]
                 
                 if total_free_keys >= 1:
                     return False, "Превышен лимит бесплатных тарифов (1 в месяц)"
@@ -246,18 +237,11 @@ class BusinessLogicValidator:
                 cursor = conn.cursor()
                 now = int(datetime.now().timestamp())
                 
-                if protocol == 'outline':
-                    cursor.execute("""
-                        SELECT COALESCE(sub.expires_at, 0) as expiry_at FROM keys k
-                        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                        WHERE k.key_id = ?
-                    """, (key_id,))
-                else:
-                    cursor.execute("""
-                        SELECT COALESCE(sub.expires_at, 0) as expiry_at FROM v2ray_keys k
-                        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                        WHERE k.v2ray_uuid = ?
-                    """, (key_id,))
+                cursor.execute("""
+                    SELECT COALESCE(sub.expires_at, 0) as expiry_at FROM v2ray_keys k
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                    WHERE k.v2ray_uuid = ?
+                """, (key_id,))
                 
                 result = cursor.fetchone()
                 if not result:
@@ -289,17 +273,12 @@ class BusinessLogicValidator:
                 # Подсчитываем активные ключи
                 now = int(datetime.now().timestamp())
                 cursor.execute("""
-                    SELECT COUNT(*) FROM keys k
-                    JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.server_id = ? AND sub.expires_at > ?
-                    UNION ALL
                     SELECT COUNT(*) FROM v2ray_keys k
                     JOIN subscriptions sub ON k.subscription_id = sub.id
                     WHERE k.server_id = ? AND sub.expires_at > ?
-                """, (server_id, now, server_id, now))
+                """, (server_id, now))
                 
-                results = cursor.fetchall()
-                total_active_keys = sum(count for count in results)
+                total_active_keys = cursor.fetchone()[0]
                 
                 if total_active_keys >= max_keys:
                     return False, f"Сервер переполнен (максимум {max_keys} ключей)"

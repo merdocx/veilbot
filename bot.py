@@ -10,7 +10,6 @@ from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration, ADMIN_ID
 from db import init_db
-from outline import create_key, delete_key
 from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import format_duration, ProtocolFactory, get_protocol_instructions
 from bot.keyboards import (
@@ -159,106 +158,24 @@ async def handle_invite_friend(message: types.Message) -> None:
 # Старые версии функций удалены
 
 async def create_new_key_flow(
-    cursor: sqlite3.Cursor, 
-    message: types.Message, 
-    user_id: int, 
-    tariff: Dict[str, Any], 
-    email: Optional[str] = None, 
+    cursor: sqlite3.Cursor,
+    message: types.Message,
+    user_id: int,
+    tariff: Dict[str, Any],
+    email: Optional[str] = None,
     country: Optional[str] = None
 ) -> None:
-    """
-    Создает новый VPN ключ или продлевает существующий (старая версия без протоколов)
-    
-    Если у пользователя есть активный или недавно истекший ключ (в пределах grace period 24 часа),
-    ключ продлевается. Иначе создается новый ключ.
-    
-    Args:
-        cursor: Курсор базы данных
-        message: Telegram сообщение для отправки уведомлений пользователю
-        user_id: ID пользователя
-        tariff: Словарь с данными тарифа (name, price_rub, duration_sec, id)
-        email: Email пользователя (опционально)
-        country: Страна сервера (опционально)
-    """
-    now = int(time.time())
-    GRACE_PERIOD = 86400  # 24 часа в секундах
-    grace_threshold = now - GRACE_PERIOD
-    
-    # Проверяем наличие активного или недавно истекшего ключа (в пределах grace period)
-    cursor.execute("""
-        SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url 
-        FROM keys k
-        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-        WHERE k.user_id = ? AND sub.expires_at > ? 
-        ORDER BY sub.expires_at DESC LIMIT 1
-    """, (user_id, grace_threshold))
-    existing_key = cursor.fetchone()
-    if existing_key:
-        # Используем функцию из key_management.py
-        from bot.services.key_management import extend_existing_key
-        extend_existing_key(cursor, existing_key, tariff['duration_sec'], email, tariff['id'])
-        was_expired = existing_key[1] <= now
-        if was_expired:
-            await message.answer(f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message(existing_key[2])}", reply_markup=get_main_menu(user_id), disable_web_page_preview=True, parse_mode="Markdown")
-        else:
-            await message.answer(f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message(existing_key[2])}", reply_markup=get_main_menu(user_id), disable_web_page_preview=True, parse_mode="Markdown")
-        # Уведомление админу
-        admin_msg = (
-            f"🔑 *Продление ключа*\n"
-            f"Пользователь: `{user_id}`\n"
-            f"Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
-            f"Ключ: `{existing_key[2]}`\n"
-        )
-        if email:
-            admin_msg += f"Email: `{email}`\n"
-        await safe_send_message(
-            bot,
-            ADMIN_ID,
-            admin_msg,
-            disable_web_page_preview=True,
-            parse_mode="Markdown",
-            mark_blocked=False,
-        )
-        return
-    # Если нет активного ключа — создаём новый
-    server = select_available_server(cursor, country)
-    if not server:
-        await message.answer("Нет доступных серверов.", reply_markup=get_main_menu(user_id))
-        return
-    key = await asyncio.get_event_loop().run_in_executor(None, create_key, server['api_url'], server['cert_sha256'])
-    if not key:
-        await message.answer("Ошибка при создании ключа.", reply_markup=get_main_menu(user_id))
-        return
-    # ВАЖНО: expiry_at удалено из таблицы keys - срок действия берется из subscriptions
-    # Этот код создает standalone ключи (без subscription_id), что не соответствует новой архитектуре
-    # TODO: Переделать на создание через SubscriptionService
-    cursor.execute(
-        "INSERT INTO keys (server_id, user_id, access_url, key_id, created_at, email, tariff_id, protocol) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 'outline')",
-        (server['id'], user_id, key["accessUrl"], key["id"], now, email, tariff['id'])
-    )
-    
-    # Если это бесплатный тариф, записываем использование
-    if tariff['price_rub'] == 0:
-        record_free_key_usage(cursor, user_id, "outline", country)
-    
-    await message.answer(format_key_message(key["accessUrl"]), reply_markup=get_main_menu(user_id), disable_web_page_preview=True, parse_mode="Markdown")
-    # Admin notification as before
-    admin_msg = (
-        f"🔑 *Покупка ключа*\n"
-        f"Пользователь: `{user_id}`\n"
-        f"Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
-        f"Ключ: `{key['accessUrl']}`\n"
-    )
-    if email:
-        admin_msg += f"Email: `{email}`\n"
-    await safe_send_message(
-        bot,
-        ADMIN_ID,
-        admin_msg,
-        disable_web_page_preview=True,
-        parse_mode="Markdown",
-        mark_blocked=False,
+    """Совместимость: делегирует в поток создания ключа V2Ray."""
+    await create_new_key_flow_with_protocol(
+        cursor,
+        message,
+        user_id,
+        tariff,
+        email,
+        country,
+        "v2ray",
+        for_renewal=False,
+        user_states=user_states,
     )
 
 # Функции switch_protocol_and_extend и change_country_and_extend перенесены в bot/services/key_management.py
@@ -278,7 +195,7 @@ async def create_payment_with_email_and_protocol(
     tariff: Dict[str, Any], 
     email: Optional[str] = None, 
     country: Optional[str] = None, 
-    protocol: str = "outline", 
+    protocol: str = "v2ray",
     payment_method: str = "platega", 
     for_renewal: bool = False
 ) -> None:
@@ -294,7 +211,7 @@ async def create_payment_with_email_and_protocol(
         tariff: Словарь с данными тарифа (name, price_rub, duration_sec, id, price_crypto_usd)
         email: Email пользователя (опционально)
         country: Страна сервера (опционально)
-        protocol: Протокол VPN ('outline' или 'v2ray')
+        protocol: Протокол VPN ('v2ray')
         payment_method: Способ оплаты ('yookassa' или 'cryptobot')
         for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
     """
@@ -562,40 +479,6 @@ async def create_payment_with_email_and_protocol(
         logging.warning("Новый платежный модуль недоступен")
         await message.answer("Платежная система временно недоступна.", reply_markup=get_main_menu(user_id))
         return
-
-def select_available_server(
-    cursor: sqlite3.Cursor, 
-    country: Optional[str] = None
-) -> Optional[Dict[str, Any]]:
-    """
-    Выбор доступного сервера для покупки
-    
-    Выбирает сервер, который активен, доступен для покупки и имеет свободные слоты для ключей.
-    
-    Args:
-        cursor: Курсор базы данных
-        country: Страна сервера (опционально, если указана, выбирается сервер из этой страны)
-    
-    Returns:
-        Словарь с данными сервера {'id': int, 'api_url': str, 'cert_sha256': str} 
-        или None, если доступный сервер не найден
-    """
-    now = int(time.time())
-    if country:
-        servers = cursor.execute("SELECT id, api_url, cert_sha256, max_keys FROM servers WHERE active = 1 AND available_for_purchase = 1 AND country = ?", (country,)).fetchall()
-    else:
-        servers = cursor.execute("SELECT id, api_url, cert_sha256, max_keys FROM servers WHERE active = 1 AND available_for_purchase = 1").fetchall()
-    for s_id, api_url, cert_sha256, max_keys in servers:
-        cursor.execute("""
-            SELECT COUNT(*) FROM keys k
-            JOIN subscriptions sub ON k.subscription_id = sub.id
-            WHERE k.server_id = ? AND sub.expires_at > ?
-        """, (s_id, now))
-        active_keys = cursor.fetchone()[0]
-        if active_keys < max_keys:
-            return {"id": s_id, "api_url": api_url, "cert_sha256": cert_sha256}
-    return None
-
 
 # Функции wait_for_payment_with_protocol и wait_for_crypto_payment перенесены в bot/services/key_creation.py
 # Старые реализации удалены (было ~70 и ~75 строк соответственно)

@@ -169,13 +169,6 @@ async def process_payment(payment_id: str):
                         """, (payment.user_id, sub[0]))
                         key_count = cursor.fetchone()[0]
                         print(f"    V2Ray ключей: {key_count}")
-                        
-                        cursor.execute("""
-                            SELECT COUNT(*) FROM keys
-                            WHERE user_id = ? AND subscription_id = ?
-                        """, (payment.user_id, sub[0]))
-                        outline_count = cursor.fetchone()[0]
-                        print(f"    Outline ключей: {outline_count}")
                 return True
             else:
                 print(f"  ❌ Ошибка при создании подписки: {error_msg}")

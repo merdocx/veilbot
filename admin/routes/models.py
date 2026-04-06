@@ -11,11 +11,26 @@ class ServerForm(BaseModel):
     api_url: str
     cert_sha256: str = ""
     max_keys: int
-    protocol: str = "outline"
+    protocol: str = "v2ray"
     domain: str = ""
     api_key: str = ""
     v2ray_path: str = "/v2ray"
-    
+    subscription_group_id: str = ""
+
+    @validator("subscription_group_id")
+    def validate_subscription_group_id(cls, v):
+        """Идентификатор группы подписки: один ключ на группу серверов с тем же ID."""
+        if v in (None, ""):
+            return ""
+        s = str(v).strip()
+        if not s:
+            return ""
+        if len(s) > 64:
+            raise ValueError("Группа подписки: не более 64 символов")
+        if not re.match(r"^[a-zA-Z0-9._-]+$", s):
+            raise ValueError("Группа подписки: только латиница, цифры, ._-")
+        return s
+
     @validator('name')
     def validate_name(cls, v):
         if len(v.strip()) < 1:
@@ -42,8 +57,8 @@ class ServerForm(BaseModel):
     
     @validator('protocol')
     def validate_protocol(cls, v):
-        if v not in ['outline', 'v2ray']:
-            raise ValueError('Protocol must be either outline or v2ray')
+        if v != 'v2ray':
+            raise ValueError('Protocol must be v2ray')
         return v
     
     @validator('domain')
@@ -71,7 +86,7 @@ class ServerForm(BaseModel):
     @validator('api_key')
     def validate_api_key(cls, v, values):
         # API key обязателен только для V2Ray серверов
-        protocol = values.get('protocol', 'outline')
+        protocol = values.get('protocol', 'v2ray')
         if protocol == 'v2ray' and not v:
             raise ValueError('API key is required for V2Ray servers')
         return v

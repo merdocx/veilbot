@@ -540,19 +540,8 @@
             delete_orphaned_on_servers: formData.has('delete_orphaned_on_servers'),
             delete_inactive_server_keys: formData.has('delete_inactive_server_keys'),
             sync_configs: formData.has('sync_configs'),
-            include_v2ray: formData.has('include_v2ray'),
-            include_outline: formData.has('include_outline'),
+            include_v2ray: true,
         };
-        
-        // Валидация: хотя бы один протокол должен быть выбран
-        if (!syncParams.include_v2ray && !syncParams.include_outline) {
-            const protocolHint = document.getElementById('protocol-hint');
-            if (protocolHint) {
-                protocolHint.style.display = 'block';
-            }
-            notify('Необходимо выбрать хотя бы один протокол (V2Ray или Outline)', 'error', 5000);
-            return;
-        }
         
         // Валидация: если выбран один сервер, должен быть указан server_id
         if (syncParams.server_scope === 'single' && !syncParams.server_id) {
@@ -765,17 +754,6 @@
                         serverIdSelect.required = false;
                         serverIdSelect.value = '';
                     }
-                }
-            });
-        });
-        
-        // Скрываем подсказку об ошибке протоколов при изменении чекбоксов
-        const protocolCheckboxes = document.querySelectorAll('input[name="include_v2ray"], input[name="include_outline"]');
-        const protocolHint = document.getElementById('protocol-hint');
-        protocolCheckboxes.forEach(checkbox => {
-            checkbox.addEventListener('change', () => {
-                if (protocolHint) {
-                    protocolHint.style.display = 'none';
                 }
             });
         });

@@ -353,11 +353,11 @@ async def cryptobot_webhook(request: Request):
                         )
                     
                     # Выбираем сервер
-                    server = select_available_server_by_protocol(cursor, country, protocol or "outline", user_id=user_id)
+                    server = select_available_server_by_protocol(cursor, country, protocol or "v2ray", user_id=user_id)
                     
                     if server:
                         await create_new_key_flow_with_protocol(
-                            cursor, None, user_id, tariff, email, country, protocol or "outline"
+                            cursor, None, user_id, tariff, email, country, protocol or "v2ray"
                         )
                         
                         # Реферальный бонус (только для платных тарифов)
@@ -377,7 +377,7 @@ async def cryptobot_webhook(request: Request):
                             bonus_duration = 30 * 24 * 3600
                             # Обрабатываем реферальный бонус (с поддержкой подписок)
                             await process_referral_bonus(
-                                cursor, referrer_id, bonus_duration, None, protocol or "outline", extend_existing_key
+                                cursor, referrer_id, bonus_duration, None, protocol or "v2ray", extend_existing_key
                             )
                             cursor.execute("UPDATE referrals SET bonus_issued = 1 WHERE referred_id = ?", (user_id,))
                 

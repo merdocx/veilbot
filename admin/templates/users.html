@@ -30,15 +30,15 @@
     <!-- Filters -->
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
-            <form method="get" action="/users" id="search-form" style="display: flex; gap: 8px; flex: 1; align-items: center;">
+            <form method="get" action="/users" id="search-form" class="filter-form">
                 <input type="text" id="global-search" name="q" value="{{ q }}" placeholder="Поиск по ID, username, имени, фамилии, email или количеству рефералов..." class="filter-input filter-input--grow" data-table-id="users-table">
                 <input type="hidden" name="page" value="1" id="search-page-input">
-                <select name="vip_filter" id="vip-filter" class="filter-input" style="min-width: 150px;">
+                <select name="vip_filter" id="vip-filter" class="filter-input filter-input--select">
                     <option value="" {% if not vip_filter %}selected{% endif %}>Все пользователи</option>
                     <option value="vip" {% if vip_filter == 'vip' %}selected{% endif %}>Только VIP</option>
                     <option value="non_vip" {% if vip_filter == 'non_vip' %}selected{% endif %}>Не VIP</option>
                 </select>
-                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+                <button type="submit" class="btn btn-primary hidden" id="search-submit-btn">Поиск</button>
             </form>
             <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
@@ -57,7 +57,7 @@
                     <th>Последняя активность</th>
                     <th>Статус</th>
                     <th class="text-center">VIP</th>
-                    <th style="width: 150px; min-width: 150px;">Действия</th>
+                    <th>Действия</th>
                 </tr>
             </thead>
             <tbody>
@@ -67,7 +67,7 @@
                         {% if user.user_id %}
                             <div class="cell-primary">
                                 {% if user.is_vip %}
-                                    <span class="material-icons icon-small" style="color: #FFD700; vertical-align: middle;" title="VIP пользователь">star</span>
+                                    <span class="material-icons icon-small vip-star" title="VIP пользователь">star</span>
                                 {% endif %}
                                 TG: {{ user.user_id }}
                             </div>
@@ -105,7 +105,7 @@
                                {% if user.is_vip %}checked{% endif %}
                                title="VIP статус">
                     </td>
-                    <td style="width: 150px; min-width: 150px;">
+                    <td>
                         <div class="action-buttons">
                             <a href="/users/{{ user.user_id }}" class="btn btn-primary">
                                 <span class="material-icons icon-small">visibility</span>

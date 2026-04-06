@@ -29,7 +29,7 @@ def mock_bot():
 def subscription_service(mock_bot):
     """Сервис для обработки покупки подписки"""
     with patch('payments.services.subscription_purchase_service.get_bot_instance', return_value=mock_bot):
-        with patch('bot.utils.messaging.get_bot_instance', return_value=mock_bot):
+        with patch('bot.services.admin_notifications.get_bot_instance', return_value=mock_bot):
             service = SubscriptionPurchaseService()
             return service
 

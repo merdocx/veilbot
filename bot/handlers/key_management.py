@@ -9,8 +9,6 @@ from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from config import PROTOCOLS, ADMIN_ID
 from app.infra.sqlite_utils import get_db_cursor
-from outline import create_key, delete_key
-from vpn_protocols import ProtocolFactory
 from bot.keyboards import get_main_menu, get_country_menu, get_countries_by_protocol, get_help_keyboard
 from bot.utils import format_key_message_unified
 from bot_error_handler import BotErrorHandler
@@ -34,7 +32,7 @@ async def show_key_selection_menu(
         user_id: ID пользователя
         keys: Список словарей с данными ключей, каждый должен содержать:
             - id: ID ключа в базе данных
-            - type: Тип ключа ('outline' или 'v2ray')
+            - type: Тип ключа ('v2ray')
             - protocol: Протокол VPN
             - country: Страна сервера
             - expiry_at: Время истечения ключа
@@ -80,14 +78,14 @@ async def show_protocol_change_menu(
     Показывает меню выбора ключа для смены протокола
     
     Отображает список доступных ключей пользователя с возможностью выбора
-    конкретного ключа для смены протокола VPN (Outline ↔ V2Ray).
+    конкретного ключа для смены протокола VPN (только V2Ray).
     
     Args:
         message: Telegram сообщение для отправки меню
         user_id: ID пользователя
         keys: Список словарей с данными ключей, каждый должен содержать:
             - id: ID ключа в базе данных
-            - type: Тип ключа ('outline' или 'v2ray')
+            - type: Тип ключа ('v2ray')
             - protocol: Протокол VPN
             - country: Страна сервера
             - expiry_at: Время истечения ключа
@@ -140,7 +138,7 @@ async def show_key_selection_for_country_change(
         user_id: ID пользователя
         all_keys: Список словарей с данными ключей, каждый должен содержать:
             - id: ID ключа в базе данных
-            - type: Тип ключа ('outline' или 'v2ray')
+            - type: Тип ключа ('v2ray')
             - protocol: Протокол VPN
             - country: Страна сервера
             - expiry_at: Время истечения ключа
@@ -181,7 +179,7 @@ async def show_country_change_menu(
         message: Telegram сообщение для отправки меню
         user_id: ID пользователя
         key_data: Словарь с данными ключа, должен содержать:
-            - protocol: Протокол VPN ('outline' или 'v2ray')
+            - protocol: Протокол VPN ('v2ray')
             - country: Текущая страна сервера
         user_states_dict: Словарь состояний пользователей
     """
@@ -258,17 +256,6 @@ def register_key_management_handlers(
         now = int(time.time())
         
         with get_db_cursor() as cursor:
-            # Получаем все активные ключи пользователя
-            cursor.execute("""
-                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type
-                FROM keys k
-                JOIN servers s ON k.server_id = s.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND sub.expires_at > ?
-                ORDER BY sub.expires_at DESC
-            """, (user_id, now))
-            outline_keys = cursor.fetchall()
-            
             cursor.execute("""
                 SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                        'v2ray' as key_type, s.domain, s.v2ray_path, k.traffic_limit_mb,
@@ -280,23 +267,8 @@ def register_key_management_handlers(
                 ORDER BY sub.expires_at DESC
             """, (user_id, now))
             v2ray_keys = cursor.fetchall()
-            
-            # Объединяем все ключи
+
             all_keys = []
-            for key in outline_keys:
-                all_keys.append({
-                    'id': key[0],
-                    'expiry_at': key[1],
-                    'server_id': key[2],
-                    'key_id': key[3],
-                    'access_url': key[4],
-                    'country': key[5],
-                    'tariff_id': key[6],
-                    'email': key[7],
-                    'protocol': key[8],
-                    'type': 'outline'
-                })
-            
             for key in v2ray_keys:
                 all_keys.append({
                     'id': key[0],
@@ -336,20 +308,8 @@ def register_key_management_handlers(
         
         try:
             with get_db_cursor() as cursor:
-                # Получаем активные ключи пользователя
                 now = int(time.time())
-                
-                # Получаем Outline ключи
-                cursor.execute("""
-                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
-                    FROM keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.user_id = ? AND sub.expires_at > ?
-                """, (user_id, now))
-                outline_keys = cursor.fetchall()
-                
-                # Получаем V2Ray ключи
+
                 cursor.execute("""
                     SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                            s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
@@ -360,24 +320,8 @@ def register_key_management_handlers(
                     WHERE k.user_id = ? AND sub.expires_at > ?
                 """, (user_id, now))
                 v2ray_keys = cursor.fetchall()
-                
-                # Объединяем все ключи
+
                 all_keys = []
-                for key in outline_keys:
-                    all_keys.append({
-                        'id': key[0],
-                        'expiry_at': key[1],
-                        'server_id': key[2],
-                        'key_id': key[3],
-                        'access_url': key[4],
-                        'country': key[5],
-                        'tariff_id': key[6],
-                        'email': key[7],
-                        'protocol': key[8],
-                        'type': 'outline',
-                        'traffic_limit_mb': key[9]
-                    })
-                
                 for key in v2ray_keys:
                     all_keys.append({
                         'id': key[0],
@@ -425,18 +369,6 @@ def register_key_management_handlers(
         
         try:
             with get_db_cursor() as cursor:
-                # Получаем все активные ключи пользователя
-                cursor.execute("""
-                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, 'outline' as key_type, k.traffic_limit_mb
-                    FROM keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.user_id = ? AND sub.expires_at > ?
-                    ORDER BY sub.expires_at DESC
-                """, (user_id, now))
-                outline_keys = cursor.fetchall()
-                logging.debug(f"Найдено {len(outline_keys)} Outline ключей")
-                
                 cursor.execute("""
                     SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
                            'v2ray' as key_type, s.domain, s.v2ray_path, k.traffic_limit_mb,
@@ -449,24 +381,8 @@ def register_key_management_handlers(
                 """, (user_id, now))
                 v2ray_keys = cursor.fetchall()
                 logging.debug(f"Найдено {len(v2ray_keys)} V2Ray ключей")
-                
-                # Объединяем все ключи
+
                 all_keys = []
-                for key in outline_keys:
-                    all_keys.append({
-                        'id': key[0],
-                        'expiry_at': key[1],
-                        'server_id': key[2],
-                        'key_id': key[3],
-                        'access_url': key[4],
-                        'country': key[5],
-                        'tariff_id': key[6],
-                        'email': key[7],
-                        'protocol': key[8],
-                        'type': 'outline',
-                        'traffic_limit_mb': key[10]
-                    })
-                
                 for key in v2ray_keys:
                     all_keys.append({
                         'id': key[0],
@@ -519,66 +435,40 @@ def register_key_management_handlers(
         key_type = parts[2]
         key_id = int(parts[3])
         
-        # Получаем данные ключа
         with get_db_cursor() as cursor:
-            if key_type == "outline":
-                cursor.execute("""
-                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
-                    FROM keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.id = ? AND k.user_id = ?
-                """, (key_id, user_id))
-            else:  # v2ray
-                cursor.execute("""
-                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
-                           s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
-                           k.traffic_over_limit_at, k.traffic_over_limit_notified
-                    FROM v2ray_keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.id = ? AND k.user_id = ?
-                """, (key_id, user_id))
-            
+            cursor.execute("""
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                       s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
+                       k.traffic_over_limit_at, k.traffic_over_limit_notified
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.id = ? AND k.user_id = ?
+            """, (key_id, user_id))
+
             key_data = cursor.fetchone()
             if not key_data:
                 await callback_query.answer("Ключ не найден")
                 return
-            
-            # Формируем словарь с данными ключа
-            if key_type == "outline":
-                key_dict = {
-                    'id': key_data[0],
-                    'expiry_at': key_data[1],
-                    'server_id': key_data[2],
-                    'key_id': key_data[3],
-                    'access_url': key_data[4],
-                    'country': key_data[5],
-                    'tariff_id': key_data[6],
-                    'email': key_data[7],
-                    'protocol': key_data[8],
-                    'traffic_limit_mb': key_data[9],
-                    'type': 'outline'
-                }
-            else:
-                key_dict = {
-                    'id': key_data[0],
-                    'expiry_at': key_data[1],
-                    'server_id': key_data[2],
-                    'v2ray_uuid': key_data[3],
-                    'country': key_data[4],
-                    'tariff_id': key_data[5],
-                    'email': key_data[6],
-                    'protocol': key_data[7],
-                    'domain': key_data[8],
-                    'v2ray_path': key_data[9],
-                    'traffic_limit_mb': key_data[10],
-                    'traffic_usage_bytes': key_data[11],
-                    'traffic_over_limit_at': key_data[12],
-                    'traffic_over_limit_notified': key_data[13],
-                    'type': 'v2ray'
-                }
-        
+
+            key_dict = {
+                'id': key_data[0],
+                'expiry_at': key_data[1],
+                'server_id': key_data[2],
+                'v2ray_uuid': key_data[3],
+                'country': key_data[4],
+                'tariff_id': key_data[5],
+                'email': key_data[6],
+                'protocol': key_data[7],
+                'domain': key_data[8],
+                'v2ray_path': key_data[9],
+                'traffic_limit_mb': key_data[10],
+                'traffic_usage_bytes': key_data[11],
+                'traffic_over_limit_at': key_data[12],
+                'traffic_over_limit_notified': key_data[13],
+                'type': 'v2ray',
+            }
+
         # Перевыпускаем ключ
         logging.debug(f"Передаем key_dict в reissue_specific_key: {list(key_dict.keys())}")
         await reissue_specific_key(callback_query.message, user_id, key_dict)
@@ -602,69 +492,42 @@ def register_key_management_handlers(
             await callback_query.answer("Ошибка: неверный формат данных")
             return
         
-        key_type = parts[2]
         key_id = int(parts[3])
-        
-        # Получаем данные ключа
+
         with get_db_cursor() as cursor:
-            if key_type == "outline":
-                cursor.execute("""
-                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
-                    FROM keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.id = ? AND k.user_id = ?
-                """, (key_id, user_id))
-            else:  # v2ray
-                cursor.execute("""
-                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
-                           s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
-                           k.traffic_over_limit_at, k.traffic_over_limit_notified
-                    FROM v2ray_keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.id = ? AND k.user_id = ?
-                """, (key_id, user_id))
-            
+            cursor.execute("""
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                       s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
+                       k.traffic_over_limit_at, k.traffic_over_limit_notified
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.id = ? AND k.user_id = ?
+            """, (key_id, user_id))
+
             key_data = cursor.fetchone()
             if not key_data:
                 await callback_query.answer("Ключ не найден")
                 return
-            
-            # Формируем словарь с данными ключа
-            if key_type == "outline":
-                key_dict = {
-                    'id': key_data[0],
-                    'expiry_at': key_data[1],
-                    'server_id': key_data[2],
-                    'key_id': key_data[3],
-                    'access_url': key_data[4],
-                    'country': key_data[5],
-                    'tariff_id': key_data[6],
-                    'email': key_data[7],
-                    'protocol': key_data[8],
-                    'traffic_limit_mb': key_data[9],
-                    'type': 'outline'
-                }
-            else:  # v2ray
-                key_dict = {
-                    'id': key_data[0],
-                    'expiry_at': key_data[1],
-                    'server_id': key_data[2],
-                    'v2ray_uuid': key_data[3],
-                    'country': key_data[4],
-                    'tariff_id': key_data[5],
-                    'email': key_data[6],
-                    'protocol': key_data[7],
-                    'type': 'v2ray',
-                    'domain': key_data[8],
-                    'v2ray_path': key_data[9],
-                    'traffic_limit_mb': key_data[10],
-                    'traffic_usage_bytes': key_data[11],
-                    'traffic_over_limit_at': key_data[12],
-                    'traffic_over_limit_notified': key_data[13],
-                }
-        
+
+            key_dict = {
+                'id': key_data[0],
+                'expiry_at': key_data[1],
+                'server_id': key_data[2],
+                'v2ray_uuid': key_data[3],
+                'country': key_data[4],
+                'tariff_id': key_data[5],
+                'email': key_data[6],
+                'protocol': key_data[7],
+                'type': 'v2ray',
+                'domain': key_data[8],
+                'v2ray_path': key_data[9],
+                'traffic_limit_mb': key_data[10],
+                'traffic_usage_bytes': key_data[11],
+                'traffic_over_limit_at': key_data[12],
+                'traffic_over_limit_notified': key_data[13],
+            }
+
         await callback_query.answer()
         await show_country_change_menu(callback_query.message, user_id, key_dict, user_states)
     
@@ -687,69 +550,42 @@ def register_key_management_handlers(
             await callback_query.answer("Ошибка: неверный формат данных")
             return
         
-        key_type = parts[2]
         key_id = int(parts[3])
-        
-        # Получаем данные ключа
+
         with get_db_cursor() as cursor:
-            if key_type == "outline":
-                cursor.execute("""
-                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.key_id, k.access_url, s.country, k.tariff_id, k.email, s.protocol, k.traffic_limit_mb
-                    FROM keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.id = ? AND k.user_id = ?
-                """, (key_id, user_id))
-            else:  # v2ray
-                cursor.execute("""
-                    SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
-                           s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
-                           k.traffic_over_limit_at, k.traffic_over_limit_notified
-                    FROM v2ray_keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.id = ? AND k.user_id = ?
-                """, (key_id, user_id))
-            
+            cursor.execute("""
+                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.server_id, k.v2ray_uuid, s.country, k.tariff_id, k.email, s.protocol,
+                       s.domain, s.v2ray_path, k.traffic_limit_mb, k.traffic_usage_bytes,
+                       k.traffic_over_limit_at, k.traffic_over_limit_notified
+                FROM v2ray_keys k
+                JOIN servers s ON k.server_id = s.id
+                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                WHERE k.id = ? AND k.user_id = ?
+            """, (key_id, user_id))
+
             key_data = cursor.fetchone()
             if not key_data:
                 await callback_query.answer("Ключ не найден")
                 return
-            
-            # Формируем словарь с данными ключа
-            if key_type == "outline":
-                key_dict = {
-                    'id': key_data[0],
-                    'expiry_at': key_data[1],
-                    'server_id': key_data[2],
-                    'key_id': key_data[3],
-                    'access_url': key_data[4],
-                    'country': key_data[5],
-                    'tariff_id': key_data[6],
-                    'email': key_data[7],
-                    'protocol': key_data[8],
-                    'traffic_limit_mb': key_data[9],
-                    'type': 'outline'
-                }
-            else:
-                key_dict = {
-                    'id': key_data[0],
-                    'expiry_at': key_data[1],
-                    'server_id': key_data[2],
-                    'v2ray_uuid': key_data[3],
-                    'country': key_data[4],
-                    'tariff_id': key_data[5],
-                    'email': key_data[6],
-                    'protocol': key_data[7],
-                    'domain': key_data[8],
-                    'v2ray_path': key_data[9],
-                    'traffic_limit_mb': key_data[10],
-                    'traffic_usage_bytes': key_data[11],
-                    'traffic_over_limit_at': key_data[12],
-                    'traffic_over_limit_notified': key_data[13],
-                    'type': 'v2ray'
-                }
-        
+
+            key_dict = {
+                'id': key_data[0],
+                'expiry_at': key_data[1],
+                'server_id': key_data[2],
+                'v2ray_uuid': key_data[3],
+                'country': key_data[4],
+                'tariff_id': key_data[5],
+                'email': key_data[6],
+                'protocol': key_data[7],
+                'domain': key_data[8],
+                'v2ray_path': key_data[9],
+                'traffic_limit_mb': key_data[10],
+                'traffic_usage_bytes': key_data[11],
+                'traffic_over_limit_at': key_data[12],
+                'traffic_over_limit_notified': key_data[13],
+                'type': 'v2ray',
+            }
+
         # Меняем протокол для ключа
         await change_protocol_for_key(callback_query.message, user_id, key_dict)
         await callback_query.answer()

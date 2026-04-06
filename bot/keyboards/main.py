@@ -58,23 +58,11 @@ def get_protocol_selection_menu() -> ReplyKeyboardMarkup:
     
     # Проверяем наличие доступных серверов для каждого протокола
     with get_db_cursor() as cursor:
-        # Проверяем Outline
-        cursor.execute("""
-            SELECT COUNT(*) FROM servers 
-            WHERE active = 1 AND (COALESCE(access_level, 'all') = 'all') AND protocol = 'outline'
-        """)
-        outline_count = cursor.fetchone()[0]
-        
-        # Проверяем V2Ray
         cursor.execute("""
             SELECT COUNT(*) FROM servers 
             WHERE active = 1 AND (COALESCE(access_level, 'all') = 'all') AND protocol = 'v2ray'
         """)
         v2ray_count = cursor.fetchone()[0]
-    
-    # Добавляем только протоколы с доступными серверами
-    if outline_count > 0:
-        menu.add(KeyboardButton(f"{PROTOCOLS['outline']['icon']} {PROTOCOLS['outline']['name']}"))
     
     if v2ray_count > 0:
         menu.add(KeyboardButton(f"{PROTOCOLS['v2ray']['icon']} {PROTOCOLS['v2ray']['name']}"))

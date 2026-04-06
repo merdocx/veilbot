@@ -800,7 +800,7 @@ class SubscriptionService:
             
             await self.repository.extend_subscription_async(existing_id, new_expires_at)
             
-            # Продлеваем все ключи подписки на серверах (v2ray и outline — только логирование для legacy Outline)
+            # Продлеваем все ключи подписки на серверах (V2Ray)
             # ВАЖНО: Продлеваем ВСЕ ключи подписки, даже если они истекли
             # Это гарантирует, что при продлении подписки все ключи будут активны
             with get_db_cursor(commit=True) as cursor:
@@ -809,14 +809,12 @@ class SubscriptionService:
                 # Подсчитываем количество ключей для логирования
                 cursor.execute("SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?", (existing_id,))
                 v2ray_keys_extended = cursor.fetchone()[0] or 0
-                cursor.execute("SELECT COUNT(*) FROM keys WHERE subscription_id = ? AND protocol = 'outline'", (existing_id,))
-                outline_keys_extended = cursor.fetchone()[0] or 0
                 logger.info(
-                    f"Extended {v2ray_keys_extended} V2Ray keys and {outline_keys_extended} Outline keys "
+                    f"Extended {v2ray_keys_extended} V2Ray keys "
                     f"for subscription {existing_id} to {new_expires_at}"
                 )
             
-            # Если нет V2Ray ключей, создаём их на всех активных V2Ray серверах (Outline больше не выдаём)
+            # Если нет V2Ray ключей, создаём их на всех активных V2Ray серверах
             created_keys = 0
             failed_servers = []
             if v2ray_keys_extended == 0:
@@ -945,11 +943,11 @@ class SubscriptionService:
                                 logger.error(f"Failed to cleanup orphaned key: {cleanup_error}")
                         failed_servers.append(server_id)
             
-            keys_extended = v2ray_keys_extended + outline_keys_extended
+            keys_extended = v2ray_keys_extended
             logger.info(
                 f"Extended existing subscription {existing_id} for user {user_id}: "
                 f"{existing_expires_at} -> {new_expires_at} (+{duration_sec} sec), "
-                f"extended {keys_extended} keys, created {created_keys} new keys"
+                f"extended {keys_extended} V2Ray keys, created {created_keys} new keys"
             )
             return {
                 'id': existing_id,

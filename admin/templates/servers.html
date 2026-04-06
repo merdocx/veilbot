@@ -46,7 +46,7 @@
 </div>
 
 <!-- Servers Table -->
-<div class="card">
+<div class="card card--has-table">
     <div class="card-header">
         <h2 class="card-title">Серверы</h2>
         <p class="card-subtitle">Управление VPN серверами</p>
@@ -55,10 +55,10 @@
     <!-- Filters -->
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
-            <form method="get" action="/servers" id="search-form" style="display: flex; gap: 8px; flex: 1;">
+            <form method="get" action="/servers" id="search-form" class="filter-form">
                 <input type="text" id="global-search" name="q" value="{{ search_query }}" placeholder="Поиск по ID, названию, стране, протоколу..." class="filter-input filter-input--grow" data-server-search="1" data-auto-search="1">
                 <input type="hidden" name="page" value="1" id="search-page-input">
-                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+                <button type="submit" class="btn btn-primary hidden" id="search-submit-btn">Поиск</button>
             </form>
             <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
@@ -69,16 +69,29 @@
 
     <!-- Table -->
     <div class="table-scroll">
-        <table class="material-table" id="servers-table">
+        <table class="material-table table" id="servers-table">
+            <colgroup>
+                <col class="servers-col--id">
+                <col class="servers-col--name">
+                <col class="servers-col--group">
+                <col class="servers-col--protocol">
+                <col class="servers-col--keys">
+                <col class="servers-col--max">
+                <col class="servers-col--status">
+                <col class="servers-col--access">
+                <col class="servers-col--country">
+                <col class="servers-col--actions">
+            </colgroup>
             <thead>
                 <tr>
                     <th>ID</th>
                     <th>Название</th>
+                    <th class="servers-table__th-group">Группа подписки</th>
                     <th>Протокол</th>
                     <th>Ключей</th>
                     <th>Макс.</th>
                     <th>Статус</th>
-                    <th>Уровень доступа</th>
+                    <th title="Уровень доступа">Доступ</th>
                     <th>Страна</th>
                     <th>Действия</th>
                 </tr>
@@ -93,6 +106,13 @@
                         <div class="cell-primary" title="{{ server.name }}">{{ server.name }}</div>
                         {% if server.display_host %}
                         <div class="cell-secondary text-muted">{{ server.display_host }}</div>
+                        {% endif %}
+                    </td>
+                    <td class="servers-table__cell servers-table__cell--sub-group" title="Одинаковый ID — одна подписка на группу серверов">
+                        {% if server.subscription_group_id %}
+                        <span class="code" style="font-size: 0.75rem;">{{ server.subscription_group_display }}</span>
+                        {% else %}
+                        <span class="text-muted">—</span>
                         {% endif %}
                     </td>
                     <td class="servers-table__cell servers-table__cell--protocol">
@@ -120,13 +140,13 @@
                     </td>
                     <td class="servers-table__cell servers-table__cell--purchase">
                         {% if server.access_level == 'all' %}
-                        <span class="badge badge-success" title="Доступен для всех">Все</span>
+                        <span class="badge badge-success servers-table__access-badge" title="Доступен для всех">Все</span>
                         {% elif server.access_level == 'paid' %}
-                        <span class="badge badge-info" title="Доступен для платных и VIP">Платные + VIP</span>
+                        <span class="badge badge-info servers-table__access-badge" title="Доступен для платных и VIP">П+VIP</span>
                         {% elif server.access_level == 'vip' %}
-                        <span class="badge badge-warning" title="Доступен только для VIP">VIP</span>
+                        <span class="badge badge-warning servers-table__access-badge" title="Доступен только для VIP">VIP</span>
                         {% else %}
-                        <span class="badge badge-neutral" title="Не указан">—</span>
+                        <span class="badge badge-neutral servers-table__access-badge" title="Не указан">—</span>
                         {% endif %}
                     </td>
                     <td class="servers-table__cell servers-table__cell--country">
@@ -153,8 +173,8 @@
     </div>
 </div>
 
-<!-- Add Server Form -->
-<div class="card">
+<!-- Add Server Form (отдельные правила сетки — не раздувать ширину страницы) -->
+<div class="card card--add-server">
     <div class="card-header">
         <h2 class="card-title">Добавить новый сервер</h2>
         <p class="card-subtitle">Создание нового VPN сервера</p>
@@ -188,25 +208,13 @@
                 <div>
                     <label for="protocol" class="form-label">Протокол:</label>
                     <select id="protocol" name="protocol" onchange="toggleProtocolFields()" class="form-control">
-                        <option value="outline" selected>Outline</option>
-                        <option value="v2ray">V2Ray</option>
+                        <option value="v2ray" selected>V2Ray</option>
                     </select>
                 </div>
             </div>
             
-            <!-- Outline-specific fields -->
-            <div id="outline-fields">
-                <h3 class="section-title">Параметры Outline</h3>
-                <div class="form-grid mb-3">
-                    <div>
-                        <label for="cert_sha256" class="form-label">SHA256 сертификата (опционально):</label>
-                        <input type="text" id="cert_sha256" name="cert_sha256" placeholder="Оставьте пустым для Outline" class="form-control">
-                    </div>
-                </div>
-            </div>
-            
             <!-- V2Ray-specific fields -->
-            <div id="v2ray-fields" class="hidden">
+            <div id="v2ray-fields">
                 <h3 class="section-title">Параметры V2Ray</h3>
                 <div class="form-grid mb-3">
                     <div>
@@ -227,6 +235,12 @@
                 </div>
             </div>
             
+            <div class="mb-3">
+                <label for="subscription_group_id" class="form-label">Группа подписки (опционально):</label>
+                <input type="text" id="subscription_group_id" name="subscription_group_id" class="form-control" placeholder="Например default или eu-1" maxlength="64" pattern="[a-zA-Z0-9._-]*" autocomplete="off">
+                <small class="form-hint">Серверы с одним и тем же ID группы делят один ключ подписки. Пусто — группа не задана.</small>
+            </div>
+
             <div class="mb-3">
                 <label for="access_level" class="form-label">Уровень доступа:</label>
                 <select id="access_level" name="access_level" class="form-control" required>

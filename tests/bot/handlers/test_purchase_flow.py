@@ -90,7 +90,7 @@ async def test_handle_buy_menu_single_protocol_country(temp_db, mock_message, mo
         INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path,
                              country, protocol, active, available_for_purchase, max_keys)
         VALUES (1, 'Server 1', 'https://server.test', 'sha256', 'server.test', 'key', '/v2ray',
-                'Россия', 'outline', 1, 1, 100)
+                'Россия', 'v2ray', 1, 1, 100)
         """
     )
     temp_db.commit()
@@ -118,7 +118,7 @@ async def test_handle_payment_method_after_country_to_tariff(temp_db, mock_messa
     user_states[user_id] = {
         "state": "waiting_payment_method_after_country",
         "country": "Россия",
-        "protocol": "outline",
+        "protocol": "v2ray",
     }
 
     mock_message.text = "💳 Карта РФ / Карта зарубеж / СБП"

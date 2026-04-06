@@ -16,9 +16,6 @@
         <div class="kv-list"><b>Email</b><span class="vv">{{ user.email or '—' }}</span></div>
       </div>
       <div>
-        <div class="kv-list"><b>Ключей Outline</b><span class="vv">{{ user.outline_count }}</span></div>
-      </div>
-      <div>
         <div class="kv-list"><b>Ключей V2Ray</b><span class="vv">{{ user.v2ray_count }}</span></div>
       </div>
       <div>
@@ -96,9 +93,9 @@
           <td class="keys-table__cell keys-table__cell--server">
             <div class="cell-primary">{{ k[5] or '—' }}</div>
             <div class="cell-secondary">
-              <span class="protocol-badge {% if protocol == 'outline' %}protocol-badge--outline{% elif protocol == 'v2ray' %}protocol-badge--v2ray{% else %}protocol-badge--neutral{% endif %}" title="{% if protocol == 'outline' %}Outline{% elif protocol == 'v2ray' %}V2Ray{% else %}{{ protocol }}{% endif %}">
-                <span class="material-icons icon-small">{% if protocol == 'outline' %}lock{% elif protocol == 'v2ray' %}security{% else %}help_outline{% endif %}</span>
-                {% if protocol == 'outline' %}Outline{% elif protocol == 'v2ray' %}V2Ray{% else %}{{ protocol or '—' }}{% endif %}
+              <span class="protocol-badge {% if protocol == 'v2ray' %}protocol-badge--v2ray{% else %}protocol-badge--neutral{% endif %}" title="{% if protocol == 'v2ray' %}V2Ray{% else %}{{ protocol or '—' }}{% endif %}">
+                <span class="material-icons icon-small">{% if protocol == 'v2ray' %}security{% else %}help_outline{% endif %}</span>
+                {% if protocol == 'v2ray' %}V2Ray{% else %}{{ protocol or '—' }}{% endif %}
               </span>
             </div>
           </td>

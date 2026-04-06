@@ -8,14 +8,17 @@ from typing import Optional, Dict, Any, cast
 from aiogram import types
 from config import (
     PROTOCOLS,
-    ADMIN_ID,
     FREE_V2RAY_TARIFF_ID,
     FREE_V2RAY_COUNTRY,
 )
 from bot.keyboards import get_main_menu
 from bot.services.key_creation import create_new_key_flow_with_protocol
-from bot.utils import safe_send_message
-from bot.core import get_bot_instance
+from bot.services.admin_notifications import (
+    AdminNotificationCategory,
+    format_free_access_info_markdown,
+    format_free_access_info_plain,
+    send_admin_message,
+)
 from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import ProtocolFactory, normalize_vless_host
 from app.infra.foreign_keys import safe_foreign_keys_off
@@ -25,7 +28,7 @@ from memory_optimizer import get_security_logger
 def check_free_tariff_limit_by_protocol_and_country(
     cursor: sqlite3.Cursor,
     user_id: int,
-    protocol: str = "outline",
+    protocol: str = "v2ray",
     country: Optional[str] = None,
     enforce_global: bool = False,
 ) -> bool:
@@ -35,7 +38,7 @@ def check_free_tariff_limit_by_protocol_and_country(
     Args:
         cursor: Курсор БД
         user_id: ID пользователя
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
         country: Страна (опционально)
     
     Returns:
@@ -75,39 +78,21 @@ def check_free_tariff_limit_by_protocol_and_country(
         if row:
             return True  # Пользователь уже получал бесплатный ключ для этого протокола и страны
     
-    # Дополнительная проверка в таблицах ключей (для обратной совместимости)
-    if protocol == "outline":
-        if country:
-            cursor.execute("""
-                SELECT k.created_at FROM keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
-                ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id, country))
-        else:
-            cursor.execute("""
-                SELECT k.created_at FROM keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.user_id = ? AND t.price_rub = 0
-                ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id,))
-    else:  # v2ray
-        if country:
-            cursor.execute("""
-                SELECT k.created_at FROM v2ray_keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
-                ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id, country))
-        else:
-            cursor.execute("""
-                SELECT k.created_at FROM v2ray_keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                WHERE k.user_id = ? AND t.price_rub = 0
-                ORDER BY k.created_at DESC LIMIT 1
-            """, (user_id,))
+    if country:
+        cursor.execute("""
+            SELECT k.created_at FROM v2ray_keys k
+            JOIN tariffs t ON k.tariff_id = t.id
+            JOIN servers s ON k.server_id = s.id
+            WHERE k.user_id = ? AND t.price_rub = 0 AND s.country = ?
+            ORDER BY k.created_at DESC LIMIT 1
+        """, (user_id, country))
+    else:
+        cursor.execute("""
+            SELECT k.created_at FROM v2ray_keys k
+            JOIN tariffs t ON k.tariff_id = t.id
+            WHERE k.user_id = ? AND t.price_rub = 0
+            ORDER BY k.created_at DESC LIMIT 1
+        """, (user_id,))
     
     row = cursor.fetchone()
     # Если найден любой бесплатный ключ — нельзя (только один раз навсегда)
@@ -131,7 +116,7 @@ def check_free_tariff_limit(cursor: sqlite3.Cursor, user_id: int) -> bool:
     return check_free_tariff_limit_by_protocol_and_country(
         cursor,
         user_id,
-        "outline",
+        "v2ray",
         enforce_global=True,
     )
 
@@ -139,7 +124,7 @@ def check_free_tariff_limit(cursor: sqlite3.Cursor, user_id: int) -> bool:
 def check_free_tariff_limit_by_protocol(
     cursor: sqlite3.Cursor,
     user_id: int,
-    protocol: str = "outline",
+    protocol: str = "v2ray",
 ) -> bool:
     """
     Проверка лимита бесплатных ключей для конкретного протокола - один раз навсегда (для обратной совместимости)
@@ -147,7 +132,7 @@ def check_free_tariff_limit_by_protocol(
     Args:
         cursor: Курсор БД
         user_id: ID пользователя
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
     
     Returns:
         True если пользователь уже получал бесплатный ключ, False иначе
@@ -163,7 +148,7 @@ def check_free_tariff_limit_by_protocol(
 def record_free_key_usage(
     cursor: sqlite3.Cursor, 
     user_id: int, 
-    protocol: str = "outline", 
+    protocol: str = "v2ray", 
     country: Optional[str] = None
 ) -> bool:
     """
@@ -172,7 +157,7 @@ def record_free_key_usage(
     Args:
         cursor: Курсор БД
         user_id: ID пользователя
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
         country: Страна (опционально)
     
     Returns:
@@ -217,17 +202,16 @@ async def handle_free_tariff(
         return
     
     now = int(time.time())
-    # Проверяем наличие активного ключа и его тип
     cursor.execute("""
         SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
-        FROM keys k
+        FROM v2ray_keys k
         JOIN tariffs t ON k.tariff_id = t.id
         LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
         WHERE k.user_id = ? AND sub.expires_at > ?
         ORDER BY sub.expires_at DESC LIMIT 1
     """, (user_id, now))
     existing_key = cursor.fetchone()
-    
+
     if existing_key:
         if existing_key[2] > 0:
             await message.answer("У вас уже есть активный платный ключ. Бесплатный ключ можно получить только если нет активных платных ключей.", reply_markup=main_menu)
@@ -235,11 +219,19 @@ async def handle_free_tariff(
         else:
             await message.answer("У вас уже есть активный бесплатный ключ. Бесплатный ключ можно получить только один раз.", reply_markup=main_menu)
             return
-    else:
-        # Импортируем create_new_key_flow из bot.py для обратной совместимости
-        # Это старая функция, которая не поддерживает протоколы
-        from bot import create_new_key_flow
-        await create_new_key_flow(cursor, message, user_id, tariff, None, country)
+
+    try:
+        import importlib
+        bot_module = importlib.import_module("bot")
+        user_states = getattr(bot_module, "user_states", {})
+    except Exception as e:
+        logging.error(f"Error importing user_states: {e}")
+        user_states = {}
+
+    await create_new_key_flow_with_protocol(
+        cursor, message, user_id, tariff, None, country, "v2ray",
+        for_renewal=False, user_states=user_states,
+    )
 
 
 async def handle_free_tariff_with_protocol(
@@ -248,7 +240,7 @@ async def handle_free_tariff_with_protocol(
     user_id: int, 
     tariff: Dict[str, Any], 
     country: Optional[str] = None, 
-    protocol: str = "outline"
+    protocol: str = "v2ray"
 ) -> None:
     """
     Обработка бесплатного тарифа с поддержкой протоколов
@@ -259,7 +251,7 @@ async def handle_free_tariff_with_protocol(
         user_id: ID пользователя
         tariff: Словарь с данными тарифа
         country: Страна (опционально)
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
     """
     main_menu = get_main_menu()
     
@@ -279,47 +271,25 @@ async def handle_free_tariff_with_protocol(
     
     now = int(time.time())
     
-    # Проверяем наличие активного ключа для конкретной страны и протокола
-    if protocol == "outline":
-        if country:
-            cursor.execute("""
-                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
-                FROM keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                JOIN servers s ON k.server_id = s.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND sub.expires_at > ? AND s.country = ?
-                ORDER BY sub.expires_at DESC LIMIT 1
-            """, (user_id, now, country))
-        else:
-            cursor.execute("""
-                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
-                FROM keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND sub.expires_at > ?
-                ORDER BY sub.expires_at DESC LIMIT 1
-            """, (user_id, now))
-    else:  # v2ray
-        if country:
-            cursor.execute("""
-                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
-                FROM v2ray_keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                JOIN servers s ON k.server_id = s.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND sub.expires_at > ? AND s.country = ?
-                ORDER BY sub.expires_at DESC LIMIT 1
-            """, (user_id, now, country))
-        else:
-            cursor.execute("""
-                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
-                FROM v2ray_keys k
-                JOIN tariffs t ON k.tariff_id = t.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND sub.expires_at > ?
-                ORDER BY sub.expires_at DESC LIMIT 1
-            """, (user_id, now))
+    if country:
+        cursor.execute("""
+            SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
+            FROM v2ray_keys k
+            JOIN tariffs t ON k.tariff_id = t.id
+            JOIN servers s ON k.server_id = s.id
+            LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+            WHERE k.user_id = ? AND sub.expires_at > ? AND s.country = ?
+            ORDER BY sub.expires_at DESC LIMIT 1
+        """, (user_id, now, country))
+    else:
+        cursor.execute("""
+            SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, t.price_rub
+            FROM v2ray_keys k
+            JOIN tariffs t ON k.tariff_id = t.id
+            LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+            WHERE k.user_id = ? AND sub.expires_at > ?
+            ORDER BY sub.expires_at DESC LIMIT 1
+        """, (user_id, now))
     
     existing_key = cursor.fetchone()
     if existing_key:
@@ -454,33 +424,22 @@ async def issue_free_v2ray_subscription_on_start(message: types.Message) -> Dict
     # Уведомление администратора (вне транзакции)
     if subscription_data:
         try:
-            bot = get_bot_instance()
-            created_v2ray_keys = subscription_data.get("created_keys", 0)
             failed_servers = subscription_data.get("failed_servers", [])
-
-            if keys_created_any:
-                admin_message = (
-                    "🎁 *Выдана бесплатная подписка*\n"
-                    f"Пользователь: `{user_id}`\n"
-                    f"Тариф: *{tariff['name']}*\n"
-                    f"Создано V2Ray ключей: *{created_v2ray_keys}*"
-                )
-            else:
-                admin_message = (
-                    "❌ *Бесплатная подписка создана, но ключи не созданы*\n"
-                    f"Пользователь: `{user_id}`\n"
-                    f"Тариф: *{tariff['name']}*\n"
-                    f"Создано V2Ray ключей: *{created_v2ray_keys}*"
-                )
-            if failed_servers:
-                admin_message += f"\nНе удалось создать на серверах: {failed_servers}"
-            await safe_send_message(
-                bot,
-                ADMIN_ID,
-                admin_message,
-                disable_web_page_preview=True,
-                parse_mode="Markdown",
-                mark_blocked=False,
+            needs_check = bool(failed_servers)
+            md = format_free_access_info_markdown(
+                user_id=user_id,
+                activated=keys_created_any,
+                needs_server_check=needs_check,
+            )
+            plain = format_free_access_info_plain(
+                user_id=user_id,
+                activated=keys_created_any,
+                needs_server_check=needs_check,
+            )
+            await send_admin_message(
+                md,
+                text_plain=plain,
+                category=AdminNotificationCategory.INFO,
             )
         except Exception as notify_exc:  # noqa: BLE001
             logging.warning("Failed to notify admin about free subscription issuance: %s", notify_exc)

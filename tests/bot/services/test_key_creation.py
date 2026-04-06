@@ -17,11 +17,11 @@ class TestKeyCreation:
                                 country, protocol, active, available_for_purchase, max_keys)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, ("Test Server", "https://test.com", "sha256", "test.com", "key", "/path", 
-              "Россия", "outline", 1, 1, 100))
+              "Россия", "v2ray", 1, 1, 100))
         mock_cursor.connection.commit()
         
         # Выбираем сервер
-        server = select_available_server_by_protocol(mock_cursor, None, "outline", False)
+        server = select_available_server_by_protocol(mock_cursor, None, "v2ray", False)
         
         assert server is not None, "Сервер должен быть найден"
         assert len(server) == 7, "Сервер должен содержать 7 полей"
@@ -35,18 +35,18 @@ class TestKeyCreation:
                                 country, protocol, active, available_for_purchase, max_keys)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, ("Russia Server", "https://ru.com", "sha256", "ru.com", "key", "/path", 
-              "Россия", "outline", 1, 1, 100))
+              "Россия", "v2ray", 1, 1, 100))
         
         mock_cursor.execute("""
             INSERT INTO servers (name, api_url, cert_sha256, domain, api_key, v2ray_path, 
                                 country, protocol, active, available_for_purchase, max_keys)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, ("USA Server", "https://us.com", "sha256", "us.com", "key", "/path", 
-              "США", "outline", 1, 1, 100))
+              "США", "v2ray", 1, 1, 100))
         mock_cursor.connection.commit()
         
         # Выбираем сервер для России
-        server = select_available_server_by_protocol(mock_cursor, "Россия", "outline", False)
+        server = select_available_server_by_protocol(mock_cursor, "Россия", "v2ray", False)
         
         assert server is not None
         assert server[1] == "Russia Server", "Должен быть выбран сервер из России"
@@ -59,11 +59,11 @@ class TestKeyCreation:
                                 country, protocol, active, available_for_purchase, max_keys)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, ("Renewal Server", "https://renewal.com", "sha256", "renewal.com", "key", "/path", 
-              "Россия", "outline", 1, 0, 100))  # available_for_purchase = 0
+              "Россия", "v2ray", 1, 0, 100))  # available_for_purchase = 0
         mock_cursor.connection.commit()
         
         # Для продления должен найти сервер даже если available_for_purchase = 0
-        server = select_available_server_by_protocol(mock_cursor, None, "outline", True)
+        server = select_available_server_by_protocol(mock_cursor, None, "v2ray", True)
         
         assert server is not None, "Сервер должен быть найден для продления"
         assert server[1] == "Renewal Server"
@@ -76,11 +76,11 @@ class TestKeyCreation:
                                 country, protocol, active, available_for_purchase, max_keys)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, ("Unavailable Server", "https://unavailable.com", "sha256", "unavailable.com", "key", "/path", 
-              "Россия", "outline", 1, 0, 100))
+              "Россия", "v2ray", 1, 0, 100))
         mock_cursor.connection.commit()
         
         # Для покупки (for_renewal=False) не должен найти сервер
-        server = select_available_server_by_protocol(mock_cursor, None, "outline", False)
+        server = select_available_server_by_protocol(mock_cursor, None, "v2ray", False)
         
         assert server is None, "Сервер не должен быть найден для покупки"
     
@@ -106,7 +106,7 @@ class TestKeyCreation:
         # Не добавляем серверы
         
         # Пытаемся выбрать сервер
-        server = select_available_server_by_protocol(mock_cursor, None, "outline", False)
+        server = select_available_server_by_protocol(mock_cursor, None, "v2ray", False)
         
         assert server is None, "Сервер не должен быть найден, если их нет"
 

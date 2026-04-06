@@ -32,20 +32,8 @@ def register_renewal_handlers(
         user_id = callback_query.from_user.id
         now = int(time.time())
         
-        # Находим активный ключ пользователя (самый новый по сроку действия)
+        # Находим активный V2Ray ключ (самый новый по сроку действия подписки)
         with get_db_cursor() as cursor:
-            # Проверяем Outline ключи
-            cursor.execute("""
-                SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, s.protocol, s.country
-                FROM keys k
-                JOIN servers s ON k.server_id = s.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND sub.expires_at > ?
-                ORDER BY sub.expires_at DESC LIMIT 1
-            """, (user_id, now))
-            outline_key = cursor.fetchone()
-            
-            # Проверяем V2Ray ключи
             cursor.execute("""
                 SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, s.protocol, s.country
                 FROM v2ray_keys k
@@ -54,17 +42,7 @@ def register_renewal_handlers(
                 WHERE k.user_id = ? AND sub.expires_at > ?
                 ORDER BY sub.expires_at DESC LIMIT 1
             """, (user_id, now))
-            v2ray_key = cursor.fetchone()
-            
-            # Выбираем самый новый ключ
-            current_key = None
-            if outline_key and v2ray_key:
-                # Сравниваем по expiry_at
-                current_key = outline_key if outline_key[1] > v2ray_key[1] else v2ray_key
-            elif outline_key:
-                current_key = outline_key
-            elif v2ray_key:
-                current_key = v2ray_key
+            current_key = cursor.fetchone()
         
         if not current_key:
             await callback_query.answer("У вас нет активных ключей для продления", show_alert=True)
@@ -116,7 +94,7 @@ def register_renewal_handlers(
         state = user_states.get(user_id, {})
         tariff = state.get("tariff")
         email = state.get("email")
-        protocol = state.get("protocol", "outline")
+        protocol = state.get("protocol", "v2ray")
         last_country = state.get("last_country")
         
         if not tariff:

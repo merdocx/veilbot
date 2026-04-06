@@ -27,17 +27,22 @@ class TestBackgroundTasks:
         now = int(time.time())
         grace_threshold = now - 86400  # 24 часа назад
         
-        # Outline ключ, истекший более 24 часов назад (expiry в схеме берётся из subscriptions)
+        mock_cursor.execute(
+            "INSERT INTO users (user_id, created_at, last_active_at, blocked) VALUES (12345, ?, ?, 0)",
+            (now, now),
+        )
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, key_id, server_id)
-            VALUES (?, ?, ?, ?)
-        """, (1, 12345, "outline_key_1", 1))
-        
-        # Добавляем сервер
+            INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path, country, protocol, active)
+            VALUES (1, 'S', 'https://test.com', 'sha256', 'd', 'k', '/v', 'RU', 'v2ray', 1)
+        """)
         mock_cursor.execute("""
-            INSERT INTO servers (id, api_url, cert_sha256)
-            VALUES (?, ?, ?)
-        """, (1, "https://test.com", "sha256"))
+            INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
+            VALUES (1, 12345, 'tok', ?, ?, NULL, 1)
+        """, (now - 200000, grace_threshold - 3600))
+        mock_cursor.execute("""
+            INSERT INTO v2ray_keys (id, user_id, server_id, v2ray_uuid, created_at, subscription_id)
+            VALUES (1, 12345, 1, 'uuid-1', ?, 1)
+        """, (now - 200000,))
         mock_cursor.connection.commit()
         
         # Запускаем функцию (она должна прерваться через KeyboardInterrupt)
@@ -64,19 +69,26 @@ class TestBackgroundTasks:
         mock_sleep.side_effect = [None, KeyboardInterrupt()]
         
         # Настраиваем БД: общая емкость 100, активных ключей 95 (свободных 5)
+        now = int(time.time())
+        mock_cursor.execute(
+            "INSERT INTO users (user_id, created_at, last_active_at, blocked) VALUES (1, ?, ?, 0)",
+            (now, now),
+        )
         mock_cursor.execute("""
             INSERT INTO servers (id, max_keys, active)
             VALUES (?, ?, ?)
         """, (1, 100, 1))
+        mock_cursor.execute("""
+            INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
+            VALUES (1, 1, 'tok', ?, ?, NULL, 1)
+        """, (now, now + 86400))
         mock_cursor.connection.commit()
         
-        now = int(time.time())
-        # Добавляем 95 активных ключей
         for i in range(95):
             mock_cursor.execute("""
-                INSERT INTO keys (id, user_id)
-                VALUES (?, ?)
-            """, (i + 1, 1000 + i))
+                INSERT INTO v2ray_keys (id, server_id, user_id, v2ray_uuid, created_at, subscription_id)
+                VALUES (?, 1, 1, ?, ?, 1)
+            """, (i + 1, f"uuid-{i}", now))
         mock_cursor.connection.commit()
         
         # Запускаем функцию
@@ -102,19 +114,26 @@ class TestBackgroundTasks:
         mock_sleep.side_effect = [None, KeyboardInterrupt()]
         
         # Настраиваем БД: общая емкость 100, активных ключей 50 (свободных 50)
+        now = int(time.time())
+        mock_cursor.execute(
+            "INSERT INTO users (user_id, created_at, last_active_at, blocked) VALUES (1, ?, ?, 0)",
+            (now, now),
+        )
         mock_cursor.execute("""
             INSERT INTO servers (id, max_keys, active)
             VALUES (?, ?, ?)
         """, (1, 100, 1))
+        mock_cursor.execute("""
+            INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
+            VALUES (1, 1, 'tok', ?, ?, NULL, 1)
+        """, (now, now + 86400))
         mock_cursor.connection.commit()
         
-        now = int(time.time())
-        # Добавляем 50 активных ключей
         for i in range(50):
             mock_cursor.execute("""
-                INSERT INTO keys (id, user_id)
-                VALUES (?, ?)
-            """, (i + 1, 1000 + i))
+                INSERT INTO v2ray_keys (id, server_id, user_id, v2ray_uuid, created_at, subscription_id)
+                VALUES (?, 1, 1, ?, ?, 1)
+            """, (i + 1, f"uuid-{i}", now))
         mock_cursor.connection.commit()
         
         # Запускаем функцию

@@ -19,7 +19,7 @@ from app.settings import settings as app_settings
 from app.infra.sqlite_utils import open_connection
 # Импорты из bot.py (используем прямые импорты, чтобы избежать циклических зависимостей)
 # bot будет получен через get_bot() или передан как параметр
-from bot.utils.formatters import format_key_message, format_key_message_unified
+from bot.utils.formatters import format_key_message_unified
 from bot.keyboards import get_main_menu
 from security_logger import log_key_creation
 
@@ -59,7 +59,7 @@ class PaymentService:
         amount: int,
         email: str,
         country: Optional[str] = None,
-        protocol: str = "outline",
+        protocol: str = "v2ray",
         description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         provider: PaymentProvider = PaymentProvider.YOOKASSA,
@@ -241,7 +241,7 @@ class PaymentService:
         amount_usd: float,
         email: str,
         country: Optional[str] = None,
-        protocol: str = "outline",
+        protocol: str = "v2ray",
         description: Optional[str] = None,
         asset: str = "USDT",
         network: str = "TRC20",
@@ -579,7 +579,7 @@ class PaymentService:
                     
                     # Добавляем задержку между обработкой платежей для избежания rate limit
                     # Увеличиваем задержку до 15 секунд для V2Ray (rate limit: 5 запросов в минуту)
-                    if (payment.protocol or 'outline') == 'v2ray':
+                    if (payment.protocol or "v2ray") == "v2ray":
                         await asyncio.sleep(15)  # 15 секунд = 4 запроса в минуту (безопасно)
                     else:
                         await asyncio.sleep(2)
@@ -675,7 +675,7 @@ class PaymentService:
                                 for_renewal = is_renewal_payment(
                                     cursor,
                                     payment.user_id,
-                                    payment.protocol or 'outline',
+                                    payment.protocol or "v2ray",
                                     DEFAULT_GRACE_PERIOD
                                 )
                                 
@@ -691,7 +691,7 @@ class PaymentService:
                                     tariff=tariff,
                                     email=payment.email,
                                     country=payment.country,
-                                    protocol=payment.protocol or 'outline',
+                                    protocol=payment.protocol or "v2ray",
                                     for_renewal=for_renewal,  # Если есть активный ключ, это продление
                                 )
 
@@ -733,13 +733,6 @@ class PaymentService:
             now_ts = int(datetime.now(timezone.utc).timestamp())
             with open_connection(app_settings.DATABASE_PATH) as conn:
                 c = conn.cursor()
-                c.execute("""
-                    SELECT 1 FROM keys k
-                    JOIN subscriptions s ON k.subscription_id = s.id
-                    WHERE k.user_id = ? AND s.expires_at > ? LIMIT 1
-                """, (payment.user_id, now_ts))
-                if c.fetchone():
-                    return True
                 c.execute("""
                     SELECT 1 FROM v2ray_keys k
                     JOIN subscriptions s ON k.subscription_id = s.id

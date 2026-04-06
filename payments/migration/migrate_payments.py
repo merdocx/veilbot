@@ -54,7 +54,7 @@ class PaymentMigration:
                     'email': row[6],
                     'status': row[7] or 'pending',
                     'country': row[8],
-                    'protocol': row[9] or 'outline',
+                    'protocol': row[9] or 'v2ray',
                     'provider': row[10] or 'yookassa',
                     'method': row[11],
                     'description': row[12],

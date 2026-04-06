@@ -25,8 +25,6 @@ def list_all_users(limit: int = 50):
             SELECT DISTINCT user_id FROM (
                 SELECT user_id FROM users
                 UNION
-                SELECT user_id FROM keys
-                UNION
                 SELECT user_id FROM v2ray_keys
                 UNION
                 SELECT user_id FROM subscriptions
@@ -51,8 +49,6 @@ def list_all_users(limit: int = 50):
             cursor.execute("""
                 SELECT MIN(user_id), MAX(user_id), COUNT(DISTINCT user_id) FROM (
                     SELECT user_id FROM users
-                    UNION
-                    SELECT user_id FROM keys
                     UNION
                     SELECT user_id FROM v2ray_keys
                     UNION

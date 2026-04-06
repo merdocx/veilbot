@@ -7,7 +7,12 @@ from typing import Optional
 from aiogram import types
 from aiogram.dispatcher import Dispatcher
 from config import ADMIN_ID
-from bot.utils.messaging import safe_send_message
+from bot.services.admin_notifications import (
+    AdminNotificationCategory,
+    format_bot_error_markdown,
+    format_bot_error_plain,
+    send_admin_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,25 +96,26 @@ class BotErrorHandler:
     async def _notify_admin(self, context: str, exception: Exception, user_id: Optional[int], username: Optional[str]):
         """Отправляет уведомление админу об ошибке"""
         try:
-            error_details = str(exception)[:500]
             traceback_str = traceback.format_exc()[:1000]
-            
-            message = f"❌ *Ошибка в боте*\n\n"
-            message += f"*Контекст:* {context}\n"
-            if user_id:
-                message += f"*User ID:* `{user_id}`\n"
-            if username:
-                message += f"*Username:* @{username}\n"
-            message += f"*Тип ошибки:* `{type(exception).__name__}`\n"
-            message += f"*Сообщение:* `{error_details}`\n\n"
-            message += f"*Traceback:*\n```\n{traceback_str}\n```"
-            
-            await safe_send_message(
-                self.bot,
-                self.admin_id,
-                message,
-                parse_mode="Markdown",
-                mark_blocked=False,
+            md = format_bot_error_markdown(
+                context=context,
+                exception=exception,
+                user_id=user_id,
+                username=username,
+                traceback_str=traceback_str,
+            )
+            plain = format_bot_error_plain(
+                context=context,
+                exception=exception,
+                user_id=user_id,
+                username=username,
+                traceback_str=traceback_str,
+            )
+            await send_admin_message(
+                md,
+                text_plain=plain,
+                admin_id=self.admin_id,
+                category=AdminNotificationCategory.ERROR,
             )
         except Exception as e:
             logger.error(f"Failed to notify admin about error: {e}")
@@ -180,27 +186,29 @@ class BotErrorHandler:
             }
         )
         
-        # Отправляем уведомление админу
-        if bot and admin_id:
+        # Отправляем уведомление админу (бот или HTTP fallback)
+        if admin_id:
             try:
-                error_details = str(error)[:500]
                 traceback_str = traceback.format_exc()[:1000]
-                
-                admin_message = f"❌ *Ошибка в боте*\n\n"
-                admin_message += f"*Контекст:* {context}\n"
-                admin_message += f"*User ID:* `{user_id}`\n"
-                if username:
-                    admin_message += f"*Username:* @{username}\n"
-                admin_message += f"*Тип ошибки:* `{type(error).__name__}`\n"
-                admin_message += f"*Сообщение:* `{error_details}`\n\n"
-                admin_message += f"*Traceback:*\n```\n{traceback_str}\n```"
-                
-                await safe_send_message(
-                    bot,
-                    admin_id,
-                    admin_message,
-                    parse_mode="Markdown",
-                    mark_blocked=False,
+                md = format_bot_error_markdown(
+                    context=context,
+                    exception=error,
+                    user_id=user_id,
+                    username=username,
+                    traceback_str=traceback_str,
+                )
+                plain = format_bot_error_plain(
+                    context=context,
+                    exception=error,
+                    user_id=user_id,
+                    username=username,
+                    traceback_str=traceback_str,
+                )
+                await send_admin_message(
+                    md,
+                    text_plain=plain,
+                    admin_id=admin_id,
+                    category=AdminNotificationCategory.ERROR,
                 )
             except Exception as e:
                 logger.error(f"Failed to notify admin: {e}")

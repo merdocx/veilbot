@@ -28,9 +28,9 @@ class _SecretMaskingFilter(logging.Filter):
             re.compile(r"(\baccessUrl\b\s*[:=]\s*[\"'])(.*?)([\"'])", re.IGNORECASE),
             r"\1***\3",
         ),
-        # vless/ss/outline style URLs (coarse masking)
+        # vless/ss style URLs (coarse masking)
         (
-            re.compile(r"\b(vless://|ss://|outline://)[^\s]+", re.IGNORECASE),
+            re.compile(r"\b(vless://|ss://)[^\s]+", re.IGNORECASE),
             r"***",
         ),
     ]

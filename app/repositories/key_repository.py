@@ -12,22 +12,6 @@ class KeyRepository:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or settings.DATABASE_PATH
 
-    def list_outline_keys(self) -> List[Tuple]:
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute(
-                """
-                SELECT k.id, k.key_id, k.access_url, k.created_at, 
-                       COALESCE(sub.expires_at, 0) as expiry_at, 
-                       s.name, k.email, t.name as tariff_name
-                FROM keys k
-                JOIN servers s ON k.server_id = s.id
-                LEFT JOIN tariffs t ON k.tariff_id = t.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                """
-            )
-            return c.fetchall()
-
     def list_v2ray_keys_with_server(self) -> List[Tuple]:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -46,13 +30,6 @@ class KeyRepository:
             )
             return c.fetchall()
 
-    def get_outline_key_brief(self, key_pk: int) -> Tuple | None:
-        """Return (user_id, key_id, server_id) for outline key id or None."""
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("SELECT user_id, key_id, server_id FROM keys WHERE id = ?", (key_pk,))
-            return c.fetchone()
-
     def get_v2ray_key_brief(self, key_pk: int) -> Tuple | None:
         """Return (user_id, v2ray_uuid, server_id) for v2ray key id or None."""
         with open_connection(self.db_path) as conn:
@@ -61,25 +38,11 @@ class KeyRepository:
             return c.fetchone()
 
     def get_key_unified_by_id(self, key_pk: int) -> Tuple | None:
-        """Return a unified key row (outline or v2ray) for the given primary key.
-        expiry_at берется из subscriptions.expires_at через JOIN.
-        """
+        """Единая строка ключа V2Ray для админки."""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
                 """
-                SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, 
-                       COALESCE(sub.expires_at, 0) as expiry_at,
-                       IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol,
-                       0, '' as api_url, '' as api_key,
-                       0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified,
-                       k.subscription_id
-                FROM keys k
-                LEFT JOIN servers s ON k.server_id = s.id
-                LEFT JOIN tariffs t ON k.tariff_id = t.id
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.id = ?
-                UNION ALL
                 SELECT k.id || '_v2ray' as id, k.v2ray_uuid as key_id,
                        COALESCE(k.client_config, '') as access_url,
                        k.created_at, COALESCE(sub.expires_at, 0) as expiry_at,
@@ -92,19 +55,10 @@ class KeyRepository:
                 LEFT JOIN tariffs t ON k.tariff_id = t.id
                 LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.id = ?
-                LIMIT 1
                 """,
-                (key_pk, key_pk),
+                (key_pk,),
             )
             return c.fetchone()
-
-    def delete_outline_key_by_id(self, key_pk: int) -> None:
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            # Используем контекстный менеджер для безопасного отключения foreign keys
-            with safe_foreign_keys_off(c):
-                c.execute("DELETE FROM keys WHERE id = ?", (key_pk,))
-            conn.commit()
 
     def delete_v2ray_key_by_id(self, key_pk: int) -> None:
         with open_connection(self.db_path) as conn:
@@ -113,18 +67,6 @@ class KeyRepository:
             with safe_foreign_keys_off(c):
                 c.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_pk,))
             conn.commit()
-
-    def get_expired_outline_keys(self, now_ts: int) -> List[Tuple]:
-        """Получить истекшие Outline ключи (срок берется из subscriptions)"""
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("""
-                SELECT k.id, k.key_id, k.server_id 
-                FROM keys k
-                JOIN subscriptions s ON k.subscription_id = s.id
-                WHERE s.expires_at <= ?
-            """, (now_ts,))
-            return c.fetchall()
 
     def get_expired_v2ray_keys(self, now_ts: int) -> List[Tuple]:
         """Получить истекшие V2Ray ключи (срок берется из subscriptions)"""
@@ -138,42 +80,11 @@ class KeyRepository:
             """, (now_ts,))
             return c.fetchall()
 
-    def outline_key_exists(self, key_pk: int) -> bool:
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("SELECT 1 FROM keys WHERE id = ?", (key_pk,))
-            return c.fetchone() is not None
-
     def v2ray_key_exists(self, key_pk: int) -> bool:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT 1 FROM v2ray_keys WHERE id = ?", (key_pk,))
             return c.fetchone() is not None
-
-    def update_outline_key_expiry(self, key_pk: int, new_expiry_ts: int, traffic_limit_mb: int | None = None) -> None:
-        """
-        Обновить срок действия Outline ключа.
-        
-        ПРИМЕЧАНИЕ: После миграции expiry_at удален из таблиц ключей.
-        Для обновления срока нужно обновить подписку через SubscriptionRepository.extend_subscription()
-        ВАЖНО: traffic_limit_mb не используется на уровне ключей, вся информация берется из подписки
-        """
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            # Получаем subscription_id ключа
-            c.execute("SELECT subscription_id FROM keys WHERE id = ?", (key_pk,))
-            result = c.fetchone()
-            if not result or not result[0]:
-                raise ValueError(f"Outline key {key_pk} does not have subscription_id")
-            
-            subscription_id = result[0]
-            # Обновляем подписку
-            from app.repositories.subscription_repository import SubscriptionRepository
-            sub_repo = SubscriptionRepository(self.db_path)
-            sub_repo.extend_subscription(subscription_id, new_expiry_ts)
-            
-            # ВАЖНО: traffic_limit_mb не обновляется на уровне ключа
-            # Вся информация о трафике берется из подписки
 
     def update_v2ray_key_expiry(self, key_pk: int, new_expiry_ts: int, traffic_limit_mb: int | None = None) -> None:
         """
@@ -199,54 +110,6 @@ class KeyRepository:
             
             # ВАЖНО: traffic_limit_mb не обновляется на уровне ключа
             # Вся информация о трафике берется из подписки
-
-    # Insert methods
-    def insert_outline_key(
-        self,
-        server_id: int,
-        user_id: int,
-        access_url: str,
-        expiry_at: int,  # Оставлен для обратной совместимости, но не используется (берется из subscription)
-        key_id: str,
-        email: str | None,
-        tariff_id: int | None,
-        *,
-        traffic_limit_mb: int = 0,
-        protocol: str = "outline",
-        created_at: int | None = None,
-        subscription_id: int | None = None,
-    ) -> int:
-        """
-        Вставка Outline ключа.
-        expiry_at параметр оставлен для обратной совместимости, но не сохраняется в БД.
-        Срок действия ключа определяется подпиской (subscription_id).
-        """
-        created_ts = created_at if created_at is not None else int(time.time())
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute(
-                """
-                INSERT INTO keys (
-                    server_id, user_id, access_url, traffic_limit_mb,
-                    notified, key_id, created_at, email, tariff_id, protocol, subscription_id
-                )
-                VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    server_id,
-                    user_id,
-                    access_url,
-                    traffic_limit_mb,
-                    key_id,
-                    created_ts,
-                    email,
-                    tariff_id,
-                    protocol,
-                    subscription_id,
-                ),
-            )
-            conn.commit()
-            return c.lastrowid
 
     def insert_v2ray_key(
         self,
@@ -311,15 +174,11 @@ class KeyRepository:
         total = 0
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            def apply_common_conditions(base_sql: str, params: list, is_outline: bool = True) -> tuple[str, list]:
-                # Добавляем JOIN для поиска по server_name и tariff_name
+            def apply_common_conditions(base_sql: str, params: list) -> tuple[str, list]:
                 needs_join = search_query is not None
                 if needs_join:
-                    if is_outline:
-                        base_sql += " LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
-                    else:
-                        base_sql += " LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
-                
+                    base_sql += " LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
+
                 where = []
                 if user_id is not None:
                     where.append("k.user_id = ?")
@@ -335,37 +194,25 @@ class KeyRepository:
                     params.append(server_id)
                 if search_query:
                     search_pattern = f"%{search_query}%"
-                    # Поиск по всем столбцам: id, email, key_id, server_name, tariff_name, user_id, subscription_id
                     search_conditions = [
-                        "CAST(k.id AS TEXT) LIKE ?",  # Поиск по числовому ID
+                        "CAST(k.id AS TEXT) LIKE ?",
                         "k.email LIKE ?",
                         "IFNULL(s.name,'') LIKE ?",
                         "IFNULL(t.name,'') LIKE ?",
-                        "CAST(k.user_id AS TEXT) LIKE ?",  # Поиск по user_id
+                        "CAST(k.user_id AS TEXT) LIKE ?",
+                        "k.v2ray_uuid LIKE ?",
+                        "(k.id || '_v2ray') LIKE ?",
+                        "CAST(k.subscription_id AS TEXT) LIKE ?",
                     ]
-                    if is_outline:
-                        search_conditions.append("k.key_id LIKE ?")
-                        # Поиск по полному ID с протоколом (например, "206_outline")
-                        search_conditions.append("(k.id || '_outline') LIKE ?")
-                    else:
-                        search_conditions.append("k.v2ray_uuid LIKE ?")
-                        # Поиск по полному ID с протоколом (например, "206_v2ray")
-                        search_conditions.append("(k.id || '_v2ray') LIKE ?")
-                        # Поиск по subscription_id для V2Ray ключей
-                        search_conditions.append("CAST(k.subscription_id AS TEXT) LIKE ?")
                     where.append("(" + " OR ".join(search_conditions) + ")")
-                    # Добавляем параметры для каждого условия поиска
                     params.extend([search_pattern] * len(search_conditions))
                 where_sql = (" WHERE " + " AND ".join(where)) if where else ""
                 return base_sql + where_sql, params
 
-            if protocol in (None, '', 'outline'):
-                sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
-                c.execute(sql, params)
-                row = c.fetchone()
-                total += int(row[0] or 0)
-            if protocol in (None, '', 'v2ray'):
-                sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
+            if protocol not in (None, "", "v2ray"):
+                return 0
+            if protocol in (None, "", "v2ray"):
+                sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [])
                 c.execute(sql, params)
                 row = c.fetchone()
                 total += int(row[0] or 0)
@@ -411,49 +258,6 @@ class KeyRepository:
                 keyset_where, keyset_params = KeysetPagination.build_keyset_where_clause(
                     sort_by, sort_order, cursor, ""
                 )
-
-            def add_outline():
-                sql = (
-                    "SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, "
-                    "COALESCE(sub.expires_at, 0) as expiry_at, "
-                    "IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol, "
-                    "0 AS traffic_limit_mb, '' as api_url, '' as api_key, "
-                    "0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified, "
-                    "k.subscription_id "
-                    "FROM keys k "
-                    "LEFT JOIN servers s ON k.server_id=s.id "
-                    "LEFT JOIN tariffs t ON k.tariff_id=t.id "
-                    "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id"
-                )
-                where = []
-                if user_id is not None:
-                    where.append("k.user_id = ?"); params.append(user_id)
-                if email:
-                    where.append("k.email LIKE ?"); params.append(f"%{email}%")
-                if tariff_id is not None:
-                    where.append("k.tariff_id = ?"); params.append(tariff_id)
-                if server_id is not None:
-                    where.append("k.server_id = ?"); params.append(server_id)
-                if search_query:
-                    search_pattern = f"%{search_query}%"
-                    # Поиск по всем столбцам: id, email, key_id, server_name, tariff_name, user_id
-                    search_conditions = [
-                        "CAST(k.id AS TEXT) LIKE ?",  # Поиск по числовому ID
-                        "k.email LIKE ?",
-                        "k.key_id LIKE ?",
-                        "IFNULL(s.name,'') LIKE ?",
-                        "IFNULL(t.name,'') LIKE ?",
-                        "CAST(k.user_id AS TEXT) LIKE ?",  # Поиск по user_id
-                        # Поиск по полному ID с протоколом (например, "206_outline")
-                        "(k.id || '_outline') LIKE ?",
-                    ]
-                    where.append("(" + " OR ".join(search_conditions) + ")")
-                    params.extend([search_pattern] * len(search_conditions))
-                # ИСПРАВЛЕНИЕ: Не применяем keyset_where здесь, т.к. он использует алиас "k" который может вызвать проблемы
-                # keyset_where будет применен к обернутому запросу после UNION
-                if where:
-                    sql += " WHERE " + " AND ".join(where)
-                parts.append(sql)
 
             def add_v2ray():
                 sql = (
@@ -501,9 +305,9 @@ class KeyRepository:
                     sql += " WHERE " + " AND ".join(where)
                 parts.append(sql)
 
-            if protocol in (None, '', 'outline'):
-                add_outline()
-            if protocol in (None, '', 'v2ray'):
+            if protocol not in (None, "", "v2ray"):
+                return []
+            if protocol in (None, "", "v2ray"):
                 add_v2ray()
 
             union_sql = " UNION ALL ".join(parts) if parts else "SELECT 0, '', '', 0, 0, '', '', '', '' WHERE 0"

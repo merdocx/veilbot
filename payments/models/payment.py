@@ -18,7 +18,7 @@ class Payment:
     email: Optional[str] = None
     status: PaymentStatus = PaymentStatus.PENDING
     country: Optional[str] = None
-    protocol: str = "outline"
+    protocol: str = "v2ray"
     provider: PaymentProvider = PaymentProvider.YOOKASSA
     method: Optional[PaymentMethod] = None
     description: Optional[str] = None
@@ -124,7 +124,7 @@ class PaymentCreate(BaseModel):
     currency: PaymentCurrency = Field(PaymentCurrency.RUB, description="Валюта")
     email: Optional[str] = Field(None, description="Email для чека")
     country: Optional[str] = Field(None, description="Страна")
-    protocol: str = Field("outline", description="VPN протокол")
+    protocol: str = Field("v2ray", description="VPN протокол")
     provider: PaymentProvider = Field(PaymentProvider.YOOKASSA, description="Платежный провайдер")
     description: Optional[str] = Field(None, description="Описание платежа")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Дополнительные данные")

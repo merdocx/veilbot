@@ -224,13 +224,10 @@ def test_update_subscription_traffic_updates_usage(repo):
     assert usage == 2048
 
 
-def test_get_subscription_keys_for_deletion_returns_all_protocols(repo):
+def test_get_subscription_keys_for_deletion_returns_v2ray_keys(repo):
     conn = sqlite3.connect(repo.db_path)
     conn.execute(
         "INSERT INTO servers (id, api_url, api_key, cert_sha256) VALUES (1, 'https://srv', 'api-key', 'cert')"
-    )
-    conn.execute(
-        "INSERT INTO servers (id, api_url, api_key, cert_sha256) VALUES (2, 'https://outline', 'outline-key', 'cert2')"
     )
     sub_id = _insert_subscription(conn)
     conn.execute(
@@ -240,17 +237,10 @@ def test_get_subscription_keys_for_deletion_returns_all_protocols(repo):
         """,
         (sub_id, 1, "uuid-1"),
     )
-    conn.execute(
-        """
-        INSERT INTO keys (subscription_id, server_id, key_id, protocol)
-        VALUES (?, ?, ?, 'outline')
-        """,
-        (sub_id, 2, "outline-key-id"),
-    )
     conn.commit()
     conn.close()
 
     keys = repo.get_subscription_keys_for_deletion(sub_id)
-    protocols = sorted(proto for *_, proto in keys)
-    assert protocols == ["outline", "v2ray"]
+    assert len(keys) == 1
+    assert keys[0][3] == "v2ray"
 

@@ -58,7 +58,7 @@ class TestPaymentIntegration:
             amount=amount,
             email=email,
             country="RU",
-            protocol="outline"
+            protocol="v2ray"
         )
         
         # Assert

@@ -37,9 +37,7 @@
             <li><b>Email:</b> {{ payment.email or '—' }}</li>
             <li><b>Страна:</b> {{ payment.country or '—' }}</li>
             <li><b>Протокол:</b>
-                {% if payment.protocol == 'outline' %}
-                    <span class="material-icons icon-lg icon-primary" title="Outline">lock</span>
-                {% elif payment.protocol == 'v2ray' %}
+                {% if payment.protocol == 'v2ray' %}
                     <span class="material-icons icon-lg icon-primary" title="V2Ray">security</span>
                 {% else %}
                     {{ payment.protocol or '—' }}

@@ -69,7 +69,7 @@ async def handle_payment_method_selection(
     tariff: Dict[str, Any],
     user_states: Dict[int, Dict[str, Any]],
     country: Optional[str] = None,
-    protocol: str = "outline"
+    protocol: str = "v2ray"
 ) -> None:
     """
     Обработка выбора способа оплаты для платного тарифа
@@ -81,7 +81,7 @@ async def handle_payment_method_selection(
         tariff: Словарь с данными тарифа
         user_states: Словарь состояний пользователей
         country: Страна (опционально)
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
     """
     # Сохраняем состояние и показываем выбор способа оплаты
     user_states[user_id] = {
@@ -116,7 +116,7 @@ async def handle_paid_tariff_with_protocol(
     tariff: Dict[str, Any],
     user_states: Dict[int, Dict[str, Any]],
     country: Optional[str] = None,
-    protocol: str = "outline"
+    protocol: str = "v2ray"
 ) -> None:
     """
     Обработка платного тарифа с поддержкой протоколов
@@ -128,7 +128,7 @@ async def handle_paid_tariff_with_protocol(
         tariff: Словарь с данными тарифа
         user_states: Словарь состояний пользователей
         country: Страна (опционально)
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
     """
     # Перенаправляем на выбор способа оплаты
     await handle_payment_method_selection(cursor, message, user_id, tariff, user_states, country, protocol)

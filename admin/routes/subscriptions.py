@@ -258,12 +258,26 @@ async def subscriptions_page(
         )
         active_servers = []
         for server_row in all_servers:
-            server_id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, access_level = server_row
+            # list_servers возвращает 13 полей (в т.ч. subscription_group_id)
+            (
+                server_id,
+                name,
+                api_url,
+                cert_sha256,
+                max_keys,
+                active,
+                country,
+                protocol,
+                domain,
+                api_key,
+                v2ray_path,
+                access_level,
+            ) = server_row[:12]
             if active:
                 active_servers.append({
                     "id": server_id,
                     "name": name or f"Server #{server_id}",
-                    "protocol": (protocol or "outline").lower(),
+                    "protocol": (protocol or "v2ray").lower(),
                 })
         
         # Формируем модели для отображения
@@ -637,9 +651,8 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
     # Получаем все ключи подписки для удаления
     subscription_keys = subscription_repo.get_subscription_keys_for_deletion(subscription_id)
     
-    # Удаляем ключи через API (V2Ray и Outline)
+    # Удаляем ключи через API (V2Ray)
     deleted_v2ray_count = 0
-    deleted_outline_count = 0
     for key_data in subscription_keys:
         if not isinstance(key_data, (tuple, list)) or len(key_data) < 4:
             logging.warning(f"Invalid key data structure: {key_data} for subscription {subscription_id}")
@@ -688,38 +701,6 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
                             await protocol_client.close()
                         except Exception as close_error:
                             logging.warning(f"Error closing protocol client: {close_error}")
-        
-        elif protocol == 'outline':
-            # Удаляем Outline ключ
-            if api_key_or_cert:  # cert_sha256 для Outline
-                try:
-                    log_admin_action(
-                        request,
-                        "OUTLINE_DELETE_ATTEMPT",
-                        f"Attempting to delete key {key_id} from server {api_url} for subscription {subscription_id}"
-                    )
-                    from outline import delete_key
-                    result = delete_key(api_url, api_key_or_cert, key_id)
-                    if result:
-                        deleted_outline_count += 1
-                        log_admin_action(
-                            request,
-                            "OUTLINE_DELETE_SUCCESS",
-                            f"Successfully deleted key {key_id} for subscription {subscription_id}"
-                        )
-                    else:
-                        log_admin_action(
-                            request,
-                            "OUTLINE_DELETE_FAILED",
-                            f"Failed to delete key {key_id} for subscription {subscription_id}"
-                        )
-                except Exception as e:
-                    logging.error(f"Error deleting Outline key {key_id}: {e}", exc_info=True)
-                    log_admin_action(
-                        request,
-                        "OUTLINE_DELETE_ERROR",
-                        f"Failed to delete key {key_id} for subscription {subscription_id}: {str(e)}"
-                    )
     
     # Удаляем ключи из БД
     deleted_keys_count = subscription_repo.delete_subscription_keys(subscription_id)
@@ -749,7 +730,7 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
     log_admin_action(
         request,
         "DELETE_SUBSCRIPTION",
-        f"Subscription ID: {subscription_id}, deleted {deleted_keys_count} keys from DB, {deleted_v2ray_count} V2Ray + {deleted_outline_count} Outline from servers, subscription removed from DB"
+        f"Subscription ID: {subscription_id}, deleted {deleted_keys_count} keys from DB, {deleted_v2ray_count} V2Ray from servers, subscription removed from DB"
     )
     
     logging.info(f"Successfully deleted subscription {subscription_id} from database")
@@ -757,7 +738,6 @@ async def _delete_subscription_internal(request: Request, subscription_id: int) 
         "subscription_id": subscription_id,
         "deleted_keys_count": deleted_keys_count,
         "deleted_v2ray_count": deleted_v2ray_count,
-        "deleted_outline_count": deleted_outline_count,
     }
 
 
@@ -943,7 +923,6 @@ class SyncKeysRequest(BaseModel):
     delete_inactive_server_keys: bool = True
     sync_configs: bool = True
     include_v2ray: bool = True
-    include_outline: bool = True
 
 
 @router.post("/subscriptions/sync-keys")
@@ -953,10 +932,10 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     
     # Валидация параметров
-    if not sync_params.include_v2ray and not sync_params.include_outline:
+    if not sync_params.include_v2ray:
         return JSONResponse({
             "success": False,
-            "error": "Необходимо выбрать хотя бы один протокол (V2Ray или Outline)"
+            "error": "Синхронизация V2Ray должна быть включена"
         }, status_code=400)
     
     if sync_params.server_scope == "single" and not sync_params.server_id:
@@ -975,7 +954,7 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
             f"delete_orphaned={sync_params.delete_orphaned_on_servers}, "
             f"delete_inactive={sync_params.delete_inactive_server_keys}, "
             f"sync_configs={sync_params.sync_configs}, "
-            f"v2ray={sync_params.include_v2ray}, outline={sync_params.include_outline}"
+            f"v2ray={sync_params.include_v2ray}"
         )
         
         # Определяем server_id для функции
@@ -992,7 +971,6 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
                     delete_inactive_server_keys=sync_params.delete_inactive_server_keys,
                     sync_configs=sync_params.sync_configs,
                     include_v2ray=sync_params.include_v2ray,
-                    include_outline=sync_params.include_outline,
                 )
             )
 
@@ -1017,8 +995,6 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
             "SYNC_KEYS_COMPLETE",
             f"Key synchronization completed: v2ray_created={result.get('v2ray_keys_created', 0)}, "
             f"v2ray_configs_updated={result.get('v2ray_configs_updated', 0)}, "
-            f"outline_created={result.get('outline_keys_created', 0)}, "
-            f"outline_configs_updated={result.get('outline_configs_updated', 0)}, "
             f"keys_deleted_from_servers={result.get('keys_deleted_from_servers', 0)}, "
             f"errors={result.get('errors', 0)}"
         )
@@ -1033,9 +1009,6 @@ async def sync_keys_with_servers(request: Request, sync_params: SyncKeysRequest 
                 "keys_deleted_from_servers": result.get("keys_deleted_from_servers", 0),
                 "v2ray_keys_created": result.get("v2ray_keys_created", 0),
                 "v2ray_configs_updated": result.get("v2ray_configs_updated", 0),
-                "outline_keys_created": result.get("outline_keys_created", 0),
-                "outline_configs_updated": result.get("outline_configs_updated", 0),
-                "outline_keys_removed": result.get("outline_keys_removed", 0),
                 "errors": result.get("errors", 0),
                 "duration_seconds": result.get("duration_seconds", 0),
                 "error_details": result.get("error_details", []),

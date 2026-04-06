@@ -1,4 +1,47 @@
-/* Material Design Admin Panel - Minimalistic Style */
+.traffic-cell--over-limit {
+    background: rgba(255, 87, 51, 0.08);
+}
+
+.traffic-warning {
+    color: #d32f2f;
+    font-weight: 600;
+    margin-top: 4px;
+}
+
+.traffic-warning.hidden {
+    display: none;
+}
+
+.btn + .btn {
+    margin-left: 8px;
+}
+.code-block {
+    background: #111827;
+    color: #f1f5f9;
+    padding: 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-family: 'Roboto Mono', monospace;
+    font-size: 13px;
+}
+.grid-two {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 24px;
+}
+
+.kv-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 8px;
+}
+
+.kv-list b {
+    font-weight: 600;
+}
+/* Material Design Admin Panel — единственный подключаемый лист админки (см. base.html). */
 
 /* Reset and Base */
 * {
@@ -13,6 +56,7 @@ body {
     color: #212121;
     line-height: 1.5;
     font-size: 14px;
+    overflow-x: clip;
 }
 
 /* Material Design Colors */
@@ -32,12 +76,16 @@ body {
     --divider: #e0e0e0;
     --shadow: 0 2px 4px rgba(0,0,0,0.1);
     --shadow-hover: 0 4px 8px rgba(0,0,0,0.15);
+    --admin-content-max-width: 1600px;
 }
 
 /* App Layout */
 .app-container {
     display: flex;
     min-height: 100vh;
+    min-width: 0;
+    max-width: 100vw;
+    overflow-x: clip;
 }
 
 /* Sidebar */
@@ -115,6 +163,9 @@ body {
     min-height: 100vh;
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    max-width: calc(100vw - 192px);
+    box-sizing: border-box;
 }
 
 /* Top Bar */
@@ -123,6 +174,11 @@ body {
     border-bottom: 1px solid var(--divider);
     padding: 16px 24px;
     box-shadow: var(--shadow);
+    width: 100%;
+    max-width: min(var(--admin-content-max-width), 100%);
+    margin-left: auto;
+    margin-right: auto;
+    box-sizing: border-box;
 }
 
 .top-bar-content {
@@ -159,6 +215,13 @@ body {
 .content-wrapper {
     flex: 1;
     padding: 24px;
+    min-width: 0;
+    width: 100%;
+    max-width: min(var(--admin-content-max-width), 100%);
+    margin-left: auto;
+    margin-right: auto;
+    box-sizing: border-box;
+    overflow-x: clip;
 }
 
 /* Cards */
@@ -168,6 +231,14 @@ body {
     box-shadow: var(--shadow);
     overflow: hidden;
     margin-bottom: 24px;
+    min-width: 0;
+    max-width: 100%;
+}
+
+/* Иначе overflow:hidden на карточке ломает position:sticky у колонок таблицы и обрезает горизонтальный скролл .table-scroll */
+.card.card--has-table,
+.card:has(.table-scroll) {
+    overflow: visible;
 }
 
 .card-header {
@@ -191,6 +262,7 @@ body {
 
 .card-body {
     padding: 24px;
+    min-width: 0;
 }
 
 .quick-actions {
@@ -229,9 +301,11 @@ body {
 /* Stats */
 .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
     gap: 16px;
     margin-bottom: 24px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .stat-card {
@@ -371,6 +445,9 @@ body {
     gap: 16px;
     align-items: center;
     flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 .filter-bar__group {
@@ -379,6 +456,54 @@ body {
     gap: 16px;
     flex: 1;
     flex-wrap: wrap;
+    min-width: 0;
+}
+
+/* Иначе flex: 1 на форме поиска даёт min-content ширину и рвёт ряд фильтров / страницу */
+.filter-bar__group > form {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.filter-form {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+    align-items: center;
+    min-width: 0;
+}
+
+.filter-form.flex-wrap {
+    flex-wrap: wrap;
+}
+
+.filter-form > .form-control:first-of-type {
+    flex: 1;
+    min-width: min(12rem, 100%);
+}
+
+.filter-form .form-control {
+    min-width: 0;
+}
+
+.filter-input--select {
+    flex: 0 1 auto;
+    min-width: min(150px, 100%);
+    max-width: 100%;
+}
+
+.filter-input--select-wide {
+    min-width: min(180px, 100%);
+}
+
+.vip-star {
+    color: #ffd700;
+    vertical-align: middle;
+}
+
+.stat-amount-sub {
+    font-size: 12px;
+    margin-top: 2px;
 }
 
 .filter-bar__reset {
@@ -387,7 +512,8 @@ body {
 
 .filter-input {
     flex: 1;
-    min-width: 200px;
+    min-width: min(200px, 100%);
+    max-width: 100%;
     padding: 8px 12px;
     border: 1px solid var(--divider);
     border-radius: 4px;
@@ -404,7 +530,8 @@ body {
 
 .filter-input--grow {
     flex: 1;
-    min-width: 250px;
+    min-width: min(250px, 100%);
+    max-width: 100%;
 }
 
 .filter-bar--compact {
@@ -414,13 +541,34 @@ body {
 /* Utilities */
 .table-scroll {
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    box-sizing: border-box;
 }
 
-.table-scroll table {
+/* table-layout: auto здесь ломал бы #servers-table (нужен fixed) — задаём только для таблиц без id */
+.table-scroll table:not([id]) {
     width: 100%;
     max-width: 100%;
-    table-layout: fixed;
+    table-layout: auto;
+}
+
+.table-scroll table[id] {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+
+.table-scroll .material-table td,
+.table-scroll .material-table th {
+    min-width: 0;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    text-align: center;
+    vertical-align: middle;
 }
 
 .material-table--compact th {
@@ -441,7 +589,8 @@ body {
 }
 
 .flex-1 {
-    flex: 1;
+    flex: 1 1 0%;
+    min-width: 0;
 }
 
 .link-plain {
@@ -451,12 +600,25 @@ body {
 
 .form-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
     gap: 16px;
+    min-width: 0;
+}
+
+/* По умолчанию у grid-элементов min-width: auto — длинный контент/инпуты раздвигают карточку */
+.form-grid > * {
+    min-width: 0;
+}
+
+.card-body > form {
+    min-width: 0;
+    max-width: 100%;
 }
 
 .form-control {
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
     padding: 8px;
     border: 1px solid var(--divider);
     border-radius: 4px;
@@ -480,6 +642,13 @@ body {
     margin-top: 4px;
     color: #666;
     font-size: 12px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* Карточка «Добавить сервер» (/servers): более узкая минимальная колонка сетки */
+.card--add-server .form-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
 }
 
 .form-hint--indent {
@@ -509,6 +678,13 @@ body {
     font-weight: 500;
 }
 
+/*
+ * Политика таблиц: обёртка .table-scroll — overflow-x:auto; таблица width/max-width 100%.
+ * Базово .material-table { table-layout:auto }. Для фиксированных колонок задавать #id таблицы
+ * { table-layout:fixed; … } — специфичность id перебивает класс без цепочек :not(#…).
+ * Не суммировать min-width на th так, что сумма превышает viewport; предпочтительно width/% + max-width + min-width:0 на ячейках.
+ */
+
 /* Material Table */
 .material-table {
     width: 100%;
@@ -518,23 +694,23 @@ body {
     max-width: 100%;
 }
 
-/* Общие стили для всех таблиц - предотвращение переполнения */
+/* Общие стили для всех таблиц — переполнение и единое выравнивание по центру */
 .material-table th,
 .material-table td {
     overflow: hidden;
     text-overflow: ellipsis;
-    padding: 8px 12px;
+    padding: 8px 10px;
     word-break: break-word;
-    text-align: left;
+    text-align: center;
     vertical-align: middle;
 }
 
 .material-table th {
-    padding-left: 16px;
+    padding: 8px 10px;
 }
 
 .material-table td {
-    padding-left: 16px;
+    padding: 8px 10px;
 }
 
 .material-table th:not(:first-child),
@@ -655,71 +831,175 @@ body {
 #users-table th:nth-child(6),
 #users-table td:nth-child(6) { 
     width: 14%;
+    max-width: min(14%, 12rem);
+    min-width: 0;
 }
 
-/* Таблица серверов */
+/* Таблица серверов: table-layout fixed + width/max-width по колонкам (см. политику таблиц выше). */
 #servers-table {
     table-layout: fixed;
     width: 100%;
     max-width: 100%;
-}
-
-/* Компактирование столбцов */
-#servers-table th {
-    padding: 8px 12px;
-    white-space: nowrap;
-    text-align: left;
-    padding-left: 16px;
-}
-
-#servers-table td {
-    padding: 12px 16px;
+    min-width: 0;
 }
 
 #servers-table th:nth-child(1),
-#servers-table td:nth-child(1) { 
-    width: 6%;
+#servers-table td:nth-child(1) {
+    width: 5%;
+    max-width: min(5%, 3.25rem);
 }
 
 #servers-table th:nth-child(2),
-#servers-table td:nth-child(2) { 
-    width: 12%;
-    max-width: 156px;
+#servers-table td:nth-child(2) {
+    width: 22%;
+    max-width: min(22%, 11rem);
 }
 
 #servers-table th:nth-child(3),
-#servers-table td:nth-child(3) { 
-    width: 15%;
+#servers-table td:nth-child(3) {
+    width: 8%;
+    max-width: min(8%, 7rem);
 }
 
 #servers-table th:nth-child(4),
-#servers-table td:nth-child(4) { 
-    width: 8%;
+#servers-table td:nth-child(4) {
+    width: 10%;
+    max-width: min(10%, 7.5rem);
 }
 
 #servers-table th:nth-child(5),
-#servers-table td:nth-child(5) { 
-    width: 8%;
+#servers-table td:nth-child(5) {
+    width: 7%;
+    max-width: min(7%, 4.5rem);
 }
 
 #servers-table th:nth-child(6),
-#servers-table td:nth-child(6) { 
-    width: 9%;
+#servers-table td:nth-child(6) {
+    width: 7%;
+    max-width: min(7%, 4rem);
 }
 
 #servers-table th:nth-child(7),
-#servers-table td:nth-child(7) { 
-    width: 9%;
+#servers-table td:nth-child(7) {
+    width: 7%;
+    max-width: min(7%, 3.5rem);
+}
+
+/* Узкая колонка «Доступ»: в table-layout:fixed max-width на td часто игнорируется, если задан width:% — фиксируем px + colgroup */
+#servers-table col.servers-col--access {
+    width: 40px;
 }
 
 #servers-table th:nth-child(8),
-#servers-table td:nth-child(8) { 
-    width: 21%;
+#servers-table td:nth-child(8) {
+    width: 40px;
+    max-width: 40px;
+    min-width: 0;
+    padding: 6px 2px;
+    box-sizing: border-box;
 }
 
 #servers-table th:nth-child(9),
-#servers-table td:nth-child(9) { 
-    width: 10%;
+#servers-table td:nth-child(9) {
+    width: 14%;
+    max-width: min(14%, 10rem);
+}
+
+/* Действия: достаточно места под две btn-icon + sticky справа при горизонтальном скролле */
+#servers-table th:nth-child(10),
+#servers-table td:nth-child(10) {
+    width: 20%;
+    min-width: 5.75rem;
+    max-width: min(20%, 8rem);
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    background: var(--surface);
+    box-shadow: -4px 0 6px rgba(15, 23, 42, 0.08);
+    overflow: visible;
+}
+
+#servers-table thead th:nth-child(10) {
+    z-index: 2;
+    background: #f5f5f5;
+}
+
+#servers-table tbody tr:hover td:nth-child(10) {
+    background: #f5f5f5;
+}
+
+#servers-table .servers-table__cell--actions .action-buttons {
+    flex-wrap: nowrap;
+    justify-content: center;
+    max-width: 100%;
+    min-width: 0;
+}
+
+/* nowrap в заголовках даёт минимальную ширину больше колонки и рвёт макет — переносим текст */
+#servers-table th {
+    padding: 8px 6px;
+    white-space: normal;
+    text-align: center;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+    font-size: 11px;
+    hyphens: auto;
+    min-width: 0;
+    overflow: hidden;
+}
+
+#servers-table td {
+    padding: 10px 6px;
+    text-align: center;
+    vertical-align: middle;
+    min-width: 0;
+    overflow: hidden;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+#servers-table .protocol-badge {
+    white-space: normal;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+#servers-table .badge {
+    white-space: normal;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    line-height: 1.2;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+#servers-table .badge.servers-table__access-badge {
+    font-size: 9px;
+    padding: 2px 3px;
+    letter-spacing: 0;
+    line-height: 1.2;
+    white-space: normal;
+    word-break: break-word;
+    text-transform: none;
+}
+
+#servers-table .cell-primary,
+#servers-table .cell-secondary {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#servers-table .code {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
 }
 
 #servers-table .cell-secondary {
@@ -727,7 +1007,7 @@ body {
 }
 
 .servers-table__cell--keys .badge {
-    min-width: 36px;
+    min-width: 0;
     justify-content: center;
 }
 
@@ -739,11 +1019,6 @@ body {
 
 .servers-table__cell--actions .btn-icon:not(.btn-danger):hover {
     background: #e2e8f0;
-}
-
-/* Таблица платежей - используем auto для гибкости, но ограничиваем ширину колонок */
-.material-table:not(#keys-table):not(#users-table):not(#servers-table) {
-    table-layout: auto;
 }
 
 /* Таблица платежей */
@@ -798,6 +1073,14 @@ body {
     width: 18%;
 }
 
+/* Фиксированная сетка таблицы (ширина задаётся в #tariffs-table и др.) */
+.material-table.material-table--fixed {
+    table-layout: fixed;
+    width: 100%;
+    max-width: 100%;
+}
+
+/* Тарифы — 9 колонок: ID, название, длит., цена, трафик, оплата, архив, подписок, действия */
 #tariffs-table {
     table-layout: fixed;
     width: 100%;
@@ -806,39 +1089,54 @@ body {
 
 #tariffs-table th:nth-child(1),
 #tariffs-table td:nth-child(1) {
-    width: 7%;
+    width: 5%;
 }
 
 #tariffs-table th:nth-child(2),
 #tariffs-table td:nth-child(2) {
-    width: 18%;
+    width: 11%;
 }
 
 #tariffs-table th:nth-child(3),
 #tariffs-table td:nth-child(3) {
-    width: 18%;
+    width: 8%;
 }
 
 #tariffs-table th:nth-child(4),
 #tariffs-table td:nth-child(4) {
-    width: 18%;
+    width: 8%;
 }
 
 #tariffs-table th:nth-child(5),
 #tariffs-table td:nth-child(5) {
-    width: 18%;
+    width: 8%;
 }
 
 #tariffs-table th:nth-child(6),
 #tariffs-table td:nth-child(6) {
-    width: 21%;
+    width: 14%;
+}
+
+#tariffs-table th:nth-child(7),
+#tariffs-table td:nth-child(7) {
+    width: 7%;
+}
+
+#tariffs-table th:nth-child(8),
+#tariffs-table td:nth-child(8) {
+    width: 8%;
+}
+
+#tariffs-table th:nth-child(9),
+#tariffs-table td:nth-child(9) {
+    width: 31%;
 }
 
 .tariff-price {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    align-items: flex-start;
+    align-items: center;
 }
 
 .tariff-price__line {
@@ -853,30 +1151,32 @@ body {
     color: var(--text-muted);
 }
 
-.material-table:not(#keys-table):not(#users-table):not(#servers-table):not(#payments-table) th,
-.material-table:not(#keys-table):not(#users-table):not(#servers-table):not(#payments-table) td {
-    max-width: 200px;
-    word-break: break-word;
-    white-space: normal;
+/* Подписки — та же дисциплина ширины, что и у остальных таблиц в .table-scroll */
+#subscriptions-table {
+    width: 100%;
+    max-width: 100%;
+    table-layout: auto;
 }
 
 .material-table th {
     background: #f5f5f5;
-    padding: 16px 12px;
-    text-align: left;
+    padding: 12px 10px;
+    text-align: center;
     font-weight: 500;
     color: var(--text-primary);
     border-bottom: 1px solid var(--divider);
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    vertical-align: middle;
 }
 
 .material-table td {
-    padding: 12px;
+    padding: 12px 10px;
     border-bottom: 1px solid #f0f0f0;
     color: var(--text-primary);
     vertical-align: middle;
+    text-align: center;
 }
 
 .material-table tr:hover {
@@ -944,6 +1244,16 @@ body {
     box-shadow: var(--shadow-hover);
 }
 
+.btn-warning {
+    background: var(--warning);
+    color: white;
+}
+
+.btn-warning:hover {
+    background: #f57c00;
+    box-shadow: var(--shadow-hover);
+}
+
 .btn-icon {
     padding: 8px;
     min-width: 36px;
@@ -998,11 +1308,6 @@ body {
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-}
-
-.protocol-badge--outline {
-    background: #e3f2fd;
-    color: #1565c0;
 }
 
 .protocol-badge--v2ray {
@@ -1240,6 +1545,18 @@ body {
     align-items: center;
 }
 
+.material-table td .action-buttons {
+    justify-content: center;
+}
+
+/* Утилиты text-left/text-right в шаблонах — в таблицах выравниваем как остальные ячейки */
+.material-table th.text-left,
+.material-table td.text-left,
+.material-table th.text-right,
+.material-table td.text-right {
+    text-align: center;
+}
+
 .vb-modal {
     display: none;
     position: fixed;
@@ -1349,6 +1666,7 @@ body.vb-modal-open {
     
     .main-content {
         margin-left: 160px; /* 200px * 0.8 = 160px (уменьшено на 20%) */
+        max-width: calc(100vw - 160px);
     }
     
     .content-wrapper {
@@ -1493,14 +1811,28 @@ a.skip-link:focus-visible,
     font-size: 12px;
 }
 
-#webhooks-table th:nth-child(1) { width: 6%; min-width: 60px; }
-#webhooks-table th:nth-child(2) { width: 12%; min-width: 130px; }
-#webhooks-table th:nth-child(3) { width: 12%; min-width: 120px; }
-#webhooks-table th:nth-child(4) { width: 10%; min-width: 110px; }
-#webhooks-table th:nth-child(5) { width: 8%; min-width: 90px; }
-#webhooks-table th:nth-child(6) { width: 12%; min-width: 120px; }
-#webhooks-table th:nth-child(7) { width: 30%; min-width: 220px; }
-#webhooks-table th:nth-child(8) { width: 10%; min-width: 130px; }
+#webhooks-table {
+    table-layout: fixed;
+    width: 100%;
+    max-width: 100%;
+}
+
+#webhooks-table th:nth-child(1),
+#webhooks-table td:nth-child(1) { width: 6%; min-width: 0; max-width: min(6%, 5rem); }
+#webhooks-table th:nth-child(2),
+#webhooks-table td:nth-child(2) { width: 12%; min-width: 0; max-width: min(12%, 10rem); }
+#webhooks-table th:nth-child(3),
+#webhooks-table td:nth-child(3) { width: 12%; min-width: 0; max-width: min(12%, 10rem); }
+#webhooks-table th:nth-child(4),
+#webhooks-table td:nth-child(4) { width: 10%; min-width: 0; max-width: min(10%, 9rem); }
+#webhooks-table th:nth-child(5),
+#webhooks-table td:nth-child(5) { width: 8%; min-width: 0; max-width: min(8%, 7rem); }
+#webhooks-table th:nth-child(6),
+#webhooks-table td:nth-child(6) { width: 12%; min-width: 0; max-width: min(12%, 10rem); }
+#webhooks-table th:nth-child(7),
+#webhooks-table td:nth-child(7) { width: 30%; min-width: 0; max-width: min(30%, 22rem); }
+#webhooks-table th:nth-child(8),
+#webhooks-table td:nth-child(8) { width: 10%; min-width: 0; max-width: min(10%, 8rem); }
 
 /* Responsive adjustments */
 @media (max-width: 640px) {
@@ -1698,46 +2030,3 @@ a.skip-link:focus-visible,
 
 
 
-.traffic-cell--over-limit {
-    background: rgba(255, 87, 51, 0.08);
-}
-
-.traffic-warning {
-    color: #d32f2f;
-    font-weight: 600;
-    margin-top: 4px;
-}
-
-.traffic-warning.hidden {
-    display: none;
-}
-
-.btn + .btn {
-    margin-left: 8px;
-}
-.code-block {
-    background: #111827;
-    color: #f1f5f9;
-    padding: 16px;
-    border-radius: 8px;
-    overflow-x: auto;
-    font-family: 'Roboto Mono', monospace;
-    font-size: 13px;
-}
-.grid-two {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 24px;
-}
-
-.kv-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: grid;
-    gap: 8px;
-}
-
-.kv-list b {
-    font-weight: 600;
-}

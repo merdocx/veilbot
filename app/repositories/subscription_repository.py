@@ -288,12 +288,11 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def get_subscription_keys_for_deletion(self, subscription_id: int) -> List[Tuple]:
-        """Получить все ключи подписки для удаления (v2ray и outline)
-        Returns: List of tuples: (key_id, api_url, api_key/cert_sha256, protocol)"""
+        """Получить все ключи подписки для удаления (V2Ray).
+        Returns: List of tuples: (key_id, api_url, api_key, protocol)"""
         result = []
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            # V2Ray ключи
             c.execute(
                 """
                 SELECT k.v2ray_uuid, s.api_url, s.api_key, 'v2ray' as protocol
@@ -303,22 +302,8 @@ class SubscriptionRepository:
                 """,
                 (subscription_id,),
             )
-            v2ray_keys = c.fetchall()
-            result.extend(v2ray_keys)
-            
-            # Outline ключи
-            c.execute(
-                """
-                SELECT k.key_id, s.api_url, s.cert_sha256, 'outline' as protocol
-                FROM keys k
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.subscription_id = ? AND k.protocol = 'outline'
-                """,
-                (subscription_id,),
-            )
-            outline_keys = c.fetchall()
-            result.extend(outline_keys)
-            
+            result.extend(c.fetchall())
+
         return result
     
     def get_subscription_keys_with_server_info(self, subscription_id: int) -> List[Tuple]:
@@ -340,7 +325,7 @@ class SubscriptionRepository:
             return c.fetchall()
 
     def delete_subscription_keys(self, subscription_id: int) -> int:
-        """Удалить все ключи подписки из БД (v2ray и outline)"""
+        """Удалить все ключи подписки из БД (V2Ray)."""
         from app.infra.foreign_keys import safe_foreign_keys_off
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
@@ -349,13 +334,7 @@ class SubscriptionRepository:
                     "DELETE FROM v2ray_keys WHERE subscription_id = ?",
                     (subscription_id,),
                 )
-                v2ray_deleted = c.rowcount
-                c.execute(
-                    "DELETE FROM keys WHERE subscription_id = ?",
-                    (subscription_id,),
-                )
-                outline_deleted = c.rowcount
-                deleted_count = v2ray_deleted + outline_deleted
+                deleted_count = c.rowcount
             conn.commit()
             return deleted_count
 
@@ -633,11 +612,10 @@ class SubscriptionRepository:
                 return rows
 
     async def get_subscription_keys_for_deletion_async(self, subscription_id: int) -> List[Tuple]:
-        """Получить все ключи подписки для удаления (асинхронная версия, v2ray и outline)
-        Returns: List of tuples: (key_id, api_url, api_key/cert_sha256, protocol)"""
+        """Получить все ключи подписки для удаления (асинхронная версия, V2Ray).
+        Returns: List of tuples: (key_id, api_url, api_key, protocol)"""
         result = []
         async with open_async_connection(self.db_path) as conn:
-            # V2Ray ключи
             async with conn.execute(
                 """
                 SELECT k.v2ray_uuid, s.api_url, s.api_key, 'v2ray' as protocol
@@ -647,45 +625,23 @@ class SubscriptionRepository:
                 """,
                 (subscription_id,),
             ) as cursor:
-                v2ray_keys = await cursor.fetchall()
-                result.extend(v2ray_keys)
-            
-            # Outline ключи
-            async with conn.execute(
-                """
-                SELECT k.key_id, s.api_url, s.cert_sha256, 'outline' as protocol
-                FROM keys k
-                JOIN servers s ON k.server_id = s.id
-                WHERE k.subscription_id = ? AND k.protocol = 'outline'
-                """,
-                (subscription_id,),
-            ) as cursor:
-                outline_keys = await cursor.fetchall()
-                result.extend(outline_keys)
-        
+                result.extend(await cursor.fetchall())
+
         return result
 
     async def delete_subscription_keys_async(self, subscription_id: int) -> int:
-        """Удалить все ключи подписки из БД (асинхронная версия, v2ray и outline)"""
+        """Удалить все ключи подписки из БД (асинхронная версия, V2Ray)."""
         async with open_async_connection(self.db_path) as conn:
-            # Отключаем foreign keys для асинхронного соединения
             await conn.execute("PRAGMA foreign_keys=OFF")
             try:
                 cursor = await conn.execute(
                     "DELETE FROM v2ray_keys WHERE subscription_id = ?",
                     (subscription_id,),
                 )
-                v2ray_deleted = cursor.rowcount
-                cursor = await conn.execute(
-                    "DELETE FROM keys WHERE subscription_id = ?",
-                    (subscription_id,),
-                )
-                outline_deleted = cursor.rowcount
-                deleted_count = v2ray_deleted + outline_deleted
+                deleted_count = cursor.rowcount
                 await conn.commit()
                 return deleted_count
             finally:
-                # Восстанавливаем foreign keys
                 await conn.execute("PRAGMA foreign_keys=ON")
 
     def list_subscriptions(
@@ -732,7 +688,7 @@ class SubscriptionRepository:
                     s.last_updated_at,
                     s.notified,
                     t.name as tariff_name,
-                    COALESCE(vk.v2ray_count, 0) + COALESCE(ok.outline_count, 0) as keys_count,
+                    COALESCE(vk.v2ray_count, 0) as keys_count,
                     s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
@@ -742,26 +698,12 @@ class SubscriptionRepository:
                     FROM v2ray_keys
                     GROUP BY subscription_id
                 ) vk ON vk.subscription_id = s.id
-                LEFT JOIN (
-                    SELECT subscription_id, COUNT(*) as outline_count
-                    FROM keys
-                    WHERE protocol = 'outline'
-                    GROUP BY subscription_id
-                ) ok ON ok.subscription_id = s.id
                 WHERE s.is_active = 1
                   {paid_condition}
                   AND (CAST(s.id AS TEXT) LIKE ?
                     OR CAST(s.user_id AS TEXT) LIKE ?
                     OR s.subscription_token LIKE ?
                     OR t.name LIKE ?
-                    OR EXISTS (
-                        SELECT 1 FROM keys k 
-                        WHERE k.user_id = s.user_id 
-                          AND k.email LIKE ? 
-                          AND k.email IS NOT NULL 
-                          AND k.email != '' 
-                          AND k.email NOT LIKE 'user_%@veilbot.com'
-                    )
                     OR EXISTS (
                         SELECT 1 FROM v2ray_keys k 
                         WHERE k.user_id = s.user_id 
@@ -782,7 +724,7 @@ class SubscriptionRepository:
                 LIMIT ? OFFSET ?
                 """
                 sql = sql.format(active_condition=active_condition, paid_condition=paid_condition)
-                c.execute(sql, (like, like, like, like, like, like, like, limit, offset))
+                c.execute(sql, (like, like, like, like, like, like, limit, offset))
             else:
                 sql = """
                 SELECT 
@@ -796,7 +738,7 @@ class SubscriptionRepository:
                     s.last_updated_at,
                     s.notified,
                     t.name as tariff_name,
-                    COALESCE(vk.v2ray_count, 0) + COALESCE(ok.outline_count, 0) as keys_count,
+                    COALESCE(vk.v2ray_count, 0) as keys_count,
                     s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
@@ -806,12 +748,6 @@ class SubscriptionRepository:
                     FROM v2ray_keys
                     GROUP BY subscription_id
                 ) vk ON vk.subscription_id = s.id
-                LEFT JOIN (
-                    SELECT subscription_id, COUNT(*) as outline_count
-                    FROM keys
-                    WHERE protocol = 'outline'
-                    GROUP BY subscription_id
-                ) ok ON ok.subscription_id = s.id
                 WHERE 1=1
                   {active_condition}
                   {paid_condition}
@@ -858,14 +794,6 @@ class SubscriptionRepository:
                     OR s.subscription_token LIKE ?
                     OR t.name LIKE ?
                     OR EXISTS (
-                        SELECT 1 FROM keys k 
-                        WHERE k.user_id = s.user_id 
-                          AND k.email LIKE ? 
-                          AND k.email IS NOT NULL 
-                          AND k.email != '' 
-                          AND k.email NOT LIKE 'user_%@veilbot.com'
-                    )
-                    OR EXISTS (
                         SELECT 1 FROM v2ray_keys k 
                         WHERE k.user_id = s.user_id 
                           AND k.email LIKE ? 
@@ -886,7 +814,7 @@ class SubscriptionRepository:
                   {paid_condition}
                 """
                 sql = sql.format(active_condition=active_condition, paid_condition=paid_condition)
-                c.execute(sql, (like, like, like, like, like, like, like))
+                c.execute(sql, (like, like, like, like, like, like))
             else:
                 if paid_only:
                     sql = """
@@ -934,11 +862,10 @@ class SubscriptionRepository:
                     OR CAST(s.user_id AS TEXT) LIKE ?
                     OR s.subscription_token LIKE ?
                     OR t.name LIKE ?
-                    OR EXISTS (SELECT 1 FROM keys k WHERE k.user_id = s.user_id AND k.email LIKE ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com')
                     OR EXISTS (SELECT 1 FROM v2ray_keys k WHERE k.user_id = s.user_id AND k.email LIKE ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com')
                     OR EXISTS (SELECT 1 FROM payments p2 WHERE p2.user_id = s.user_id AND p2.email LIKE ? AND p2.email IS NOT NULL AND p2.email != '' AND p2.email NOT LIKE 'user_%@veilbot.com'))
                 )""" + active_condition + paid_condition
-                params = (like, like, like, like, like, like, like)
+                params = (like, like, like, like, like, like)
                 c.execute(
                     "SELECT COUNT(*) FROM subscriptions s LEFT JOIN tariffs t ON s.tariff_id = t.id LEFT JOIN users u ON s.user_id = u.user_id WHERE "
                     + base_where + extra_active,
@@ -990,7 +917,7 @@ class SubscriptionRepository:
                     s.last_updated_at,
                     s.notified,
                     t.name as tariff_name,
-                    COALESCE(vk.v2ray_count, 0) + COALESCE(ok.outline_count, 0) as keys_count,
+                    COALESCE(vk.v2ray_count, 0) as keys_count,
                     s.traffic_limit_mb
                 FROM subscriptions s
                 LEFT JOIN tariffs t ON s.tariff_id = t.id
@@ -999,12 +926,6 @@ class SubscriptionRepository:
                     FROM v2ray_keys
                     GROUP BY subscription_id
                 ) vk ON vk.subscription_id = s.id
-                LEFT JOIN (
-                    SELECT subscription_id, COUNT(*) as outline_count
-                    FROM keys
-                    WHERE protocol = 'outline'
-                    GROUP BY subscription_id
-                ) ok ON ok.subscription_id = s.id
                 WHERE s.id = ?
                 """,
                 (subscription_id,),
@@ -1018,54 +939,23 @@ class SubscriptionRepository:
             c.execute(
                 """
                 SELECT 
-                    key_id,
-                    protocol,
-                    identifier,
-                    email,
-                    created_at,
-                    expiry_at,
-                    server_name,
-                    country,
-                    traffic_limit_mb,
-                    traffic_usage_bytes
-                FROM (
-                    SELECT 
-                        vk.id AS key_id,
-                        'v2ray' AS protocol,
-                        vk.v2ray_uuid AS identifier,
-                        vk.email,
-                        vk.created_at,
-                        COALESCE(sub.expires_at, 0) as expiry_at,
-                        s.name AS server_name,
-                        s.country,
-                        vk.traffic_limit_mb,
-                        vk.traffic_usage_bytes
-                    FROM v2ray_keys vk
-                    JOIN servers s ON vk.server_id = s.id
-                    LEFT JOIN subscriptions sub ON vk.subscription_id = sub.id
-                    WHERE vk.subscription_id = ?
-                    
-                    UNION ALL
-                    
-                    SELECT 
-                        k.id AS key_id,
-                        'outline' AS protocol,
-                        k.key_id AS identifier,
-                        k.email,
-                        k.created_at,
-                        COALESCE(sub.expires_at, 0) as expiry_at,
-                        s.name AS server_name,
-                        s.country,
-                        k.traffic_limit_mb,
-                        0 AS traffic_usage_bytes
-                    FROM keys k
-                    JOIN servers s ON k.server_id = s.id
-                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                    WHERE k.subscription_id = ? AND k.protocol = 'outline'
-                )
+                    vk.id AS key_id,
+                    'v2ray' AS protocol,
+                    vk.v2ray_uuid AS identifier,
+                    vk.email,
+                    vk.created_at,
+                    COALESCE(sub.expires_at, 0) as expiry_at,
+                    s.name AS server_name,
+                    s.country,
+                    vk.traffic_limit_mb,
+                    vk.traffic_usage_bytes
+                FROM v2ray_keys vk
+                JOIN servers s ON vk.server_id = s.id
+                LEFT JOIN subscriptions sub ON vk.subscription_id = sub.id
+                WHERE vk.subscription_id = ?
                 ORDER BY server_name, country, protocol
                 """,
-                (subscription_id, subscription_id),
+                (subscription_id,),
             )
             return c.fetchall()
 
@@ -1320,9 +1210,7 @@ class SubscriptionRepository:
             # Подсчитываем количество ключей в подписке
             c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?", (subscription_id,))
             v2ray_count = c.fetchone()[0] or 0
-            c.execute("SELECT COUNT(*) FROM keys WHERE subscription_id = ?", (subscription_id,))
-            outline_count = c.fetchone()[0] or 0
-            return v2ray_count + outline_count
+            return v2ray_count
     
     def update_subscription_keys_traffic_limit(self, subscription_id: int, traffic_limit_mb: int) -> int:
         """Обновить лимит трафика всех ключей подписки (в МБ)

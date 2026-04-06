@@ -6,7 +6,6 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from urllib.parse import urlparse, urlunparse
-from outline import create_key as outline_create_key, delete_key as outline_delete_key
 
 logger = logging.getLogger(__name__)
 
@@ -140,71 +139,6 @@ class VPNProtocol(ABC):
     async def get_traffic_stats(self) -> List[Dict]:
         """Получить статистику трафика"""
         pass
-
-class OutlineProtocol(VPNProtocol):
-    """Реализация для Outline VPN"""
-    
-    def __init__(self, api_url: str, cert_sha256: str):
-        self.api_url = api_url
-        self.cert_sha256 = cert_sha256
-    
-    async def create_user(self, email: str, level: int = 0) -> Dict:
-        """Создать пользователя Outline"""
-        try:
-            # Используем существующую функцию outline.py
-            key_data = await asyncio.get_event_loop().run_in_executor(
-                None, outline_create_key, self.api_url, self.cert_sha256
-            )
-            
-            if key_data:
-                return {
-                    'id': key_data['id'],
-                    'accessUrl': key_data['accessUrl'],
-                    'name': email,
-                    'password': '',
-                    'port': key_data.get('port', 443),
-                    'method': 'chacha20-ietf-poly1305'
-                }
-            else:
-                raise Exception("Failed to create Outline key")
-                
-        except Exception as e:
-            logger.error(f"Error creating Outline user: {e}")
-            raise
-    
-    async def delete_user(self, user_id: str) -> bool:
-        """Удалить пользователя Outline"""
-        try:
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, outline_delete_key, self.api_url, self.cert_sha256, user_id
-            )
-            return result
-        except Exception as e:
-            logger.error(f"Error deleting Outline user: {e}")
-            return False
-    
-    async def get_user_config(self, user_id: str, server_config: Dict) -> str:
-        """Получить конфигурацию Outline пользователя"""
-        # Для Outline возвращаем accessUrl как есть
-        return server_config.get('accessUrl', '')
-    
-    async def get_traffic_stats(self) -> List[Dict]:
-        """Получить статистику трафика Outline"""
-        # Outline не предоставляет детальную статистику через API
-        # Возвращаем пустой список
-        return []
-
-    async def get_all_keys(self) -> List[Dict]:
-        """Получить все ключи с Outline сервера"""
-        try:
-            from outline import get_keys
-            keys = await asyncio.get_event_loop().run_in_executor(
-                None, get_keys, self.api_url, self.cert_sha256
-            )
-            return keys
-        except Exception as e:
-            logger.error(f"Error getting Outline keys: {e}")
-            return []
 
 class V2RayProtocol(VPNProtocol):
     """Реализация для V2Ray VLESS с новым API"""
@@ -1452,12 +1386,7 @@ class ProtocolFactory:
     @staticmethod
     def create_protocol(protocol_type: str, server_config: Dict) -> VPNProtocol:
         """Создать экземпляр протокола по типу"""
-        if protocol_type == 'outline':
-            return OutlineProtocol(
-                server_config['api_url'], 
-                server_config['cert_sha256']
-            )
-        elif protocol_type == 'v2ray':
+        if protocol_type == 'v2ray':
             return V2RayProtocol(
                 server_config['api_url'], 
                 server_config.get('api_key')
@@ -1466,24 +1395,15 @@ class ProtocolFactory:
             raise ValueError(f"Неизвестный протокол: {protocol_type}")
 
 def get_protocol_instructions(protocol: str) -> str:
-    """Получить инструкции по подключению для протокола"""
-    if protocol == 'outline':
-        return (
-            "1. Установите Outline:\n"
-            "   • [App Store](https://apps.apple.com/app/outline-app/id1356177741)\n"
-            "   • [Google Play](https://play.google.com/store/apps/details?id=org.outline.android.client)\n"
-            "2. Откройте приложение и нажмите «Добавить сервер»\n"
-            "3. Вставьте ключ выше"
-        )
-    else:  # v2ray
-        return (
-            "1. Установите V2Ray клиент:\n"
-            "   • [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951)\n"
-            "   • [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n"
-            "2. Откройте приложение и нажмите «+»\n"
-            "3. Выберите «Импорт из буфера обмена»\n"
-            "4. Вставьте ключ выше"
-        )
+    """Получить инструкции по подключению для протокола (V2Ray VLESS)."""
+    return (
+        "1. Установите V2Ray клиент:\n"
+        "   • [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951)\n"
+        "   • [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n"
+        "2. Откройте приложение и нажмите «+»\n"
+        "3. Выберите «Импорт из буфера обмена»\n"
+        "4. Вставьте ключ выше"
+    )
 
 def get_word_declension(number: int, word_forms: tuple) -> str:
     """

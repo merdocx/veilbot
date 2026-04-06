@@ -27,7 +27,7 @@ def activate_and_zero_traffic_in_db(subscription_id: int) -> None:
     with open_connection(db_path) as conn:
         c = conn.cursor()
         
-        # Сначала обнуляем трафик всех ключей подписки (только v2ray_keys, т.к. у outline ключей нет traffic_usage_bytes)
+        # Сначала обнуляем трафик всех ключей подписки (v2ray_keys)
         c.execute(
             """
             UPDATE v2ray_keys

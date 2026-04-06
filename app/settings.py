@@ -60,12 +60,6 @@ class Settings(BaseSettings):
     # Protocols
     PROTOCOLS: Dict[str, Dict[str, Any]] = Field(
         default_factory=lambda: {
-            "outline": {
-                "name": "Outline VPN",
-                "description": "Современный VPN протокол с высокой скоростью",
-                "icon": "🔒",
-                "default_port": 443,
-            },
             "v2ray": {
                 "name": "V2Ray VLESS",
                 "description": "Продвинутый протокол с обфускацией трафика и Reality",
@@ -78,7 +72,6 @@ class Settings(BaseSettings):
 
     FREE_V2RAY_TARIFF_ID: int = Field(default=2, description="ID бесплатного тарифа для авто-выдачи V2Ray")
     FREE_V2RAY_COUNTRY: str = Field(default="Нидерланды", description="Страна для авто-выдачи V2Ray ключей")
-    OUTLINE_SERVER_ID: int = Field(default=8, description="ID сервера Outline для создания ключей подписок (в sync и админке)")
 
     # Admin CORS
     ADMIN_ALLOWED_ORIGINS: list[str] | str = Field(default_factory=list)

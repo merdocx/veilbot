@@ -14,6 +14,12 @@ from bot.core import get_bot_instance
 from bot.keyboards import get_main_menu, get_help_keyboard
 from bot_error_handler import BotErrorHandler
 from bot.utils import safe_send_message
+from bot.services.admin_notifications import (
+    AdminNotificationCategory,
+    format_broadcast_report_markdown,
+    format_broadcast_report_plain,
+    send_admin_message,
+)
 
 # Временное хранилище для текстов рассылки
 broadcast_texts: Dict[int, str] = {}
@@ -151,7 +157,13 @@ async def broadcast_message(
         
         if total_users == 0:
             if admin_id:
-                await safe_send_message(bot, admin_id, "❌ Нет пользователей для рассылки", mark_blocked=False)
+                empty_msg = "❌ Нет пользователей для рассылки"
+                await send_admin_message(
+                    empty_msg,
+                    text_plain=empty_msg,
+                    admin_id=admin_id,
+                    category=AdminNotificationCategory.BROADCAST_REPORT,
+                )
             return
         
         # Отправляем сообщение каждому пользователю
@@ -169,22 +181,35 @@ async def broadcast_message(
         # Отправляем отчет администратору
         if admin_id:
             audience_label = AUDIENCE_LABELS.get(audience_value, AUDIENCE_LABELS["all_started"])
-            report = (
-                f"📊 *Отчет о рассылке*\n\n"
-                f"✅ Успешно отправлено: {success_count}\n"
-                f"❌ Ошибок: {failed_count}\n"
-                f"📈 Всего пользователей: {total_users}\n"
-                f"🎯 Аудитория: {audience_label}\n"
+            report_md = format_broadcast_report_markdown(
+                success_count=success_count,
+                failed_count=failed_count,
+                total_users=total_users,
+                audience_label=audience_label,
             )
-            if total_users:
-                report += f"📊 Процент успеха: {(success_count/total_users*100):.1f}%"
-            await safe_send_message(bot, admin_id, report, parse_mode='Markdown', mark_blocked=False)
-            
+            report_plain = format_broadcast_report_plain(
+                success_count=success_count,
+                failed_count=failed_count,
+                total_users=total_users,
+                audience_label=audience_label,
+            )
+            await send_admin_message(
+                report_md,
+                text_plain=report_plain,
+                admin_id=admin_id,
+                category=AdminNotificationCategory.BROADCAST_REPORT,
+            )
+
     except Exception as e:
         error_msg = f"❌ Ошибка при рассылке: {e}"
         logging.error(error_msg, exc_info=True)
         if admin_id:
-            await safe_send_message(bot, admin_id, error_msg, mark_blocked=False)
+            await send_admin_message(
+                error_msg,
+                text_plain=error_msg,
+                admin_id=admin_id,
+                category=AdminNotificationCategory.BROADCAST_REPORT,
+            )
 
 
 async def handle_broadcast_command(message: types.Message) -> None:
@@ -313,20 +338,17 @@ async def handle_migrate_to_subscription(message: types.Message) -> None:
             )
             return
         
-        # Проверка наличия ключей (только Outline, так как V2Ray ключи теперь только в подписках)
+        # Проверка наличия ключей V2Ray с активной подпиской
         now = int(time.time())
         has_keys = False
         
         with get_db_cursor() as cursor:
-            # Проверяем Outline ключи
             cursor.execute("""
-                SELECT COUNT(*) FROM keys k
+                SELECT COUNT(*) FROM v2ray_keys k
                 JOIN subscriptions s ON k.subscription_id = s.id
                 WHERE k.user_id = ? AND s.expires_at > ?
             """, (user_id, now))
-            outline_count = cursor.fetchone()[0]
-            
-            has_keys = outline_count > 0
+            has_keys = cursor.fetchone()[0] > 0
         
         if not has_keys:
             await message.answer(

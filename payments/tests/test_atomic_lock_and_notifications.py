@@ -231,13 +231,6 @@ class TestRenewalDetection:
             )
         """)
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS keys (
-                id INTEGER PRIMARY KEY,
-                user_id INTEGER,
-                subscription_id INTEGER
-            )
-        """)
-        cursor.execute("""
             CREATE TABLE IF NOT EXISTS v2ray_keys (
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER,
@@ -255,19 +248,19 @@ class TestRenewalDetection:
             (1, user_id, future_expiry)
         )
         cursor.execute(
-            "INSERT INTO keys (user_id, subscription_id) VALUES (?, ?)",
+            "INSERT INTO v2ray_keys (user_id, subscription_id) VALUES (?, ?)",
             (user_id, 1)
         )
         conn.commit()
         
         # Act
-        is_renewal = is_renewal_payment(cursor, user_id, 'outline')
+        is_renewal = is_renewal_payment(cursor, user_id, 'v2ray')
         
         # Assert
         assert is_renewal is True
         
         # Проверяем для нового пользователя (без ключа)
-        is_renewal_new = is_renewal_payment(cursor, 99999, 'outline')
+        is_renewal_new = is_renewal_payment(cursor, 99999, 'v2ray')
         assert is_renewal_new is False
         
         conn.close()

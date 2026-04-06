@@ -4,7 +4,21 @@ from typing import Any, Optional
 
 from aiogram import Bot
 from aiogram.types import Message
-from aiogram.utils.exceptions import BotBlocked, ChatNotFound, RetryAfter, TelegramAPIError
+
+try:
+    from aiogram.utils.exceptions import BotBlocked, ChatNotFound, RetryAfter, TelegramAPIError
+except ImportError:
+    # aiogram v3
+    from aiogram.exceptions import (
+        TelegramAPIError,
+        TelegramForbiddenError,
+        TelegramNotFound,
+        TelegramRetryAfter,
+    )
+
+    BotBlocked = TelegramForbiddenError
+    ChatNotFound = TelegramNotFound
+    RetryAfter = TelegramRetryAfter
 
 from app.infra.sqlite_utils import get_db_cursor
 
@@ -65,7 +79,7 @@ async def safe_send_message(
             return None
         
         except RetryAfter as exc:
-            wait_for = getattr(exc, "timeout", 1)
+            wait_for = getattr(exc, "timeout", None) or getattr(exc, "retry_after", 1)
             LOGGER.warning("RetryAfter for user %s (attempt %d/%d): waiting %s seconds", 
                           user_id, attempt + 1, max_retries, wait_for)
             if attempt < max_retries - 1:

@@ -32,14 +32,14 @@
     <!-- Filters -->
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
-            <form method="get" action="/subscriptions" id="search-form" style="display: flex; gap: 8px; flex: 1; align-items: center;">
+            <form method="get" action="/subscriptions" id="search-form" class="filter-form">
                 <input type="text" id="global-search" name="q" value="{{ q or '' }}" placeholder="Поиск по ID подписки, ID пользователя, токену, тарифу или email..." class="filter-input filter-input--grow" data-table-id="subscriptions-table">
-                <select name="paid" id="paid-filter" class="filter-input" style="min-width: 150px;">
+                <select name="paid" id="paid-filter" class="filter-input filter-input--select">
                     <option value="0" {% if not paid_filter %}selected{% endif %}>Все подписки</option>
                     <option value="1" {% if paid_filter %}selected{% endif %}>Платные</option>
                 </select>
                 <input type="hidden" name="page" value="1" id="search-page-input">
-                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+                <button type="submit" class="btn btn-primary hidden" id="search-submit-btn">Поиск</button>
             </form>
             <button type="button" class="btn filter-bar__reset" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>
@@ -285,26 +285,12 @@
                 </label>
                 <label class="form-checkbox">
                     <input type="checkbox" name="sync_configs" checked>
-                    <span>Синхронизировать конфигурации (VLESS / access_url)</span>
+                    <span>Синхронизировать конфигурации (VLESS)</span>
                 </label>
             </div>
         </div>
 
-        <!-- Фильтр по протоколам -->
-        <div class="form-field">
-            <label class="form-label">Протоколы</label>
-            <div class="form-checkbox-group">
-                <label class="form-checkbox">
-                    <input type="checkbox" name="include_v2ray" checked>
-                    <span>V2Ray</span>
-                </label>
-                <label class="form-checkbox">
-                    <input type="checkbox" name="include_outline" checked>
-                    <span>Outline</span>
-                </label>
-            </div>
-            <div class="form-hint" id="protocol-hint" style="display: none; color: #d32f2f;">Необходимо выбрать хотя бы один протокол.</div>
-        </div>
+        <input type="hidden" name="include_v2ray" value="on">
 
         <div class="form-actions">
             <button type="button" class="btn" data-modal-close>Отмена</button>

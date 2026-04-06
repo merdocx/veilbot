@@ -19,7 +19,6 @@ from starlette import status
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.repositories.key_repository import KeyRepository
 from vpn_protocols import ProtocolFactory
-from outline import delete_key
 from vpn_protocols import V2RayProtocol
 import aiohttp
 from app.infra.sqlite_utils import open_connection
@@ -214,7 +213,7 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     traffic_raw = get(traffic_raw_idx)
     traffic_info = _parse_traffic_value(traffic_raw)
 
-    # Извлекаем числовой ID из строки вида "206_outline" или "206_v2ray"
+    # Извлекаем числовой ID из строки вида "206_v2ray"
     key_id_str = str(row[0])
     if '_' in key_id_str:
         key_id = int(key_id_str.split('_')[0])
@@ -231,7 +230,6 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     status_icon = "check_circle" if is_active else "cancel"
     protocol = (get(protocol_idx, '') or '').lower()
     protocol_meta = {
-        "outline": {"label": "Outline", "icon": "lock", "class": "protocol-badge--outline"},
         "v2ray": {"label": "V2Ray", "icon": "security", "class": "protocol-badge--v2ray"},
     }
     protocol_info = protocol_meta.get(protocol, {"label": protocol or "—", "icon": "help_outline", "class": "protocol-badge--neutral"})
@@ -352,25 +350,17 @@ def _compute_key_stats(db_path: str, now_ts: int) -> Dict[str, int]:
     """Вычисляет общую статистику по всем ключам (без фильтров)"""
     with open_connection(db_path) as conn:
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM keys")
-        outline_total = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM v2ray_keys")
         v2ray_total = c.fetchone()[0]
-        total = int(outline_total) + int(v2ray_total)
+        total = int(v2ray_total)
 
-        c.execute("""
-            SELECT COUNT(*) FROM keys k
-            JOIN subscriptions s ON k.subscription_id = s.id
-            WHERE s.expires_at > ?
-        """, (now_ts,))
-        outline_active = c.fetchone()[0]
         c.execute("""
             SELECT COUNT(*) FROM v2ray_keys k
             JOIN subscriptions s ON k.subscription_id = s.id
             WHERE s.expires_at > ?
         """, (now_ts,))
         v2ray_active = c.fetchone()[0]
-        active = int(outline_active) + int(v2ray_active)
+        active = int(v2ray_active)
 
     expired = max(total - active, 0)
     return {
@@ -407,11 +397,9 @@ def _compute_filtered_key_stats(
     with open_connection(db_path) as conn:
         c = conn.cursor()
         
-        def apply_common_conditions(base_sql: str, params: list, is_outline: bool = True) -> tuple[str, list]:
+        def apply_common_conditions(base_sql: str, params: list) -> tuple[str, list]:
             # Всегда добавляем JOIN с subscriptions для получения expires_at
             base_sql += " LEFT JOIN subscriptions sub ON k.subscription_id = sub.id"
-            # Добавляем JOIN для поиска по server_name и tariff_name
-            # JOIN нужен только если есть search_query или если нужны данные из servers/tariffs
             needs_join = search_query is not None
             if needs_join:
                 base_sql += " LEFT JOIN servers s ON k.server_id=s.id LEFT JOIN tariffs t ON k.tariff_id=t.id"
@@ -434,57 +422,22 @@ def _compute_filtered_key_stats(
                     "IFNULL(s.name,'') LIKE ?",
                     "IFNULL(t.name,'') LIKE ?",
                     "CAST(k.user_id AS TEXT) LIKE ?",
+                    "k.v2ray_uuid LIKE ?",
+                    "(k.id || '_v2ray') LIKE ?",
+                    "CAST(k.subscription_id AS TEXT) LIKE ?",
                 ]
-                if is_outline:
-                    search_conditions.append("k.key_id LIKE ?")
-                    search_conditions.append("(k.id || '_outline') LIKE ?")
-                else:
-                    search_conditions.append("k.v2ray_uuid LIKE ?")
-                    search_conditions.append("(k.id || '_v2ray') LIKE ?")
-                    search_conditions.append("CAST(k.subscription_id AS TEXT) LIKE ?")
                 where.append("(" + " OR ".join(search_conditions) + ")")
                 params.extend([search_pattern] * len(search_conditions))
             where_sql = (" WHERE " + " AND ".join(where)) if where else ""
             return base_sql + where_sql, params
         
-        outline_active = 0
-        outline_expired = 0
-        outline_total = 0
         v2ray_active = 0
         v2ray_expired = 0
         v2ray_total = 0
         
-        # Считаем активные и истекшие Outline ключи
-        if protocol in (None, '', 'outline'):
+        if protocol in (None, "", "v2ray"):
             # Активные: expires_at из подписки > now_ts
-            sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
-            if "WHERE" in sql:
-                sql += " AND sub.expires_at > ? AND sub.expires_at IS NOT NULL"
-            else:
-                sql += " WHERE sub.expires_at > ? AND sub.expires_at IS NOT NULL"
-            params.append(now_ts)
-            c.execute(sql, params)
-            outline_active = c.fetchone()[0] or 0
-            
-            # Истекшие: expires_at из подписки <= now_ts OR NULL
-            sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
-            if "WHERE" in sql:
-                sql += " AND (sub.expires_at <= ? OR sub.expires_at IS NULL)"
-            else:
-                sql += " WHERE (sub.expires_at <= ? OR sub.expires_at IS NULL)"
-            params.append(now_ts)
-            c.execute(sql, params)
-            outline_expired = c.fetchone()[0] or 0
-            
-            # Считаем общее количество Outline ключей (для статистики outline_count)
-            sql, params = apply_common_conditions("SELECT COUNT(*) FROM keys k", [], is_outline=True)
-            c.execute(sql, params)
-            outline_total = c.fetchone()[0] or 0
-        
-        # Считаем активные и истекшие V2Ray ключи
-        if protocol in (None, '', 'v2ray'):
-            # Активные: expires_at из подписки > now_ts
-            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [])
             if "WHERE" in sql:
                 sql += " AND sub.expires_at > ? AND sub.expires_at IS NOT NULL"
             else:
@@ -494,7 +447,7 @@ def _compute_filtered_key_stats(
             v2ray_active = c.fetchone()[0] or 0
             
             # Истекшие: expires_at из подписки <= now_ts OR NULL
-            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [])
             if "WHERE" in sql:
                 sql += " AND (sub.expires_at <= ? OR sub.expires_at IS NULL)"
             else:
@@ -504,12 +457,12 @@ def _compute_filtered_key_stats(
             v2ray_expired = c.fetchone()[0] or 0
             
             # Считаем общее количество V2Ray ключей (для статистики v2ray_count)
-            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [], is_outline=False)
+            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [])
             c.execute(sql, params)
             v2ray_total = c.fetchone()[0] or 0
         
-        active = int(outline_active) + int(v2ray_active)
-        expired = int(outline_expired) + int(v2ray_expired)
+        active = int(v2ray_active)
+        expired = int(v2ray_expired)
     
     # Если expired не совпадает с (total - active), используем явно посчитанное значение
     # Это гарантирует правильный подсчет даже если есть ключи с NULL expiry_at
@@ -519,7 +472,6 @@ def _compute_filtered_key_stats(
         "active": active,
         "expired": expired,
         "v2ray": int(v2ray_total),
-        "outline": int(outline_total),
     }
 
 
@@ -543,51 +495,10 @@ def _append_default_traffic(row: tuple[Any, ...] | list[Any]) -> list[Any]:
 
 
 async def _delete_key_internal(request: Request, key_id: int | str, key_repo: KeyRepository) -> Dict[str, Any]:
-    # Парсим ID если он в формате "206_outline" или "206_v2ray"
+    # Парсим ID если он в формате "206_v2ray"
     if isinstance(key_id, str) and '_' in key_id:
         parts = key_id.split('_')
         key_id = int(parts[0])
-        protocol = parts[1] if len(parts) > 1 else None
-    else:
-        protocol = None
-    
-    outline_key = key_repo.get_outline_key_brief(key_id)
-    if outline_key:
-        user_id, outline_key_id, server_id = outline_key
-        if outline_key_id and server_id:
-            with open_connection(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute("SELECT api_url, cert_sha256 FROM servers WHERE id = ?", (server_id,))
-                server = c.fetchone()
-                if server:
-                    try:
-                        log_admin_action(request, "OUTLINE_DELETE_ATTEMPT", f"Attempting to delete key {outline_key_id} from server {server[0]}")
-                        result = delete_key(server[0], server[1], outline_key_id)
-                        if result:
-                            log_admin_action(request, "OUTLINE_DELETE_SUCCESS", f"Successfully deleted key {outline_key_id} from server")
-                        else:
-                            log_admin_action(request, "OUTLINE_DELETE_FAILED", f"Failed to delete key {outline_key_id} from server")
-                    except Exception as e:
-                        logging.error(f"Error deleting Outline key {outline_key_id}: {e}", exc_info=True)
-                        log_admin_action(request, "OUTLINE_DELETE_ERROR", f"Failed to delete key {outline_key_id}: {str(e)}")
-
-        try:
-            key_repo.delete_outline_key_by_id(key_id)
-            with open_connection(DB_PATH) as conn:
-                c = conn.cursor()
-                if user_id:
-                    c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
-                    outline_count = c.fetchone()[0]
-                    c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
-                    v2ray_count = c.fetchone()[0]
-                    if outline_count == 0 and v2ray_count == 0:
-                        c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
-                        conn.commit()
-        except Exception as e:
-            logging.error(f"Error deleting Outline key from database: {e}", exc_info=True)
-            log_admin_action(request, "OUTLINE_KEY_DELETE_DB_ERROR", f"Failed to delete key {key_id} from database: {str(e)}")
-
-        return {"protocol": "outline"}
 
     v2ray_key = key_repo.get_v2ray_key_brief(key_id)
     if v2ray_key:
@@ -625,11 +536,9 @@ async def _delete_key_internal(request: Request, key_id: int | str, key_repo: Ke
             with open_connection(DB_PATH) as conn:
                 c = conn.cursor()
                 if user_id:
-                    c.execute("SELECT COUNT(*) FROM keys WHERE user_id = ?", (user_id,))
-                    outline_count = c.fetchone()[0]
                     c.execute("SELECT COUNT(*) FROM v2ray_keys WHERE user_id = ?", (user_id,))
                     v2ray_count = c.fetchone()[0]
-                    if outline_count == 0 and v2ray_count == 0:
+                    if v2ray_count == 0:
                         c.execute("UPDATE payments SET revoked = 1 WHERE user_id = ? AND status = 'paid'", (user_id,))
                         conn.commit()
         except Exception as e:
@@ -642,126 +551,59 @@ async def _delete_key_internal(request: Request, key_id: int | str, key_repo: Ke
 
 
 def _load_key_view_model(key_repo: KeyRepository, key_id: int | str, now_ts: int) -> Optional[Dict[str, Any]]:
-    # Парсим ID если он в формате "206_outline" или "206_v2ray"
     if isinstance(key_id, str) and '_' in key_id:
         parts = key_id.split('_')
         numeric_id = int(parts[0])
-        protocol_hint = parts[1] if len(parts) > 1 else None
     else:
-        protocol_hint = None
         numeric_id = int(key_id)
-    
+
     row = key_repo.get_key_unified_by_id(numeric_id)
     if not row:
         return None
-    
-    # Если был указан протокол, проверяем что он совпадает
-    if protocol_hint:
-        returned_id = str(row[0])
-        returned_protocol = row[9] if len(row) > 9 else None
-        expected_suffix = f"_{protocol_hint}"
-        
-        if not returned_id.endswith(expected_suffix) or returned_protocol != protocol_hint:
-            # Если протокол не совпадает, ищем ключ напрямую в нужной таблице
-            from app.infra.sqlite_utils import open_connection
-            from app.settings import settings as app_settings
-            
-            with open_connection(app_settings.DATABASE_PATH) as conn:
-                c = conn.cursor()
-                if protocol_hint == 'outline':
-                    c.execute("""
-                        SELECT k.id || '_outline' as id, k.key_id, k.access_url, k.created_at, 
-                               COALESCE(sub.expires_at, 0) as expiry_at,
-                               IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'outline' as protocol,
-                               COALESCE(k.traffic_limit_mb, 0), '' as api_url, '' as api_key,
-                               0 AS traffic_usage_bytes, NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified,
-                               k.subscription_id
-                        FROM keys k
-                        LEFT JOIN servers s ON k.server_id = s.id
-                        LEFT JOIN tariffs t ON k.tariff_id = t.id
-                        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                        WHERE k.id = ?
-                    """, (numeric_id,))
-                elif protocol_hint == 'v2ray':
-                    c.execute("""
-                        SELECT k.id || '_v2ray' as id, k.v2ray_uuid as key_id,
-                               COALESCE(k.client_config, '') as access_url,
-                               k.created_at, COALESCE(sub.expires_at, 0) as expiry_at,
-                               IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
-                               COALESCE(k.traffic_limit_mb, 0), IFNULL(s.api_url,''), IFNULL(s.api_key,''),
-                               COALESCE(k.traffic_usage_bytes, 0), NULL AS traffic_over_limit_at,
-                               0 AS traffic_over_limit_notified
-                        FROM v2ray_keys k
-                        LEFT JOIN servers s ON k.server_id = s.id
-                        LEFT JOIN tariffs t ON k.tariff_id = t.id
-                        LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                        WHERE k.id = ?
-                    """, (numeric_id,))
-                else:
-                    c = None
-                
-                if c:
-                    row = c.fetchone()
-                    if not row:
-                        return None
-    
+
     normalized_row = _append_default_traffic(row)
     return _build_key_view_model(normalized_row, now_ts)
 
 
 async def get_key_monthly_traffic(key_uuid: str, protocol: str, server_config: dict, server_id: int = None) -> str:
     """Get monthly traffic for a specific key in GB"""
+    if protocol != "v2ray":
+        return "N/A"
     v2ray = None
     try:
-        if protocol == 'v2ray':
-            # ИСПРАВЛЕНИЕ: Не используем кеш, т.к. он содержит данные из get_monthly_traffic(),
-            # а нам нужны данные из get_traffic_stats() с interface_traffic.total_bytes
-            
-            # Create V2Ray protocol instance
-            v2ray = ProtocolFactory.create_protocol('v2ray', server_config)
-            
-            try:
-                # ИСПРАВЛЕНИЕ: Используем GET /api/keys/{key_id}/traffic/history
-                # Сначала получаем key_id (id из API) по UUID
-                key_info_data = await v2ray.get_key_info(key_uuid)
-                api_key_id = key_info_data.get('id') or key_info_data.get('uuid')
-                
-                if not api_key_id:
-                    logging.warning(f"[TRAFFIC] No key_id found for UUID {key_uuid}")
-                    return "0 GB"
-                
-                # Получаем traffic/history для этого ключа
-                history = await v2ray.get_key_traffic_history(str(api_key_id))
-                
-                if history and history.get('data'):
-                    data = history.get('data', {})
-                    total_traffic = data.get('total_traffic', {})
-                    
-                    if total_traffic and isinstance(total_traffic, dict):
-                        total_bytes = total_traffic.get('total_bytes', 0)
-                        
-                        if total_bytes > 0:
-                            logging.info(f"[TRAFFIC] Found traffic (traffic/history) for {key_uuid}: {total_bytes} bytes ({total_bytes/(1024**4):.2f} TB)")
-                            
-                            # Форматируем в TB если > 1TB, иначе в GB
-                            if total_bytes >= (1024 ** 4):  # >= 1TB
-                                traffic_tb = total_bytes / (1024 ** 4)
-                                return f"{traffic_tb:.2f} TB"
-                            else:
-                                traffic_gb = total_bytes / (1024 * 1024 * 1024)
-                                return f"{traffic_gb:.2f} GB"
-                
-                return "0 GB"
-            finally:
-                await v2ray.close()
-        else:
-            # For Outline, we don't have historical data yet
-            return "N/A"
+        v2ray = ProtocolFactory.create_protocol("v2ray", server_config)
+        key_info_data = await v2ray.get_key_info(key_uuid)
+        api_key_id = key_info_data.get("id") or key_info_data.get("uuid")
+
+        if not api_key_id:
+            logging.warning(f"[TRAFFIC] No key_id found for UUID {key_uuid}")
+            return "0 GB"
+
+        history = await v2ray.get_key_traffic_history(str(api_key_id))
+
+        if history and history.get("data"):
+            data = history.get("data", {})
+            total_traffic = data.get("total_traffic", {})
+
+            if total_traffic and isinstance(total_traffic, dict):
+                total_bytes = total_traffic.get("total_bytes", 0)
+
+                if total_bytes > 0:
+                    logging.info(
+                        f"[TRAFFIC] Found traffic (traffic/history) for {key_uuid}: "
+                        f"{total_bytes} bytes ({total_bytes/(1024**4):.2f} TB)"
+                    )
+                    if total_bytes >= (1024**4):
+                        traffic_tb = total_bytes / (1024**4)
+                        return f"{traffic_tb:.2f} TB"
+                    traffic_gb = total_bytes / (1024 * 1024 * 1024)
+                    return f"{traffic_gb:.2f} GB"
+
+        return "0 GB"
     except Exception as e:
         logging.error(f"Error getting monthly traffic for key {key_uuid}: {e}", exc_info=True)
         return "Error"
     finally:
-        # Закрываем сессию V2Ray
         if v2ray:
             await v2ray.close()
 
@@ -905,8 +747,7 @@ async def keys_page(
             v2ray_tasks.append(fetch_v2ray_config(key))
             all_keys_dict[key_id] = {'type': 'v2ray', 'data': list(key) + ["—"]}
         else:
-            # Outline keys - сохраняем данные
-            all_keys_dict[key_id] = {'type': 'outline', 'data': list(key) + ["N/A"]}
+            all_keys_dict[key_id] = {'type': 'unknown', 'data': list(key) + ["N/A"]}
     
     # Параллельно загружаем все конфигурации
     if v2ray_tasks:
@@ -997,21 +838,19 @@ async def keys_page(
     active_count = int(filtered_stats.get("active", 0))
     expired_count = int(filtered_stats.get("expired", 0))
     v2ray_count = int(filtered_stats.get("v2ray", 0))
-    outline_count = int(filtered_stats.get("outline", 0))
     total_from_stats = int(filtered_stats.get("total", 0))
     
     # КРИТИЧЕСКАЯ ПРОВЕРКА: убеждаемся, что значения правильные
-    if active_count != filtered_stats["active"] or expired_count != filtered_stats["expired"] or v2ray_count != filtered_stats["v2ray"] or outline_count != filtered_stats["outline"]:
+    if active_count != filtered_stats["active"] or expired_count != filtered_stats["expired"] or v2ray_count != filtered_stats["v2ray"]:
         logging.error(
             f"CRITICAL: Values mismatch after extraction! "
             f"filtered_stats={filtered_stats}, "
-            f"active_count={active_count}, expired_count={expired_count}, v2ray_count={v2ray_count}, outline_count={outline_count}"
+            f"active_count={active_count}, expired_count={expired_count}, v2ray_count={v2ray_count}"
         )
         # Исправляем значения
         active_count = int(filtered_stats["active"])
         expired_count = int(filtered_stats["expired"])
         v2ray_count = int(filtered_stats["v2ray"])
-        outline_count = int(filtered_stats["outline"])
     
     # Логируем для отладки, если есть расхождение
     if total != total_from_stats:
@@ -1041,12 +880,10 @@ async def keys_page(
     assert active_count == filtered_stats["active"], f"active_count changed: {active_count} != {filtered_stats['active']}"
     assert expired_count == filtered_stats["expired"], f"expired_count changed: {expired_count} != {filtered_stats['expired']}"
     assert v2ray_count == filtered_stats["v2ray"], f"v2ray_count changed: {v2ray_count} != {filtered_stats['v2ray']}"
-    assert outline_count == filtered_stats["outline"], f"outline_count changed: {outline_count} != {filtered_stats['outline']}"
-    
     logging.info(
         f"Keys page FINAL values for template: total={total_from_stats}, "
         f"active_count={active_count}, expired_count={expired_count}, "
-        f"v2ray_count={v2ray_count}, outline_count={outline_count}"
+        f"v2ray_count={v2ray_count}"
     )
     
     return templates.TemplateResponse("keys.html", {
@@ -1059,7 +896,6 @@ async def keys_page(
         "active_count": active_count,
         "expired_count": expired_count,
         "v2ray_count": v2ray_count,
-        "outline_count": outline_count,
         "pages": pages,
         "next_cursor": next_cursor,
         "email": email or '',
@@ -1089,7 +925,7 @@ async def get_key_traffic_api(request: Request, key_id: int):
 
         traffic_info = key_view.get("traffic", {})
         display_value = traffic_info.get("display", "—")
-        protocol = key_view.get("protocol", "outline")
+        protocol = key_view.get("protocol", "v2ray")
 
         return JSONResponse({
             "traffic": display_value,

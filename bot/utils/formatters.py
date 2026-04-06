@@ -6,17 +6,8 @@ from vpn_protocols import format_duration, get_protocol_instructions
 import logging
 
 def format_key_message(access_url: str) -> str:
-    """Форматирование сообщения с ключом Outline (устаревшее, для обратной совместимости)"""
-    return (
-        f"*Ваш ключ* (коснитесь, чтобы скопировать):\n"
-        f"`{access_url}`\n\n"
-        "🔧 *Как подключиться:*\n"
-        "1. Установите Outline:\n"
-        "   • [App Store](https://apps.apple.com/app/outline-app/id1356177741)\n"
-        "   • [Google Play](https://play.google.com/store/apps/details?id=org.outline.android.client)\n"
-        "2. Откройте приложение и нажмите «Добавить сервер» или «+»\n"
-        "3. Вставьте ключ выше"
-    )
+    """Форматирование сообщения с ключом (устаревшее имя; делегирует V2Ray-формату)."""
+    return format_key_message_unified(access_url, "v2ray")
 
 def format_key_message_unified(config: str, protocol: str, tariff: dict = None, remaining_time: int = None) -> str:
     """Унифицированное форматирование сообщения с ключом для всех протоколов"""

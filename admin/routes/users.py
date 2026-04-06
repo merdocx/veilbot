@@ -47,16 +47,11 @@ def _is_user_active(user_id: int, overview: dict) -> bool:
         c.execute("""
             SELECT COUNT(*) FROM (
                 SELECT k.id
-                FROM keys k
-                JOIN subscriptions s ON k.subscription_id = s.id
-                WHERE k.user_id = ? AND s.expires_at > ? AND s.is_active = 1
-                UNION
-                SELECT k.id
                 FROM v2ray_keys k
                 JOIN subscriptions s ON k.subscription_id = s.id
                 WHERE k.user_id = ? AND s.expires_at > ? AND s.is_active = 1
             )
-        """, (user_id, now, user_id, now))
+        """, (user_id, now))
         count = c.fetchone()[0]
         return count > 0
 
@@ -188,33 +183,26 @@ async def resend_key(request: Request, key_id: int, csrf_token: str = Form(...))
     try:
         with open_connection(DB_PATH) as conn:
             c = conn.cursor()
-            c.execute("SELECT user_id, access_url FROM keys WHERE id = ?", (key_id,))
-            row = c.fetchone()
-            if row:
-                user_id = row[0]
-                access_url = row[1]
-                protocol = 'outline'
-            else:
-                c.execute("SELECT user_id, v2ray_uuid, server_id, client_config FROM v2ray_keys WHERE id = ?", (key_id,))
-                r = c.fetchone()
-                if r:
-                    user_id = r[0]
-                    v2_uuid = r[1]
-                    server_id = r[2]
-                    stored_config = r[3] or ""
-                    protocol = 'v2ray'
-                    if stored_config:
-                        access_url = stored_config.strip()
+            c.execute("SELECT user_id, v2ray_uuid, server_id, client_config FROM v2ray_keys WHERE id = ?", (key_id,))
+            r = c.fetchone()
+            if r:
+                user_id = r[0]
+                v2_uuid = r[1]
+                server_id = r[2]
+                stored_config = r[3] or ""
+                protocol = "v2ray"
+                if stored_config:
+                    access_url = stored_config.strip()
+                else:
+                    c.execute("SELECT domain, COALESCE(v2ray_path,'/v2ray') FROM servers WHERE id = ?", (server_id,))
+                    s = c.fetchone()
+                    domain = (s[0] or "").strip() if s else ""
+                    v2path = s[1] if s else "/v2ray"
+                    if domain:
+                        access_url = f"vless://{v2_uuid}@{domain}:443?path={v2path}&security=tls&type=ws#VeilBot-V2Ray"
                     else:
-                        c.execute("SELECT domain, COALESCE(v2ray_path,'/v2ray') FROM servers WHERE id = ?", (server_id,))
-                        s = c.fetchone()
-                        domain = (s[0] or '').strip() if s else ''
-                        v2path = s[1] if s else '/v2ray'
-                        if domain:
-                            access_url = f"vless://{v2_uuid}@{domain}:443?path={v2path}&security=tls&type=ws#VeilBot-V2Ray"
-                        else:
-                            access_url = ""
-        
+                        access_url = ""
+
         if user_id and access_url and protocol:
             try:
                 bot = get_bot()
@@ -233,12 +221,8 @@ async def resend_key(request: Request, key_id: int, csrf_token: str = Form(...))
             except Exception as e:
                 return JSONResponse({"success": False, "error": str(e)}, status_code=500)
         return JSONResponse({"success": False, "error": "Key not found"}, status_code=404)
-    finally:
-        if user_id:
-            try:
-                return RedirectResponse(url=f"/users/{user_id}", status_code=303)
-            except Exception:
-                pass
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
 @router.post("/users/keys/{key_id}/extend")
@@ -257,69 +241,35 @@ async def extend_key(
     if not validate_csrf_token(request, csrf_token):
         return JSONResponse({"error": "Invalid CSRF"}, status_code=400)
     
-    kr = KeyRepository(DB_PATH)
-    user_id = None
     try:
         now_ts = int(time.time())
         extend_sec = max(1, int(days)) * 86400
         
         with open_connection(DB_PATH) as conn:
             c = conn.cursor()
-            # Проверяем Outline ключ
-            # Получаем subscription_id для обновления подписки
-            c.execute("SELECT user_id, subscription_id FROM keys WHERE id = ?", (key_id,))
+            c.execute("SELECT user_id, subscription_id FROM v2ray_keys WHERE id = ?", (key_id,))
             row = c.fetchone()
             if row:
                 user_id = row[0]
                 subscription_id = row[1]
                 if subscription_id:
-                    # Получаем текущий срок подписки
                     c.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (subscription_id,))
                     sub_row = c.fetchone()
                     old_expiry = sub_row[0] if sub_row and sub_row[0] else now_ts
                     new_expiry = max(now_ts, old_expiry) + extend_sec
-                    # Обновляем подписку
                     from app.repositories.subscription_repository import SubscriptionRepository
                     sub_repo = SubscriptionRepository(DB_PATH)
                     sub_repo.extend_subscription(subscription_id, new_expiry)
                 else:
-                    raise ValueError(f"Key {key_id} does not have subscription_id")
+                    raise ValueError(f"V2Ray key {key_id} does not have subscription_id")
                 conn.commit()
-                log_admin_action(request, "EXTEND_KEY", f"Outline Key ID: {key_id}, Days: {days}")
+                log_admin_action(request, "EXTEND_KEY", f"V2Ray Key ID: {key_id}, Days: {days}")
                 return JSONResponse({"success": True, "new_expiry": new_expiry})
-            else:
-                # Проверяем V2Ray ключ
-                c.execute("SELECT user_id, subscription_id FROM v2ray_keys WHERE id = ?", (key_id,))
-                row = c.fetchone()
-                if row:
-                    user_id = row[0]
-                    subscription_id = row[1]
-                    if subscription_id:
-                        # Получаем текущий срок подписки
-                        c.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (subscription_id,))
-                        sub_row = c.fetchone()
-                        old_expiry = sub_row[0] if sub_row and sub_row[0] else now_ts
-                        new_expiry = max(now_ts, old_expiry) + extend_sec
-                        # Обновляем подписку
-                        from app.repositories.subscription_repository import SubscriptionRepository
-                        sub_repo = SubscriptionRepository(DB_PATH)
-                        sub_repo.extend_subscription(subscription_id, new_expiry)
-                    else:
-                        raise ValueError(f"V2Ray key {key_id} does not have subscription_id")
-                    conn.commit()
-                    log_admin_action(request, "EXTEND_KEY", f"V2Ray Key ID: {key_id}, Days: {days}")
-                    return JSONResponse({"success": True, "new_expiry": new_expiry})
-        
+
         return JSONResponse({"success": False, "error": "Key not found"}, status_code=404)
     except Exception as e:
         log_admin_action(request, "EXTEND_KEY_ERROR", f"Key ID: {key_id}, Error: {str(e)}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
-    finally:
-        if user_id:
-            try:
-                return RedirectResponse(url=f"/users/{user_id}", status_code=303)
-            except Exception:
-                pass
 
 
 @router.post("/api/keys/{key_id}/expiry")
@@ -338,24 +288,14 @@ async def update_key_expiry(request: Request, key_id: int):
         
         with open_connection(DB_PATH) as conn:
             c = conn.cursor()
-            # Пытаемся обновить в таблице keys
-            # Получаем subscription_id и обновляем подписку
-            c.execute("SELECT subscription_id FROM keys WHERE id = ?", (key_id,))
+            c.execute("SELECT subscription_id FROM v2ray_keys WHERE id = ?", (key_id,))
             row = c.fetchone()
             if row and row[0]:
                 from app.repositories.subscription_repository import SubscriptionRepository
                 sub_repo = SubscriptionRepository(DB_PATH)
                 sub_repo.extend_subscription(row[0], expiry_timestamp)
             else:
-                # Пытаемся в таблице v2ray_keys
-                c.execute("SELECT subscription_id FROM v2ray_keys WHERE id = ?", (key_id,))
-                row = c.fetchone()
-                if row and row[0]:
-                    from app.repositories.subscription_repository import SubscriptionRepository
-                    sub_repo = SubscriptionRepository(DB_PATH)
-                    sub_repo.extend_subscription(row[0], expiry_timestamp)
-                else:
-                    raise ValueError(f"Key {key_id} not found or has no subscription_id")
+                raise ValueError(f"Key {key_id} not found or has no subscription_id")
             conn.commit()
         
         log_admin_action(request, "UPDATE_KEY_EXPIRY", f"Key ID: {key_id}, Expiry: {expiry_timestamp}")

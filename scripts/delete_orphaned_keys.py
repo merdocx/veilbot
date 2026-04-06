@@ -15,7 +15,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from scripts.compare_keys import compare_servers, extract_v2ray_uuid  # noqa: E402
-from vpn_protocols import OutlineProtocol, V2RayProtocol  # noqa: E402
+from vpn_protocols import V2RayProtocol  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,28 +61,22 @@ async def delete_orphaned_keys(dry_run: bool = False) -> Dict[str, Any]:
         deleted_count = 0
         failed_count = 0
         
-        # Создаем клиент для работы с сервером
-        if result.server.protocol == "v2ray":
-            client = V2RayProtocol(result.server.api_url, result.server.api_key or "")
-        elif result.server.protocol == "outline":
-            client = OutlineProtocol(result.server.api_url, result.server.cert_sha256 or "")
-        else:
-            logger.warning(f"Сервер {server_name}: неподдерживаемый протокол {result.server.protocol}")
+        if result.server.protocol != "v2ray":
+            logger.warning(
+                f"Сервер {server_name}: ожидается v2ray, получено {result.server.protocol}"
+            )
             continue
-        
+
+        client = V2RayProtocol(result.server.api_url, result.server.api_key or "")
+
         try:
             for item in result.missing_in_db:
                 remote_key = item.get("remote_key", {})
                 hint = item.get("matching_hint", {})
-                
-                # Извлекаем идентификатор ключа
-                if result.server.protocol == "v2ray":
-                    uuid = hint.get("uuid") or extract_v2ray_uuid(remote_key)
-                    key_id = uuid or remote_key.get("id")
-                    key_display = f"UUID: {uuid[:20]}..." if uuid else f"ID: {key_id[:20]}..."
-                else:  # outline
-                    key_id = hint.get("key_id") or remote_key.get("id")
-                    key_display = f"ID: {key_id}"
+
+                uuid = hint.get("uuid") or extract_v2ray_uuid(remote_key)
+                key_id = uuid or remote_key.get("id")
+                key_display = f"UUID: {uuid[:20]}..." if uuid else f"ID: {key_id[:20]}..."
                 
                 if not key_id:
                     logger.warning(f"Сервер {server_name}: не удалось определить ID ключа для удаления")

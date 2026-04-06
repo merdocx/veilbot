@@ -160,12 +160,6 @@ def diagnose_free_subscription_issue(user_id: int):
         """, (user_id,))
         v2ray_count = cursor.fetchone()[0]
         print(f"  V2Ray ключей: {v2ray_count}")
-        
-        cursor.execute("""
-            SELECT COUNT(*) FROM keys WHERE user_id = ?
-        """, (user_id,))
-        outline_count = cursor.fetchone()[0]
-        print(f"  Outline ключей: {outline_count}")
         print()
         
         # 6. Тест функции check_free_tariff_limit_by_protocol_and_country

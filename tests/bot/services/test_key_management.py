@@ -15,31 +15,6 @@ class TestKeyManagement:
     """Тесты для функций управления ключами"""
     
     @patch('requests.get')
-    def test_check_server_availability_outline_success(self, mock_get):
-        """Тест проверки доступности Outline сервера - успех"""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_get.return_value = mock_response
-        
-        result = check_server_availability("https://test.com", "sha256", "outline")
-        
-        assert result is True
-        mock_get.assert_called_once_with(
-            "https://test.com/access-keys", verify=False, timeout=10
-        )
-    
-    @patch('requests.get')
-    def test_check_server_availability_outline_failure(self, mock_get):
-        """Тест проверки доступности Outline сервера - ошибка"""
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_get.return_value = mock_response
-        
-        result = check_server_availability("https://test.com", "sha256", "outline")
-        
-        assert result is False
-    
-    @patch('requests.get')
     def test_check_server_availability_v2ray_success(self, mock_get):
         """Тест проверки доступности V2Ray сервера - успех"""
         mock_response = MagicMock()
@@ -54,11 +29,18 @@ class TestKeyManagement:
         )
     
     @patch('requests.get')
+    def test_check_server_availability_v2ray_http_error(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_get.return_value = mock_response
+        assert check_server_availability("https://v2ray.com", "sha256", "v2ray") is False
+    
+    @patch('requests.get')
     def test_check_server_availability_exception(self, mock_get):
         """Тест проверки доступности сервера - исключение"""
         mock_get.side_effect = Exception("Connection error")
         
-        result = check_server_availability("https://test.com", "sha256", "outline")
+        result = check_server_availability("https://test.com", "sha256", "v2ray")
         
         assert result is False
     
@@ -70,18 +52,18 @@ class TestKeyManagement:
                                 country, protocol, active)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (1, "Server 1", "https://server1.com", "sha256", "server1.com", "key", "/path", 
-              "Россия", "outline", 1))
+              "Россия", "v2ray", 1))
         
         mock_cursor.execute("""
             INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path, 
                                 country, protocol, active)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (2, "Server 2", "https://server2.com", "sha256", "server2.com", "key", "/path", 
-              "Россия", "outline", 1))
+              "Россия", "v2ray", 1))
         mock_cursor.connection.commit()
         
         # Ищем альтернативный сервер, исключая Server 1
-        server = find_alternative_server(mock_cursor, "Россия", "outline", 1)
+        server = find_alternative_server(mock_cursor, "Россия", "v2ray", 1)
         
         assert server is not None
         assert server[0] == 2, "Должен быть найден Server 2"
@@ -95,18 +77,18 @@ class TestKeyManagement:
                                 country, protocol, active)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (1, "Server 1", "https://server1.com", "sha256", "server1.com", "key", "/path", 
-              "Россия", "outline", 1))
+              "Россия", "v2ray", 1))
         
         mock_cursor.execute("""
             INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path, 
                                 country, protocol, active)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (2, "Server 2", "https://server2.com", "sha256", "server2.com", "key", "/path", 
-              "США", "outline", 1))
+              "США", "v2ray", 1))
         mock_cursor.connection.commit()
         
         # Ищем альтернативный сервер, исключая Server 1
-        server = find_alternative_server(mock_cursor, None, "outline", 1)
+        server = find_alternative_server(mock_cursor, None, "v2ray", 1)
         
         assert server is not None
         assert server[0] == 2
@@ -119,11 +101,11 @@ class TestKeyManagement:
                                 country, protocol, active)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (1, "Server 1", "https://server1.com", "sha256", "server1.com", "key", "/path", 
-              "Россия", "outline", 1))
+              "Россия", "v2ray", 1))
         mock_cursor.connection.commit()
         
         # Ищем альтернативный сервер, исключая единственный
-        server = find_alternative_server(mock_cursor, "Россия", "outline", 1)
+        server = find_alternative_server(mock_cursor, "Россия", "v2ray", 1)
         
         assert server is None, "Альтернативный сервер не должен быть найден"
     
@@ -133,23 +115,22 @@ class TestKeyManagement:
         expiry_at = now + 86400  # Истекает через 24 часа
         duration = 2592000  # Продлеваем на 30 дней
         
-        # Создаем подписку и связанный ключ
-        # ВАЖНО: expiry_at удалено из keys, срок действия берется из subscriptions
-        # Для теста используем expiry_at из ключа как начальное значение для подписки
+        mock_cursor.execute("""
+            INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path, country, protocol, active)
+            VALUES (1, 'S1', 'https://h', 'c', 'd', 'k', '/v', 'RU', 'v2ray', 1)
+        """)
         mock_cursor.execute("""
             INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
             VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (1, 12345, "token-1", now, expiry_at, None))
         
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, access_url, subscription_id)
-            VALUES (?, ?, ?, ?)
-        """, (1, 12345, "ss://test", 1))
+            INSERT INTO v2ray_keys (id, server_id, user_id, v2ray_uuid, created_at, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (1, 1, 12345, "uuid-test", now, 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ (теперь без expiry_at, но функция все еще ожидает его в tuple)
-        # Для обратной совместимости передаем expiry_at как второй элемент
-        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        mock_cursor.execute("SELECT id FROM v2ray_keys WHERE id = ?", (1,))
         key_row = mock_cursor.fetchone()
         # Получаем expiry_at из подписки для передачи в функцию
         mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
@@ -174,22 +155,22 @@ class TestKeyManagement:
         expiry_at = now - 86400  # Истек 24 часа назад
         duration = 2592000  # Продлеваем на 30 дней
         
-        # ВАЖНО: expiry_at удалено из keys, срок действия берется из subscriptions
-        # Создаем подписку с истекшим сроком
+        mock_cursor.execute("""
+            INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path, country, protocol, active)
+            VALUES (1, 'S1', 'https://h', 'c', 'd', 'k', '/v', 'RU', 'v2ray', 1)
+        """)
         mock_cursor.execute("""
             INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
             VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (1, 12345, "token-1", now - 200000, expiry_at, None))
         
-        # Создаем ключ, привязанный к подписке
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, access_url, subscription_id)
-            VALUES (?, ?, ?, ?)
-        """, (1, 12345, "ss://test", 1))
+            INSERT INTO v2ray_keys (id, server_id, user_id, v2ray_uuid, created_at, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (1, 1, 12345, "uuid-test", now - 200000, 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ (теперь без expiry_at, но функция все еще ожидает его в tuple)
-        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        mock_cursor.execute("SELECT id FROM v2ray_keys WHERE id = ?", (1,))
         key_row = mock_cursor.fetchone()
         # Получаем expiry_at из подписки для передачи в функцию
         mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
@@ -218,19 +199,21 @@ class TestKeyManagement:
         email = "test@example.com"
         
         mock_cursor.execute("""
+            INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path, country, protocol, active)
+            VALUES (1, 'S1', 'https://h', 'c', 'd', 'k', '/v', 'RU', 'v2ray', 1)
+        """)
+        mock_cursor.execute("""
             INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
             VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (1, 12345, "token-1", now, expiry_at + duration, None))
         
-        # Создаем ключ, привязанный к подписке (expiry берётся из subscriptions)
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, access_url, email, subscription_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (1, 12345, "ss://test", "old@example.com", 1))
+            INSERT INTO v2ray_keys (id, server_id, user_id, v2ray_uuid, created_at, email, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (1, 1, 12345, "uuid-test", now, "old@example.com", 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ: id и expiry из подписки для передачи в функцию
-        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        mock_cursor.execute("SELECT id FROM v2ray_keys WHERE id = ?", (1,))
         key_row = mock_cursor.fetchone()
         mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
         sub_expiry = mock_cursor.fetchone()[0]
@@ -241,7 +224,7 @@ class TestKeyManagement:
         mock_cursor.connection.commit()
         
         # Проверяем email
-        mock_cursor.execute("SELECT email FROM keys WHERE id = ?", (1,))
+        mock_cursor.execute("SELECT email FROM v2ray_keys WHERE id = ?", (1,))
         new_email = mock_cursor.fetchone()[0]
         assert new_email == email, f"Email должен быть {email}, получен {new_email}"
     
@@ -252,20 +235,25 @@ class TestKeyManagement:
         duration = 2592000
         tariff_id = 5
         
+        mock_cursor.execute(
+            "INSERT INTO tariffs (id, name, price_rub, duration_sec) VALUES (1, 'T1', 1, 3600), (5, 'T5', 1, 3600)"
+        )
+        mock_cursor.execute("""
+            INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path, country, protocol, active)
+            VALUES (1, 'S1', 'https://h', 'c', 'd', 'k', '/v', 'RU', 'v2ray', 1)
+        """)
         mock_cursor.execute("""
             INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
             VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (1, 12345, "token-1", now, expiry_at + duration, None))
         
-        # Создаем ключ, привязанный к подписке (expiry берётся из subscriptions)
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, access_url, tariff_id, subscription_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (1, 12345, "ss://test", 1, 1))
+            INSERT INTO v2ray_keys (id, server_id, user_id, v2ray_uuid, created_at, tariff_id, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (1, 1, 12345, "uuid-test", now, 1, 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ: id и expiry из подписки для передачи в функцию
-        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        mock_cursor.execute("SELECT id FROM v2ray_keys WHERE id = ?", (1,))
         key_row = mock_cursor.fetchone()
         mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
         sub_expiry = mock_cursor.fetchone()[0]
@@ -276,7 +264,7 @@ class TestKeyManagement:
         mock_cursor.connection.commit()
         
         # Проверяем tariff_id
-        mock_cursor.execute("SELECT tariff_id FROM keys WHERE id = ?", (1,))
+        mock_cursor.execute("SELECT tariff_id FROM v2ray_keys WHERE id = ?", (1,))
         new_tariff_id = mock_cursor.fetchone()[0]
         assert new_tariff_id == tariff_id, f"Tariff ID должен быть {tariff_id}, получен {new_tariff_id}"
     
@@ -288,20 +276,25 @@ class TestKeyManagement:
         email = "new@example.com"
         tariff_id = 5
         
+        mock_cursor.execute(
+            "INSERT INTO tariffs (id, name, price_rub, duration_sec) VALUES (1, 'T1', 1, 3600), (5, 'T5', 1, 3600)"
+        )
+        mock_cursor.execute("""
+            INSERT INTO servers (id, name, api_url, cert_sha256, domain, api_key, v2ray_path, country, protocol, active)
+            VALUES (1, 'S1', 'https://h', 'c', 'd', 'k', '/v', 'RU', 'v2ray', 1)
+        """)
         mock_cursor.execute("""
             INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active)
             VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (1, 12345, "token-1", now, expiry_at + duration, None))
         
-        # Создаем ключ, привязанный к подписке (expiry берётся из subscriptions)
         mock_cursor.execute("""
-            INSERT INTO keys (id, user_id, access_url, email, tariff_id, subscription_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (1, 12345, "ss://test", "old@example.com", 1, 1))
+            INSERT INTO v2ray_keys (id, server_id, user_id, v2ray_uuid, created_at, email, tariff_id, subscription_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (1, 1, 12345, "uuid-test", now, "old@example.com", 1, 1))
         mock_cursor.connection.commit()
         
-        # Получаем ключ: id и expiry из подписки для передачи в функцию
-        mock_cursor.execute("SELECT id FROM keys WHERE id = ?", (1,))
+        mock_cursor.execute("SELECT id FROM v2ray_keys WHERE id = ?", (1,))
         key_row = mock_cursor.fetchone()
         mock_cursor.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (1,))
         sub_expiry = mock_cursor.fetchone()[0]
@@ -312,7 +305,7 @@ class TestKeyManagement:
         mock_cursor.connection.commit()
         
         # Проверяем оба поля
-        mock_cursor.execute("SELECT email, tariff_id FROM keys WHERE id = ?", (1,))
+        mock_cursor.execute("SELECT email, tariff_id FROM v2ray_keys WHERE id = ?", (1,))
         row = mock_cursor.fetchone()
         assert row[0] == email
         assert row[1] == tariff_id

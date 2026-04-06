@@ -48,7 +48,7 @@
         <div class="stat-value">
             {{ (completed_total_amount_rub if completed_total_amount_rub is defined else completed_total_amount) | rub }}
             {% if completed_total_amount_usd is defined and completed_total_amount_usd %}
-                <div class="text-muted" style="font-size: 12px; margin-top: 2px;">
+                <div class="text-muted stat-amount-sub">
                     + ${{ "%.2f"|format(completed_total_amount_usd / 100.0) }}
                 </div>
             {% endif %}
@@ -73,8 +73,8 @@
     <!-- Filters -->
     <div class="filter-bar">
         <div class="filter-bar__group flex-1">
-            <form method="get" action="/payments" id="search-form" style="display: flex; gap: 8px; flex: 1; align-items: center;">
-                <select name="status" id="status-filter" class="filter-input" style="min-width: 180px;">
+            <form method="get" action="/payments" id="search-form" class="filter-form">
+                <select name="status" id="status-filter" class="filter-input filter-input--select-wide">
                     <option value="">Все статусы</option>
                     <option value="pending" {% if status == 'pending' %}selected{% endif %}>⏳ Ожидает оплаты</option>
                     <option value="paid" {% if status == 'paid' %}selected{% endif %}>✅ Оплачен</option>
@@ -92,7 +92,7 @@
                 {% if protocol %}<input type="hidden" name="protocol" value="{{ protocol }}">{% endif %}
                 {% if country %}<input type="hidden" name="country" value="{{ country }}">{% endif %}
                 {% if preset %}<input type="hidden" name="preset" value="{{ preset }}">{% endif %}
-                <button type="submit" class="btn btn-primary" style="display: none;" id="search-submit-btn">Поиск</button>
+                <button type="submit" class="btn btn-primary hidden" id="search-submit-btn">Поиск</button>
             </form>
             <button type="button" class="btn" id="reset-search-btn">
                 <span class="material-icons icon-small">clear</span>

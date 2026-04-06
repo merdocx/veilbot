@@ -44,13 +44,6 @@ class ServerClientPool:
                         "api_key": api_key,
                         "domain": domain,
                     })
-                elif protocol == "outline":
-                    if not api_url:
-                        return None
-                    self._clients[server_id] = ProtocolFactory.create_protocol("outline", {
-                        "api_url": api_url,
-                        "cert_sha256": cert_sha256 or "",
-                    })
                 else:
                     return None
             except Exception as e:
@@ -391,15 +384,8 @@ class SubscriptionPurchaseService:
                 # Проверяем, есть ли ключи для этой подписки
                 async with open_async_connection(self.db_path) as conn:
                     async with conn.execute(
-                        """
-                        SELECT COUNT(*) FROM (
-                            SELECT id FROM v2ray_keys WHERE subscription_id = ?
-                            UNION ALL
-                            SELECT id FROM keys WHERE subscription_id = ?
-                        )
-                        """
-                        ,
-                        (subscription_id_retry, subscription_id_retry)
+                        "SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?",
+                        (subscription_id_retry,),
                     ) as cursor:
                         keys_count = (await cursor.fetchone())[0] or 0
                 
@@ -671,15 +657,8 @@ class SubscriptionPurchaseService:
             # (защита от race condition или если была ошибка при создании)
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
-                    """
-                    SELECT COUNT(*) FROM (
-                        SELECT id FROM v2ray_keys WHERE subscription_id = ?
-                        UNION ALL
-                        SELECT id FROM keys WHERE subscription_id = ?
-                    )
-                    """
-                    ,
-                    (subscription_id, subscription_id)
+                    "SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?",
+                    (subscription_id,),
                 ) as cursor:
                     keys_count = (await cursor.fetchone())[0] or 0
             
@@ -2141,14 +2120,8 @@ class SubscriptionPurchaseService:
             # Проверка 1: Есть ли ключи у подписки?
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
-                    """
-                    SELECT COUNT(*) FROM (
-                        SELECT id FROM v2ray_keys WHERE subscription_id = ?
-                        UNION ALL
-                        SELECT id FROM keys WHERE subscription_id = ?
-                    )
-                    """,
-                    (subscription_id, subscription_id)
+                    "SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?",
+                    (subscription_id,),
                 ) as cursor:
                     keys_count = (await cursor.fetchone())[0] or 0
             

@@ -32,9 +32,6 @@ def _fetch_dashboard_stats_readonly():
         c = conn.cursor()
         c.execute("""
             SELECT 
-                (SELECT COUNT(*) FROM keys k
-                 JOIN subscriptions s ON k.subscription_id = s.id
-                 WHERE s.expires_at > ?) as active_outline,
                 (SELECT COUNT(*) FROM v2ray_keys k
                  JOIN subscriptions s ON k.subscription_id = s.id
                  WHERE s.expires_at > ?) as active_v2ray,
@@ -42,12 +39,12 @@ def _fetch_dashboard_stats_readonly():
                 (SELECT COUNT(*) FROM tariffs) as tariff_count,
                 (SELECT COUNT(*) FROM servers) as server_count,
                 (SELECT COUNT(*) FROM users) as started_users
-        """, (now, now, now))
+        """, (now, now))
         row = c.fetchone()
-        active_keys = (row[0] or 0) + (row[1] or 0)
-        tariff_count = row[3] or 0
-        server_count = row[4] or 0
-        started_users = row[5] or 0
+        active_keys = row[0] or 0
+        tariff_count = row[2] or 0
+        server_count = row[3] or 0
+        started_users = row[4] or 0
 
         c.execute("""
             SELECT date, active_keys, started_users, COALESCE(paid_subscriptions, 0)

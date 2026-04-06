@@ -19,16 +19,11 @@ class UserRepository:
                 WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
                 UNION ALL
                 SELECT k.email, 2 AS priority, COALESCE(sub.expires_at, k.created_at) AS sort_date
-                FROM keys k
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                WHERE k.user_id = ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com'
-                UNION ALL
-                SELECT k.email, 3 AS priority, COALESCE(sub.expires_at, k.created_at) AS sort_date
                 FROM v2ray_keys k
                 LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.user_id = ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com'
             ) ORDER BY priority ASC, sort_date DESC LIMIT 1
-        """, (user_id, user_id, user_id))
+        """, (user_id, user_id))
         row = cursor.fetchone()
         return row[0] if row else ""
 
@@ -65,14 +60,6 @@ class UserRepository:
                    OR IFNULL(u.last_name, '') LIKE ?
                    OR CAST(IFNULL(r.referral_count, 0) AS TEXT) LIKE ?
                    OR EXISTS (
-                       SELECT 1 FROM keys k 
-                       WHERE k.user_id = u.user_id 
-                         AND k.email LIKE ? 
-                         AND k.email IS NOT NULL 
-                         AND k.email != '' 
-                         AND k.email NOT LIKE 'user_%@veilbot.com'
-                   )
-                   OR EXISTS (
                        SELECT 1 FROM v2ray_keys k 
                        WHERE k.user_id = u.user_id 
                          AND k.email LIKE ? 
@@ -90,7 +77,7 @@ class UserRepository:
                    ))
                    {vip_condition}
                 """
-                c.execute(sql, (like, like, like, like, like, like, like, like))
+                c.execute(sql, (like, like, like, like, like, like, like))
             else:
                 sql = f"SELECT COUNT(*) FROM users u WHERE 1=1 {vip_condition}"
                 c.execute(sql)
@@ -137,14 +124,6 @@ class UserRepository:
                     f"   OR IFNULL(u.last_name, '') LIKE ? "
                     f"   OR CAST(IFNULL(r.referral_count, 0) AS TEXT) LIKE ? "
                     f"   OR EXISTS ("
-                    f"       SELECT 1 FROM keys k "
-                    f"       WHERE k.user_id = u.user_id "
-                    f"         AND k.email LIKE ? "
-                    f"         AND k.email IS NOT NULL "
-                    f"         AND k.email != '' "
-                    f"         AND k.email NOT LIKE 'user_%@veilbot.com'"
-                    f"   ) "
-                    f"   OR EXISTS ("
                     f"       SELECT 1 FROM v2ray_keys k "
                     f"       WHERE k.user_id = u.user_id "
                     f"         AND k.email LIKE ? "
@@ -163,7 +142,7 @@ class UserRepository:
                     f"   {vip_condition} "
                     f"ORDER BY u.user_id LIMIT ? OFFSET ?"
                 )
-                c.execute(sql, (like, like, like, like, like, like, like, like, limit, offset))
+                c.execute(sql, (like, like, like, like, like, like, like, limit, offset))
             else:
                 sql = (
                     f"SELECT u.user_id, "
@@ -181,20 +160,16 @@ class UserRepository:
         """Return basic info about user: counts, last activity, email if any."""
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("SELECT COUNT(*), MAX(created_at) FROM keys WHERE user_id = ?", (user_id,))
-            outline_row = c.fetchone() or (0, None)
             c.execute("SELECT COUNT(*), MAX(created_at) FROM v2ray_keys WHERE user_id = ?", (user_id,))
             v2ray_row = c.fetchone() or (0, None)
             email_value = self._resolve_user_email(c, user_id)
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
             ref_cnt = c.fetchone()
-            outline_last = int(outline_row[1] or 0)
             v2ray_last = int(v2ray_row[1] or 0)
             return {
                 "user_id": user_id,
-                "outline_count": int(outline_row[0] or 0),
                 "v2ray_count": int(v2ray_row[0] or 0),
-                "last_activity": max(outline_last, v2ray_last),
+                "last_activity": v2ray_last,
                 "email": email_value,
                 "referrals": int((ref_cnt or [0])[0] or 0),
             }
@@ -258,16 +233,11 @@ class UserRepository:
             c.execute("""
                 SELECT COUNT(DISTINCT user_id) FROM (
                     SELECT k.user_id
-                    FROM keys k
-                    JOIN subscriptions s ON k.subscription_id = s.id
-                    WHERE s.expires_at > ? AND s.is_active = 1
-                    UNION
-                    SELECT k.user_id
                     FROM v2ray_keys k
                     JOIN subscriptions s ON k.subscription_id = s.id
                     WHERE s.expires_at > ? AND s.is_active = 1
                 )
-            """, (now, now))
+            """, (now,))
             row = c.fetchone()
             return int(row[0] if row and row[0] is not None else 0)
 

@@ -97,7 +97,7 @@ class TestPaymentService:
             amount=amount,
             email=email,
             country="RU",
-            protocol="outline"
+            protocol="v2ray"
         )
         
         # Assert
@@ -122,7 +122,7 @@ class TestPaymentService:
             tariff_id=1,
             amount=10000,
             email="invalid-email",
-            protocol="outline"
+            protocol="v2ray"
         )
         
         # Assert
@@ -137,7 +137,7 @@ class TestPaymentService:
             tariff_id=1,
             amount=-100,  # Отрицательная сумма
             email="test@example.com",
-            protocol="outline"
+            protocol="v2ray"
         )
         
         # Assert

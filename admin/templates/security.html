@@ -13,7 +13,7 @@
                     Статус безопасности
                 </h2>
             </div>
-            <div class="card-content">
+            <div class="card-body">
                 <div class="security-grid">
                     <div class="security-item">
                         <div class="security-icon success">
@@ -68,7 +68,7 @@
                     События безопасности
                 </h2>
             </div>
-            <div class="card-content">
+            <div class="card-body">
                 <div class="events-list">
                     {% for event in security_events %}
                     <div class="event-item {{ event.level }}">
@@ -98,7 +98,7 @@
                     Действия безопасности
                 </h2>
             </div>
-            <div class="card-content">
+            <div class="card-body">
                 <div class="actions-grid">
                     <form method="post" action="/security/clear_blocks" data-confirm="Снять все блокировки IP?">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

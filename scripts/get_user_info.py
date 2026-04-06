@@ -85,7 +85,6 @@ def get_user_info(user_id: int):
     print("📊 ОБЗОР")
     print("-" * 80)
     overview = repo.get_user_overview(user_id)
-    print(f"Outline ключей:  {overview['outline_count']}")
     print(f"V2Ray ключей:    {overview['v2ray_count']}")
     print(f"Рефералов:       {overview['referrals']}")
     print(f"Email:           {overview['email'] or 'N/A'}")
@@ -131,52 +130,7 @@ def get_user_info(user_id: int):
             print("  Нет подписок")
     print()
     
-    # 4. Ключи (Outline)
-    print("🔐 OUTLINE КЛЮЧИ")
-    print("-" * 80)
-    with open_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT k.id, k.key_id, k.access_url, k.created_at, k.email,
-                   k.server_id, k.tariff_id, k.subscription_id,
-                   s.name as server_name, t.name as tariff_name,
-                   sub.expires_at as subscription_expires
-            FROM keys k
-            LEFT JOIN servers s ON k.server_id = s.id
-            LEFT JOIN tariffs t ON k.tariff_id = t.id
-            LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-            WHERE k.user_id = ?
-            ORDER BY k.created_at DESC
-        """, (user_id,))
-        outline_keys = cursor.fetchall()
-        
-        if outline_keys:
-            for key in outline_keys:
-                key_id, key_uuid, access_url, created_at, email, server_id, tariff_id, sub_id, server_name, tariff_name, sub_expires = key
-                print(f"  Ключ #{key_id}")
-                print(f"    Key ID:        {key_uuid[:50]}...")
-                print(f"    Email:         {email or 'N/A'}")
-                print(f"    Сервер:        {server_name or f'ID {server_id}'}")
-                print(f"    Тариф:         {tariff_name or f'ID {tariff_id}'}")
-                print(f"    Подписка:      {sub_id or 'Нет'}")
-                if sub_expires:
-                    now = int(datetime.now().timestamp())
-                    is_expired = sub_expires < now
-                    remaining = sub_expires - now if not is_expired else 0
-                    print(f"    Истекает:      {format_timestamp(sub_expires)}")
-                    if not is_expired:
-                        print(f"    Осталось:      {format_duration(remaining)}")
-                    else:
-                        print(f"    Статус:        Истек")
-                print(f"    Создан:        {format_timestamp(created_at)}")
-                if access_url:
-                    print(f"    Access URL:    {access_url[:80]}...")
-                print()
-        else:
-            print("  Нет Outline ключей")
-    print()
-    
-    # 5. Ключи (V2Ray)
+    # 4. Ключи (V2Ray)
     print("🛡️  V2RAY КЛЮЧИ")
     print("-" * 80)
     with open_connection(db_path) as conn:
@@ -228,7 +182,7 @@ def get_user_info(user_id: int):
             print("  Нет V2Ray ключей")
     print()
     
-    # 6. Платежи
+    # 5. Платежи
     print("💳 ПЛАТЕЖИ")
     print("-" * 80)
     import asyncio
@@ -271,7 +225,7 @@ def get_user_info(user_id: int):
         print("  Нет платежей")
     print()
     
-    # 7. Рефералы
+    # 6. Рефералы
     print("👥 РЕФЕРАЛЫ")
     print("-" * 80)
     referrals = repo.list_referrals(user_id)
@@ -287,7 +241,7 @@ def get_user_info(user_id: int):
         print("  Нет рефералов")
     print()
     
-    # 8. Реферальная информация (как реферер)
+    # 7. Реферальная информация (как реферер)
     print("🎯 РЕФЕРАЛЬНАЯ СЕТЬ")
     print("-" * 80)
     with open_connection(db_path) as conn:

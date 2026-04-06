@@ -301,7 +301,7 @@ async def health_check():
     
     Проверяет:
     - База данных (основная проверка)
-    - Доступность VPN серверов (Outline, V2Ray) - опционально
+    - Доступность VPN серверов (V2Ray) — опционально
     - Метрики производительности (response time)
     """
     import time
@@ -354,21 +354,27 @@ async def health_check():
         
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
             for server in servers_to_check:
-                server_id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, access_level = server
-                protocol = (protocol or "outline").lower()
+                (
+                    server_id,
+                    name,
+                    api_url,
+                    cert_sha256,
+                    max_keys,
+                    active,
+                    country,
+                    protocol,
+                    domain,
+                    api_key,
+                    v2ray_path,
+                    access_level,
+                ) = server[:12]
+                protocol = (protocol or "v2ray").lower()
                 
                 try:
                     check_start = time.time()
                     if protocol == "v2ray" and api_url:
                         # Проверяем V2Ray API
                         async with session.get(f"{api_url}/", ssl=False) as resp:
-                            if resp.status == 200:
-                                servers_status["available"] += 1
-                            else:
-                                servers_status["unavailable"] += 1
-                    elif protocol == "outline" and api_url:
-                        # Проверяем Outline API
-                        async with session.get(f"{api_url}/access-keys", ssl=False) as resp:
                             if resp.status == 200:
                                 servers_status["available"] += 1
                             else:

@@ -16,7 +16,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from app.infra.sqlite_utils import get_db_cursor  # noqa: E402
-from vpn_protocols import OutlineProtocol, V2RayProtocol  # noqa: E402
+from vpn_protocols import V2RayProtocol  # noqa: E402
 
 
 @dataclass
@@ -73,27 +73,16 @@ def load_servers() -> List[ServerInfo]:
 
 def load_db_keys(server: ServerInfo) -> List[Dict[str, Any]]:
     with get_db_cursor() as cursor:
-        if server.protocol == "outline":
-            cursor.execute(
-                """
-                SELECT id, user_id, email, key_id, access_url
-                FROM keys
-                WHERE server_id = ?
-                """,
-                (server.id,),
-            )
-        elif server.protocol == "v2ray":
-            cursor.execute(
-                """
-                SELECT id, user_id, email, v2ray_uuid, level, created_at
-                FROM v2ray_keys
-                WHERE server_id = ?
-                """,
-                (server.id,),
-            )
-        else:
+        if server.protocol != "v2ray":
             return []
-
+        cursor.execute(
+            """
+            SELECT id, user_id, email, v2ray_uuid, level, created_at
+            FROM v2ray_keys
+            WHERE server_id = ?
+            """,
+            (server.id,),
+        )
         rows = cursor.fetchall()
 
     return [dict(row) for row in rows]
@@ -108,68 +97,6 @@ def serialize_row(row: Dict[str, Any]) -> Dict[str, Any]:
         else:
             serialized[key] = value
     return serialized
-
-
-async def compare_outline(server: ServerInfo, db_keys: List[Dict[str, Any]]) -> ComparisonResult:
-    result = ComparisonResult(server=server, db_count=len(db_keys), remote_count=0)
-
-    client = OutlineProtocol(server.api_url, server.cert_sha256 or "")
-    try:
-        remote_keys = await client.get_all_keys()
-    except Exception as exc:  # noqa: BLE001
-        result.errors.append(f"Outline API error: {exc}")
-        return result
-
-    remote_dict: Dict[str, Dict[str, Any]] = {}
-    remote_names: Dict[str, Dict[str, Any]] = {}
-
-    for key in remote_keys or []:
-        key_id = key.get("id")
-        name = key.get("name")
-        if key_id is not None:
-            remote_dict[str(key_id)] = key
-        if isinstance(name, str) and name:
-            remote_names[name.lower()] = key
-
-    result.remote_count = len(remote_keys or [])
-
-    for row in db_keys:
-        key_id = row.get("key_id")
-        email = (row.get("email") or "").lower()
-        row_serialized = serialize_row(row)
-
-        if key_id:
-            remote_entry = remote_dict.get(str(key_id))
-            if not remote_entry:
-                result.missing_on_server.append(
-                    {
-                        "db_entry": row_serialized,
-                        "matching_hint": {"key_id": key_id, "email": row.get("email")},
-                    }
-                )
-            continue
-
-        # No remote id stored, try to match by email/name
-        if email and email in remote_names:
-            continue
-
-        result.db_without_remote_id.append(row_serialized)
-
-    # Remote keys missing in DB
-    db_key_ids = {str(row["key_id"]) for row in db_keys if row.get("key_id")}
-    db_emails = {(row.get("email") or "").lower() for row in db_keys if row.get("email")}
-
-    for key_id, remote_entry in remote_dict.items():
-        name = (remote_entry.get("name") or "").lower()
-        if key_id not in db_key_ids and name not in db_emails:
-            result.missing_in_db.append(
-                {
-                    "remote_key": remote_entry,
-                    "matching_hint": {"key_id": key_id, "name": remote_entry.get("name")},
-                }
-            )
-
-    return result
 
 
 def extract_v2ray_uuid(remote_entry: Dict[str, Any]) -> Optional[str]:
@@ -255,13 +182,11 @@ async def compare_servers() -> List[ComparisonResult]:
 
     for server in servers:
         db_keys = load_db_keys(server)
-        if server.protocol == "outline":
-            results.append(await compare_outline(server, db_keys))
-        elif server.protocol == "v2ray":
+        if server.protocol == "v2ray":
             results.append(await compare_v2ray(server, db_keys))
         else:
             result = ComparisonResult(server=server, db_count=len(db_keys), remote_count=0)
-            result.errors.append(f"Unsupported protocol: {server.protocol}")
+            result.errors.append(f"Unsupported protocol (expected v2ray): {server.protocol}")
             results.append(result)
 
     return results

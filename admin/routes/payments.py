@@ -15,18 +15,13 @@ from payments.models.payment import PaymentFilter
 from payments.models.enums import PaymentStatus, PaymentProvider
 from payments.config import get_payment_service
 from app.settings import settings
-from bot.core import get_bot_instance
-from bot.utils.messaging import safe_send_message
+from bot.services.admin_notifications import (
+    AdminNotificationCategory,
+    format_reconcile_result_markdown,
+    format_reconcile_result_plain,
+    send_admin_message,
+)
 from app.infra.sqlite_utils import open_connection
-
-# Lazy import: получаем bot instance только когда он нужен
-def get_bot():
-    """Получить экземпляр бота (lazy import для избежания ошибок при старте админки)"""
-    try:
-        return get_bot_instance()
-    except RuntimeError:
-        # Бот еще не запущен - возвращаем None
-        return None
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token, validate_csrf_token
@@ -300,14 +295,20 @@ async def payments_reconcile(request: Request, csrf_token: str = Form(...)):
         try:
             admin_id = getattr(settings, "ADMIN_ID", None)
             if admin_id:
-                msg = (
-                    f"🧾 Реконсиляция выполнена\n"
-                    f"• Pending обработано: {pending_processed}\n"
-                    f"• Выдано ключей: {issued_processed}\n"
+                md = format_reconcile_result_markdown(
+                    pending_processed=pending_processed,
+                    issued_processed=issued_processed,
                 )
-                bot = get_bot()
-                if bot:
-                    await safe_send_message(bot, admin_id, msg, mark_blocked=False)
+                plain = format_reconcile_result_plain(
+                    pending_processed=pending_processed,
+                    issued_processed=issued_processed,
+                )
+                await send_admin_message(
+                    md,
+                    text_plain=plain,
+                    admin_id=admin_id,
+                    category=AdminNotificationCategory.INFO,
+                )
         except Exception:
             pass
 

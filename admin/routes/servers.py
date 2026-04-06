@@ -16,7 +16,6 @@ from app.settings import settings
 from app.infra.sqlite_utils import open_connection
 from app.infra.foreign_keys import safe_foreign_keys_off
 from vpn_protocols import V2RayProtocol
-from outline import delete_key as outline_delete_key
 
 from ..middleware.audit import log_admin_action
 from ..dependencies.csrf import get_csrf_token, validate_csrf_token
@@ -50,7 +49,6 @@ def _prepare_servers_context(repo: ServerRepository, search_query: str | None = 
         return [], 0
 
     server_ids = [row[0] for row in raw_servers]
-    outline_key_counts = repo.outline_key_counts(server_ids)
     v2ray_key_counts = repo.v2ray_key_counts(server_ids)
 
     servers_for_template: list[dict] = []
@@ -68,10 +66,12 @@ def _prepare_servers_context(repo: ServerRepository, search_query: str | None = 
             api_key,
             v2ray_path,
             access_level,
+            subscription_group_id,
         ) = row
 
-        protocol = (protocol or "outline").lower()
-        total_keys = outline_key_counts.get(server_id, 0) + v2ray_key_counts.get(server_id, 0)
+        protocol = (protocol or "v2ray").lower()
+        group_display = (subscription_group_id or "").strip() or "—"
+        total_keys = v2ray_key_counts.get(server_id, 0)
         parsed_api = urlparse(api_url or "")
         host_candidate = parsed_api.netloc or parsed_api.path
         display_host = (domain or "").strip() or (host_candidate or "")
@@ -79,9 +79,6 @@ def _prepare_servers_context(repo: ServerRepository, search_query: str | None = 
         if protocol == "v2ray":
             protocol_badge_class = "protocol-badge--v2ray"
             protocol_icon = "security"
-        elif protocol == "outline":
-            protocol_badge_class = "protocol-badge--outline"
-            protocol_icon = "lock"
         else:
             protocol_badge_class = "protocol-badge--neutral"
             protocol_icon = "device_hub"
@@ -102,6 +99,8 @@ def _prepare_servers_context(repo: ServerRepository, search_query: str | None = 
                 "access_level": access_level or 'all',
                 "domain": domain or "",
                 "display_host": display_host,
+                "subscription_group_id": (subscription_group_id or "").strip(),
+                "subscription_group_display": group_display,
             }
         )
 
@@ -139,11 +138,12 @@ async def add_server(
     cert_sha256: str = Form(""),
     max_keys: int = Form(...),
     country: str = Form(""),
-    protocol: str = Form("outline"),
+    protocol: str = Form("v2ray"),
     domain: str = Form(""),
     api_key: str = Form(""),
     v2ray_path: str = Form("/v2ray"),
-    csrf_token: str = Form(...)
+    subscription_group_id: str = Form(""),
+    csrf_token: str = Form(...),
 ):
     """Добавление нового сервера"""
     if not request.session.get("admin_logged_in"):
@@ -155,8 +155,9 @@ async def add_server(
         return templates.TemplateResponse("servers.html", {
             "request": request, 
             "error": "Invalid request. Please try again.",
-            "servers": [],
+                "servers": [],
             "active_servers": 0,
+            "search_query": "",
             "csrf_token": get_csrf_token(request)
         })
     
@@ -176,7 +177,8 @@ async def add_server(
             protocol=protocol,
             domain=domain,
             api_key=api_key,
-            v2ray_path=v2ray_path
+            v2ray_path=v2ray_path,
+            subscription_group_id=subscription_group_id,
         )
         
         api_url_to_store = server_data.api_url
@@ -194,6 +196,7 @@ async def add_server(
             api_key=server_data.api_key,
             v2ray_path=server_data.v2ray_path,
             access_level=access_level,
+            subscription_group_id=server_data.subscription_group_id or None,
         )
         
         # Если это новый активный V2Ray сервер, создаем ключи для всех активных подписок
@@ -292,7 +295,7 @@ async def delete_server(request: Request, server_id: int):
             request,
             "DELETE_SERVER_CLEANUP",
             (
-                f"ID: {server_id}, outline_keys_deleted={deletion_stats.get('outline_keys_deleted', 0)}, "
+                f"ID: {server_id}, "
                 f"v2ray_keys_deleted={deletion_stats.get('v2ray_keys_deleted', 0)}, "
                 f"subscriptions_affected={deletion_stats.get('subscriptions_affected', 0)}"
             ),
@@ -341,11 +344,12 @@ async def edit_server_page(request: Request, server_id: int):
             "max_keys": server[4],
             "active": server[5],
             "country": server[6] or "",
-            "protocol": server[7] or "outline",
+            "protocol": server[7] or "v2ray",
             "domain": server[8] or "",
             "api_key": server[9] or "",
             "v2ray_path": server[10] if len(server) > 10 else "/v2ray",
             "access_level": server[11] if len(server) > 11 else 'all',
+            "subscription_group_id": server[12] if len(server) > 12 else "",
         },
         "csrf_token": get_csrf_token(request),
         "error_message": error_message,
@@ -361,12 +365,13 @@ async def edit_server(
     cert_sha256: str = Form(""),
     max_keys: int = Form(...),
     country: str = Form(""),
-    protocol: str = Form("outline"),
+    protocol: str = Form("v2ray"),
     domain: str = Form(""),
     api_key: str = Form(""),
     v2ray_path: str = Form("/v2ray"),
     active: bool = Form(False),
-    csrf_token: str = Form(...)
+    subscription_group_id: str = Form(""),
+    csrf_token: str = Form(...),
 ):
     """Обновление сервера"""
     if not request.session.get("admin_logged_in"):
@@ -400,7 +405,8 @@ async def edit_server(
             protocol=protocol,
             domain=domain,
             api_key=api_key,
-            v2ray_path=v2ray_path
+            v2ray_path=v2ray_path,
+            subscription_group_id=subscription_group_id,
         )
         
         api_url_to_store = server_data.api_url
@@ -435,6 +441,7 @@ async def edit_server(
             v2ray_path=server_data.v2ray_path,
             active=new_active,
             access_level=access_level,
+            subscription_group_id=server_data.subscription_group_id or None,
         )
         
         # Инвалидируем кэш меню бота
@@ -477,10 +484,10 @@ async def _delete_all_keys_from_server(
     
     Args:
         server_id: ID сервера
-        protocol: Протокол сервера ('v2ray' или 'outline')
+        protocol: Протокол сервера ('v2ray')
         api_url: URL API сервера
         api_key: API ключ (для V2Ray)
-        cert_sha256: SHA256 сертификата (для Outline)
+        cert_sha256: не используется (legacy)
     """
     logging.info(f"Deleting all keys from server {server_id} (protocol: {protocol})")
     
@@ -542,54 +549,6 @@ async def _delete_all_keys_from_server(
                     deleted_from_db += cursor.rowcount
                     conn.commit()
                     logging.info(f"Deleted {cursor.rowcount} V2Ray keys from database for server {server_id}")
-            
-            elif protocol == 'outline':
-                # Получаем Outline ключи
-                cursor.execute("""
-                    SELECT id, key_id, user_id
-                    FROM keys
-                    WHERE server_id = ? AND protocol = 'outline'
-                """, (server_id,))
-                outline_keys = cursor.fetchall()
-                
-                # Удаляем Outline ключи с сервера
-                # ВАЖНО: Выполняем в отдельном потоке с таймаутом, чтобы не блокировать
-                if outline_keys and api_url and cert_sha256:
-                    for key_id, outline_key_id, user_id in outline_keys:
-                        if outline_key_id:
-                            try:
-                                # Выполняем синхронную операцию в отдельном потоке с таймаутом
-                                loop = asyncio.get_event_loop()
-                                result = await asyncio.wait_for(
-                                    loop.run_in_executor(
-                                        None,
-                                        outline_delete_key,
-                                        api_url,
-                                        cert_sha256,
-                                        outline_key_id
-                                    ),
-                                    timeout=5.0
-                                )
-                                if result:
-                                    deleted_from_server += 1
-                                    logging.info(f"Deleted Outline key {outline_key_id} from server {server_id}")
-                                else:
-                                    errors.append(f"Failed to delete Outline key {outline_key_id} from server")
-                            except asyncio.TimeoutError:
-                                error_msg = f"Timeout deleting Outline key {outline_key_id} from server {server_id}"
-                                logging.warning(error_msg)
-                                errors.append(error_msg)
-                            except Exception as e:
-                                error_msg = f"Error deleting Outline key {outline_key_id}: {e}"
-                                logging.error(error_msg, exc_info=True)
-                                errors.append(error_msg)
-                
-                # Удаляем Outline ключи из БД
-                with safe_foreign_keys_off(cursor):
-                    cursor.execute("DELETE FROM keys WHERE server_id = ? AND protocol = 'outline'", (server_id,))
-                    deleted_from_db += cursor.rowcount
-                    conn.commit()
-                    logging.info(f"Deleted {cursor.rowcount} Outline keys from database for server {server_id}")
             
             else:
                 logging.warning(f"Unknown protocol {protocol} for server {server_id}")

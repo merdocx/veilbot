@@ -12,7 +12,7 @@ from typing import Optional, Tuple, Dict, Any, Callable
 from aiogram import types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-from config import PROTOCOLS, ADMIN_ID
+from config import PROTOCOLS
 from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import format_duration, ProtocolFactory
 from bot.keyboards import get_main_menu, get_countries_by_protocol
@@ -95,7 +95,7 @@ def _is_server_accessible_for_user(cursor: sqlite3.Cursor, server_access_level: 
 def select_available_server_by_protocol(
     cursor: sqlite3.Cursor, 
     country: Optional[str] = None, 
-    protocol: str = 'outline', 
+    protocol: str = 'v2ray', 
     for_renewal: bool = False,
     user_id: Optional[int] = None
 ) -> Optional[Tuple]:
@@ -105,7 +105,7 @@ def select_available_server_by_protocol(
     Args:
         cursor: Курсор базы данных
         country: Страна сервера
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
         for_renewal: Если True, проверяет только active, не проверяет access_level (для продления)
         user_id: ID пользователя (необходим для проверки access_level при for_renewal=False)
     
@@ -193,7 +193,7 @@ async def create_new_key_flow_with_protocol(
     tariff: Dict[str, Any], 
     email: Optional[str] = None, 
     country: Optional[str] = None, 
-    protocol: str = "outline", 
+    protocol: str = "v2ray", 
     for_renewal: bool = False,
     user_states: Optional[Dict[int, Dict[str, Any]]] = None,
     extend_existing_key_with_fallback: Optional[Callable] = None,
@@ -211,7 +211,7 @@ async def create_new_key_flow_with_protocol(
         tariff: Словарь с данными тарифа
         email: Email пользователя
         country: Страна сервера
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
         for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
         user_states: Словарь состояний пользователей (для очистки состояния)
         extend_existing_key_with_fallback: Функция продления ключа (импортируется из bot.py)
@@ -271,128 +271,16 @@ async def create_new_key_flow_with_protocol(
     grace_threshold = now - GRACE_PERIOD
     
     # Проверяем наличие активного или недавно истекшего ключа (в пределах grace period)
-    if protocol == "outline":
-        _execute_with_limit_fallback(
-            cursor,
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email "
-            "FROM keys k JOIN servers s ON k.server_id = s.id "
-            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
-            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email "
-            "FROM keys k JOIN servers s ON k.server_id = s.id "
-            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
-            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            (user_id, grace_threshold),
-        )
-        existing_key = cursor.fetchone()
-        if existing_key:
-            # Проверяем, отличается ли запрошенная страна от текущей
-            current_country = existing_key[3]  # s.country
-            
-            if country and country != current_country:
-                # Запрошена другая страна - запускаем логику смены страны с продлением
-                logging.info(f"User {user_id} requested different country: current={current_country}, requested={country}. Running country change logic.")
-                
-                # Формируем key_data для функции смены страны
-                key_data = {
-                    'id': existing_key[0],
-                    'expiry_at': existing_key[1],
-                    'access_url': existing_key[2],
-                    'country': current_country,
-                    'server_id': existing_key[4],
-                    'key_id': existing_key[5],
-                    'tariff_id': existing_key[6] or tariff['id'],
-                    'email': existing_key[7] or email,
-                    'protocol': protocol,
-                    'type': 'outline',
-                }
-                
-                # Вызываем функцию смены страны с продлением
-                if change_country_and_extend is None:
-                    logging.error("change_country_and_extend is None, cannot change country for Outline key")
-                    success = False
-                else:
-                    success = await change_country_and_extend(
-                        cursor,
-                        message,
-                        user_id,
-                        key_data,
-                        country,
-                        tariff['duration_sec'],
-                        email,
-                        tariff,
-                        reset_usage=for_renewal,
-                    )
-                
-                if success:
-                    user_states.pop(user_id, None)
-                    return
-                else:
-                    # Если не удалось сменить страну, создаем новый ключ
-                    logging.warning(f"Failed to change country for key {existing_key[0]}, creating new key for user {user_id}")
-                    # Продолжаем выполнение для создания нового ключа
-            else:
-                # Та же страна или страна не указана - продлеваем как обычно
-                if extend_existing_key_with_fallback is None:
-                    logging.error("extend_existing_key_with_fallback is None, cannot extend Outline key")
-                    # Продолжаем создание нового ключа
-                    success = False
-                else:
-                    success = await extend_existing_key_with_fallback(cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol)
-            
-                if success:
-                    # Получаем обновленную информацию о ключе
-                    cursor.execute("SELECT access_url FROM keys WHERE id = ?", (existing_key[0],))
-                    updated_key = cursor.fetchone()
-                    access_url = updated_key[0] if updated_key else existing_key[2]
-                    
-                    # Очищаем состояние пользователя
-                    user_states.pop(user_id, None)
-                    
-                    # Проверяем, был ли ключ истекшим
-                    was_expired = existing_key[1] <= now
-                    if was_expired:
-                        msg_text = f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}"
-                    else:
-                        msg_text = f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(access_url, protocol, tariff)}"
-                    
-                    # Отправляем сообщение пользователю
-                    notification_sent = False
-                    if message:
-                        try:
-                            await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-                            notification_sent = True
-                        except Exception as e:
-                            logging.error(f"Failed to send Outline renewal notification via message.answer to user {user_id}: {e}")
-                            # Пробуем через safe_send_message как fallback
-                            result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-                            notification_sent = result is not None
-                    else:
-                        # Если message=None (например, из webhook), отправляем напрямую через bot
-                        result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-                        notification_sent = result is not None
-                    
-                    if notification_sent:
-                        logging.info(f"Outline renewal notification sent successfully to user {user_id}")
-                    else:
-                        logging.warning(f"Failed to send Outline renewal notification to user {user_id}")
-                    
-                    return
-                else:
-                    # Если не удалось продлить, создаем новый ключ
-                    logging.warning(f"Failed to extend key {existing_key[0]}, creating new key for user {user_id}")
-                    # Продолжаем выполнение для создания нового ключа
-    else:  # v2ray
-        cursor.execute(
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
-            "k.tariff_id, k.email, COALESCE(k.traffic_usage_bytes, 0) "
-            "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
-            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
-            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            (user_id, grace_threshold),
-        )
-        existing_key = cursor.fetchone()
-        if existing_key:
+    cursor.execute(
+        "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
+        "k.tariff_id, k.email, COALESCE(k.traffic_usage_bytes, 0) "
+        "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
+        "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
+        "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
+        (user_id, grace_threshold),
+    )
+    existing_key = cursor.fetchone()
+    if existing_key:
             # Проверяем, отличается ли запрошенная страна от текущей
             current_country = existing_key[6]  # s.country
             
@@ -417,7 +305,6 @@ async def create_new_key_flow_with_protocol(
                 }
                 
                 # Вызываем функцию смены страны с продлением
-                success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff, reset_usage=for_renewal)
                 success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff, reset_usage=for_renewal)
                 
                 if success:
@@ -549,123 +436,18 @@ async def create_new_key_flow_with_protocol(
                     logging.warning(f"Failed to extend V2Ray key {existing_key[0]}, creating new key for user {user_id}")
                     # Продолжаем выполнение для создания нового ключа
     
-    # НОВАЯ ЛОГИКА: Если нет ключа запрошенного протокола, проверяем противоположный протокол
-    # Это важно: проверяем только если НЕ нашли ключ запрошенного протокола выше
-    if protocol == "outline":
-        # Проверяем, есть ли V2Ray ключ
-        _execute_with_limit_fallback(
-            cursor,
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
-            "k.tariff_id, k.email, COALESCE(k.traffic_limit_mb, 0), COALESCE(k.traffic_usage_bytes, 0), "
-            "k.traffic_over_limit_at, COALESCE(k.traffic_over_limit_notified, 0) "
-            "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
-            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
-            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
-            "k.tariff_id, k.email, 0 AS traffic_limit_mb, 0 AS traffic_usage_bytes, "
-            "NULL AS traffic_over_limit_at, 0 AS traffic_over_limit_notified "
-            "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
-            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
-            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            (user_id, grace_threshold),
-        )
-        opposite_key = cursor.fetchone()
-        
-        if opposite_key:
-            # Нашли V2Ray ключ, хотя покупается Outline
-            logging.info(f"User {user_id}: found V2Ray key while purchasing Outline. Switching protocol.")
-            
-            old_key_data = {
-                'id': opposite_key[0],
-                'expiry_at': opposite_key[1],
-                'v2ray_uuid': opposite_key[2],
-                'domain': opposite_key[3],
-                'v2ray_path': opposite_key[4],
-                'server_id': opposite_key[5],
-                'country': opposite_key[6],
-                'tariff_id': opposite_key[7],
-                'email': opposite_key[8],
-                'protocol': 'v2ray',
-                'type': 'v2ray',
-                'traffic_usage_bytes': opposite_key[9] if len(opposite_key) > 9 else 0,
-            }
-            
-            # Вызываем функцию смены протокола
-            if switch_protocol_and_extend is None:
-                logging.error("switch_protocol_and_extend is None, cannot switch protocol")
-                success = False
-            else:
-                success = await switch_protocol_and_extend(cursor, message, user_id, old_key_data, protocol, country, tariff['duration_sec'], email, tariff)
-            
-            if success:
-                user_states.pop(user_id, None)
-                return
-            else:
-                logging.warning(f"Failed to switch protocol from v2ray to outline for user {user_id}, creating new key")
-                # Продолжаем создание нового ключа
-    
-    else:  # protocol == "v2ray"
-        # Проверяем, есть ли Outline ключ
-        _execute_with_limit_fallback(
-            cursor,
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email FROM keys k JOIN servers s ON k.server_id = s.id LEFT JOIN subscriptions sub ON k.subscription_id = sub.id WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.access_url, s.country, k.server_id, k.key_id, k.tariff_id, k.email "
-            "FROM keys k JOIN servers s ON k.server_id = s.id "
-            "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
-            "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
-            (user_id, grace_threshold),
-        )
-        opposite_key = cursor.fetchone()
-        
-        if opposite_key:
-            # Нашли Outline ключ, хотя покупается V2Ray
-            logging.info(f"User {user_id}: found Outline key while purchasing V2Ray. Switching protocol.")
-            
-            old_key_data = {
-                'id': opposite_key[0],
-                'expiry_at': opposite_key[1],
-                'access_url': opposite_key[2],
-                'country': opposite_key[3],
-                'server_id': opposite_key[4],
-                'key_id': opposite_key[5],
-                'tariff_id': opposite_key[6],
-                'email': opposite_key[7],
-                'protocol': 'outline',
-                'type': 'outline'
-            }
-            
-            # Вызываем функцию смены протокола
-            success = await switch_protocol_and_extend(cursor, message, user_id, old_key_data, protocol, country, tariff['duration_sec'], email, tariff)
-            
-            if success:
-                user_states.pop(user_id, None)
-                return
-            else:
-                logging.warning(f"Failed to switch protocol from outline to v2ray for user {user_id}, creating new key")
-                # Продолжаем создание нового ключа
-    
     # Если нет активного ключа — проверяем историю и спрашиваем про страну
     if country is None:
         # Ищем последний сервер пользователя (даже если ключ уже удалён)
         last_country = None
-        if protocol == "outline":
-            cursor.execute("""
-                SELECT s.country 
-                FROM keys k 
-                JOIN servers s ON k.server_id = s.id 
-                WHERE k.user_id = ? 
-                ORDER BY k.created_at DESC 
-                LIMIT 1
-            """, (user_id,))
-        else:  # v2ray
-            cursor.execute("""
-                SELECT s.country 
-                FROM v2ray_keys k 
-                JOIN servers s ON k.server_id = s.id 
-                WHERE k.user_id = ? 
-                ORDER BY k.created_at DESC 
-                LIMIT 1
-            """, (user_id,))
+        cursor.execute("""
+            SELECT s.country 
+            FROM v2ray_keys k 
+            JOIN servers s ON k.server_id = s.id 
+            WHERE k.user_id = ? 
+            ORDER BY k.created_at DESC 
+            LIMIT 1
+        """, (user_id,))
         
         country_row = cursor.fetchone()
         if country_row:
@@ -763,7 +545,7 @@ async def create_new_key_flow_with_protocol(
                 logging.warning(f"Ошибка инициализации VPN протоколов: {e}")
         
         if VPN_PROTOCOLS_AVAILABLE:
-            protocol_client = ProtocolFactory.create_protocol(protocol, server_config)
+            protocol_client = ProtocolFactory.create_protocol("v2ray", server_config)
         else:
             raise Exception("VPN протоколы недоступны")
         
@@ -771,137 +553,99 @@ async def create_new_key_flow_with_protocol(
         user_data = await protocol_client.create_user(email or f"user_{user_id}@veilbot.com")
         
         # Валидация: проверяем, что пользователь действительно создан
-        if not user_data or not user_data.get('uuid' if protocol == 'v2ray' else 'id'):
+        if not user_data or not user_data.get("uuid"):
             raise Exception(f"Failed to create {protocol} user - invalid response from server")
         
         # Сохраняем в соответствующую таблицу
         expiry = now + tariff['duration_sec']
         
-        if protocol == 'outline':
+        # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
+        config = None
+        if user_data.get('client_config'):
+            config = user_data['client_config']
+            # Извлекаем VLESS URL, если конфигурация многострочная
+            if 'vless://' in config:
+                lines = config.split('\n')
+                for line in lines:
+                    if line.strip().startswith('vless://'):
+                        config = line.strip()
+                        break
+            logging.info(f"Using client_config from create_user response for new key")
+        else:
+            # Если client_config нет в ответе, запрашиваем через get_user_config
+            logging.debug(f"client_config not in create_user response, fetching via get_user_config")
+            config = await protocol_client.get_user_config(user_data['uuid'], {
+                'domain': server[4],
+                'port': 443,
+                'path': server[6] or '/v2ray',
+                'email': email or f"user_{user_id}@veilbot.com"
+            })
+            # Извлекаем VLESS URL, если конфигурация многострочная
+            if 'vless://' in config:
+                lines = config.split('\n')
+                for line in lines:
+                    if line.strip().startswith('vless://'):
+                        config = line.strip()
+                        break
+        
+        # ИСПРАВЛЕНИЕ: Проверяем и создаем пользователя в таблице users, если его нет
+        # Это необходимо для соблюдения foreign key constraint
+        from app.infra.foreign_keys import safe_foreign_keys_off
+        
+        # Проверяем существование пользователя и создаем его, если нужно
+        # Все операции выполняем в одном контексте с отключенными foreign keys
+        with safe_foreign_keys_off(cursor):
+            cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+            if not cursor.fetchone():
+                logging.info(f"User {user_id} not found in users table, creating...")
+                # Получаем данные пользователя из message, если доступны
+                username = None
+                first_name = None
+                last_name = None
+                if message and hasattr(message, 'from_user') and message.from_user:
+                    username = message.from_user.username
+                    first_name = message.from_user.first_name
+                    last_name = message.from_user.last_name
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO users 
+                    (user_id, username, first_name, last_name, created_at, last_active_at, blocked)
+                    VALUES (?, ?, ?, ?, ?, ?, 0)
+                """, (user_id, username, first_name, last_name, now, now))
+                logging.info(f"User {user_id} created in users table")
+            
+            # Сохраняем ключ с конфигурацией в БД
+            # Выполняем в том же контексте с отключенными foreign keys
             # ВАЖНО: traffic_limit_mb и expiry_at не устанавливаются на уровне ключа
             # Вся информация берется из подписки
-            _insert_with_schema(
-                cursor,
-                "keys",
-                {
-                    "server_id": server[0],
-                    "user_id": user_id,
-                    "access_url": user_data['accessUrl'],
-                    "notified": 0,
-                    "key_id": user_data['id'],
-                    "created_at": now,
-                    "email": email,
-                    "tariff_id": tariff['id'],
-                    "protocol": protocol,
-                },
-            )
-            
-            config = user_data['accessUrl']
-            
-            # Логирование создания Outline ключа
-            try:
-                security_logger = get_security_logger()
-                if security_logger:
-                    security_logger.log_key_creation(
-                        user_id=user_id,
-                        key_id=user_data['id'],
-                        protocol=protocol,
-                        server_id=server[0],
-                        tariff_id=tariff['id'],
-                        ip_address=str(message.from_user.id) if message and hasattr(message, 'from_user') and message.from_user and hasattr(message.from_user, 'id') else None,
-                        user_agent="Telegram Bot"
-                    )
-            except Exception as e:
-                logging.error(f"Error logging key creation: {e}")
-                
-        else:  # v2ray
-            # ИСПРАВЛЕНИЕ: Используем client_config из ответа create_user, если он есть
-            config = None
-            if user_data.get('client_config'):
-                config = user_data['client_config']
-                # Извлекаем VLESS URL, если конфигурация многострочная
-                if 'vless://' in config:
-                    lines = config.split('\n')
-                    for line in lines:
-                        if line.strip().startswith('vless://'):
-                            config = line.strip()
-                            break
-                logging.info(f"Using client_config from create_user response for new key")
-            else:
-                # Если client_config нет в ответе, запрашиваем через get_user_config
-                logging.debug(f"client_config not in create_user response, fetching via get_user_config")
-                config = await protocol_client.get_user_config(user_data['uuid'], {
-                    'domain': server[4],
-                    'port': 443,
-                    'path': server[6] or '/v2ray',
-                    'email': email or f"user_{user_id}@veilbot.com"
-                })
-                # Извлекаем VLESS URL, если конфигурация многострочная
-                if 'vless://' in config:
-                    lines = config.split('\n')
-                    for line in lines:
-                        if line.strip().startswith('vless://'):
-                            config = line.strip()
-                            break
-            
-            # ИСПРАВЛЕНИЕ: Проверяем и создаем пользователя в таблице users, если его нет
-            # Это необходимо для соблюдения foreign key constraint
-            from app.infra.foreign_keys import safe_foreign_keys_off
-            
-            # Проверяем существование пользователя и создаем его, если нужно
-            # Все операции выполняем в одном контексте с отключенными foreign keys
-            with safe_foreign_keys_off(cursor):
-                cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-                if not cursor.fetchone():
-                    logging.info(f"User {user_id} not found in users table, creating...")
-                    # Получаем данные пользователя из message, если доступны
-                    username = None
-                    first_name = None
-                    last_name = None
-                    if message and hasattr(message, 'from_user') and message.from_user:
-                        username = message.from_user.username
-                        first_name = message.from_user.first_name
-                        last_name = message.from_user.last_name
-                    
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO users 
-                        (user_id, username, first_name, last_name, created_at, last_active_at, blocked)
-                        VALUES (?, ?, ?, ?, ?, ?, 0)
-                    """, (user_id, username, first_name, last_name, now, now))
-                    logging.info(f"User {user_id} created in users table")
-                
-                # Сохраняем ключ с конфигурацией в БД
-                # Выполняем в том же контексте с отключенными foreign keys
-                # ВАЖНО: traffic_limit_mb и expiry_at не устанавливаются на уровне ключа
-                # Вся информация берется из подписки
-                values_map = {
-                    "server_id": server[0],
-                    "user_id": user_id,
-                    "v2ray_uuid": user_data['uuid'],
-                    "email": email or f"user_{user_id}@veilbot.com",
-                    "created_at": now,
-                    "tariff_id": tariff['id'],
-                    "client_config": config,
-                    "traffic_usage_bytes": 0,
-                }
-                _insert_with_schema(cursor, "v2ray_keys", values_map)
-                new_key_id = cursor.lastrowid
-            
-            # Логирование создания V2Ray ключа
-            try:
-                security_logger = get_security_logger()
-                if security_logger:
-                    security_logger.log_key_creation(
-                        user_id=user_id,
-                        key_id=user_data['uuid'],
-                        protocol=protocol,
-                        server_id=server[0],
-                        tariff_id=tariff['id'],
-                        ip_address=str(message.from_user.id) if message and hasattr(message, 'from_user') and message.from_user and hasattr(message.from_user, 'id') else None,
-                        user_agent="Telegram Bot"
-                    )
-            except Exception as e:
-                logging.error(f"Error logging key creation: {e}")
+            values_map = {
+                "server_id": server[0],
+                "user_id": user_id,
+                "v2ray_uuid": user_data['uuid'],
+                "email": email or f"user_{user_id}@veilbot.com",
+                "created_at": now,
+                "tariff_id": tariff['id'],
+                "client_config": config,
+                "traffic_usage_bytes": 0,
+            }
+            _insert_with_schema(cursor, "v2ray_keys", values_map)
+            new_key_id = cursor.lastrowid
+        
+        # Логирование создания V2Ray ключа
+        try:
+            security_logger = get_security_logger()
+            if security_logger:
+                security_logger.log_key_creation(
+                    user_id=user_id,
+                    key_id=user_data['uuid'],
+                    protocol=protocol,
+                    server_id=server[0],
+                    tariff_id=tariff['id'],
+                    ip_address=str(message.from_user.id) if message and hasattr(message, 'from_user') and message.from_user and hasattr(message.from_user, 'id') else None,
+                    user_agent="Telegram Bot"
+                )
+        except Exception as e:
+            logging.error(f"Error logging key creation: {e}")
         
         # Удаляем сообщение о загрузке
         try:
@@ -961,24 +705,8 @@ async def create_new_key_flow_with_protocol(
         else:
             logging.warning(f"Failed to send key creation notification to user {user_id} for {protocol} key")
         
-        # Уведомление админу
-        admin_msg = (
-            f"🔑 *Покупка ключа {PROTOCOLS[protocol]['icon']}*\n"
-            f"Пользователь: `{user_id}`\n"
-            f"Протокол: *{PROTOCOLS[protocol]['name']}*\n"
-            f"Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
-            f"Ключ: `{config}`\n"
-        )
-        if email:
-            admin_msg += f"Email: `{email}`\n"
-        await safe_send_message(
-            bot,
-            ADMIN_ID,
-            admin_msg,
-            disable_web_page_preview=True,
-            parse_mode="Markdown",
-            mark_blocked=False,
-        )
+        # Админ-уведомления о действиях с ключами отключены:
+        # админ получает только платежные уведомления о подписке.
             
     except Exception as e:
         # При ошибке пытаемся удалить созданного пользователя с сервера
@@ -1000,15 +728,9 @@ async def create_new_key_flow_with_protocol(
             logging.error(f"Error logging key creation failure: {log_e}")
         
         try:
-            if 'user_data' in locals() and user_data:
-                if protocol == 'v2ray' and user_data.get('uuid'):
-                    await protocol_client.delete_user(user_data['uuid'])
-                    logging.info(f"Deleted V2Ray user {user_data['uuid']} from server due to error")
-                elif protocol == 'outline' and user_data.get('id'):
-                    # Для Outline используем существующую функцию
-                    from outline import delete_key
-                    delete_key(server[2], server[3], user_data['id'])
-                    logging.info(f"Deleted Outline key {user_data['id']} from server due to error")
+            if 'user_data' in locals() and user_data and user_data.get('uuid'):
+                await protocol_client.delete_user(user_data['uuid'])
+                logging.info(f"Deleted V2Ray user {user_data['uuid']} from server due to error")
         except Exception as cleanup_error:
             logging.error(f"Failed to cleanup {protocol} user after error: {cleanup_error}")
         
@@ -1057,7 +779,7 @@ async def process_referral_bonus(
         referrer_id: ID реферера
         bonus_duration: Длительность бонуса в секундах
         message: Сообщение от пользователя (для создания нового ключа при необходимости)
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
         extend_existing_key: Функция продления ключа
         
     Returns:
@@ -1127,10 +849,7 @@ async def process_referral_bonus(
             # Подписка уже обновлена выше в коде (new_expires_at), ключи автоматически используют срок из подписки
             # Подсчитываем количество ключей для логирования
             cursor.execute("SELECT COUNT(*) FROM v2ray_keys WHERE subscription_id = ?", (subscription_id,))
-            v2ray_keys_extended = cursor.fetchone()[0] or 0
-            cursor.execute("SELECT COUNT(*) FROM keys WHERE subscription_id = ? AND protocol = 'outline'", (subscription_id,))
-            outline_keys_extended = cursor.fetchone()[0] or 0
-            keys_extended = v2ray_keys_extended + outline_keys_extended
+            keys_extended = cursor.fetchone()[0] or 0
             
             # Отправляем уведомление
             bot = get_bot_instance()
@@ -1156,8 +875,8 @@ async def process_referral_bonus(
         
         # Активной подписки нет - используем текущую логику продления ключа
         cursor.execute(
-            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at FROM keys k LEFT JOIN subscriptions sub ON k.subscription_id = sub.id WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1", 
-            (referrer_id, now)
+            "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at FROM v2ray_keys k LEFT JOIN subscriptions sub ON k.subscription_id = sub.id WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
+            (referrer_id, now),
         )
         key = cursor.fetchone()
         
@@ -1210,33 +929,19 @@ async def process_referral_bonus(
                     )
                     
                     # Привязываем созданный ключ к подписке
-                    # Находим последний созданный ключ пользователя для этого протокола
-                    if protocol == 'v2ray':
-                        cursor.execute("""
-                            SELECT id FROM v2ray_keys 
-                            WHERE user_id = ? AND subscription_id IS NULL 
-                            ORDER BY created_at DESC LIMIT 1
-                        """, (referrer_id,))
-                    else:  # outline
-                        cursor.execute("""
-                            SELECT id FROM keys 
-                            WHERE user_id = ? AND protocol = 'outline' AND subscription_id IS NULL 
-                            ORDER BY created_at DESC LIMIT 1
-                        """, (referrer_id,))
+                    cursor.execute("""
+                        SELECT id FROM v2ray_keys 
+                        WHERE user_id = ? AND subscription_id IS NULL 
+                        ORDER BY created_at DESC LIMIT 1
+                    """, (referrer_id,))
                     
                     created_key = cursor.fetchone()
                     if created_key:
                         key_id = created_key[0]
-                        if protocol == 'v2ray':
-                            cursor.execute(
-                                "UPDATE v2ray_keys SET subscription_id = ? WHERE id = ?",
-                                (subscription_id, key_id)
-                            )
-                        else:  # outline
-                            cursor.execute(
-                                "UPDATE keys SET subscription_id = ? WHERE id = ?",
-                                (subscription_id, key_id)
-                            )
+                        cursor.execute(
+                            "UPDATE v2ray_keys SET subscription_id = ? WHERE id = ?",
+                            (subscription_id, key_id),
+                        )
                         cursor.connection.commit()
                         logger.info(
                             f"Linked key {key_id} (protocol={protocol}) to subscription {subscription_id} "
@@ -1291,33 +996,19 @@ async def process_referral_bonus(
                 )
                 
                 # Привязываем созданный ключ к подписке
-                # Находим последний созданный ключ пользователя для этого протокола
-                if protocol == 'v2ray':
-                    cursor.execute("""
-                        SELECT id FROM v2ray_keys 
-                        WHERE user_id = ? AND subscription_id IS NULL 
-                        ORDER BY created_at DESC LIMIT 1
-                    """, (referrer_id,))
-                else:  # outline
-                    cursor.execute("""
-                        SELECT id FROM keys 
-                        WHERE user_id = ? AND protocol = 'outline' AND subscription_id IS NULL 
-                        ORDER BY created_at DESC LIMIT 1
-                    """, (referrer_id,))
+                cursor.execute("""
+                    SELECT id FROM v2ray_keys 
+                    WHERE user_id = ? AND subscription_id IS NULL 
+                    ORDER BY created_at DESC LIMIT 1
+                """, (referrer_id,))
                 
                 created_key = cursor.fetchone()
                 if created_key:
                     key_id = created_key[0]
-                    if protocol == 'v2ray':
-                        cursor.execute(
-                            "UPDATE v2ray_keys SET subscription_id = ? WHERE id = ?",
-                            (subscription_id, key_id)
-                        )
-                    else:  # outline
-                        cursor.execute(
-                            "UPDATE keys SET subscription_id = ? WHERE id = ?",
-                            (subscription_id, key_id)
-                        )
+                    cursor.execute(
+                        "UPDATE v2ray_keys SET subscription_id = ? WHERE id = ?",
+                        (subscription_id, key_id),
+                    )
                     cursor.connection.commit()
                     logger.info(
                         f"Linked key {key_id} (protocol={protocol}) to subscription {subscription_id} "
@@ -1345,7 +1036,7 @@ async def wait_for_payment_with_protocol(
     user_id: int, 
     tariff: Dict[str, Any], 
     country: Optional[str] = None, 
-    protocol: str = "outline", 
+    protocol: str = "v2ray", 
     for_renewal: bool = False,
     extend_existing_key: Optional[Callable] = None
 ) -> None:
@@ -1359,7 +1050,7 @@ async def wait_for_payment_with_protocol(
         user_id: ID пользователя
         tariff: Словарь с данными тарифа
         country: Страна сервера
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
         for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
         extend_existing_key: Функция продления ключа (импортируется из bot.py)
     """
@@ -1761,7 +1452,7 @@ async def wait_for_crypto_payment(
     user_id: int, 
     tariff: Dict[str, Any], 
     country: Optional[str] = None, 
-    protocol: str = "outline", 
+    protocol: str = "v2ray", 
     for_renewal: bool = False,
     extend_existing_key: Optional[Callable] = None
 ) -> None:
@@ -1775,7 +1466,7 @@ async def wait_for_crypto_payment(
         user_id: ID пользователя
         tariff: Словарь с данными тарифа
         country: Страна сервера
-        protocol: Протокол (outline или v2ray)
+        protocol: Протокол (v2ray)
         for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
         extend_existing_key: Функция продления ключа (импортируется из bot.py)
     """

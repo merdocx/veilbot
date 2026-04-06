@@ -17,7 +17,8 @@ class ServerRepository:
                 search_pattern = f"%{search_query}%"
                 c.execute(
                     """
-                    SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, COALESCE(access_level, 'all') as access_level 
+                    SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, COALESCE(access_level, 'all') as access_level,
+                           COALESCE(subscription_group_id, '') as subscription_group_id
                     FROM servers
                     WHERE CAST(id AS TEXT) LIKE ? 
                        OR name LIKE ? 
@@ -31,21 +32,36 @@ class ServerRepository:
                 )
             else:
                 c.execute(
-                    "SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, COALESCE(access_level, 'all') as access_level FROM servers"
+                    """SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path,
+                              COALESCE(access_level, 'all') as access_level,
+                              COALESCE(subscription_group_id, '') as subscription_group_id
+                       FROM servers"""
                 )
             return c.fetchall()
 
     def add_server(
-        self, name: str, api_url: str, cert_sha256: str, max_keys: int, country: str, protocol: str, domain: str, api_key: str, v2ray_path: str, access_level: str = 'all'
+        self,
+        name: str,
+        api_url: str,
+        cert_sha256: str,
+        max_keys: int,
+        country: str,
+        protocol: str,
+        domain: str,
+        api_key: str,
+        v2ray_path: str,
+        access_level: str = "all",
+        subscription_group_id: str | None = None,
     ) -> int:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            gid = (subscription_group_id or "").strip() or None
             c.execute(
                 """
-                INSERT INTO servers (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path, access_level)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO servers (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path, access_level, subscription_group_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path, access_level),
+                (name, api_url, cert_sha256, max_keys, country, protocol, domain, api_key, v2ray_path, access_level, gid),
             )
             conn.commit()
             return c.lastrowid
@@ -54,7 +70,10 @@ class ServerRepository:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
-                "SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, COALESCE(access_level, 'all') as access_level FROM servers WHERE id = ?",
+                """SELECT id, name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path,
+                          COALESCE(access_level, 'all') as access_level,
+                          COALESCE(subscription_group_id, '') as subscription_group_id
+                   FROM servers WHERE id = ?""",
                 (server_id,),
             )
             return c.fetchone()
@@ -72,18 +91,35 @@ class ServerRepository:
         domain: str,
         api_key: str,
         v2ray_path: str,
-        access_level: str = 'all',
+        access_level: str = "all",
+        subscription_group_id: str | None = None,
     ) -> None:
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
+            gid = (subscription_group_id or "").strip() or None
             c.execute(
                 """
                 UPDATE servers
                 SET name = ?, api_url = ?, cert_sha256 = ?, max_keys = ?, active = ?, country = ?,
-                    protocol = ?, domain = ?, api_key = ?, v2ray_path = ?, access_level = ?
+                    protocol = ?, domain = ?, api_key = ?, v2ray_path = ?, access_level = ?,
+                    subscription_group_id = ?
                 WHERE id = ?
                 """,
-                (name, api_url, cert_sha256, max_keys, active, country, protocol, domain, api_key, v2ray_path, access_level, server_id),
+                (
+                    name,
+                    api_url,
+                    cert_sha256,
+                    max_keys,
+                    active,
+                    country,
+                    protocol,
+                    domain,
+                    api_key,
+                    v2ray_path,
+                    access_level,
+                    gid,
+                    server_id,
+                ),
             )
             conn.commit()
 
@@ -94,7 +130,6 @@ class ServerRepository:
         Возвращает статистику, чтобы маршруты могли логировать результат.
         """
         stats = {
-            "outline_keys_deleted": 0,
             "v2ray_keys_deleted": 0,
             "subscriptions_affected": 0,
         }
@@ -110,18 +145,9 @@ class ServerRepository:
             )
             affected_subscriptions.update(sub_id for (sub_id,) in c.fetchall() if sub_id)
 
-            c.execute(
-                "SELECT DISTINCT subscription_id FROM keys WHERE server_id = ? AND subscription_id IS NOT NULL",
-                (server_id,),
-            )
-            affected_subscriptions.update(sub_id for (sub_id,) in c.fetchall() if sub_id)
-
             with safe_foreign_keys_off(c):
                 c.execute("DELETE FROM v2ray_keys WHERE server_id = ?", (server_id,))
                 stats["v2ray_keys_deleted"] = c.rowcount
-
-                c.execute("DELETE FROM keys WHERE server_id = ?", (server_id,))
-                stats["outline_keys_deleted"] = c.rowcount
 
                 c.execute("DELETE FROM servers WHERE id = ?", (server_id,))
 
@@ -129,15 +155,6 @@ class ServerRepository:
 
         stats["subscriptions_affected"] = len(affected_subscriptions)
         return stats
-
-    def outline_key_counts(self, server_ids: List[int]) -> dict:
-        if not server_ids:
-            return {}
-        q_marks = ",".join(["?"] * len(server_ids))
-        with open_connection(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute(f"SELECT server_id, COUNT(*) FROM keys GROUP BY server_id HAVING server_id IN ({q_marks})", server_ids)
-            return dict(c.fetchall())
 
     def v2ray_key_counts(self, server_ids: List[int]) -> dict:
         if not server_ids:

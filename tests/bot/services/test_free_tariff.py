@@ -25,7 +25,7 @@ class TestFreeTariff:
     def test_check_free_tariff_limit_after_usage(self, mock_cursor):
         """Тест проверки лимита после использования бесплатного ключа"""
         user_id = 12345
-        protocol = "outline"
+        protocol = "v2ray"
         
         # Записываем использование бесплатного ключа
         record_free_key_usage(mock_cursor, user_id, protocol)
@@ -35,31 +35,32 @@ class TestFreeTariff:
         result = check_free_tariff_limit_by_protocol(mock_cursor, user_id, protocol)
         assert result is True, "Пользователь должен иметь лимит после использования бесплатного ключа"
     
-    def test_check_free_tariff_limit_by_protocol_outline(self, mock_cursor):
-        """Тест проверки лимита для конкретного протокола (Outline)"""
+    def test_check_free_tariff_limit_by_protocol_v2ray(self, mock_cursor):
+        """Тест проверки лимита для конкретного протокола (v2ray vs другой)"""
         user_id = 12345
-        protocol = "outline"
+        protocol_primary = "v2ray"
+        protocol_other = "other_proto"
         
         # Изначально лимита нет
-        result = check_free_tariff_limit_by_protocol(mock_cursor, user_id, protocol)
+        result = check_free_tariff_limit_by_protocol(mock_cursor, user_id, protocol_primary)
         assert result is False
         
-        # Записываем использование для Outline
-        record_free_key_usage(mock_cursor, user_id, protocol)
+        # Записываем использование для v2ray
+        record_free_key_usage(mock_cursor, user_id, protocol_primary)
         mock_cursor.connection.commit()
         
-        # Теперь лимит есть для Outline
-        result = check_free_tariff_limit_by_protocol(mock_cursor, user_id, protocol)
+        # Теперь лимит есть для v2ray
+        result = check_free_tariff_limit_by_protocol(mock_cursor, user_id, protocol_primary)
         assert result is True
         
-        # Но для V2Ray лимита еще нет
-        result_v2ray = check_free_tariff_limit_by_protocol(mock_cursor, user_id, "v2ray")
-        assert result_v2ray is False
+        # Для другого протокола лимита еще нет
+        result_other = check_free_tariff_limit_by_protocol(mock_cursor, user_id, protocol_other)
+        assert result_other is False
     
     def test_check_free_tariff_limit_by_protocol_and_country(self, mock_cursor):
         """Тест проверки лимита для протокола и страны"""
         user_id = 12345
-        protocol = "outline"
+        protocol = "v2ray"
         country = "Россия"
         
         # Изначально лимита нет
@@ -78,7 +79,7 @@ class TestFreeTariff:
         )
         assert result is True
         
-        # Но для другой страны лимита может не быть (если не было общего использования)
+        # Но для другой страны лимита может не быть (если не было общего использования протокола)
         result_other = check_free_tariff_limit_by_protocol_and_country(
             mock_cursor, user_id, protocol, "США"
         )
@@ -87,7 +88,7 @@ class TestFreeTariff:
     def test_record_free_key_usage(self, mock_cursor):
         """Тест записи использования бесплатного ключа"""
         user_id = 12345
-        protocol = "outline"
+        protocol = "v2ray"
         country = "Россия"
         
         # Записываем использование
@@ -109,7 +110,7 @@ class TestFreeTariff:
     def test_record_free_key_usage_without_country(self, mock_cursor):
         """Тест записи использования без указания страны"""
         user_id = 12345
-        protocol = "outline"
+        protocol = "v2ray"
         
         # Записываем использование без страны
         result = record_free_key_usage(mock_cursor, user_id, protocol, None)
@@ -122,4 +123,3 @@ class TestFreeTariff:
         """, (user_id, protocol))
         count = mock_cursor.fetchone()[0]
         assert count == 1
-

@@ -22,7 +22,7 @@ def test_build_key_view_model_active_with_limit():
         'user@example.com',  # 6: email
         12345,  # 7: user_id (расширенный формат)
         'Premium',  # 8: tariff
-        'outline',  # 9: protocol
+        'v2ray',  # 9: protocol
         1024,  # 10: traffic_limit_mb (1 GB)
         '',  # 11: api_url
         '',  # 12: api_key
@@ -34,7 +34,7 @@ def test_build_key_view_model_active_with_limit():
 
     view = _build_key_view_model(row, now_ts)
 
-    assert view['id'] == '42_outline'  # ID теперь включает протокол
+    assert view['id'] == '42_v2ray'  # ID теперь включает протокол
     assert view['numeric_id'] == 42  # Числовой ID доступен отдельно
     assert view['status'] == 'active'
     assert view['status_label'] == 'Активен'

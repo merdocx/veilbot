@@ -43,7 +43,7 @@ class PaymentRepository:
                     email TEXT,
                     status TEXT DEFAULT 'pending',
                     country TEXT,
-                    protocol TEXT DEFAULT 'outline',
+                    protocol TEXT DEFAULT 'v2ray',
                     provider TEXT DEFAULT 'yookassa',
                     method TEXT,
                     description TEXT,
@@ -67,7 +67,7 @@ class PaymentRepository:
                     ("amount", "INTEGER DEFAULT 0"),
                     ("currency", "TEXT DEFAULT 'RUB'"),
                     ("country", "TEXT"),
-                    ("protocol", "TEXT DEFAULT 'outline'"),
+                    ("protocol", "TEXT DEFAULT 'v2ray'"),
                     ("provider", "TEXT DEFAULT 'yookassa'"),
                     ("method", "TEXT"),
                     ("description", "TEXT"),
@@ -208,7 +208,7 @@ class PaymentRepository:
                 payment_id=str(row[3]) if row[3] is not None else "",
                 status=safe_status(row[4] if len(row) > 4 and row[4] else "pending"),
                 email=row[5] if len(row) > 5 else None,
-                protocol=row[7] if len(row) > 7 and row[7] else "outline",
+                protocol=row[7] if len(row) > 7 and row[7] else "v2ray",
                 amount=int(row[8]) if len(row) > 8 and row[8] is not None else 0,
                 created_at=safe_timestamp(row[9]) if len(row) > 9 else None,
                 country=row[10] if len(row) > 10 else None,
@@ -819,10 +819,6 @@ class PaymentRepository:
                         -- Для обычных платежей: исключаем если есть активные ключи или подписки
                         (NOT (p.metadata LIKE '%subscription%' AND p.protocol = 'v2ray')
                          AND p.user_id NOT IN (
-                             SELECT k.user_id FROM keys k
-                             JOIN subscriptions s ON k.subscription_id = s.id
-                             WHERE s.expires_at > ?
-                             UNION
                              SELECT k.user_id FROM v2ray_keys k
                              JOIN subscriptions s ON k.subscription_id = s.id
                              WHERE s.expires_at > ?
@@ -831,7 +827,7 @@ class PaymentRepository:
                          ))
                     )
                     ORDER BY p.created_at ASC
-                """, (now_ts, now_ts, now_ts)) as cursor:
+                """, (now_ts, now_ts)) as cursor:
                     rows = await cursor.fetchall()
                     return [self._payment_from_row(row) for row in rows]
                     

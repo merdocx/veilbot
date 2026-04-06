@@ -52,7 +52,7 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             api_key TEXT,
             v2ray_path TEXT,
             country TEXT,
-            protocol TEXT DEFAULT 'outline',
+            protocol TEXT DEFAULT 'v2ray',
             active INTEGER DEFAULT 1,
             available_for_purchase INTEGER DEFAULT 1,
             max_keys INTEGER DEFAULT 100,

@@ -107,7 +107,7 @@ class PaymentValidators:
         Returns:
             True если протокол поддерживается
         """
-        supported_protocols = ['outline', 'v2ray']
+        supported_protocols = ['v2ray']
         return protocol.lower() in supported_protocols
     
     @staticmethod

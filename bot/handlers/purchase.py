@@ -77,7 +77,9 @@ def register_purchase_handlers(
                 SELECT DISTINCT protocol FROM servers 
                 WHERE active = 1 AND available_for_purchase = 1
             """)
-            available_protocols = [row[0] for row in cursor.fetchall()]
+            available_protocols = [
+                row[0] for row in cursor.fetchall() if row[0] == "v2ray"
+            ]
         
         if len(available_protocols) == 0:
             await message.answer(
@@ -144,13 +146,14 @@ def register_purchase_handlers(
         except Exception as e:
             await BotErrorHandler.handle_error(message, e, "handle_buy_menu", bot, ADMIN_ID)
     
-    @dp.message_handler(lambda m: m.text in [f"{PROTOCOLS['outline']['icon']} {PROTOCOLS['outline']['name']}", 
-                                            f"{PROTOCOLS['v2ray']['icon']} {PROTOCOLS['v2ray']['name']}"])
+    @dp.message_handler(
+        lambda m: m.text
+        == f"{PROTOCOLS['v2ray']['icon']} {PROTOCOLS['v2ray']['name']}"
+    )
     async def handle_protocol_selection(message: types.Message):
         """Обработка выбора протокола"""
         user_id = message.from_user.id
-        text = message.text or ""
-        protocol = 'outline' if ('Outline' in text or 'Outline VPN' in text) else ('v2ray' if 'V2Ray' in text or 'VLESS' in text else 'outline')
+        protocol = "v2ray"
         
         # Сохраняем выбор протокола в состоянии пользователя
         user_states[user_id] = {
@@ -214,7 +217,7 @@ def register_purchase_handlers(
         
         if text == "🔙 Назад":
             # Возвращаемся к выбору страны
-            protocol = state.get("protocol", "outline")
+            protocol = state.get("protocol", "v2ray")
             auto_protocol = state.get("auto_protocol", False)
             auto_country = state.get("auto_country", False)
 
@@ -243,7 +246,7 @@ def register_purchase_handlers(
             user_states[user_id] = state
             
             country = state.get("country", "")
-            protocol = state.get("protocol", "outline")
+            protocol = state.get("protocol", "v2ray")
             
             msg = f"💳 *Оплата картой / СБП*\n\n"
             if protocol:
@@ -280,7 +283,7 @@ def register_purchase_handlers(
             user_states[user_id] = state
             
             country = state.get("country", "")
-            protocol = state.get("protocol", "outline")
+            protocol = state.get("protocol", "v2ray")
             
             msg = f"₿ *Оплата криптовалютой (USDT)*\n\n"
             if protocol:
@@ -332,7 +335,7 @@ def register_purchase_handlers(
             user_states[user_id]["state"] = "waiting_email"
             
             tariff = state.get("tariff", {})
-            protocol = state.get("protocol", "outline")
+            protocol = state.get("protocol", "v2ray")
             
             await message.answer(
                 f"💳 *Оплата картой / СБП*\n\n"
@@ -358,7 +361,7 @@ def register_purchase_handlers(
             user_states[user_id] = state
             user_states[user_id]["state"] = "waiting_email"
             
-            protocol = state.get("protocol", "outline")
+            protocol = state.get("protocol", "v2ray")
             
             await message.answer(
                 f"₿ *Оплата криптовалютой (USDT)*\n\n"
@@ -406,7 +409,7 @@ def register_purchase_handlers(
             state = user_states.get(user_id, {})
             tariff = state.get("tariff")
             country = state.get("country")
-            protocol = state.get("protocol", "outline")
+            protocol = state.get("protocol", "v2ray")
             payment_method = state.get("payment_method", "yookassa")  # По умолчанию YooKassa
             del user_states[user_id]
             
@@ -488,7 +491,7 @@ def register_purchase_handlers(
             user_id = message.from_user.id
             user_state = user_states.get(user_id, {})
             country = (message.text or "").strip()
-            protocol = user_state.get("protocol", "outline")
+            protocol = user_state.get("protocol", "v2ray")
             
             # Получаем страны только для выбранного протокола
             countries = get_countries_by_protocol(protocol)
@@ -519,7 +522,7 @@ def register_purchase_handlers(
     async def handle_tariff_back(message: types.Message):
         user_id = message.from_user.id
         state = user_states.get(user_id, {})
-        protocol = state.get("protocol", "outline")
+        protocol = state.get("protocol", "v2ray")
         country = state.get("country", "")
 
         state["state"] = "waiting_payment_method_after_country"
@@ -550,7 +553,7 @@ def register_purchase_handlers(
         label = message.text.strip()
         state = user_states.get(user_id, {})
         country = state.get("country")
-        protocol = state.get("protocol", "outline")
+        protocol = state.get("protocol", "v2ray")
         payment_method = state.get("payment_method", "yookassa")  # Получаем выбранный способ оплаты
         
         # Parse tariff name and price from the label
@@ -637,41 +640,18 @@ def register_purchase_handlers(
                     try:
                         now_ts = int(time.time())
                         
-                        # Оптимизированный запрос: объединяем 3 запроса в один с UNION ALL
-                        # Приоритет: payments > keys (если outline) > v2ray_keys
-                        # Если протокол outline, проверяем keys, иначе только payments и v2ray_keys
-                        if (protocol or 'outline') == 'outline':
-                            cursor.execute("""
-                                SELECT email FROM (
-                                    SELECT email, 1 as priority, created_at as sort_date
-                                    FROM payments 
-                                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
-                                    UNION ALL
-                                    SELECT k.email, 2 as priority, COALESCE(sub.expires_at, 0) as sort_date
-                                    FROM keys k
-                                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                                    WHERE k.user_id = ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com'
-                                    UNION ALL
-                                    SELECT k.email, 3 as priority, COALESCE(sub.expires_at, 0) as sort_date
-                                    FROM v2ray_keys k
-                                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                                    WHERE k.user_id = ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com'
-                                ) ORDER BY priority ASC, sort_date DESC LIMIT 1
-                            """, (user_id, user_id, user_id))
-                        else:
-                            # Для v2ray протокола не проверяем keys
-                            cursor.execute("""
-                                SELECT email FROM (
-                                    SELECT email, 1 as priority, created_at as sort_date
-                                    FROM payments 
-                                    WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
-                                    UNION ALL
-                                    SELECT k.email, 2 as priority, COALESCE(sub.expires_at, 0) as sort_date
-                                    FROM v2ray_keys k
-                                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                                    WHERE k.user_id = ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com'
-                                ) ORDER BY priority ASC, sort_date DESC LIMIT 1
-                            """, (user_id, user_id))
+                        cursor.execute("""
+                            SELECT email FROM (
+                                SELECT email, 1 as priority, created_at as sort_date
+                                FROM payments 
+                                WHERE user_id = ? AND email IS NOT NULL AND email != '' AND email NOT LIKE 'user_%@veilbot.com'
+                                UNION ALL
+                                SELECT k.email, 2 as priority, COALESCE(sub.expires_at, 0) as sort_date
+                                FROM v2ray_keys k
+                                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                                WHERE k.user_id = ? AND k.email IS NOT NULL AND k.email != '' AND k.email NOT LIKE 'user_%@veilbot.com'
+                            ) ORDER BY priority ASC, sort_date DESC LIMIT 1
+                        """, (user_id, user_id))
                         
                         row = cursor.fetchone()
                         email_db = row[0] if row and row[0] else None

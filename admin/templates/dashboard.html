@@ -59,7 +59,7 @@
     <div class="card-header">
         <h2 class="card-title">Быстрые действия</h2>
     </div>
-    <div class="card-content">
+    <div class="card-body">
         <div class="quick-actions">
             <a href="/cleanup" class="btn btn-warning">
                 <span class="material-icons">cleaning_services</span>
@@ -86,7 +86,7 @@
     <div class="card-header">
         <h2 class="card-title">Динамика по дням</h2>
     </div>
-    <div class="card-content">
+    <div class="card-body">
         {% if chart_data %}
             <svg class="metrics-chart" viewBox="0 0 {{ chart_data.width }} {{ chart_data.height }}" preserveAspectRatio="none">
                 <defs>

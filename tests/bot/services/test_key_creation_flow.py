@@ -16,11 +16,10 @@ def reset_vpn_protocols_available(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_new_outline_key_inserts_record(temp_db, mock_message, monkeypatch):
-    """Создание нового Outline ключа вставляет запись и отправляет сообщение пользователю."""
+async def test_create_new_v2ray_key_inserts_record(temp_db, mock_message, monkeypatch):
+    """Создание нового V2Ray ключа вставляет запись и отправляет сообщение пользователю."""
     cursor = temp_db.cursor()
 
-    # Подготовка данных
     cursor.execute(
         """
         INSERT INTO tariffs (id, name, price_rub, duration_sec, traffic_limit_mb)
@@ -43,7 +42,7 @@ async def test_create_new_outline_key_inserts_record(temp_db, mock_message, monk
             "api-key",
             "/v2ray",
             "Россия",
-            "outline",
+            "v2ray",
             1,
             1,
             100,
@@ -53,7 +52,10 @@ async def test_create_new_outline_key_inserts_record(temp_db, mock_message, monk
 
     class DummyProtocol:
         async def create_user(self, email):
-            return {"id": "outline-123", "accessUrl": "ss://outline-config"}
+            return {
+                "uuid": "v2-uuid-123",
+                "client_config": "vless://test-config",
+            }
 
     dummy_factory = SimpleNamespace(create_protocol=lambda protocol, config: DummyProtocol())
 
@@ -81,7 +83,7 @@ async def test_create_new_outline_key_inserts_record(temp_db, mock_message, monk
         tariff=tariff,
         email="user@example.com",
         country="Россия",
-        protocol="outline",
+        protocol="v2ray",
         user_states=user_states,
         extend_existing_key_with_fallback=_noop,
         change_country_and_extend=_noop,
@@ -89,10 +91,10 @@ async def test_create_new_outline_key_inserts_record(temp_db, mock_message, monk
         record_free_key_usage=_record,
     )
 
-    cursor.execute("SELECT access_url, tariff_id FROM keys WHERE user_id = ?", (12345,))
+    cursor.execute("SELECT v2ray_uuid, tariff_id FROM v2ray_keys WHERE user_id = ?", (12345,))
     row = cursor.fetchone()
     assert row is not None
-    assert row[0] == "ss://outline-config"
+    assert row[0] == "v2-uuid-123"
     assert row[1] == 1
     assert user_states == {}
 
@@ -126,7 +128,7 @@ async def test_create_new_key_no_servers_notifies_user(temp_db, monkeypatch):
         tariff=tariff,
         email="user@example.com",
         country="Россия",
-        protocol="outline",
+        protocol="v2ray",
         user_states=user_states,
         extend_existing_key_with_fallback=_noop,
         change_country_and_extend=_noop,
@@ -167,7 +169,7 @@ async def test_create_new_key_prompts_for_country(temp_db, mock_message, monkeyp
             "api-key",
             "/v2ray",
             "Россия",
-            "outline",
+            "v2ray",
             1,
             1,
             100,
@@ -175,20 +177,17 @@ async def test_create_new_key_prompts_for_country(temp_db, mock_message, monkeyp
     )
     cursor.execute(
         """
-        INSERT INTO keys (id, server_id, user_id, access_url, key_id,
-                          created_at, email, tariff_id, protocol)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO v2ray_keys (id, server_id, user_id, v2ray_uuid, created_at, email, tariff_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             1,
             1,
             999,
-            "ss://old",
-            "old-key",
+            "old-uuid",
             now - 200000,
             "old@example.com",
             1,
-            "outline",
         ),
     )
     temp_db.commit()
@@ -213,7 +212,7 @@ async def test_create_new_key_prompts_for_country(temp_db, mock_message, monkeyp
         tariff=tariff,
         email="user@example.com",
         country=None,
-        protocol="outline",
+        protocol="v2ray",
         user_states=user_states,
         extend_existing_key_with_fallback=_noop,
         change_country_and_extend=_noop,

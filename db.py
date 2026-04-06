@@ -2,6 +2,15 @@ import sqlite3
 import logging
 from config import DATABASE_PATH
 
+
+def _table_exists(cursor: sqlite3.Cursor, name: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (name,),
+    )
+    return cursor.fetchone() is not None
+
+
 def init_db():
     conn = sqlite3.connect(DATABASE_PATH, timeout=5)
     c = conn.cursor()
@@ -15,7 +24,7 @@ def init_db():
         max_keys INTEGER DEFAULT 100,
         active INTEGER DEFAULT 1,
         country TEXT,
-        protocol TEXT DEFAULT 'outline',
+        protocol TEXT DEFAULT 'v2ray',
         domain TEXT,
         v2ray_path TEXT,
         api_key TEXT
@@ -28,23 +37,6 @@ def init_db():
         duration_sec INTEGER,
         traffic_limit_mb INTEGER,
         price_rub INTEGER
-    )""")
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS keys (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        server_id INTEGER,
-        user_id INTEGER,
-        access_url TEXT,
-        traffic_limit_mb INTEGER,
-        notified INTEGER DEFAULT 0,
-        key_id TEXT,
-        created_at INTEGER,
-        email TEXT,
-        tariff_id INTEGER,
-        protocol TEXT DEFAULT 'outline',
-        subscription_id INTEGER,
-        FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
     )""")
 
     c.execute("""
@@ -155,6 +147,9 @@ def migrate_add_key_id():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
+        if not _table_exists(cursor, "keys"):
+            logging.info("Таблица keys отсутствует, пропуск migrate_add_key_id")
+            return
         cursor.execute("ALTER TABLE keys ADD COLUMN key_id TEXT")
         conn.commit()
         logging.info("Поле key_id успешно добавлено.")
@@ -166,6 +161,9 @@ def migrate_add_email():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
+        if not _table_exists(cursor, "keys"):
+            logging.info("Таблица keys отсутствует, пропуск migrate_add_email")
+            return
         cursor.execute("ALTER TABLE keys ADD COLUMN email TEXT")
         conn.commit()
         logging.info("Поле email успешно добавлено в таблицу keys.")
@@ -188,6 +186,9 @@ def migrate_add_tariff_id_to_keys():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
+        if not _table_exists(cursor, "keys"):
+            logging.info("Таблица keys отсутствует, пропуск migrate_add_tariff_id_to_keys")
+            return
         cursor.execute("ALTER TABLE keys ADD COLUMN tariff_id INTEGER")
         conn.commit()
         logging.info("Поле tariff_id успешно добавлено в таблицу keys.")
@@ -241,7 +242,7 @@ def migrate_add_protocol_fields():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
-        cursor.execute("ALTER TABLE servers ADD COLUMN protocol TEXT DEFAULT 'outline'")
+        cursor.execute("ALTER TABLE servers ADD COLUMN protocol TEXT DEFAULT 'v2ray'")
         conn.commit()
         logging.info("Поле protocol успешно добавлено в таблицу servers.")
     except sqlite3.OperationalError:
@@ -295,7 +296,7 @@ def migrate_extend_payments_schema():
             ("amount", "INTEGER DEFAULT 0"),
             ("currency", "TEXT DEFAULT 'RUB'"),
             ("country", "TEXT"),
-            ("protocol", "TEXT DEFAULT 'outline'"),
+            ("protocol", "TEXT DEFAULT 'v2ray'"),
             ("provider", "TEXT DEFAULT 'yookassa'"),
             ("method", "TEXT"),
             ("description", "TEXT"),
@@ -342,13 +343,13 @@ def migrate_add_common_indexes():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
-        # keys indexes
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id)")
-        # Индекс на expiry_at удален, так как поле больше не существует в таблице keys
-    # cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_expiry_at ON keys(expiry_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_server_id ON keys(server_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_tariff_id ON keys(tariff_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_email ON keys(email) WHERE email IS NOT NULL")
+        if _table_exists(cursor, "keys"):
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_server_id ON keys(server_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_keys_tariff_id ON keys(tariff_id)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_keys_email ON keys(email) WHERE email IS NOT NULL"
+            )
         # v2ray_keys indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_v2ray_keys_user_id ON v2ray_keys(user_id)")
         # Индекс на expiry_at удален, так как поле больше не существует в таблице v2ray_keys
@@ -393,10 +394,13 @@ def migrate_add_unique_key_indexes():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
-        try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_keys_user_keyid ON keys(user_id, key_id)")
-        except sqlite3.OperationalError:
-            pass
+        if _table_exists(cursor, "keys"):
+            try:
+                cursor.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_keys_user_keyid ON keys(user_id, key_id)"
+                )
+            except sqlite3.OperationalError:
+                pass
         try:
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2ray_user_uuid ON v2ray_keys(user_id, v2ray_uuid)")
         except sqlite3.OperationalError:
@@ -497,25 +501,35 @@ def migrate_create_users_table():
         conn.close()
 
 def migrate_backfill_users():
-    """Fill users table with existing user_id from keys and v2ray_keys"""
+    """Fill users table with existing user_id from v2ray_keys (and keys if legacy table exists)."""
     import time
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
-        # Get all unique user_ids
-        cursor.execute("""
-            SELECT DISTINCT user_id, MIN(created_at) as earliest, MAX(COALESCE(sub.expires_at, created_at)) as latest
-            FROM (
-                SELECT k.user_id, k.created_at, sub.expires_at 
-                FROM keys k
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-                UNION ALL
-                SELECT k.user_id, k.created_at, sub.expires_at 
-                FROM v2ray_keys k
-                LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
-            )
-            GROUP BY user_id
-        """)
+        if _table_exists(cursor, "keys"):
+            cursor.execute("""
+                SELECT DISTINCT user_id, MIN(created_at) as earliest, MAX(COALESCE(sub.expires_at, created_at)) as latest
+                FROM (
+                    SELECT k.user_id, k.created_at, sub.expires_at
+                    FROM keys k
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                    UNION ALL
+                    SELECT k.user_id, k.created_at, sub.expires_at
+                    FROM v2ray_keys k
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                )
+                GROUP BY user_id
+            """)
+        else:
+            cursor.execute("""
+                SELECT DISTINCT user_id, MIN(created_at) as earliest, MAX(COALESCE(sub.expires_at, created_at)) as latest
+                FROM (
+                    SELECT k.user_id, k.created_at, sub.expires_at
+                    FROM v2ray_keys k
+                    LEFT JOIN subscriptions sub ON k.subscription_id = sub.id
+                )
+                GROUP BY user_id
+            """)
         
         existing_users = []
         for row in cursor.fetchall():
@@ -688,71 +702,73 @@ def migrate_add_traffic_monitoring_to_v2ray_keys():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
-        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_limit_mb INTEGER DEFAULT 0")
-        conn.commit()
-        logging.info("Поле traffic_limit_mb добавлено в v2ray_keys")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name: traffic_limit_mb" in str(e):
-            logging.info("Поле traffic_limit_mb уже существует в v2ray_keys")
-        else:
-            raise
-    try:
-        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_usage_bytes INTEGER DEFAULT 0")
-        conn.commit()
-        logging.info("Поле traffic_usage_bytes добавлено в v2ray_keys")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name: traffic_usage_bytes" in str(e):
-            logging.info("Поле traffic_usage_bytes уже существует в v2ray_keys")
-        else:
-            raise
-    try:
-        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_over_limit_at INTEGER")
-        conn.commit()
-        logging.info("Поле traffic_over_limit_at добавлено в v2ray_keys")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name: traffic_over_limit_at" in str(e):
-            logging.info("Поле traffic_over_limit_at уже существует в v2ray_keys")
-        else:
-            raise
-    try:
-        cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_over_limit_notified INTEGER DEFAULT 0")
-        conn.commit()
-        logging.info("Поле traffic_over_limit_notified добавлено в v2ray_keys")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name: traffic_over_limit_notified" in str(e):
-            logging.info("Поле traffic_over_limit_notified уже существует в v2ray_keys")
-        else:
-            raise
-    try:
-        cursor.execute(
-            """
-            UPDATE v2ray_keys
-            SET traffic_limit_mb = COALESCE(
-                (SELECT traffic_limit_mb FROM tariffs WHERE tariffs.id = v2ray_keys.tariff_id),
-                traffic_limit_mb,
-                0
+        try:
+            cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_limit_mb INTEGER DEFAULT 0")
+            conn.commit()
+            logging.info("Поле traffic_limit_mb добавлено в v2ray_keys")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name: traffic_limit_mb" in str(e):
+                logging.info("Поле traffic_limit_mb уже существует в v2ray_keys")
+            else:
+                raise
+        try:
+            cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_usage_bytes INTEGER DEFAULT 0")
+            conn.commit()
+            logging.info("Поле traffic_usage_bytes добавлено в v2ray_keys")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name: traffic_usage_bytes" in str(e):
+                logging.info("Поле traffic_usage_bytes уже существует в v2ray_keys")
+            else:
+                raise
+        try:
+            cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_over_limit_at INTEGER")
+            conn.commit()
+            logging.info("Поле traffic_over_limit_at добавлено в v2ray_keys")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name: traffic_over_limit_at" in str(e):
+                logging.info("Поле traffic_over_limit_at уже существует в v2ray_keys")
+            else:
+                raise
+        try:
+            cursor.execute("ALTER TABLE v2ray_keys ADD COLUMN traffic_over_limit_notified INTEGER DEFAULT 0")
+            conn.commit()
+            logging.info("Поле traffic_over_limit_notified добавлено в v2ray_keys")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name: traffic_over_limit_notified" in str(e):
+                logging.info("Поле traffic_over_limit_notified уже существует в v2ray_keys")
+            else:
+                raise
+        try:
+            cursor.execute(
+                """
+                UPDATE v2ray_keys
+                SET traffic_limit_mb = COALESCE(
+                    (SELECT traffic_limit_mb FROM tariffs WHERE tariffs.id = v2ray_keys.tariff_id),
+                    traffic_limit_mb,
+                    0
+                )
+                """
             )
-            """
-        )
-        conn.commit()
-        logging.info("Данные traffic_limit_mb в v2ray_keys синхронизированы с тарифами")
-    except Exception as e:
-        logging.warning(f"Не удалось выполнить бэкфилл traffic_limit_mb для v2ray_keys: {e}")
-    try:
-        cursor.execute(
-            """
-            UPDATE keys
-            SET traffic_limit_mb = COALESCE(
-                (SELECT traffic_limit_mb FROM tariffs WHERE tariffs.id = keys.tariff_id),
-                traffic_limit_mb,
-                0
-            )
-            """
-        )
-        conn.commit()
-        logging.info("Данные traffic_limit_mb в keys синхронизированы с тарифами")
-    except Exception as e:
-        logging.warning(f"Не удалось выполнить бэкфилл traffic_limit_mb для keys: {e}")
+            conn.commit()
+            logging.info("Данные traffic_limit_mb в v2ray_keys синхронизированы с тарифами")
+        except Exception as e:
+            logging.warning(f"Не удалось выполнить бэкфилл traffic_limit_mb для v2ray_keys: {e}")
+        if _table_exists(cursor, "keys"):
+            try:
+                cursor.execute(
+                    """
+                    UPDATE keys
+                    SET traffic_limit_mb = COALESCE(
+                        (SELECT traffic_limit_mb FROM tariffs WHERE tariffs.id = keys.tariff_id),
+                        traffic_limit_mb,
+                        0
+                    )
+                    """
+                )
+                conn.commit()
+                logging.info("Данные traffic_limit_mb в keys синхронизированы с тарифами")
+            except Exception as e:
+                logging.warning(f"Не удалось выполнить бэкфилл traffic_limit_mb для keys: {e}")
     finally:
         conn.close()
 
@@ -803,11 +819,33 @@ def migrate_add_access_level_to_servers():
         conn.close()
 
 
+def migrate_add_subscription_group_id_to_servers():
+    """Добавление subscription_group_id в servers (дедуп ключей подписки по группе серверов)."""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("PRAGMA table_info(servers)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "subscription_group_id" not in columns:
+            cursor.execute("ALTER TABLE servers ADD COLUMN subscription_group_id TEXT")
+            conn.commit()
+            logging.info("Поле subscription_group_id добавлено в servers")
+        else:
+            logging.info("Поле subscription_group_id уже существует в servers")
+    except sqlite3.OperationalError as e:
+        logging.error(f"Ошибка миграции subscription_group_id: {e}", exc_info=True)
+    finally:
+        conn.close()
+
+
 def migrate_add_server_cascade_to_keys():
     """Обеспечить каскадное удаление outline-ключей при удалении сервера."""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
+        if not _table_exists(cursor, "keys"):
+            logging.info("Таблица keys отсутствует, пропуск migrate_add_server_cascade_to_keys")
+            return
         cursor.execute("PRAGMA foreign_key_list(keys)")
         fk_list = cursor.fetchall()
         needs_rebuild = True
@@ -838,7 +876,7 @@ def migrate_add_server_cascade_to_keys():
                 created_at INTEGER,
                 email TEXT,
                 tariff_id INTEGER,
-                protocol TEXT DEFAULT 'outline',
+                protocol TEXT DEFAULT 'v2ray',
                 FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
             )
             """
@@ -931,10 +969,13 @@ def migrate_add_subscription_id_to_v2ray_keys():
         conn.close()
 
 def migrate_add_subscription_id_to_keys():
-    """Добавление поля subscription_id в keys для связи с подписками (outline ключи)"""
+    """Добавление поля subscription_id в keys для связи с подписками (legacy; таблица может отсутствовать)."""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     try:
+        if not _table_exists(cursor, "keys"):
+            logging.info("Таблица keys отсутствует, пропуск migrate_add_subscription_id_to_keys")
+            return
         cursor.execute("ALTER TABLE keys ADD COLUMN subscription_id INTEGER")
         conn.commit()
         logging.info("Поле subscription_id добавлено в keys")
@@ -1561,6 +1602,40 @@ def migrate_fix_traffic_stats_foreign_keys():
             pass
         conn.close()
 
+def migrate_remove_outline_support():
+    """Удаление legacy Outline: очистка данных и таблицы keys, нормализация protocol."""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM free_key_usage WHERE protocol = 'outline'")
+        try:
+            cursor.execute("PRAGMA table_info(payments)")
+            pay_cols = {row[1] for row in cursor.fetchall()}
+            if "protocol" in pay_cols:
+                cursor.execute(
+                    "UPDATE payments SET protocol = 'v2ray' WHERE LOWER(COALESCE(protocol,'')) = 'outline'"
+                )
+        except sqlite3.OperationalError as e:
+            logging.warning("migrate_remove_outline_support: payments protocol update: %s", e)
+        cursor.execute(
+            """
+            UPDATE servers
+            SET protocol = 'v2ray'
+            WHERE protocol IS NULL OR LOWER(TRIM(protocol)) = 'outline'
+            """
+        )
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        cursor.execute("DROP TABLE IF EXISTS keys")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        conn.commit()
+        logging.info("migrate_remove_outline_support: таблица keys удалена, protocol нормализован")
+    except Exception as e:
+        logging.error("migrate_remove_outline_support: %s", e, exc_info=True)
+        conn.rollback()
+    finally:
+        conn.close()
+
+
 def _run_all_migrations():
     """Выполнить все миграции базы данных"""
     migrate_add_key_id()
@@ -1604,7 +1679,9 @@ def _run_all_migrations():
     migrate_add_paid_subscriptions_to_dashboard_metrics()
     migrate_create_discrepancy_notifications_table()
     migrate_add_access_level_to_servers()
+    migrate_add_subscription_group_id_to_servers()
     migrate_add_traffic_baseline_to_v2ray_keys()
+    migrate_remove_outline_support()
 
 # Выполняем миграции после определения всех функций
 # Это нужно для того, чтобы init_db() могла вызывать миграции

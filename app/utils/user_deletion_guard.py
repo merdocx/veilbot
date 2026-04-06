@@ -62,24 +62,15 @@ def check_user_can_be_deleted(user_id: int, db_path: str) -> Tuple[bool, List[st
         # 3. Проверяем активные ключи (связанные с активными подписками)
         cursor.execute("""
             SELECT COUNT(*)
-            FROM keys k
-            JOIN subscriptions s ON k.subscription_id = s.id
-            WHERE k.user_id = ? AND s.expires_at > ? AND s.is_active = 1
-        """, (user_id, now))
-        active_outline_keys = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(*)
             FROM v2ray_keys k
             JOIN subscriptions s ON k.subscription_id = s.id
             WHERE k.user_id = ? AND s.expires_at > ? AND s.is_active = 1
         """, (user_id, now))
         active_v2ray_keys = cursor.fetchone()[0]
         
-        if active_outline_keys > 0 or active_v2ray_keys > 0:
+        if active_v2ray_keys > 0:
             reasons.append(
-                f"У пользователя есть активные ключи: {active_outline_keys} Outline, "
-                f"{active_v2ray_keys} V2Ray"
+                f"У пользователя есть активные ключи V2Ray: {active_v2ray_keys}"
             )
         
         can_delete = len(reasons) == 0
