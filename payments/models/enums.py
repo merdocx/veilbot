@@ -6,6 +6,8 @@ class PaymentStatus(str, Enum):
     """Статусы платежей"""
     PENDING = "pending"
     PAID = "paid"
+    # Промежуточный статус: деньги получены, идёт атомарная обработка подписки (защита от двойного продления)
+    PROCESSING_SUBSCRIPTION = "processing_subscription"
     COMPLETED = "completed"  # Платеж оплачен и ключ выдан/продлен
     FAILED = "failed"
     CANCELLED = "cancelled"

@@ -15,6 +15,7 @@ class MockPaymentRepository:
         self.payments = {}
         self.create_called = False
         self.update_called = False
+        self.try_update_called = False
     
     async def create(self, payment: Payment) -> Payment:
         self.create_called = True
@@ -29,6 +30,17 @@ class MockPaymentRepository:
         self.update_called = True
         self.payments[payment.payment_id] = payment
         return payment
+
+    async def try_update_status(self, payment_id: str, new_status: PaymentStatus, expected_status: PaymentStatus) -> bool:
+        self.try_update_called = True
+        p = self.payments.get(payment_id)
+        if not p or p.status != expected_status:
+            return False
+        if new_status == PaymentStatus.PAID:
+            p.mark_as_paid()
+        else:
+            p.status = new_status
+        return True
     
     async def get_user_payments(self, user_id: int, limit: int = 100):
         """Получение платежей пользователя"""
@@ -165,15 +177,14 @@ class TestPaymentService:
         # Act
         success = await payment_service.process_payment_success("test_payment_1")
         
-        # Assert
+        # Assert (успешная оплата из pending идёт через try_update_status → paid)
         assert success is True
-        assert mock_repo.update_called
-        
-        # Проверяем обновленный платеж
+        assert mock_repo.try_update_called or mock_repo.update_called
+
         updated_payment = await mock_repo.get_by_payment_id("test_payment_1")
         assert updated_payment.status == PaymentStatus.PAID
         assert updated_payment.paid_at is not None
-    
+        
     async def test_wait_for_payment_success(self, payment_service, mock_repo, mock_yookassa):
         """Тест ожидания успешного платежа"""
         # Arrange

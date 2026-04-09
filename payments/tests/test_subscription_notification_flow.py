@@ -1,47 +1,190 @@
 """
-Тесты для проверки правильного порядка операций при покупке подписки:
-1. Оплата → статус paid
-2. Создание подписки и ключей
-3. Уведомление пользователю СРАЗУ после создания
-4. Статус completed только после успешной отправки уведомления
+Тесты порядка операций при покупке подписки (реальная async SQLite + мок платежа/бота).
+
+Текущее поведение process_subscription_purchase:
+- атомарный захват paid -> processing_subscription;
+- подписка и ключи через реальную БД;
+- пользовательское уведомление не должно ронять весь процесс при сбое отправки.
 """
-import pytest
-import asyncio
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from datetime import datetime, timezone
 
 from payments.models.payment import Payment, PaymentStatus
 from payments.services.subscription_purchase_service import SubscriptionPurchaseService
-from payments.repositories.payment_repository import PaymentRepository
-from app.repositories.subscription_repository import SubscriptionRepository
-from app.repositories.tariff_repository import TariffRepository
+
+
+def _create_notification_test_db(db_path: Path) -> None:
+    """Минимальная схема для прохождения _get_or_create_subscription и _create_keys_for_subscription."""
+    conn = sqlite3.connect(db_path)
+    try:
+        c = conn.cursor()
+        c.executescript(
+            """
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                is_vip INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                api_url TEXT,
+                cert_sha256 TEXT,
+                domain TEXT,
+                api_key TEXT,
+                v2ray_path TEXT,
+                country TEXT,
+                protocol TEXT DEFAULT 'v2ray',
+                active INTEGER DEFAULT 1,
+                max_keys INTEGER DEFAULT 100,
+                access_level TEXT DEFAULT 'all',
+                subscription_group_id TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                subscription_token TEXT,
+                created_at INTEGER,
+                expires_at INTEGER,
+                tariff_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                last_updated_at INTEGER,
+                notified INTEGER DEFAULT 0,
+                purchase_notification_sent INTEGER DEFAULT 0,
+                traffic_limit_mb INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS v2ray_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id INTEGER,
+                user_id INTEGER,
+                v2ray_uuid TEXT,
+                created_at INTEGER,
+                email TEXT,
+                tariff_id INTEGER,
+                client_config TEXT,
+                subscription_id INTEGER,
+                traffic_limit_mb INTEGER DEFAULT 0,
+                traffic_usage_bytes INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                payment_id TEXT UNIQUE NOT NULL,
+                user_id INTEGER NOT NULL,
+                tariff_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                currency TEXT DEFAULT 'RUB',
+                email TEXT,
+                status TEXT DEFAULT 'pending',
+                country TEXT,
+                protocol TEXT DEFAULT 'v2ray',
+                provider TEXT DEFAULT 'yookassa',
+                method TEXT,
+                description TEXT,
+                created_at INTEGER,
+                updated_at INTEGER,
+                paid_at INTEGER,
+                metadata TEXT,
+                subscription_id INTEGER
+            );
+            """
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO users (user_id, username, is_vip) VALUES (12345, 't', 0)"
+        )
+        c.execute(
+            """
+            INSERT INTO servers (id, name, api_url, api_key, domain, v2ray_path, protocol, active, cert_sha256)
+            VALUES (1, 'Server1', 'http://api', 'key', 'example.com', '/', 'v2ray', 1, NULL)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _patch_claim_and_get_payment(subscription_service, payment: Payment, call_order: list | None = None):
+    """Атомарный захват paid -> processing_subscription (и далее COMPLETED) для моков репозитория."""
+
+    async def try_update_side_effect(pid, new_status, expected_status):
+        if payment.payment_id != pid:
+            return False
+        if payment.status != expected_status:
+            return False
+        if call_order is not None and new_status == PaymentStatus.COMPLETED:
+            call_order.append(("payment_completed",))
+        payment.status = new_status
+        return True
+
+    return (
+        patch.object(
+            subscription_service.payment_repo,
+            "get_by_payment_id",
+            AsyncMock(return_value=payment),
+        ),
+        patch.object(
+            subscription_service.payment_repo,
+            "try_update_status",
+            AsyncMock(side_effect=try_update_side_effect),
+        ),
+    )
+
+
+def _notification_patches():
+    """Стабильные стабы для Telegram-разметки и отправки в тестах."""
+    return (
+        patch(
+            "payments.services.subscription_purchase_service.get_main_menu",
+            return_value={"keyboard": [[{"text": "x"}]], "resize_keyboard": True},
+        ),
+        patch(
+            "payments.services.subscription_purchase_service.reset_subscription_traffic",
+            AsyncMock(return_value=True),
+        ),
+        patch.object(
+            SubscriptionPurchaseService,
+            "_verify_subscription_consistency",
+            AsyncMock(return_value=None),
+        ),
+    )
 
 
 @pytest.fixture
 def mock_bot():
-    """Мок бота для отправки уведомлений"""
     bot = MagicMock()
     bot.send_message = AsyncMock(return_value=MagicMock())
     return bot
 
 
 @pytest.fixture
-def subscription_service(mock_bot):
-    """Сервис для обработки покупки подписки"""
-    with patch('payments.services.subscription_purchase_service.get_bot_instance', return_value=mock_bot):
-        with patch('bot.services.admin_notifications.get_bot_instance', return_value=mock_bot):
-            service = SubscriptionPurchaseService()
-            return service
+def subscription_service(mock_bot, tmp_path):
+    db_path = tmp_path / "notification_flow.db"
+    _create_notification_test_db(db_path)
+    with patch(
+        "payments.services.subscription_purchase_service.get_bot_instance",
+        return_value=mock_bot,
+    ):
+        with patch(
+            "bot.services.admin_notifications.get_bot_instance",
+            return_value=mock_bot,
+        ):
+            yield SubscriptionPurchaseService(db_path=str(db_path))
 
 
 @pytest.mark.asyncio
-async def test_subscription_notification_sent_immediately_after_creation(subscription_service, mock_bot):
-    """Тест: уведомление отправляется СРАЗУ после создания подписки и ключей"""
-    # Arrange
+async def test_subscription_notification_sent_immediately_after_creation(
+    subscription_service, mock_bot
+):
+    """После успешной обработки платёж завершается (completed), уведомление идёт через safe_send_message."""
     payment_id = "test_payment_123"
     user_id = 12345
-    
-    # Создаем платеж со статусом paid
+
     payment = Payment(
         payment_id=payment_id,
         user_id=user_id,
@@ -49,60 +192,55 @@ async def test_subscription_notification_sent_immediately_after_creation(subscri
         amount=10000,
         email="test@example.com",
         status=PaymentStatus.PAID,
-        protocol='v2ray',
+        protocol="v2ray",
         paid_at=datetime.now(timezone.utc),
-        metadata={'key_type': 'subscription'}
+        metadata={"key_type": "subscription"},
     )
-    
-    # Мокируем репозитории
-    with patch.object(subscription_service.payment_repo, 'get_by_payment_id', return_value=payment):
-        with patch.object(subscription_service.payment_repo, 'update') as mock_update:
-            with patch.object(subscription_service.tariff_repo, 'get_tariff', return_value=(1, 'Test Tariff', 86400, 100, 0)):
-                with patch.object(subscription_service.subscription_repo, 'get_active_subscription_async', return_value=None):
-                    with patch.object(subscription_service.subscription_repo, 'get_subscription_by_token_async', return_value=None):
-                        with patch.object(subscription_service.subscription_repo, 'create_subscription_async', return_value=1):
-                            with patch.object(subscription_service.subscription_repo, 'mark_purchase_notification_sent_async'):
-                                # Мокируем создание ключей
-                                with patch('payments.services.subscription_purchase_service.open_async_connection') as mock_conn:
-                                    mock_cursor = AsyncMock()
-                                    mock_cursor.execute = AsyncMock()
-                                    mock_cursor.fetchall = AsyncMock(return_value=[(1, 'Server1', 'http://api', 'key', 'domain', 'path')])
-                                    mock_cursor.rowcount = 1
-                                    mock_conn.return_value.__aenter__.return_value.execute.return_value = mock_cursor
-                                    
-                                    # Мокируем создание пользователя на V2Ray сервере
-                                    mock_protocol_client = AsyncMock()
-                                    mock_protocol_client.create_user = AsyncMock(return_value={'uuid': 'test-uuid'})
-                                    mock_protocol_client.get_user_config = AsyncMock(return_value='vless://test-config')
-                                    
-                                    with patch('payments.services.subscription_purchase_service.ProtocolFactory.create_protocol', return_value=mock_protocol_client):
-                                        # Act
-                                        success, error_msg = await subscription_service.process_subscription_purchase(payment_id)
-                                        
-                                        # Assert
-                                        assert success is True
-                                        assert error_msg is None
-                                        
-                                        # Проверяем, что уведомление было отправлено
-                                        assert mock_bot.send_message.called or hasattr(mock_bot, '_send_notification_called')
-                                        
-                                        # Проверяем, что платеж был помечен как completed
-                                        update_calls = [call for call in mock_update.call_args_list]
-                                        assert len(update_calls) > 0
-                                        
-                                        # Проверяем, что последний вызов update был с completed статусом
-                                        final_payment = mock_update.call_args[0][0]
-                                        assert final_payment.status == PaymentStatus.COMPLETED
+
+    mock_protocol_client = AsyncMock()
+    mock_protocol_client.create_user = AsyncMock(return_value={"uuid": "test-uuid"})
+    mock_protocol_client.get_user_config = AsyncMock(return_value="vless://test-config\n")
+    mock_protocol_client.close = AsyncMock()
+
+    get_payment_p, try_claim_p = _patch_claim_and_get_payment(subscription_service, payment)
+    p_main, p_reset, p_verify = _notification_patches()
+
+    with get_payment_p, try_claim_p, p_main, p_reset, p_verify:
+        with patch.object(
+            subscription_service.payment_repo, "update_subscription_id", AsyncMock(return_value=None)
+        ):
+            with patch.object(
+                subscription_service.tariff_repo,
+                "get_tariff",
+                return_value=(1, "Test Tariff", 86400, 100, 0),
+            ):
+                with patch(
+                    "payments.services.subscription_purchase_service.ProtocolFactory.create_protocol",
+                    return_value=mock_protocol_client,
+                ):
+                    with patch(
+                        "payments.services.subscription_purchase_service.safe_send_message",
+                        new_callable=AsyncMock,
+                        return_value=True,
+                    ) as mock_safe:
+                        success, error_msg = await subscription_service.process_subscription_purchase(
+                            payment_id
+                        )
+
+                        assert success is True
+                        assert error_msg is None
+                        mock_safe.assert_called()
+                        assert payment.status == PaymentStatus.COMPLETED
 
 
 @pytest.mark.asyncio
-async def test_payment_not_completed_if_notification_failed(subscription_service, mock_bot):
-    """Тест: платеж НЕ помечается как completed, если уведомление не отправлено"""
-    # Arrange
+async def test_payment_completes_even_if_user_notification_returns_false(
+    subscription_service, mock_bot
+):
+    """Если safe_send_message вернул False, покупка всё равно успешна; платёж completed (неблокирующее уведомление)."""
     payment_id = "test_payment_456"
     user_id = 12345
-    
-    # Создаем платеж со статусом paid
+
     payment = Payment(
         payment_id=payment_id,
         user_id=user_id,
@@ -110,57 +248,53 @@ async def test_payment_not_completed_if_notification_failed(subscription_service
         amount=10000,
         email="test@example.com",
         status=PaymentStatus.PAID,
-        protocol='v2ray',
+        protocol="v2ray",
         paid_at=datetime.now(timezone.utc),
-        metadata={'key_type': 'subscription'}
+        metadata={"key_type": "subscription"},
     )
-    
-    # Мокируем неудачную отправку уведомления
-    mock_bot.send_message = AsyncMock(return_value=None)
-    
-    # Мокируем репозитории
-    with patch.object(subscription_service.payment_repo, 'get_by_payment_id', return_value=payment):
-        with patch.object(subscription_service.payment_repo, 'update') as mock_update:
-            with patch.object(subscription_service.tariff_repo, 'get_tariff', return_value=(1, 'Test Tariff', 86400, 100, 0)):
-                with patch.object(subscription_service.subscription_repo, 'get_active_subscription_async', return_value=None):
-                    with patch.object(subscription_service.subscription_repo, 'get_subscription_by_token_async', return_value=None):
-                        with patch.object(subscription_service.subscription_repo, 'create_subscription_async', return_value=1):
-                            # Мокируем создание ключей
-                            with patch('payments.services.subscription_purchase_service.open_async_connection') as mock_conn:
-                                mock_cursor = AsyncMock()
-                                mock_cursor.execute = AsyncMock()
-                                mock_cursor.fetchall = AsyncMock(return_value=[(1, 'Server1', 'http://api', 'key', 'domain', 'path')])
-                                mock_cursor.rowcount = 1
-                                mock_conn.return_value.__aenter__.return_value.execute.return_value = mock_cursor
-                                
-                                # Мокируем создание пользователя на V2Ray сервере
-                                mock_protocol_client = AsyncMock()
-                                mock_protocol_client.create_user = AsyncMock(return_value={'uuid': 'test-uuid'})
-                                mock_protocol_client.get_user_config = AsyncMock(return_value='vless://test-config')
-                                
-                                with patch('payments.services.subscription_purchase_service.ProtocolFactory.create_protocol', return_value=mock_protocol_client):
-                                    # Act
-                                    success, error_msg = await subscription_service.process_subscription_purchase(payment_id)
-                                    
-                                    # Assert
-                                    assert success is False
-                                    assert "Failed to send notification" in error_msg
-                                    
-                                    # Проверяем, что платеж НЕ был помечен как completed
-                                    # Последний вызов update должен быть с paid статусом, а не completed
-                                    final_payment = mock_update.call_args[0][0]
-                                    assert final_payment.status == PaymentStatus.PAID
-                                    assert final_payment.metadata.get('_notification_failed') is True
+
+    mock_protocol_client = AsyncMock()
+    mock_protocol_client.create_user = AsyncMock(return_value={"uuid": "test-uuid"})
+    mock_protocol_client.get_user_config = AsyncMock(return_value="vless://test-config\n")
+    mock_protocol_client.close = AsyncMock()
+
+    get_payment_p, try_claim_p = _patch_claim_and_get_payment(subscription_service, payment)
+    p_main, p_reset, p_verify = _notification_patches()
+
+    with get_payment_p, try_claim_p, p_main, p_reset, p_verify:
+        with patch.object(
+            subscription_service.payment_repo, "update_subscription_id", AsyncMock(return_value=None)
+        ):
+            with patch.object(
+                subscription_service.tariff_repo,
+                "get_tariff",
+                return_value=(1, "Test Tariff", 86400, 100, 0),
+            ):
+                with patch(
+                    "payments.services.subscription_purchase_service.ProtocolFactory.create_protocol",
+                    return_value=mock_protocol_client,
+                ):
+                    with patch(
+                        "payments.services.subscription_purchase_service.safe_send_message",
+                        new_callable=AsyncMock,
+                        return_value=False,
+                    ):
+                        success, error_msg = await subscription_service.process_subscription_purchase(
+                            payment_id
+                        )
+
+                        assert success is True
+                        assert error_msg is None
+                        assert payment.status == PaymentStatus.COMPLETED
 
 
 @pytest.mark.asyncio
 async def test_notification_order_after_subscription_creation(subscription_service, mock_bot):
-    """Тест: порядок операций - создание подписки → уведомление → completed"""
-    # Arrange
+    """Текущий код: сначала _mark_payment_completed (COMPLETED), затем user notification через safe_send_message."""
     payment_id = "test_payment_789"
     user_id = 12345
-    call_order = []
-    
+    call_order: list = []
+
     payment = Payment(
         payment_id=payment_id,
         user_id=user_id,
@@ -168,91 +302,52 @@ async def test_notification_order_after_subscription_creation(subscription_servi
         amount=10000,
         email="test@example.com",
         status=PaymentStatus.PAID,
-        protocol='v2ray',
+        protocol="v2ray",
         paid_at=datetime.now(timezone.utc),
-        metadata={'key_type': 'subscription'}
+        metadata={"key_type": "subscription"},
     )
-    
-    # Отслеживаем порядок вызовов
-    original_update = subscription_service.payment_repo.update
-    async def tracked_update(p):
-        call_order.append(('update', p.status))
-        return await original_update(p)
-    
-    original_mark_sent = subscription_service.subscription_repo.mark_purchase_notification_sent_async
-    async def tracked_mark_sent(sub_id):
-        call_order.append(('mark_notification_sent', sub_id))
-        return await original_mark_sent(sub_id)
-    
-    async def tracked_send_message(*args, **kwargs):
-        call_order.append(('send_notification',))
-        return await mock_bot.send_message(*args, **kwargs)
-    
-    mock_bot.send_message = AsyncMock(side_effect=tracked_send_message)
-    
-    # Мокируем репозитории
-    with patch.object(subscription_service.payment_repo, 'get_by_payment_id', return_value=payment):
-        with patch.object(subscription_service.payment_repo, 'update', side_effect=tracked_update):
-            with patch.object(subscription_service.tariff_repo, 'get_tariff', return_value=(1, 'Test Tariff', 86400, 100, 0)):
-                with patch.object(subscription_service.subscription_repo, 'get_active_subscription_async', return_value=None):
-                    with patch.object(subscription_service.subscription_repo, 'get_subscription_by_token_async', return_value=None):
-                        with patch.object(subscription_service.subscription_repo, 'create_subscription_async', return_value=1):
-                            with patch.object(subscription_service.subscription_repo, 'mark_purchase_notification_sent_async', side_effect=tracked_mark_sent):
-                                # Мокируем создание ключей
-                                with patch('payments.services.subscription_purchase_service.open_async_connection') as mock_conn:
-                                    mock_cursor = AsyncMock()
-                                    mock_cursor.execute = AsyncMock()
-                                    mock_cursor.fetchall = AsyncMock(return_value=[(1, 'Server1', 'http://api', 'key', 'domain', 'path')])
-                                    mock_cursor.rowcount = 1
-                                    mock_conn.return_value.__aenter__.return_value.execute.return_value = mock_cursor
-                                    
-                                    # Мокируем создание пользователя на V2Ray сервере
-                                    mock_protocol_client = AsyncMock()
-                                    mock_protocol_client.create_user = AsyncMock(return_value={'uuid': 'test-uuid'})
-                                    mock_protocol_client.get_user_config = AsyncMock(return_value='vless://test-config')
-                                    
-                                    with patch('payments.services.subscription_purchase_service.ProtocolFactory.create_protocol', return_value=mock_protocol_client):
-                                        # Act
-                                        success, error_msg = await subscription_service.process_subscription_purchase(payment_id)
-                                        
-                                        # Assert
-                                        assert success is True
-                                        
-                                        # Проверяем порядок операций
-                                        # 1. Создание подписки (через create_subscription_async)
-                                        # 2. Создание ключей
-                                        # 3. Отправка уведомления
-                                        # 4. Пометка уведомления как отправленного
-                                        # 5. Пометка платежа как completed
-                                        
-                                        notification_index = None
-                                        mark_sent_index = None
-                                        completed_index = None
-                                        
-                                        for i, (op, _) in enumerate(call_order):
-                                            if op == 'send_notification':
-                                                notification_index = i
-                                            elif op == 'mark_notification_sent':
-                                                mark_sent_index = i
-                                            elif op == 'update' and call_order[i][1] == PaymentStatus.COMPLETED:
-                                                completed_index = i
-                                        
-                                        # Уведомление должно быть отправлено
-                                        assert notification_index is not None
-                                        
-                                        # Уведомление должно быть помечено как отправленное после отправки
-                                        if mark_sent_index is not None:
-                                            assert mark_sent_index > notification_index
-                                        
-                                        # Платеж должен быть помечен как completed после отправки уведомления
-                                        assert completed_index is not None
-                                        assert completed_index > notification_index
 
+    async def tracked_safe_send(*args, **kwargs):
+        call_order.append(("send_notification",))
+        return True
 
+    mock_protocol_client = AsyncMock()
+    mock_protocol_client.create_user = AsyncMock(return_value={"uuid": "test-uuid"})
+    mock_protocol_client.get_user_config = AsyncMock(return_value="vless://test-config\n")
+    mock_protocol_client.close = AsyncMock()
 
+    get_payment_p, try_claim_p = _patch_claim_and_get_payment(
+        subscription_service, payment, call_order=call_order
+    )
+    p_main, p_reset, p_verify = _notification_patches()
 
+    with get_payment_p, try_claim_p, p_main, p_reset, p_verify:
+        with patch.object(
+            subscription_service.payment_repo, "update_subscription_id", AsyncMock(return_value=None)
+        ):
+            with patch.object(
+                subscription_service.tariff_repo,
+                "get_tariff",
+                return_value=(1, "Test Tariff", 86400, 100, 0),
+            ):
+                with patch(
+                    "payments.services.subscription_purchase_service.ProtocolFactory.create_protocol",
+                    return_value=mock_protocol_client,
+                ):
+                    with patch(
+                        "payments.services.subscription_purchase_service.safe_send_message",
+                        new_callable=AsyncMock,
+                        side_effect=tracked_safe_send,
+                    ):
+                        success, error_msg = await subscription_service.process_subscription_purchase(
+                            payment_id
+                        )
 
+                        assert success is True
+                        assert error_msg is None
 
-
-
-
+                        completed_idx = next(
+                            i for i, x in enumerate(call_order) if x[0] == "payment_completed"
+                        )
+                        send_idx = next(i for i, x in enumerate(call_order) if x[0] == "send_notification")
+                        assert completed_idx < send_idx

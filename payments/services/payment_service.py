@@ -628,6 +628,12 @@ class PaymentService:
                                         payment.payment_id,
                                     )
                                     continue
+                                if payment_status == "processing_subscription":
+                                    logger.info(
+                                        "Payment %s is processing subscription elsewhere, skipping this round",
+                                        payment.payment_id,
+                                    )
+                                    continue
                                 if payment_status != "paid":
                                     cursor.execute(
                                         "UPDATE payments SET status = 'paid' WHERE payment_id = ?",

@@ -281,6 +281,8 @@ class SubscriptionPurchaseService:
         Returns:
             Tuple[success, error_message]
         """
+        subscription_processing_claimed = False
+        subscription_finalize_completed = False
         try:
             logger.info(f"[SUBSCRIPTION] Processing subscription purchase for payment {payment_id}")
             
@@ -333,16 +335,80 @@ class SubscriptionPurchaseService:
                             )
                 return True, None
             
+            # Другой воркер уже обрабатывает этот платёж (атомарный захват выполнен им)
+            if payment.status == PaymentStatus.PROCESSING_SUBSCRIPTION:
+                logger.info(
+                    f"[SUBSCRIPTION] Payment {payment_id} already in processing_subscription (another worker), skipping"
+                )
+                return True, None
+            
             if payment.status != PaymentStatus.PAID:
                 error_msg = f"Payment {payment_id} is not paid (status: {payment.status.value}), cannot process subscription"
                 logger.warning(f"[SUBSCRIPTION] {error_msg}")
                 return False, error_msg
+            
+            # Атомарный захват: только один воркер переводит paid -> processing_subscription
+            claim_ok = await self.payment_repo.try_update_status(
+                payment_id,
+                PaymentStatus.PROCESSING_SUBSCRIPTION,
+                PaymentStatus.PAID,
+            )
+            if not claim_ok:
+                payment = await self.payment_repo.get_by_payment_id(payment_id)
+                if not payment:
+                    return False, f"Payment {payment_id} not found after claim race"
+                if payment.status == PaymentStatus.COMPLETED:
+                    logger.info(f"[SUBSCRIPTION] Payment {payment_id} completed by another process during claim, skipping")
+                    if payment.subscription_id is not None:
+                        subscription_row = await self.subscription_repo.get_subscription_by_id_async(payment.subscription_id)
+                        tariff_row_for_notify = self.tariff_repo.get_tariff(payment.tariff_id) if payment.tariff_id else None
+                        if subscription_row and tariff_row_for_notify:
+                            tariff_for_notify = {
+                                'id': tariff_row_for_notify[0],
+                                'name': tariff_row_for_notify[1],
+                                'duration_sec': tariff_row_for_notify[2],
+                                'price_rub': tariff_row_for_notify[3],
+                                'traffic_limit_mb': tariff_row_for_notify[4] if len(tariff_row_for_notify) > 4 else 0,
+                            }
+                            try:
+                                await self._send_admin_purchase_notification(
+                                    payment,
+                                    payment.subscription_id,
+                                    tariff_for_notify,
+                                    subscription_row[4],
+                                    is_new=False,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"[SUBSCRIPTION] Failed to send admin notification for race-completed payment {payment_id}: {e}"
+                                )
+                    return True, None
+                if payment.status == PaymentStatus.PROCESSING_SUBSCRIPTION:
+                    logger.info(
+                        f"[SUBSCRIPTION] Payment {payment_id} claimed by another worker during race, skipping"
+                    )
+                    return True, None
+                error_msg = f"Payment {payment_id} unexpected status after claim: {payment.status.value}"
+                logger.warning(f"[SUBSCRIPTION] {error_msg}")
+                return False, error_msg
+            
+            subscription_processing_claimed = True
+            payment = await self.payment_repo.get_by_payment_id(payment_id)
+            if not payment:
+                await self.payment_repo.try_update_status(
+                    payment_id, PaymentStatus.PAID, PaymentStatus.PROCESSING_SUBSCRIPTION
+                )
+                subscription_processing_claimed = False
+                return False, f"Payment {payment_id} not found after claim"
             
             # Шаг 4: Получаем тариф
             tariff_row = self.tariff_repo.get_tariff(payment.tariff_id)
             if not tariff_row:
                 error_msg = f"Tariff {payment.tariff_id} not found"
                 logger.error(f"[SUBSCRIPTION] {error_msg}")
+                await self.payment_repo.try_update_status(
+                    payment_id, PaymentStatus.PAID, PaymentStatus.PROCESSING_SUBSCRIPTION
+                )
                 return False, error_msg
             
             tariff = {
@@ -352,27 +418,6 @@ class SubscriptionPurchaseService:
                 'price_rub': tariff_row[3],
                 'traffic_limit_mb': tariff_row[4] if len(tariff_row) > 4 else 0,
             }
-            
-            # Дополнительная проверка статуса после получения тарифа (защита от race condition)
-            payment_check = await self.payment_repo.get_by_payment_id(payment_id)
-            if payment_check and payment_check.status == PaymentStatus.COMPLETED:
-                logger.info(f"[SUBSCRIPTION] Payment {payment_id} was completed by another process, skipping")
-                if payment_check.subscription_id is not None:
-                    sub_row = await self.subscription_repo.get_subscription_by_id_async(payment_check.subscription_id)
-                    if sub_row:
-                        try:
-                            await self._send_admin_purchase_notification(
-                                payment_check,
-                                payment_check.subscription_id,
-                                tariff,
-                                sub_row[4],
-                                is_new=False,
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"[SUBSCRIPTION] Failed to send admin notification for race-completed payment {payment_id}: {e}"
-                            )
-                return True, None
             
             logger.info(
                 f"[SUBSCRIPTION] Processing: payment={payment_id}, user={payment.user_id}, "
@@ -408,8 +453,14 @@ class SubscriptionPurchaseService:
                     update_success = await self.payment_repo.try_update_status(
                         payment_id,
                         PaymentStatus.COMPLETED,
-                        PaymentStatus.PAID
+                        PaymentStatus.PROCESSING_SUBSCRIPTION,
                     )
+                    if not update_success:
+                        update_success = await self.payment_repo.try_update_status(
+                            payment_id,
+                            PaymentStatus.COMPLETED,
+                            PaymentStatus.PAID,
+                        )
                     if update_success:
                         logger.info(
                             f"[SUBSCRIPTION] Payment {payment_id} status updated to completed during retry"
@@ -419,6 +470,10 @@ class SubscriptionPurchaseService:
                         logger.debug(
                             f"[SUBSCRIPTION] Payment {payment_id} status update skipped (already completed or changed)"
                         )
+                    
+                    pay_retry_final = await self.payment_repo.get_by_payment_id(payment_id)
+                    if pay_retry_final and pay_retry_final.status != PaymentStatus.COMPLETED:
+                        await self._mark_payment_completed(pay_retry_final)
                     
                     # Уведомление админу при переходе в completed (в т.ч. при повторном webhook)
                     subscription_row_retry = await self.subscription_repo.get_subscription_by_id_async(subscription_id_retry)
@@ -432,6 +487,7 @@ class SubscriptionPurchaseService:
                             is_new=False
                         )
                     
+                    subscription_finalize_completed = True
                     return True, None
                 else:
                     # Платеж связан с подпиской, но ключи НЕ созданы → нужно создать ключи
@@ -444,6 +500,10 @@ class SubscriptionPurchaseService:
                     if not subscription_row:
                         error_msg = f"Subscription {subscription_id_retry} not found"
                         logger.error(f"[SUBSCRIPTION] {error_msg}")
+                        await self.payment_repo.try_update_status(
+                            payment_id, PaymentStatus.PAID, PaymentStatus.PROCESSING_SUBSCRIPTION
+                        )
+                        subscription_processing_claimed = False
                         return False, error_msg
                     
                     # Создаем ключи для существующей подписки, если их нет
@@ -464,6 +524,10 @@ class SubscriptionPurchaseService:
                     if created_keys == 0:
                         error_msg = f"Failed to create keys for subscription {subscription_id_retry} during retry"
                         logger.error(f"[SUBSCRIPTION] {error_msg}")
+                        await self.payment_repo.try_update_status(
+                            payment_id, PaymentStatus.PAID, PaymentStatus.PROCESSING_SUBSCRIPTION
+                        )
+                        subscription_processing_claimed = False
                         return False, error_msg
                     
                     logger.info(
@@ -473,7 +537,14 @@ class SubscriptionPurchaseService:
                     # Обновляем статус платежа на completed
                     payment = await self.payment_repo.get_by_payment_id(payment_id)
                     if payment:
-                        await self._mark_payment_completed(payment)
+                        mark_retry = await self._mark_payment_completed(payment)
+                        if not mark_retry:
+                            await self.payment_repo.try_update_status(
+                                payment_id, PaymentStatus.PAID, PaymentStatus.PROCESSING_SUBSCRIPTION
+                            )
+                            subscription_processing_claimed = False
+                            return False, f"Failed to finalize payment {payment_id} during retry"
+                        subscription_finalize_completed = True
                         # Уведомление админу при успешном завершении
                         expires_at_retry = subscription_row[4]
                         await self._send_admin_purchase_notification(
@@ -507,6 +578,10 @@ class SubscriptionPurchaseService:
             if not subscription_row:
                 error_msg = "Failed to get or create subscription"
                 logger.error(f"[SUBSCRIPTION] {error_msg}")
+                await self.payment_repo.try_update_status(
+                    payment_id, PaymentStatus.PAID, PaymentStatus.PROCESSING_SUBSCRIPTION
+                )
+                subscription_processing_claimed = False
                 return False, error_msg
             
             subscription_id = subscription_row[0]
@@ -566,10 +641,7 @@ class SubscriptionPurchaseService:
             
             # Обновляем subscription_id в платеже ПЕРЕД обновлением expires_at
             await self.payment_repo.update_subscription_id(payment.payment_id, subscription_id)
-            # Сразу помечаем платёж completed, чтобы при любом исключении ниже (expires_at, ключи) статус не терялся
-            payment_updated = await self.payment_repo.get_by_payment_id(payment_id)
-            if payment_updated:
-                await self._mark_payment_completed(payment_updated)
+            # Статус остаётся processing_subscription до успешного завершения выдачи/продления (см. _mark_payment_completed в конце)
             
             # ВАЖНО: Проверяем VIP статус перед обновлением expires_at
             # VIP подписки не должны изменяться при продлении
@@ -686,7 +758,19 @@ class SubscriptionPurchaseService:
                     # НЕ возвращаем ошибку, так как подписка уже создана
                     # Но логируем для мониторинга
             
-            # Платёж уже помечен completed; перезагружаем для уведомлений
+            # Завершаем платёж только после обновления подписки/ключей (processing_subscription -> completed)
+            payment_for_notify = await self.payment_repo.get_by_payment_id(payment_id)
+            if not payment_for_notify:
+                payment_for_notify = payment
+            mark_ok = await self._mark_payment_completed(payment_for_notify)
+            if not mark_ok:
+                await self.payment_repo.try_update_status(
+                    payment_id, PaymentStatus.PAID, PaymentStatus.PROCESSING_SUBSCRIPTION
+                )
+                subscription_processing_claimed = False
+                return False, f"Failed to finalize payment {payment_id} as completed"
+            subscription_finalize_completed = True
+            
             payment_for_notify = await self.payment_repo.get_by_payment_id(payment_id)
             if not payment_for_notify:
                 payment_for_notify = payment
@@ -725,6 +809,22 @@ class SubscriptionPurchaseService:
         except Exception as e:
             error_msg = f"Error processing subscription purchase for payment {payment_id}: {e}"
             logger.error(f"[SUBSCRIPTION] {error_msg}", exc_info=True)
+            if subscription_processing_claimed and not subscription_finalize_completed:
+                try:
+                    reverted = await self.payment_repo.try_update_status(
+                        payment_id,
+                        PaymentStatus.PAID,
+                        PaymentStatus.PROCESSING_SUBSCRIPTION,
+                    )
+                    if reverted:
+                        logger.warning(
+                            f"[SUBSCRIPTION] Payment {payment_id} reverted to paid after error (was processing_subscription)"
+                        )
+                except Exception as rev_err:
+                    logger.error(
+                        f"[SUBSCRIPTION] Failed to revert payment {payment_id} to paid: {rev_err}",
+                        exc_info=True,
+                    )
             return False, error_msg
     
     async def _create_subscription_as_renewal(
@@ -1968,6 +2068,9 @@ class SubscriptionPurchaseService:
         Единая точка обновления статуса платежа на COMPLETED.
         Использует атомарное обновление с fallback механизмами.
         
+        Ожидаемый переход: PROCESSING_SUBSCRIPTION -> COMPLETED (после успешной выдачи/продления).
+        Fallback: PAID -> COMPLETED (совместимость со старыми потоками без промежуточного статуса).
+        
         Returns:
             bool: True если платеж успешно помечен как COMPLETED, False в противном случае
         """
@@ -1976,8 +2079,14 @@ class SubscriptionPurchaseService:
             update_success = await self.payment_repo.try_update_status(
                 payment.payment_id,
                 PaymentStatus.COMPLETED,
-                PaymentStatus.PAID
+                PaymentStatus.PROCESSING_SUBSCRIPTION,
             )
+            if not update_success:
+                update_success = await self.payment_repo.try_update_status(
+                    payment.payment_id,
+                    PaymentStatus.COMPLETED,
+                    PaymentStatus.PAID,
+                )
             
             if not update_success:
                 # Если атомарное обновление не сработало (статус уже изменился), 

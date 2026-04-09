@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timezone
 
 from ..models.payment import Payment, PaymentStatus, PaymentFilter
-from ..models.enums import PaymentProvider
+from ..models.enums import PaymentProvider, PaymentCurrency, PaymentMethod
 import json
 
 from app.infra.sqlite_utils import open_async_connection, retry_async_db_operation
@@ -181,45 +181,81 @@ class PaymentRepository:
                 except Exception:
                     return PaymentProvider.YOOKASSA
             
-            # Каноническая схема (после нормализации данных):
-            # 0 id | 1 user_id | 2 tariff_id | 3 payment_id | 4 status | 5 email | 6 revoked | 7 protocol |
-            # 8 amount | 9 created_at | 10 country | 11 currency | 12 provider | 13 method | 14 description |
-            # 15 updated_at | 16 paid_at | 17 metadata | [18..22 crypto_* optional] | subscription_id
-            #
-            # Поддерживаем два варианта длины:
-            # - >= 24: есть crypto_* и subscription_id на позиции 23
-            # - >= 18: без crypto_*, subscription_id на позиции 18 (после metadata)
+            def _safe_currency_cell(val):
+                if val is None or val == "":
+                    return PaymentCurrency.RUB
+                try:
+                    return PaymentCurrency(str(val))
+                except Exception:
+                    return PaymentCurrency.RUB
+
+            def _safe_method_cell(val):
+                if val is None:
+                    return None
+                try:
+                    return PaymentMethod(str(val))
+                except Exception:
+                    return None
+
+            # Две физические схемы таблицы `payments`:
+            # — Legacy (prod vpn.db): id, user_id, tariff_id, payment_id, status, email, revoked, protocol, ...
+            # — Modern (_ensure_table_exists для новых БД): id, payment_id, user_id, tariff_id, amount, currency, ...
+            # Различаем по типу row[1]: в legacy это INTEGER user_id, в modern — TEXT payment_id.
             if len(row) < 17:
                 raise ValueError(f"Unexpected payments row length: {len(row)}")
 
-            # subscription_id position
-            subscription_id_value = None
-            if len(row) >= 24:
-                subscription_id_value = row[23]
-            elif len(row) >= 19:
-                subscription_id_value = row[18]
-            else:
+            if len(row) >= 2 and isinstance(row[1], int):
+                # Legacy schema (см. PRAGMA table_info на существующих инсталляциях)
                 subscription_id_value = None
+                if len(row) >= 24:
+                    subscription_id_value = row[23]
+                elif len(row) >= 19:
+                    subscription_id_value = row[18]
+                else:
+                    subscription_id_value = None
 
+                return Payment(
+                    id=row[0],
+                    user_id=int(row[1]) if row[1] is not None else 0,
+                    tariff_id=int(row[2]) if row[2] is not None else 0,
+                    payment_id=str(row[3]) if row[3] is not None else "",
+                    status=safe_status(row[4] if len(row) > 4 and row[4] else "pending"),
+                    email=row[5] if len(row) > 5 else None,
+                    protocol=row[7] if len(row) > 7 and row[7] else "v2ray",
+                    amount=int(row[8]) if len(row) > 8 and row[8] is not None else 0,
+                    created_at=safe_timestamp(row[9]) if len(row) > 9 else None,
+                    country=row[10] if len(row) > 10 else None,
+                    currency=_safe_currency_cell(row[11] if len(row) > 11 else None),
+                    provider=safe_provider(row[12] if len(row) > 12 and row[12] else "yookassa"),
+                    method=_safe_method_cell(row[13] if len(row) > 13 else None),
+                    description=row[14] if len(row) > 14 else None,
+                    updated_at=safe_timestamp(row[15]) if len(row) > 15 else None,
+                    paid_at=safe_timestamp(row[16]) if len(row) > 16 else None,
+                    metadata=safe_metadata(row[17]) if len(row) > 17 else {},
+                    subscription_id=subscription_id_value,
+                )
+
+            # Modern schema (CREATE TABLE в _ensure_table_exists)
+            subscription_id_modern = row[17] if len(row) > 17 else None
             return Payment(
                 id=row[0],
-                user_id=int(row[1]) if row[1] is not None else 0,
-                tariff_id=int(row[2]) if row[2] is not None else 0,
-                payment_id=str(row[3]) if row[3] is not None else "",
-                status=safe_status(row[4] if len(row) > 4 and row[4] else "pending"),
-                email=row[5] if len(row) > 5 else None,
-                protocol=row[7] if len(row) > 7 and row[7] else "v2ray",
-                amount=int(row[8]) if len(row) > 8 and row[8] is not None else 0,
-                created_at=safe_timestamp(row[9]) if len(row) > 9 else None,
-                country=row[10] if len(row) > 10 else None,
-                currency=row[11] if len(row) > 11 and row[11] else "RUB",
-                provider=safe_provider(row[12] if len(row) > 12 and row[12] else "yookassa"),
-                method=row[13] if len(row) > 13 else None,
-                description=row[14] if len(row) > 14 else None,
-                updated_at=safe_timestamp(row[15]) if len(row) > 15 else None,
-                paid_at=safe_timestamp(row[16]) if len(row) > 16 else None,
-                metadata=safe_metadata(row[17]) if len(row) > 17 else {},
-                subscription_id=subscription_id_value,
+                payment_id=str(row[1]) if row[1] is not None else "",
+                user_id=int(row[2]) if row[2] is not None else 0,
+                tariff_id=int(row[3]) if row[3] is not None else 0,
+                amount=int(row[4]) if len(row) > 4 and row[4] is not None else 0,
+                currency=_safe_currency_cell(row[5] if len(row) > 5 else None),
+                email=row[6] if len(row) > 6 else None,
+                status=safe_status(row[7] if len(row) > 7 and row[7] else "pending"),
+                country=row[8] if len(row) > 8 else None,
+                protocol=row[9] if len(row) > 9 and row[9] else "v2ray",
+                provider=safe_provider(row[10] if len(row) > 10 and row[10] else "yookassa"),
+                method=_safe_method_cell(row[11] if len(row) > 11 else None),
+                description=row[12] if len(row) > 12 else None,
+                created_at=safe_timestamp(row[13]) if len(row) > 13 else None,
+                updated_at=safe_timestamp(row[14]) if len(row) > 14 else None,
+                paid_at=safe_timestamp(row[15]) if len(row) > 15 else None,
+                metadata=safe_metadata(row[16]) if len(row) > 16 else {},
+                subscription_id=subscription_id_modern,
             )
         except Exception as e:
             logger.error(f"Error creating Payment from row: {e}, row: {row}")
