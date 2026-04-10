@@ -9,7 +9,6 @@ import logging
 import sqlite3
 from collections import defaultdict
 from typing import Optional, Callable, Awaitable, Dict, Any, List, Tuple, Set
-from datetime import datetime
 
 from app.infra.sqlite_utils import get_db_cursor, retry_db_operation
 from vpn_protocols import format_duration, ProtocolFactory
@@ -21,7 +20,6 @@ from app.infra.foreign_keys import safe_foreign_keys_off
 from memory_optimizer import optimize_memory, log_memory_usage
 from config import ADMIN_ID
 from app.repositories.subscription_repository import SubscriptionRepository
-from app.repositories.tariff_repository import TariffRepository
 from bot.services.subscription_service import invalidate_subscription_cache
 from payments.utils.renewal_detector import DEFAULT_GRACE_PERIOD, grace_threshold_ts
 
@@ -689,10 +687,8 @@ async def auto_delete_expired_subscriptions() -> None:
                     try:
                         with safe_foreign_keys_off(cursor):
                             cursor.execute("DELETE FROM v2ray_keys WHERE subscription_id = ?", (subscription_id,))
-                            deleted_keys_count = cursor.rowcount
                     except Exception as exc:
                         logging.warning("Error deleting subscription keys: %s", exc)
-                        deleted_keys_count = 0
                     
                     # Удалить подписку из БД (аналогично удалению ключей)
                     # Используем safe_foreign_keys_off для обхода проблем с foreign keys
@@ -837,7 +833,6 @@ async def monitor_subscription_traffic_limits() -> None:
         # Шаг 1: Читаем все необходимые данные из БД (без долгих операций между чтениями)
         active_keys = []
         subscriptions = []
-        traffic_sums = {}
         
         # Получить все активные (не истекшие) ключи V2Ray (sync DB — в executor, чтобы не блокировать loop).
         # Здесь формируется единственный источник правды по usage: traffic_usage_bytes в v2ray_keys
@@ -879,12 +874,6 @@ async def monitor_subscription_traffic_limits() -> None:
         
         # Получить активные подписки с лимитами (sync DB — в executor)
         subscriptions = await asyncio.to_thread(repo.get_subscriptions_with_traffic_limits, now)
-        
-        if subscriptions:
-            subscription_ids = [sub[0] for sub in subscriptions]
-            traffic_sums = await asyncio.to_thread(
-                repo.get_all_subscriptions_traffic_sum, subscription_ids
-            )
         
         # Шаг 2: Выполняем долгие операции с API (БД уже закрыта, блокировок нет)
         # Ограничение параллелизма снижает Connection timeout на перегруженных панелях (все ключи сразу).
@@ -1008,7 +997,17 @@ async def monitor_subscription_traffic_limits() -> None:
         traffic_updates = []  # Для batch-обновления трафика
         
         for sub in subscriptions:
-            subscription_id, user_id, stored_usage, over_limit_at, notified_flags, expires_at, tariff_id, limit_mb, tariff_name = sub[0], sub[1], sub[2], sub[3], sub[4], sub[5], sub[6], sub[7], sub[8]
+            subscription_id, user_id, _, over_limit_at, notified_flags, _, _, limit_mb, tariff_name = (
+                sub[0],
+                sub[1],
+                sub[2],
+                sub[3],
+                sub[4],
+                sub[5],
+                sub[6],
+                sub[7],
+                sub[8],
+            )
             
             # Трафик из актуальных данных API (с учётом окна после сброса)
             total_usage = subscription_usage_from_api.get(subscription_id, 0)
@@ -1378,12 +1377,9 @@ async def fix_payments_without_subscription_id() -> None:
     async def job() -> None:
         try:
             from payments.repositories.payment_repository import PaymentRepository
-            from app.repositories.subscription_repository import SubscriptionRepository
             from app.settings import settings as app_settings
-            from payments.models.payment import PaymentStatus
             
             payment_repo = PaymentRepository(app_settings.DATABASE_PATH)
-            subscription_repo = SubscriptionRepository(app_settings.DATABASE_PATH)
             
             # Получаем все completed платежи за подписки без subscription_id
             # Используем прямой SQL запрос для эффективности
@@ -1446,7 +1442,6 @@ async def fix_payments_without_subscription_id() -> None:
                     
                     if subscription_row:
                         subscription_id = subscription_row[0]
-                        sub_created_at = subscription_row[1]
                         sub_expires_at = subscription_row[2]
                         
                         # Проверяем, что подписка была активна на момент обработки платежа
@@ -1537,7 +1532,6 @@ async def create_keys_for_new_server(server_id: int) -> None:
             return
         
         # Получить все активные подписки
-        subscription_repo = SubscriptionRepository()
         now = int(time.time())
         
         with get_db_cursor() as cursor:
@@ -2067,7 +2061,6 @@ async def _process_protocol_sync(
     """
     if protocol != "v2ray":
         return
-    existing_server_ids = {key[1] for key in existing_keys}
 
     keys_to_recreate = []
     verified_existing_server_ids = set()

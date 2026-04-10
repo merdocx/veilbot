@@ -576,7 +576,6 @@ class SubscriptionPurchaseService:
             # 3. Уникальные ограничения на подписки (если нужны)
             
             now = int(time.time())
-            grace_threshold = grace_threshold_ts(now, DEFAULT_GRACE_PERIOD)
             
             # НОВАЯ УПРОЩЕННАЯ ЛОГИКА: Определение покупки/продления (1 проверка)
             # Получаем или создаем подписку
@@ -2139,7 +2138,7 @@ class SubscriptionPurchaseService:
                                 return True, None  # Ключ уже существует, считаем успехом
                         
                         # Вставляем ключ только если его еще нет
-                        cursor = await conn.execute(
+                        await conn.execute(
                             """
                             INSERT INTO v2ray_keys 
                             (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
