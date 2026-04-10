@@ -20,6 +20,7 @@ from vpn_protocols import ProtocolFactory, format_duration
 from bot.core import get_bot_instance
 from bot.utils import safe_send_message
 from bot.keyboards import get_main_menu
+from bot.services.admin_notifications import format_amount_rub_from_kopecks
 from bot.services.subscription_traffic_reset import reset_subscription_traffic
 from bot.services.subscription_server_groups import (
     compute_targets_purchase_sql_rows,
@@ -3177,12 +3178,13 @@ class SubscriptionPurchaseService:
             _provider = (payment.provider.value if payment.provider else "") or ""
             payment_method = payment_method_map.get(_provider.lower(), _provider or "—")
             purchase_type = "новая" if is_new else "продление"
+            amount_rub = format_amount_rub_from_kopecks(payment.amount)
             message = (
                 f"💳 *Покупка подписки*\n\n"
                 f"👤 Пользователь: `{payment.user_id}`\n"
                 f"📋 Подписка: #{subscription_id}\n"
                 f"📦 Тариф: {tariff.get('name', 'N/A')}\n"
-                f"💰 Сумма: {payment.amount} ₽\n"
+                f"💰 Сумма: {amount_rub}\n"
                 f"💳 Способ оплаты: {payment_method}\n"
                 f"📅 Действует до: {expires_date}\n"
                 f"🔄 Тип: {purchase_type}\n"
@@ -3193,7 +3195,7 @@ class SubscriptionPurchaseService:
                 f"👤 Пользователь: {payment.user_id}\n"
                 f"📋 Подписка: #{subscription_id}\n"
                 f"📦 Тариф: {tariff.get('name', 'N/A')}\n"
-                f"💰 Сумма: {payment.amount} ₽\n"
+                f"💰 Сумма: {amount_rub}\n"
                 f"💳 Способ оплаты: {payment_method}\n"
                 f"📅 Действует до: {expires_date}\n"
                 f"🔄 Тип: {purchase_type}\n"
