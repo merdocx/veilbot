@@ -1,8 +1,6 @@
 """
 Unit тесты для bot/services/free_tariff.py
 """
-import pytest
-import time
 from bot.services.free_tariff import (
     check_free_tariff_limit_by_protocol_and_country,
     check_free_tariff_limit,
@@ -80,7 +78,7 @@ class TestFreeTariff:
         assert result is True
         
         # Но для другой страны лимита может не быть (если не было общего использования протокола)
-        result_other = check_free_tariff_limit_by_protocol_and_country(
+        check_free_tariff_limit_by_protocol_and_country(
             mock_cursor, user_id, protocol, "США"
         )
         # Это зависит от реализации - может быть True если есть общее использование протокола

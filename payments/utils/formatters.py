@@ -106,7 +106,7 @@ class PaymentFormatters:
         Returns:
             Отформатированный чек
         """
-        amount_rub = payment.amount / 100
+        payment.amount / 100
         
         receipt = f"🧾 *Чек платежа*\n\n"
         receipt += f"📦 Товар: {tariff_name}\n"

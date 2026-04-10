@@ -3,7 +3,7 @@
 """
 import re
 import sqlite3
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Tuple, Any
 from datetime import datetime, timedelta
 
 class ValidationError(Exception):

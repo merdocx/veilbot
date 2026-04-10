@@ -7,7 +7,6 @@ import os
 import asyncio
 import logging
 import time
-import urllib.parse
 from collections import defaultdict
 from typing import List, Tuple, Dict, Any, Optional, Set
 
@@ -551,7 +550,7 @@ async def sync_all_keys_with_servers(
     if delete_inactive_server_keys:
         logger.info("\n[ЭТАП 2.5] Удаление ключей для неактивных подписок...")
         
-        active_subscription_ids = {sub["id"] for sub in subscriptions}
+        {sub["id"] for sub in subscriptions}
         
         # Удаляем V2Ray ключи для неактивных подписок
         with get_db_cursor() as cursor:

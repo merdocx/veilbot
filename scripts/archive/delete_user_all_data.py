@@ -10,7 +10,7 @@ import asyncio
 import sys
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Dict
 
 # Добавляем корневую директорию в путь
 root_dir = Path(__file__).parent.parent
@@ -150,7 +150,7 @@ async def delete_all_user_data(user_id: int) -> Dict[str, int]:
         v2ray_uuid = key_row["v2ray_uuid"]
         api_url = key_row["api_url"]
         api_key = key_row["api_key"]
-        db_id = key_row["id"]
+        key_row["id"]
         
         if v2ray_uuid and api_url and api_key:
             try:
@@ -195,7 +195,7 @@ async def delete_all_user_data(user_id: int) -> Dict[str, int]:
         key_id = key_row["key_id"]
         api_url = key_row["api_url"]
         cert_sha256 = key_row["cert_sha256"]
-        db_id = key_row["id"]
+        key_row["id"]
         
         if key_id and api_url and cert_sha256:
             try:

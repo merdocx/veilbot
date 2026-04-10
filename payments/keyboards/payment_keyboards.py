@@ -1,5 +1,4 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from typing import Optional
 
 
 class PaymentKeyboards:

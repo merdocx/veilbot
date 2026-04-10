@@ -2,10 +2,9 @@
 Глобальная обработка ошибок для админки
 """
 import logging
-from fastapi import Request, status
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError, HTTPException
-from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import RedirectResponse
 
 logger = logging.getLogger(__name__)

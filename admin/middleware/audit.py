@@ -3,7 +3,6 @@
 """
 import logging
 from fastapi import Request
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

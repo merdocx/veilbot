@@ -9,8 +9,6 @@ from config import PROTOCOLS, ADMIN_ID, FREE_V2RAY_TARIFF_ID
 from app.infra.sqlite_utils import get_db_cursor
 from validators import input_validator, ValidationError
 from bot.keyboards import (
-    get_main_menu,
-    get_cancel_keyboard,
     get_protocol_selection_menu,
     get_tariff_menu,
     get_payment_method_keyboard,
@@ -335,7 +333,7 @@ def register_purchase_handlers(
             user_states[user_id]["state"] = "waiting_email"
             
             tariff = state.get("tariff", {})
-            protocol = state.get("protocol", "v2ray")
+            state.get("protocol", "v2ray")
             
             await message.answer(
                 f"💳 *Оплата картой / СБП*\n\n"
@@ -361,7 +359,7 @@ def register_purchase_handlers(
             user_states[user_id] = state
             user_states[user_id]["state"] = "waiting_email"
             
-            protocol = state.get("protocol", "v2ray")
+            state.get("protocol", "v2ray")
             
             await message.answer(
                 f"₿ *Оплата криптовалютой (USDT)*\n\n"
@@ -638,7 +636,7 @@ def register_purchase_handlers(
                 if user_states.get(user_id, {}).get("paid_only"):
                     email_db = None
                     try:
-                        now_ts = int(time.time())
+                        int(time.time())
                         
                         cursor.execute("""
                             SELECT email FROM (

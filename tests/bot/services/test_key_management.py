@@ -1,7 +1,6 @@
 """
 Unit тесты для bot/services/key_management.py
 """
-import pytest
 import time
 from unittest.mock import MagicMock, patch
 from bot.services.key_management import (

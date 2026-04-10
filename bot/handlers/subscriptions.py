@@ -14,7 +14,6 @@ from bot.keyboards import (
     get_payment_method_keyboard,
     get_payment_method_keyboard_async,
     get_platega_method_keyboard,
-    get_tariff_menu_async,
 )
 from bot.payment_messages import (
     PAYMENT_SERVICE_UNAVAILABLE,
@@ -562,7 +561,6 @@ async def handle_email_for_subscription(message: types.Message):
         
         from memory_optimizer import get_payment_service
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        from bot.core import get_bot_instance
         
         logger.info(f"[SUBSCRIPTION] Getting payment service...")
         payment_service = get_payment_service()

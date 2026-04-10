@@ -2,7 +2,7 @@
 Маршруты для аутентификации администратора
 """
 from fastapi import APIRouter, Request, Form, HTTPException
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse
 from starlette.status import HTTP_303_SEE_OTHER
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -16,7 +16,6 @@ from app.settings import settings
 
 from ..middleware.audit import log_admin_action
 from ..middleware.bruteforce import BruteforceProtection
-from ..dependencies.csrf import get_csrf_token
 from ..dependencies.templates import templates
 
 router = APIRouter()

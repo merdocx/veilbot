@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import sqlite3
 import time
 from typing import List, Tuple, Optional
 from app.settings import settings
@@ -983,6 +982,38 @@ class SubscriptionRepository:
                 (subscription_id,),
             )
             return c.fetchone()
+
+    async def get_subscription_by_id_async(self, subscription_id: int) -> Optional[Tuple]:
+        """Асинхронная версия get_subscription_by_id; те же поля 0–11 + purchase_notification_sent (12)."""
+        async with open_async_connection(self.db_path) as conn:
+            async with conn.execute(
+                """
+                SELECT
+                    s.id,
+                    s.user_id,
+                    s.subscription_token,
+                    s.created_at,
+                    s.expires_at,
+                    s.tariff_id,
+                    s.is_active,
+                    s.last_updated_at,
+                    s.notified,
+                    t.name AS tariff_name,
+                    COALESCE(vk.v2ray_count, 0) AS keys_count,
+                    s.traffic_limit_mb,
+                    s.purchase_notification_sent
+                FROM subscriptions s
+                LEFT JOIN tariffs t ON s.tariff_id = t.id
+                LEFT JOIN (
+                    SELECT subscription_id, COUNT(*) AS v2ray_count
+                    FROM v2ray_keys
+                    GROUP BY subscription_id
+                ) vk ON vk.subscription_id = s.id
+                WHERE s.id = ?
+                """,
+                (subscription_id,),
+            ) as cursor:
+                return await cursor.fetchone()
 
     def get_subscription_keys_list(self, subscription_id: int) -> List[Tuple]:
         """Получить список всех ключей подписки с информацией о серверах"""

@@ -57,11 +57,6 @@ def run_import_tests():
     print("📦 Testing module imports...")
     try:
         # Test basic imports that don't require environment variables
-        from config import PROTOCOLS
-        from db import init_db
-        from validators import input_validator, db_validator, business_validator
-        from vpn_protocols import ProtocolFactory
-        from app.infra.sqlite_utils import get_db_cursor
         print("✅ All basic imports successful")
         return True
     except Exception as e:

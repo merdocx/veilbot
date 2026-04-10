@@ -1,7 +1,6 @@
 """
 Unit тесты для bot/services/tariff_service.py
 """
-import pytest
 from bot.services.tariff_service import get_tariff_by_name_and_price
 
 

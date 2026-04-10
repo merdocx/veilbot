@@ -4,7 +4,6 @@
 Этот модуль обеспечивает плавный переход от старого кода к новому модулю.
 """
 
-import asyncio
 import logging
 from typing import Optional, Tuple, Dict, Any
 

@@ -1,7 +1,5 @@
 import asyncio
 import aiohttp
-import uuid
-import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional

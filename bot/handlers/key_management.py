@@ -1,16 +1,14 @@
 """
 Обработчики управления ключами (reissue, protocol change, country change)
 """
-import asyncio
 import time
 import logging
-from typing import Dict, Any, Callable, List, Optional
+from typing import Dict, Any, Callable, List
 from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from config import PROTOCOLS, ADMIN_ID
 from app.infra.sqlite_utils import get_db_cursor
-from bot.keyboards import get_main_menu, get_country_menu, get_countries_by_protocol, get_help_keyboard
-from bot.utils import format_key_message_unified
+from bot.keyboards import get_main_menu, get_countries_by_protocol, get_help_keyboard
 from bot_error_handler import BotErrorHandler
 from bot_rate_limiter import rate_limit
 
@@ -432,7 +430,7 @@ def register_key_management_handlers(
             await callback_query.answer("Ошибка: неверный формат данных")
             return
         
-        key_type = parts[2]
+        parts[2]
         key_id = int(parts[3])
         
         with get_db_cursor() as cursor:

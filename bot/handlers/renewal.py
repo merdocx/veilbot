@@ -2,7 +2,6 @@
 Обработчики продления ключей
 """
 import time
-import logging
 from aiogram import Dispatcher, types
 from config import PROTOCOLS
 from app.infra.sqlite_utils import get_db_cursor
@@ -95,7 +94,7 @@ def register_renewal_handlers(
         tariff = state.get("tariff")
         email = state.get("email")
         protocol = state.get("protocol", "v2ray")
-        last_country = state.get("last_country")
+        state.get("last_country")
         
         if not tariff:
             await message.answer("Ошибка: данные тарифа не найдены. Попробуйте еще раз.", reply_markup=get_main_menu(user_id))

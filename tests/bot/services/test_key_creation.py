@@ -1,8 +1,6 @@
 """
 Unit тесты для bot/services/key_creation.py
 """
-import pytest
-from unittest.mock import MagicMock, patch
 from bot.services.key_creation import select_available_server_by_protocol
 
 

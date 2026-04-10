@@ -7,19 +7,17 @@ import base64
 import time
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any, List, NamedTuple
+from typing import Optional, Dict, Any, NamedTuple
 
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.infra.cache import SimpleCache
 from vpn_protocols import (
-    V2RayProtocol,
     ProtocolFactory,
     normalize_vless_host,
     add_server_name_to_vless,
     remove_fragment_from_vless,
 )
 from app.infra.sqlite_utils import get_db_cursor, retry_db_operation
-from app.infra.foreign_keys import safe_foreign_keys_off
 from config import SUPPORT_USERNAME
 
 try:
@@ -542,7 +540,6 @@ class SubscriptionService:
 
         expiry_dt = datetime.fromtimestamp(expires_at)
         expiry_label = expiry_dt.strftime("%d.%m.%Y %H:%M")
-        tariff_display = tariff_name or "Subscription"
         traffic_label = _format_traffic_label(traffic_usage_bytes, traffic_limit_bytes)
         support_contact = _normalize_support_username()
         subscription_title = SUBSCRIPTION_DISPLAY_NAME

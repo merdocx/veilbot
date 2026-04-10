@@ -4,7 +4,6 @@
 Проблема: ключи не создались, подписки неактивны
 """
 import sqlite3
-import os
 from datetime import datetime
 
 db_path = '/root/veilbot/vpn.db'

@@ -14,7 +14,6 @@ from datetime import datetime
 from io import StringIO
 import csv
 from typing import Any, Dict, Optional
-from starlette import status
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.repositories.key_repository import KeyRepository
@@ -204,8 +203,6 @@ def _build_key_view_model(row: list[Any] | tuple[Any, ...], now_ts: int) -> Dict
     user_id_idx = 7 if is_extended else None
     limit_idx = 10 if is_extended else 9
     usage_idx = 13 if row_len > 13 else None
-    over_limit_idx = 14 if row_len > 14 else None
-    notified_idx = 15 if row_len > 15 else None
     # traffic_raw используем из usage_idx (traffic_usage_bytes), а не отдельный столбец
     traffic_raw_idx = usage_idx  # Используем traffic_usage_bytes как raw значение
     subscription_id_idx = 16 if row_len > 16 else None

@@ -8,7 +8,7 @@ import asyncio
 import sys
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 # Добавляем корневую директорию в путь
 root_dir = Path(__file__).parent.parent
@@ -72,14 +72,14 @@ async def delete_user_subscription(user_id: int) -> None:
         subscription_id, sub_user_id, token, created_at, expires_at, tariff_id, is_active, last_updated_at, notified = subscription
     else:
         subscription_id = subscription["id"]
-        sub_user_id = subscription["user_id"]
+        subscription["user_id"]
         token = subscription["subscription_token"]
-        created_at = subscription["created_at"]
-        expires_at = subscription["expires_at"]
-        tariff_id = subscription["tariff_id"]
+        subscription["created_at"]
+        subscription["expires_at"]
+        subscription["tariff_id"]
         is_active = subscription["is_active"]
-        last_updated_at = subscription.get("last_updated_at")
-        notified = subscription.get("notified", 0)
+        subscription.get("last_updated_at")
+        subscription.get("notified", 0)
     
     logger.info(f"Найдена подписка ID={subscription_id}, токен={token[:8]}..., активна={is_active}")
     

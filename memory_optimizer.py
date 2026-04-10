@@ -3,8 +3,6 @@
 """
 
 import gc
-import sys
-import weakref
 from typing import Any, Dict, Optional, Callable
 from functools import wraps
 import logging

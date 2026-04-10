@@ -371,7 +371,7 @@ async def health_check():
                 protocol = (protocol or "v2ray").lower()
                 
                 try:
-                    check_start = time.time()
+                    time.time()
                     if protocol == "v2ray" and api_url:
                         # Проверяем V2Ray API
                         async with session.get(f"{api_url}/", ssl=False) as resp:

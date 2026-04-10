@@ -4,15 +4,11 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
-import json
 import time
 
 from payments.models.payment import Payment, PaymentStatus
 from payments.services.subscription_purchase_service import SubscriptionPurchaseService
 from payments.repositories.payment_repository import PaymentRepository
-from app.repositories.subscription_repository import SubscriptionRepository
-from app.repositories.tariff_repository import TariffRepository
 
 
 @pytest.mark.asyncio

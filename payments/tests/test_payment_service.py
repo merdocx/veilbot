@@ -1,11 +1,7 @@
 import pytest
-import asyncio
-from unittest.mock import Mock, AsyncMock
-from datetime import datetime
 
 from ..services.payment_service import PaymentService
 from ..models.payment import Payment, PaymentStatus
-from ..models.enums import PaymentCurrency, PaymentProvider
 
 
 class MockPaymentRepository:

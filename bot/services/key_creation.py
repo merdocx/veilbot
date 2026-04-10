@@ -7,7 +7,6 @@ import time
 import logging
 import sqlite3
 import secrets
-from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, Callable
 from aiogram import types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -1070,7 +1069,7 @@ async def wait_for_payment_with_protocol(
             PAYMENT_MODULE_AVAILABLE = False
     
     # Получаем user_states и main_menu с fallback
-    user_states = getattr(bot_module, 'user_states', {})
+    getattr(bot_module, 'user_states', {})
     main_menu = getattr(bot_module, 'main_menu', None)
     if main_menu is None:
         # Если main_menu не найден, получаем через функцию
@@ -1085,7 +1084,7 @@ async def wait_for_payment_with_protocol(
             main_menu.add(KeyboardButton("Получить доступ"))
     
     from memory_optimizer import get_payment_service
-    bot = get_bot_instance()
+    get_bot_instance()
     
     if extend_existing_key is None:
         extend_existing_key = getattr(bot_module, 'extend_existing_key', None)
@@ -1476,7 +1475,7 @@ async def wait_for_crypto_payment(
     bot_module = importlib.import_module('bot')
     
     # Получаем user_states и main_menu с fallback
-    user_states = getattr(bot_module, 'user_states', {})
+    getattr(bot_module, 'user_states', {})
     main_menu = getattr(bot_module, 'main_menu', None)
     if main_menu is None:
         # Если main_menu не найден, получаем через функцию
@@ -1491,7 +1490,7 @@ async def wait_for_crypto_payment(
             main_menu.add(KeyboardButton("Получить доступ"))
     
     from memory_optimizer import get_payment_service
-    bot = get_bot_instance()
+    get_bot_instance()
     
     if extend_existing_key is None:
         extend_existing_key = getattr(bot_module, 'extend_existing_key', None)

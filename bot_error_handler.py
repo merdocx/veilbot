@@ -5,8 +5,6 @@ import logging
 import traceback
 from typing import Optional
 from aiogram import types
-from aiogram.dispatcher import Dispatcher
-from config import ADMIN_ID
 from bot.services.admin_notifications import (
     AdminNotificationCategory,
     format_bot_error_markdown,

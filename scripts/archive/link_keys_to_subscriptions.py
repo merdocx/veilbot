@@ -112,7 +112,7 @@ def link_keys(dry_run: bool = False) -> None:
         total_v2ray = 0
         processed_users = 0
 
-        now = int(time.time())
+        int(time.time())
 
         for user_id, sub_info in mapping.items():
             outline_count, v2ray_count = update_keys_for_user(

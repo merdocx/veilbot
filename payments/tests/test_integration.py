@@ -5,15 +5,10 @@
 """
 
 import pytest
-import asyncio
 import os
-from datetime import datetime
 
 from ..config import PaymentConfig, initialize_payment_module
-from ..services.payment_service import PaymentService
-from ..repositories.payment_repository import PaymentRepository
 from ..models.payment import Payment, PaymentStatus
-from ..models.enums import PaymentCurrency, PaymentProvider
 
 
 @pytest.mark.asyncio

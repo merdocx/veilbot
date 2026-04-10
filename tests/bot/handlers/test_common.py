@@ -3,7 +3,6 @@
 """
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
-from aiogram import types
 from bot.handlers.common import (
     handle_invite_friend,
     handle_help,
@@ -83,7 +82,6 @@ class TestCommonHandlers:
         import bot.handlers.common as common_module
         # Мокируем метод exists() чтобы он всегда возвращал False
         # Это гарантирует, что код пойдет по ветке без изображения
-        original_path = common_module.APPLE_TV_GUIDE_IMAGE_PATH
         mock_path = MagicMock()
         mock_path.exists = MagicMock(return_value=False)
         monkeypatch.setattr(common_module, "APPLE_TV_GUIDE_IMAGE_PATH", mock_path)

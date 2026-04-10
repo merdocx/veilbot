@@ -1,5 +1,4 @@
 """Тесты для create_new_key_flow_with_protocol"""
-import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock

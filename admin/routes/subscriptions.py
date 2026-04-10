@@ -225,7 +225,7 @@ async def subscriptions_page(
         log_admin_action(request, "SUBSCRIPTIONS_PAGE_ACCESS")
 
         subscription_repo = SubscriptionRepository(DB_PATH)
-        user_repo = UserRepository(DB_PATH)
+        UserRepository(DB_PATH)
         server_repo = ServerRepository(DB_PATH)
 
         # Нормализуем параметр поиска
@@ -789,7 +789,7 @@ async def delete_subscription_api(request: Request, subscription_id: int):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     
     try:
-        result = await _delete_subscription_internal(request, subscription_id)
+        await _delete_subscription_internal(request, subscription_id)
         now_ts = int(time.time())
         stats = _compute_subscription_stats(DB_PATH, now_ts)
         return JSONResponse({
@@ -1087,12 +1087,10 @@ def _calculate_subscription_discrepancies(db_path: str) -> list:
       В этом случае используется duration_sec текущего тарифа подписки для всех платежей.
     """
     from app.repositories.tariff_repository import TariffRepository
-    from payments.utils.renewal_detector import DEFAULT_GRACE_PERIOD
     
     VIP_EXPIRES_AT = 4102434000  # 01.01.2100
     REFERRAL_BONUS_DURATION = 30 * 24 * 3600  # 30 дней
     now = int(time.time())
-    FREE_V2RAY_TARIFF_ID = settings.FREE_V2RAY_TARIFF_ID
     
     discrepancies = []
     

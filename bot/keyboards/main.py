@@ -2,7 +2,6 @@
 Клавиатуры для бота
 """
 import asyncio
-import time
 from typing import Optional
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from app.infra.sqlite_utils import get_db_cursor

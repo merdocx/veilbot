@@ -1,23 +1,14 @@
 import asyncio
-import time
 import sqlite3
-import re
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Any, List, Tuple
-from app.logging_config import setup_logging
-from aiogram import Bot, Dispatcher, types, executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from config import TELEGRAM_BOT_TOKEN, PROTOCOLS, validate_configuration, ADMIN_ID
-from db import init_db
+from typing import Optional, Dict, Any
+from aiogram import types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from config import PROTOCOLS
 from app.infra.sqlite_utils import get_db_cursor
-from vpn_protocols import format_duration, ProtocolFactory, get_protocol_instructions
 from bot.keyboards import (
-    get_main_menu, get_help_keyboard, get_cancel_keyboard,
-    get_protocol_selection_menu, get_tariff_menu, get_payment_method_keyboard,
-    get_country_menu, get_countries, get_countries_by_protocol, invalidate_menu_cache
+    get_main_menu
 )
-from bot.utils import format_key_message, format_key_message_unified, format_key_message_with_protocol, safe_send_message
 from bot.services.key_creation import (
     select_available_server_by_protocol,
     create_new_key_flow_with_protocol,
@@ -25,34 +16,10 @@ from bot.services.key_creation import (
     wait_for_crypto_payment
 )
 from payments.models.enums import PaymentProvider, PaymentMethod
-from bot.services.key_management import (
-    extend_existing_key,
-    extend_existing_key_with_fallback,
-    delete_old_key_after_success,
-    switch_protocol_and_extend,
-    change_country_and_extend,
-    change_protocol_for_key,
-    change_country_for_key,
-    reissue_specific_key
-)
-from bot.services.free_tariff import (
-    handle_free_tariff,
-    handle_free_tariff_with_protocol,
-    check_free_tariff_limit,
-    check_free_tariff_limit_by_protocol,
-    check_free_tariff_limit_by_protocol_and_country,
-    record_free_key_usage
-)
-from bot.services.tariff_service import (
-    get_tariff_by_name_and_price,
-    handle_payment_method_selection,
-    handle_paid_tariff_with_protocol
-)
 
 # Оптимизация памяти
 from memory_optimizer import (
-    get_payment_service, get_vpn_service, get_security_logger,
-    optimize_memory, get_memory_stats, log_memory_usage
+    get_payment_service, get_security_logger
 )
 
 # Ленивые импорты для тяжелых модулей
@@ -61,10 +28,6 @@ VPN_PROTOCOLS_AVAILABLE = None   # Будет определено при пер
 SECURITY_LOGGER_AVAILABLE = None # Будет определено при первом использовании
 
 # Импорты валидаторов (легкие модули)
-from validators import input_validator, db_validator, business_validator, validate_user_input, sanitize_user_input, ValidationError, is_valid_email
-from bot_error_handler import BotErrorHandler, setup_error_handler
-from bot_rate_limiter import rate_limit
-from app.infra.foreign_keys import safe_foreign_keys_off
 
 # Security configuration
 SECURITY_HEADERS = {
@@ -77,7 +40,7 @@ SECURITY_HEADERS = {
 # Инициализация bot и dp перенесена в bot/main.py
 # Эти переменные будут созданы при запуске через bot/main.py
 # Для обратной совместимости импортируем из bot.core.state
-from bot.core.state import get_user_states, get_bot_instance, get_dp_instance
+from bot.core.state import get_user_states
 
 # Глобальные переменные для обратной совместимости с декораторами
 bot = None  # Будет установлен в bot/main.py через set_bot_instance()
@@ -96,12 +59,6 @@ user_states: Dict[int, Dict[str, Any]] = get_user_states()  # user_id -> {"state
 # Импортируется оттуда (см. импорты выше)
 
 # Импортируем и регистрируем handlers
-from bot.handlers.start import register_start_handler
-from bot.handlers.keys import register_keys_handler
-from bot.handlers.purchase import register_purchase_handlers
-from bot.handlers.renewal import register_renewal_handlers
-from bot.handlers.common import register_common_handlers
-from bot.handlers.key_management import register_key_management_handlers
 
 # Функции управления ключами определены в bot.py (строки 2576+)
 # Они будут переданы в register_key_management_handlers после их определения
@@ -485,11 +442,6 @@ async def create_payment_with_email_and_protocol(
 
 # Фоновые задачи перенесены в bot/services/background_tasks.py
 # Импортируем их оттуда
-from bot.services.background_tasks import (
-    auto_delete_expired_keys,
-    check_key_availability,
-    process_pending_paid_payments
-)
 
 # Старые реализации фоновых задач удалены (было ~350 строк)
 # Удалены функции:

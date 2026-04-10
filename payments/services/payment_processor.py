@@ -4,7 +4,7 @@
 """
 import logging
 from typing import Tuple, Optional
-from ..models.payment import Payment, PaymentStatus
+from ..models.payment import PaymentStatus
 from ..repositories.payment_repository import PaymentRepository
 from .subscription_purchase_service import SubscriptionPurchaseService
 

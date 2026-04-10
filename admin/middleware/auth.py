@@ -1,9 +1,7 @@
 """
 Модуль авторизации и аутентификации для админки
 """
-from fastapi import Request, HTTPException, Depends
-from fastapi.responses import RedirectResponse
-from functools import wraps
+from fastapi import Request, HTTPException
 import logging
 
 logger = logging.getLogger(__name__)

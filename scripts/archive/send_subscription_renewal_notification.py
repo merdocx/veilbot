@@ -49,7 +49,7 @@ async def send_renewal_notification(user_id: int):
                 (subscription_id,)
             )
             row = cursor.fetchone()
-            purchase_notification_sent = row[0] if row else 0
+            row[0] if row else 0
         
         # Определяем, было ли это продление или создание
         # Если last_updated_at > created_at, то это продление

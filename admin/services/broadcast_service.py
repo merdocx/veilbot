@@ -1,9 +1,8 @@
 """
 Сервис для рассылки сообщений пользователям бота
 """
-import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from aiogram import Bot
 from config import TELEGRAM_BOT_TOKEN, ADMIN_ID

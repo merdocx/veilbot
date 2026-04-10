@@ -3,7 +3,6 @@
 """
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
-from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
 import json
@@ -13,7 +12,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from payments.config import get_webhook_service
 from app.settings import settings
 from bot.core import get_bot_instance
-from bot.utils.messaging import safe_send_message
 from app.infra.sqlite_utils import open_connection
 
 from ..middleware.audit import log_admin_action
@@ -33,7 +31,6 @@ async def yookassa_webhook(request: Request):
     client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
         request.client.host if request.client else ""
     )
-    status_code = 200
     
     try:
         data = json.loads(body)
@@ -69,10 +66,8 @@ async def yookassa_webhook(request: Request):
 
         if processed:
             return JSONResponse({"status": "ok"})
-        status_code = 400
         return JSONResponse({"status": "error", "processed": False}, status_code=400)
     except Exception as e:
-        status_code = 500
         logging.error(f"[YOOKASSA_WEBHOOK] Error: {e}")
         # Пытаемся залогировать даже при ошибке парсинга
         try:
@@ -162,7 +157,6 @@ async def cryptobot_webhook(request: Request):
     client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
         request.client.host if request.client else ""
     )
-    status_code = 200
     
     try:
         data = json.loads(body)
@@ -206,7 +200,7 @@ async def cryptobot_webhook(request: Request):
             try:
                 # Получаем платеж из БД (проверяем и pending, и paid статусы)
                 from payments.config import get_payment_service
-                payment_service = get_payment_service()
+                get_payment_service()
                 
                 with open_connection(DB_PATH) as conn:
                     c = conn.cursor()
@@ -317,7 +311,6 @@ async def cryptobot_webhook(request: Request):
                 
                 # Создаем ключ для пользователя
                 import importlib.util
-                import time
                 _root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 _bot_file = os.path.join(_root_dir, 'bot.py')
                 spec = importlib.util.spec_from_file_location("bot_module", _bot_file)
@@ -329,12 +322,8 @@ async def cryptobot_webhook(request: Request):
                 # Импортируем функцию обработки реферальных бонусов
                 from bot.services.key_creation import process_referral_bonus
                 # Получаем bot через централизованный модуль
-                bot = get_bot_instance()
+                get_bot_instance()
                 from app.infra.sqlite_utils import get_db_cursor
-                from bot.utils.formatters import format_key_message_unified
-                from app.repositories.server_repository import ServerRepository
-                from app.repositories.key_repository import KeyRepository
-                from vpn_protocols import ProtocolFactory
                 
                 with get_db_cursor(commit=True) as cursor:
                     cursor.execute(
@@ -416,7 +405,6 @@ async def cryptobot_webhook(request: Request):
             return JSONResponse({"status": "ok", "processed": False})
             
     except Exception as e:
-        status_code = 500
         logging.error(f"[CRYPTOBOT_WEBHOOK] Error: {e}")
         try:
             with open_connection(DB_PATH) as conn:

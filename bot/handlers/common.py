@@ -8,7 +8,7 @@ from typing import Dict, Optional, Set
 from pathlib import Path
 from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
-from config import ADMIN_ID, SUPPORT_USERNAME
+from config import ADMIN_ID
 from app.infra.sqlite_utils import get_db_cursor
 from bot.core import get_bot_instance
 from bot.keyboards import get_main_menu, get_help_keyboard
@@ -64,7 +64,7 @@ async def handle_help(message: types.Message) -> None:
 
 async def handle_support(message: types.Message) -> None:
     """Обработчик кнопки связи с поддержкой"""
-    help_keyboard = get_help_keyboard()
+    get_help_keyboard()
     
     # Используем @vee_support как контакт поддержки
     username = "vee_support"
@@ -467,7 +467,7 @@ def register_common_handlers(dp: Dispatcher, user_states: dict) -> None:
         await handle_support(message)
     
     # Регистрация обработчика возврата из помощи
-    help_keyboard = get_help_keyboard()
+    get_help_keyboard()
     @dp.message_handler(lambda m: m.text == "🔙 Назад" and m.from_user.id in help_menu_users)
     async def help_back_handler(message: types.Message):
         await handle_help_back(message)

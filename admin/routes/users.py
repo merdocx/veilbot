@@ -3,7 +3,6 @@
 """
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
-from starlette.status import HTTP_303_SEE_OTHER
 import sys
 import os
 import time
@@ -11,7 +10,6 @@ import time
 _root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _root_dir)
 from app.repositories.user_repository import UserRepository
-from app.repositories.key_repository import KeyRepository
 from app.settings import settings
 from app.infra.sqlite_utils import open_connection
 from bot.core import get_bot_instance
@@ -72,7 +70,7 @@ async def users_page(request: Request, page: int = 1, limit: int = 50, q: str | 
     rows = repo.list_users(query=q, limit=limit, offset=offset, vip_filter=vip_filter)
     
     # Получаем бота для получения username пользователей
-    bot = get_bot()
+    get_bot()
     
     user_list = []
     for row in rows:
@@ -250,7 +248,7 @@ async def extend_key(
             c.execute("SELECT user_id, subscription_id FROM v2ray_keys WHERE id = ?", (key_id,))
             row = c.fetchone()
             if row:
-                user_id = row[0]
+                row[0]
                 subscription_id = row[1]
                 if subscription_id:
                     c.execute("SELECT expires_at FROM subscriptions WHERE id = ?", (subscription_id,))
@@ -279,7 +277,6 @@ async def update_key_expiry(request: Request, key_id: int):
         return JSONResponse({"error": "Not authorized"}, status_code=403)
     
     try:
-        from fastapi import Body
         data = await request.json()
         expiry_timestamp = data.get("expiry_timestamp")
         
@@ -344,7 +341,6 @@ async def toggle_user_vip(request: Request, user_id: int, csrf_token: str = Form
         # Если установлен VIP, обновляем все активные подписки пользователя
         if new_vip_status:
             from app.repositories.subscription_repository import SubscriptionRepository
-            import time
             sub_repo = SubscriptionRepository(DB_PATH)
             VIP_EXPIRES_AT = 4102434000  # 01.01.2100 00:00 UTC
             VIP_TRAFFIC_LIMIT_MB = 0  # 0 = безлимит

@@ -6,7 +6,7 @@
 import asyncio
 import sys
 import os
-from typing import Optional, Dict, Any, List, Set
+from typing import Optional, Dict, Any, Set
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
@@ -14,7 +14,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from app.infra.sqlite_utils import get_db_cursor
-from vpn_protocols import V2RayProtocol, ProtocolFactory, normalize_vless_host, remove_fragment_from_vless
+from vpn_protocols import ProtocolFactory, normalize_vless_host, remove_fragment_from_vless
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

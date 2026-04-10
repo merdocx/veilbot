@@ -17,6 +17,18 @@ from bot.core.state import (
     get_user_state,
 )
 
+__all__ = [
+    "set_bot_instance",
+    "get_bot_instance",
+    "set_dp_instance",
+    "get_dp_instance",
+    "get_user_states",
+    "clear_user_state",
+    "set_user_state",
+    "get_user_state",
+    "is_bot_registered",
+]
+
 # Для обратной совместимости
 def is_bot_registered() -> bool:
     """Проверяет, зарегистрирован ли bot instance"""

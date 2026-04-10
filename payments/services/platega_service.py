@@ -1,7 +1,6 @@
 import logging
 import aiohttp
 from typing import Optional, Dict, Any, Tuple
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 

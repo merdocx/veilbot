@@ -164,13 +164,12 @@ def extend_existing_key(
         tariff_id: ID тарифа (опционально, для обновления)
     """
     now = int(time.time())
-    tariff_limit_mb: Optional[int] = None
     if tariff_id:
         try:
             cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff_id,))
             row = cursor.fetchone()
             if row and row[0] is not None:
-                tariff_limit_mb = int(row[0])
+                int(row[0])
         except Exception as e:  # noqa: BLE001
             logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff_id}: {e}")
     # Получаем subscription_id для обновления подписки
@@ -506,7 +505,7 @@ async def switch_protocol_and_extend(
         email: Email пользователя
         tariff: Словарь с данными тарифа
     """
-    bot = get_bot_instance()
+    get_bot_instance()
     main_menu = get_main_menu()
     
     now = int(time.time())
@@ -521,7 +520,7 @@ async def switch_protocol_and_extend(
     
     # Общее время = оставшееся + новое купленное
     total_duration = remaining + additional_duration
-    new_expiry = now + total_duration
+    now + total_duration
     
     old_server_id = old_key_data['server_id']
     old_email = old_key_data.get('email') or email
@@ -744,7 +743,7 @@ async def change_country_and_extend(
         tariff: Словарь с данными тарифа
         reset_usage: Сбрасывать ли учёт трафика после переноса (используется при продлении)
     """
-    bot = get_bot_instance()
+    get_bot_instance()
     main_menu = get_main_menu()
     
     now = int(time.time())
@@ -778,7 +777,7 @@ async def change_country_and_extend(
     
     # Общее время = оставшееся + новое купленное
     total_duration = remaining + additional_duration
-    new_expiry = now + total_duration
+    now + total_duration
     
     old_server_id = key_data['server_id']
     old_country = key_data['country']
@@ -998,7 +997,7 @@ async def change_protocol_for_key(
             - expiry_at: Время истечения ключа
             - server_id: ID сервера
     """
-    bot = get_bot_instance()
+    get_bot_instance()
     main_menu = get_main_menu()
     
     await message.answer(

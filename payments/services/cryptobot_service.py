@@ -1,9 +1,7 @@
-import asyncio
 import logging
 import json
 import aiohttp
 from typing import Optional, Tuple, Dict, Any
-from datetime import datetime
 
 from app.settings import settings
 

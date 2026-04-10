@@ -27,7 +27,7 @@ DATABASE_PATH = settings.DATABASE_PATH
 def _fetch_dashboard_stats_readonly():
     """Только SELECT — не держит write-lock, быстрее при конкуренции с ботом. Для отдачи страницы."""
     now = int(time.time())
-    today = time.strftime("%Y-%m-%d")
+    time.strftime("%Y-%m-%d")
     with open_connection(DATABASE_PATH) as conn:
         c = conn.cursor()
         c.execute("""

@@ -1,9 +1,7 @@
-import asyncio
-from dataclasses import replace
 
 import pytest
 
-from payments.models.payment import Payment, PaymentStatus, PaymentProvider, PaymentCurrency
+from payments.models.payment import Payment, PaymentStatus
 from payments.services.subscription_purchase_service import SubscriptionPurchaseService
 
 

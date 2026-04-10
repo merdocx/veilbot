@@ -6,7 +6,7 @@
 import asyncio
 import sys
 import os
-from typing import Optional, Dict, Any, List, Set
+from typing import Optional, Dict, Any, Set
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))

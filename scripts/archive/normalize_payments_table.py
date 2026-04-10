@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 
 CANON_COLS: List[Tuple[str, str]] = [

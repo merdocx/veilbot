@@ -4,9 +4,8 @@
 
 import logging
 import json
-import hashlib
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from dataclasses import dataclass, asdict
 import os
 from pathlib import Path

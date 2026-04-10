@@ -3,9 +3,8 @@
 Полный анализ неиспользуемых, устаревших и дублирующихся файлов
 """
 import os
-import sys
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import List, Set, Tuple
 import re
 
 PROJECT_ROOT = Path(__file__).parent.parent

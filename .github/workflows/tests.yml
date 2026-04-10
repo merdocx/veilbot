@@ -42,8 +42,7 @@ jobs:
       run: |
         ruff check --respect-gitignore .
 
-    - name: Ruff unused imports and variables (informational)
-      continue-on-error: true
+    - name: Ruff unused imports and variables (F401, F841)
       run: |
         ruff check --respect-gitignore . --select F401,F841
 

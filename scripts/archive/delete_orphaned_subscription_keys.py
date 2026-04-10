@@ -5,7 +5,7 @@
 import asyncio
 import sys
 import os
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
@@ -69,7 +69,7 @@ async def delete_orphaned_subscription_keys(dry_run: bool = False) -> Dict[str, 
         v2ray_uuid = key_row[3]
         user_id = key_row[4]
         email = key_row[5]
-        expiry_at = key_row[6]
+        key_row[6]
         server_name = key_row[7]
         api_url = key_row[8]
         api_key = key_row[9]

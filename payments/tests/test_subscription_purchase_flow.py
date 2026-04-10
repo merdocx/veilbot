@@ -2,15 +2,13 @@
 Тесты для флоу покупки подписки
 """
 import pytest
-import asyncio
 from contextlib import contextmanager
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch, MagicMock
+from datetime import datetime, timezone
 import time
 
 from ..services.payment_service import PaymentService
 from ..models.payment import Payment, PaymentStatus
-from ..models.enums import PaymentCurrency, PaymentProvider
 
 
 class MockPaymentRepository:
@@ -222,7 +220,7 @@ class TestSubscriptionPurchaseFlow:
         user_id = 12345
         tariff_id = 14
         payment_id = "test_payment_subscription_2"
-        now_ts = int(time.time())
+        int(time.time())
         
         payment = Payment(
             payment_id=payment_id,

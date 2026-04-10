@@ -28,7 +28,6 @@ from bot.services.background_tasks import (
     check_key_availability,
     process_pending_paid_payments,
     monitor_subscription_traffic_limits,
-    fix_payments_without_subscription_id,
 )
 
 # Импортируем функции и переменные из bot.py
@@ -241,7 +240,7 @@ def main():
         
         # Настройка централизованной обработки ошибок
         logger.info("Настройка обработчика ошибок...")
-        error_handler = setup_error_handler(dp, bot)
+        setup_error_handler(dp, bot)
         logger.info("Обработчик ошибок настроен")
         
         # Запуск бота с обработкой ошибок

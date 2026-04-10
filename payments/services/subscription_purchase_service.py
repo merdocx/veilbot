@@ -457,9 +457,8 @@ class SubscriptionPurchaseService:
                         f"keys exist ({keys_count}). This is a retry webhook. Skipping processing."
                     )
                     # Платеж уже обработан, подписка уже создана/продлена, ключи созданы
-                    # Не нужно повторять обработку, только отправить уведомление (если не отправлено)
-                    # TODO: Реализовать send_notification_only_if_needed
-                    
+                    # Повторная обработка не нужна; пользователю — только если purchase_notification_sent ещё 0
+
                     # КРИТИЧНО: Обновляем статус на completed, если он еще не обновлен
                     # Это важно для retry webhook'ов, которые могут прийти до обновления статуса
                     update_success = await self.payment_repo.try_update_status(
@@ -498,6 +497,29 @@ class SubscriptionPurchaseService:
                             expires_at_retry,
                             is_new=False
                         )
+                        purchase_notif_sent = (
+                            subscription_row_retry[12] if len(subscription_row_retry) > 12 else 1
+                        )
+                        if purchase_notif_sent != 1:
+                            try:
+                                sent = await self._send_universal_notification(
+                                    payment,
+                                    subscription_row_retry,
+                                    tariff,
+                                    expires_at_retry,
+                                    False,
+                                    subscription_id_retry,
+                                )
+                                if sent:
+                                    await self.subscription_repo.mark_purchase_notification_sent_async(
+                                        subscription_id_retry
+                                    )
+                            except Exception as user_notif_err:
+                                logger.warning(
+                                    f"[SUBSCRIPTION] Retry webhook: optional user notification failed "
+                                    f"for payment {payment_id}: {user_notif_err}",
+                                    exc_info=True,
+                                )
                     
                     subscription_finalize_completed = True
                     return True, None
@@ -576,7 +598,7 @@ class SubscriptionPurchaseService:
             # 3. Уникальные ограничения на подписки (если нужны)
             
             now = int(time.time())
-            grace_threshold = grace_threshold_ts(now, DEFAULT_GRACE_PERIOD)
+            grace_threshold_ts(now, DEFAULT_GRACE_PERIOD)
             
             # НОВАЯ УПРОЩЕННАЯ ЛОГИКА: Определение покупки/продления (1 проверка)
             # Получаем или создаем подписку
@@ -2114,7 +2136,7 @@ class SubscriptionPurchaseService:
                                 return True, None  # Ключ уже существует, считаем успехом
                         
                         # Вставляем ключ только если его еще нет
-                        cursor = await conn.execute(
+                        await conn.execute(
                             """
                             INSERT INTO v2ray_keys 
                             (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)

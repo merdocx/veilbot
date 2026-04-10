@@ -10,7 +10,6 @@ PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from bot.services.background_tasks import sync_subscription_keys_with_active_servers
 
 async def main():
     """Запустить синхронизацию вручную"""
@@ -33,7 +32,7 @@ async def main():
         )
         import logging
         
-        logger = logging.getLogger(__name__)
+        logging.getLogger(__name__)
         now = int(time.time())
         
         # Получаем все активные подписки

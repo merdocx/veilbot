@@ -13,10 +13,9 @@ from typing import List, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aiogram import Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-from app.settings import settings
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.infra.sqlite_utils import get_db_cursor
-from bot.core import set_bot_instance, get_bot_instance
+from bot.core import set_bot_instance
 from bot.utils.messaging import safe_send_message
 
 logging.basicConfig(

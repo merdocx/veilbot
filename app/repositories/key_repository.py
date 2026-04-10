@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
-import time
 from typing import List, Tuple
 from app.settings import settings
 from app.infra.sqlite_utils import open_connection
@@ -240,7 +238,7 @@ class KeyRepository:
             'email': 6,
             'tariff_name': 7,
         }
-        order_idx = sort_map.get(sort_by.lower(), 3)
+        sort_map.get(sort_by.lower(), 3)
         order_dir = 'ASC' if str(sort_order).upper() == 'ASC' else 'DESC'
 
         with open_connection(self.db_path) as conn:

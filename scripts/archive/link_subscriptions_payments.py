@@ -12,7 +12,7 @@ from typing import List, Tuple, Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.settings import settings
-from app.infra.sqlite_utils import open_connection, open_async_connection
+from app.infra.sqlite_utils import open_connection
 from payments.repositories.payment_repository import PaymentRepository
 
 

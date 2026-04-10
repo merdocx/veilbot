@@ -7,8 +7,15 @@
 
 ## [Unreleased]
 
+### Добавлено
+- `SubscriptionRepository.get_subscription_by_id_async` — асинхронная выборка подписки по id (в т.ч. `purchase_notification_sent`).
+- Повторный webhook: при `purchase_notification_sent = 0` догоняющее пользовательское уведомление (`_send_universal_notification`) и отметка флага.
+
 ### Изменено
-- Очистка репозитория: удалён `copy_to_new_server.py` (секреты в коде); дубликат `docs/archive/compare_keys.py`; неиспользуемый `admin/services/compare_keys_service.py`; каталог `venv.backup*` из дерева; разовые скрипты перенесены в `scripts/archive/`; отчёты в корне — в `docs/archive/incidents/`; в CI добавлен шаг Ruff F401/F841 (informational); обновлён `scripts/analyze_unused_files.py` (обход venv.backup и `.pytest_cache`).
+- Массовая зачистка неиспользуемых импортов и переменных (Ruff F401/F841); `bot.core` — явный `__all__` для реэкспортов.
+- Скрипты `fix_subscription_traffic_after_payment`, `fix_subscriptions_316_322`, `fix_subscriptions_478_479_480` перенесены в `scripts/archive/`; анализ `subscription_255_payment_325` — в `docs/archive/`.
+- Документация: раздел «Секреты в истории Git» в `SECURITY.md`; уточнён RUNBOOK 8.1a.
+- Очистка репозитория (первая волна): удалён `copy_to_new_server.py` (секреты в коде); дубликат `docs/archive/compare_keys.py`; неиспользуемый `admin/services/compare_keys_service.py`; каталог `venv.backup*` из дерева; разовые скрипты перенесены в `scripts/archive/`; отчёты в корне — в `docs/archive/incidents/`; в CI добавлен шаг Ruff F401/F841 (informational); обновлён `scripts/analyze_unused_files.py` (обход venv.backup и `.pytest_cache`).
 
 ## [2.4.43] - 2026-04-10
 

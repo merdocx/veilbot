@@ -4,7 +4,7 @@ import sqlite3
 from typing import Optional, Tuple, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 
-from ..models.payment import Payment, PaymentStatus, PaymentCreate, PaymentFilter
+from ..models.payment import Payment, PaymentStatus, PaymentFilter
 from ..models.enums import PaymentProvider, PaymentCurrency, PaymentMethod
 from ..repositories.payment_repository import PaymentRepository
 from ..services.yookassa_service import YooKassaService
@@ -12,16 +12,10 @@ from ..services.cryptobot_service import CryptoBotService
 from ..services.platega_service import PlategaService
 from app.repositories.tariff_repository import TariffRepository
 from ..utils.validators import PaymentValidators
-from app.repositories.server_repository import ServerRepository
-from app.repositories.key_repository import KeyRepository
-from vpn_protocols import ProtocolFactory
 from app.settings import settings as app_settings
 from app.infra.sqlite_utils import open_connection
 # Импорты из bot.py (используем прямые импорты, чтобы избежать циклических зависимостей)
 # bot будет получен через get_bot() или передан как параметр
-from bot.utils.formatters import format_key_message_unified
-from bot.keyboards import get_main_menu
-from security_logger import log_key_creation
 
 # Получаем bot из глобального контекста bot.py
 def get_bot():

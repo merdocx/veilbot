@@ -850,7 +850,7 @@ def migrate_add_server_cascade_to_keys():
         fk_list = cursor.fetchall()
         needs_rebuild = True
         for fk in fk_list:
-            table, from_col, to_col, on_delete = fk[2], fk[3], fk[4], fk[6]
+            table, from_col, _to_col, on_delete = fk[2], fk[3], fk[4], fk[6]
             if table == 'servers' and from_col == 'server_id':
                 needs_rebuild = (on_delete or '').upper() != 'CASCADE'
                 break
@@ -1691,5 +1691,4 @@ def init_db_with_migrations():
     _run_all_migrations()
 
 if __name__ == "__main__":
-    import time
     init_db_with_migrations()

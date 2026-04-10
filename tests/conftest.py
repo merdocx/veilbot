@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import os
 from typing import Generator
-from unittest.mock import MagicMock, Mock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock
 
 
 @pytest.fixture

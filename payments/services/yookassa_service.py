@@ -1,5 +1,4 @@
 import aiohttp
-import json
 import base64
 import logging
 import asyncio
@@ -7,8 +6,7 @@ from typing import Tuple, Optional, Dict, Any
 from datetime import datetime, timezone
 import os
 
-from ..models.payment import Payment
-from ..models.enums import PaymentStatus, PaymentMethod, PaymentReceiptType, PaymentVATCode, PaymentMode
+from ..models.enums import PaymentReceiptType, PaymentVATCode, PaymentMode
 
 logger = logging.getLogger(__name__)
 

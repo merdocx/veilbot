@@ -6,12 +6,10 @@ import sys
 import os
 import asyncio
 import logging
-from typing import List, Tuple
 
 # Добавляем корневую директорию проекта в путь
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.settings import settings
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import ProtocolFactory, normalize_vless_host, remove_fragment_from_vless
@@ -32,7 +30,7 @@ async def update_subscription_keys_short_ids(dry_run: bool = False, force: bool 
         dry_run: Если True, только показывает что будет обновлено, не изменяет БД
         force: Если True, принудительно обновляет все ключи, даже если они уже имеют правильный short id
     """
-    repo = SubscriptionRepository()
+    SubscriptionRepository()
     
     # Получаем все активные подписки
     with get_db_cursor() as cursor:

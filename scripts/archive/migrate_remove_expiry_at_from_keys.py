@@ -5,7 +5,6 @@
 """
 import sqlite3
 import sys
-import os
 from pathlib import Path
 
 # Добавляем корневую директорию проекта в путь (scripts/archive -> scripts -> корень)
@@ -59,7 +58,7 @@ def migrate():
         print("\n2. Пересоздание таблицы keys без expiry_at...")
         # Получаем текущую структуру
         cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='keys'")
-        old_sql = cursor.fetchone()[0]
+        cursor.fetchone()[0]
         
         # Создаем временную таблицу с новой структурой
         cursor.execute("""

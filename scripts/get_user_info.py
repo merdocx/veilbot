@@ -47,8 +47,8 @@ def get_user_info(user_id: int):
     """Получить полную информацию о пользователе"""
     db_path = settings.DATABASE_PATH
     repo = UserRepository(db_path)
-    key_repo = KeyRepository(db_path)
-    sub_repo = SubscriptionRepository(db_path)
+    KeyRepository(db_path)
+    SubscriptionRepository(db_path)
     pay_repo = PaymentRepository(db_path)
     
     print("=" * 80)

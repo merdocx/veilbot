@@ -2,10 +2,8 @@
 """
 Скрипт для поиска пользователей без ключа на указанном сервере
 """
-import sqlite3
 import sys
 from app.infra.sqlite_utils import get_db_cursor
-from config import DATABASE_PATH
 
 def find_users_without_key_on_server(server_id: int):
     """Найти пользователей без ключа на указанном сервере"""
@@ -32,11 +30,9 @@ def find_users_without_key_on_server(server_id: int):
         
         # Определяем, какая таблица ключей используется
         if protocol == 'v2ray':
-            keys_table = 'v2ray_keys'
-            key_id_field = 'v2ray_uuid'
+            pass
         else:
-            keys_table = 'keys'
-            key_id_field = 'key_id'
+            pass
         
         # Найти пользователей с активными подписками
         now = int(__import__('time').time())

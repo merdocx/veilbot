@@ -1,8 +1,7 @@
 """
 Unit тесты для InputValidator
 """
-import pytest
-from validators import InputValidator, ValidationError
+from validators import InputValidator
 
 
 class TestInputValidator:

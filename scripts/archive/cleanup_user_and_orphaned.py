@@ -12,7 +12,7 @@ import logging
 import time
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 
 # Добавляем корневую директорию в путь
 root_dir = Path(__file__).parent.parent
@@ -200,7 +200,7 @@ async def cleanup_user_data_with_free_key_flag(user_id: int) -> Dict[str, int]:
         v2ray_uuid = key_row["v2ray_uuid"]
         api_url = key_row["api_url"]
         api_key = key_row["api_key"]
-        db_id = key_row["id"]
+        key_row["id"]
         
         if v2ray_uuid and api_url and api_key:
             try:
@@ -245,7 +245,7 @@ async def cleanup_user_data_with_free_key_flag(user_id: int) -> Dict[str, int]:
         key_id = key_row["key_id"]
         api_url = key_row["api_url"]
         cert_sha256 = key_row["cert_sha256"]
-        db_id = key_row["id"]
+        key_row["id"]
         
         if key_id and api_url and cert_sha256:
             try:
@@ -372,7 +372,7 @@ async def cleanup_orphaned_keys_and_subscriptions() -> Dict[str, Any]:
     
     # Проверить каждый сервер
     for server_row in servers:
-        server_id = server_row["id"]
+        server_row["id"]
         server_name = server_row["name"]
         protocol = (server_row["protocol"] or "outline").lower()
         api_url = server_row["api_url"]

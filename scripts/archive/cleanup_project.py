@@ -2,7 +2,6 @@
 """
 Скрипт для очистки проекта от устаревших и неиспользуемых файлов
 """
-import os
 import shutil
 from pathlib import Path
 from datetime import datetime
