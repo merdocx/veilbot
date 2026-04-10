@@ -226,7 +226,7 @@ class SubscriptionPurchaseService:
         """
         Единая точка расчета нового expires_at для покупки/продления.
 
-        - VIP подписки и VIP-пользователи не меняют expires_at.
+        - VIP-пользователь или подписка с «вечным» expires_at (VIP_EXPIRES_AT): возвращаем current_expires_at без изменений.
         - Для новых подписок срок пересчитывается на основе всех платежей.
         - Для продления существующей подписки срок продлевается от max(now, expires_at, paid_at).
         """
@@ -711,7 +711,16 @@ class SubscriptionPurchaseService:
                 # Используем значение из тарифа (может быть 0 для безлимита)
                 traffic_limit_mb = int(traffic_limit_mb)
             
-            if abs(current_expires_at - new_expires_at) > 60:  # Допускаем разницу до 1 минуты
+            # Запись expires_at:
+            # - Любое реальное продление (new > current) — всегда пишем, иначе при разнице < 60 с срок в БД
+            #   не обновлялся, а сброс трафика и уведомления опирались на рассчитанный new_expires_at.
+            # - Уменьшение срока — только если |Δ| > 60 с (крупная коррекция/пересчёт), микро-откат не трогаем.
+            extends_expiry = (not (is_vip or is_vip_subscription)) and new_expires_at > current_expires_at
+            shrinks_expiry_large = (not (is_vip or is_vip_subscription)) and new_expires_at < current_expires_at and (
+                abs(current_expires_at - new_expires_at) > 60
+            )
+
+            if extends_expiry or shrinks_expiry_large:
                 await self._update_subscription_expires_at(
                     subscription_id,
                     new_expires_at,
@@ -719,7 +728,7 @@ class SubscriptionPurchaseService:
                     traffic_limit_mb
                 )
             else:
-                # Даже если expires_at не изменился, обновляем tariff_id и лимит трафика из тарифа (безопасно)
+                # VIP, идемпотентное совпадение new==current или микро-откат < 60 с — только тариф/лимит
                 # ВАЖНО: Обновляем tariff_id, даже если expires_at не изменился
                 async with open_async_connection(self.db_path) as conn:
                     await conn.execute(
