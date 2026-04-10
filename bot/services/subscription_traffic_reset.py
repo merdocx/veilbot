@@ -230,7 +230,7 @@ async def reconcile_subscription_traffic_usage_from_api(subscription_id: int) ->
 
 
 def schedule_traffic_reconcile_after_reset(subscription_id: int) -> None:
-    """Фоновый дожим usage из API после reset с fallback-ключами."""
+    """Фоновый дожим usage из API после reset (fallback baseline или ошибки панели на reset)."""
 
     async def _run() -> None:
         try:
@@ -252,7 +252,7 @@ async def reset_subscription_traffic(
 
     Выполняет:
     1. Получает все ключи подписки с информацией о серверах
-    2. Для каждого ключа: GET ключа по UUID → POST reset traffic
+    2. Для каждого ключа: resolve трафика (GET /keys/{uuid}/traffic по возможности) → POST reset traffic
     3. Обнуляет traffic_usage_bytes в БД для всех ключей подписки
     4. Обнуляет traffic_usage_bytes в таблице subscriptions
 
@@ -395,7 +395,9 @@ async def reset_subscription_traffic(
         keys_total,
     )
 
-    if fallback_keys > 0:
+    # Дожим из API: если baseline ушёл в fallback ИЛИ POST reset на панели не сработал
+    # (иначе счётчик на сервере мог остаться большим — монитор потом покажет «всплеск»).
+    if fallback_keys > 0 or failed_count > 0:
         schedule_traffic_reconcile_after_reset(subscription_id)
 
     # Серверный reset best-effort, но DB reset — источник истины для биллинга/лимитов.
