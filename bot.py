@@ -471,3 +471,15 @@ async def create_payment_with_email_and_protocol(
 
 # Регистрация handlers перенесена в bot/main.py
 # Точка входа перенесена в bot/main.py
+
+# --- Реэкспорты для bot/main.py (load bot.py как bot_module; ruff не видит использования) ---
+from validators import is_valid_email  # noqa: F401
+from bot.services.tariff_service import get_tariff_by_name_and_price  # noqa: F401
+from bot.services.free_tariff import handle_free_tariff_with_protocol  # noqa: F401
+from bot.services.key_management import (  # noqa: F401
+    delete_old_key_after_success,
+    change_protocol_for_key,
+    change_country_for_key,
+    reissue_specific_key,
+)
+
