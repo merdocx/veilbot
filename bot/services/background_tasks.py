@@ -845,7 +845,8 @@ async def monitor_subscription_traffic_limits() -> None:
                         k.subscription_id,
                         IFNULL(s.api_url, '') AS api_url,
                         IFNULL(s.api_key, '') AS api_key,
-                        IFNULL(k.traffic_baseline_bytes, 0) AS traffic_baseline_bytes
+                        IFNULL(k.traffic_baseline_bytes, 0) AS traffic_baseline_bytes,
+                        IFNULL(k.traffic_usage_bytes, 0) AS traffic_usage_bytes
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     JOIN subscriptions sub ON k.subscription_id = sub.id
@@ -885,7 +886,7 @@ async def monitor_subscription_traffic_limits() -> None:
         for key_row in active_keys:
             # В выборке 7 столбцов (включая traffic_baseline_bytes), поэтому распаковываем все,
             # даже если baseline напрямую здесь не используется.
-            key_id, v2ray_uuid, server_id, subscription_id, api_url, api_key, _traffic_baseline_bytes = key_row
+            key_id, v2ray_uuid, server_id, subscription_id, api_url, api_key, _traffic_baseline_bytes, _traffic_usage_bytes = key_row
             if not api_url or not api_key:
                 logging.warning(
                     "[TRAFFIC] Missing API credentials for server %s, skipping key %s",
@@ -975,9 +976,16 @@ async def monitor_subscription_traffic_limits() -> None:
             key_id = key_row[0]
             subscription_id = key_row[3]
             baseline_bytes = key_row[6] if len(key_row) > 6 else 0
-            api_val = usage_map.get(key_id, 0)
+            stored_usage_bytes = key_row[7] if len(key_row) > 7 else 0
+            api_val = usage_map.get(key_id) if key_id in usage_map else None
 
-            effective = _compute_effective_usage(subscription_id, api_val, baseline_bytes)
+            # ВАЖНО: Если по ключу не удалось получить трафик из API, не считаем его 0.
+            # Используем последнее известное значение из БД (v2ray_keys.traffic_usage_bytes),
+            # чтобы не "обнулять" суммарный трафик подписки из-за временных ошибок API.
+            if api_val is None:
+                effective = int(stored_usage_bytes or 0)
+            else:
+                effective = _compute_effective_usage(subscription_id, api_val, baseline_bytes)
 
             subscription_usage_from_api[subscription_id] = (
                 subscription_usage_from_api.get(subscription_id, 0) + effective

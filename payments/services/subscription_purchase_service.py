@@ -216,6 +216,7 @@ class SubscriptionPurchaseService:
         is_vip: bool,
         is_vip_subscription: bool,
         current_expires_at: int,
+        now_ts: int,
         all_payments: list[Payment],
         subscription_created_at: int,
         user_id: int,
@@ -240,7 +241,9 @@ class SubscriptionPurchaseService:
             )
 
         tariff_duration = tariff.get("duration_sec", 0) or 0
-        return current_expires_at + tariff_duration
+        # Продление считаем от max(now, expires_at), чтобы в grace-периоде не "съедать" оплаченный срок.
+        base = max(int(now_ts or 0), int(current_expires_at or 0))
+        return base + int(tariff_duration)
 
     @staticmethod
     def _should_reset_traffic_after_renewal(
@@ -248,6 +251,7 @@ class SubscriptionPurchaseService:
         was_created: bool,
         current_expires_at: int,
         new_expires_at: int,
+        traffic_limit_mb: int,
     ) -> bool:
         """
         Условие для сброса трафика после продления.
@@ -255,7 +259,10 @@ class SubscriptionPurchaseService:
         Сбрасываем трафик только при реальном продлении существующей подписки
         (не для новой) и только если expires_at увеличился.
         """
-        return (not was_created) and (new_expires_at > current_expires_at)
+        # Политика трафика "зависит от тарифа": по умолчанию сбрасываем только для лимитных тарифов.
+        # 0 = безлимит, для него reset трафика обычно бессмысленен.
+        reset_allowed_by_tariff = int(traffic_limit_mb or 0) > 0
+        return (not was_created) and reset_allowed_by_tariff and (new_expires_at > current_expires_at)
     
     async def process_subscription_purchase(self, payment_id: str) -> Tuple[bool, Optional[str]]:
         """
@@ -656,6 +663,7 @@ class SubscriptionPurchaseService:
                 is_vip=is_vip,
                 is_vip_subscription=is_vip_subscription,
                 current_expires_at=current_expires_at,
+                now_ts=now,
                 all_payments=all_payments,
                 subscription_created_at=subscription_created_at,
                 user_id=payment.user_id,
@@ -712,9 +720,21 @@ class SubscriptionPurchaseService:
                 was_created=was_created,
                 current_expires_at=current_expires_at,
                 new_expires_at=new_expires_at,
+                traffic_limit_mb=traffic_limit_mb,
             ):
                 try:
-                    reset_success = await reset_subscription_traffic(subscription_id)
+                    # Для продления привязываем reset к факту оплаты (paid_at) для трассировки.
+                    paid_at_ts = None
+                    try:
+                        if payment.paid_at:
+                            paid_at_ts = int(payment.paid_at.timestamp())
+                    except Exception:
+                        paid_at_ts = None
+
+                    reset_success = await reset_subscription_traffic(
+                        subscription_id,
+                        reset_ts=paid_at_ts,
+                    )
                     if reset_success:
                         logger.info(
                             f"[SUBSCRIPTION] Successfully reset traffic for subscription {subscription_id} after renewal"
@@ -1271,7 +1291,13 @@ class SubscriptionPurchaseService:
             # Для is_purchase=True мы не продлеваем подписку и не должны вмешиваться в учёт трафика.
             if not is_purchase:
                 try:
-                    reset_success = await reset_subscription_traffic(subscription_id)
+                    paid_at_ts = None
+                    try:
+                        if payment.paid_at:
+                            paid_at_ts = int(payment.paid_at.timestamp())
+                    except Exception:
+                        paid_at_ts = None
+                    reset_success = await reset_subscription_traffic(subscription_id, reset_ts=paid_at_ts)
                     if reset_success:
                         logger.info(f"[SUBSCRIPTION] Successfully reset traffic for subscription {subscription_id}")
                     else:
@@ -1922,7 +1948,13 @@ class SubscriptionPurchaseService:
             
             # Шаг 3.5: Сбрасываем трафик всех ключей подписки при создании
             try:
-                reset_success = await reset_subscription_traffic(subscription_id)
+                paid_at_ts = None
+                try:
+                    if payment.paid_at:
+                        paid_at_ts = int(payment.paid_at.timestamp())
+                except Exception:
+                    paid_at_ts = None
+                reset_success = await reset_subscription_traffic(subscription_id, reset_ts=paid_at_ts)
                 if reset_success:
                     logger.info(f"[SUBSCRIPTION] Successfully reset traffic for new subscription {subscription_id}")
                 else:

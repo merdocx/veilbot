@@ -351,23 +351,20 @@ def _compute_key_stats(db_path: str, now_ts: int) -> Dict[str, int]:
     with open_connection(db_path) as conn:
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM v2ray_keys")
-        v2ray_total = c.fetchone()[0]
-        total = int(v2ray_total)
+        total = int(c.fetchone()[0])
 
         c.execute("""
             SELECT COUNT(*) FROM v2ray_keys k
             JOIN subscriptions s ON k.subscription_id = s.id
             WHERE s.expires_at > ?
         """, (now_ts,))
-        v2ray_active = c.fetchone()[0]
-        active = int(v2ray_active)
+        active = int(c.fetchone()[0])
 
     expired = max(total - active, 0)
     return {
         "total": total,
         "active": active,
         "expired": expired,
-        "v2ray": int(v2ray_total),
     }
 
 
@@ -433,8 +430,6 @@ def _compute_filtered_key_stats(
         
         v2ray_active = 0
         v2ray_expired = 0
-        v2ray_total = 0
-        
         if protocol in (None, "", "v2ray"):
             # Активные: expires_at из подписки > now_ts
             sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [])
@@ -455,11 +450,6 @@ def _compute_filtered_key_stats(
             params.append(now_ts)
             c.execute(sql, params)
             v2ray_expired = c.fetchone()[0] or 0
-            
-            # Считаем общее количество V2Ray ключей (для статистики v2ray_count)
-            sql, params = apply_common_conditions("SELECT COUNT(*) FROM v2ray_keys k", [])
-            c.execute(sql, params)
-            v2ray_total = c.fetchone()[0] or 0
         
         active = int(v2ray_active)
         expired = int(v2ray_expired)
@@ -471,7 +461,6 @@ def _compute_filtered_key_stats(
         "total": total,
         "active": active,
         "expired": expired,
-        "v2ray": int(v2ray_total),
     }
 
 
@@ -829,28 +818,25 @@ async def keys_page(
     
     logging.info(
         f"Keys page filtered_stats result: total={filtered_stats['total']}, "
-        f"active={filtered_stats['active']}, expired={filtered_stats['expired']}, "
-        f"v2ray={filtered_stats['v2ray']}"
+        f"active={filtered_stats['active']}, expired={filtered_stats['expired']}"
     )
     
     # Извлекаем значения из filtered_stats
     # ВАЖНО: Используем значения напрямую из filtered_stats, не пересчитываем
     active_count = int(filtered_stats.get("active", 0))
     expired_count = int(filtered_stats.get("expired", 0))
-    v2ray_count = int(filtered_stats.get("v2ray", 0))
     total_from_stats = int(filtered_stats.get("total", 0))
     
     # КРИТИЧЕСКАЯ ПРОВЕРКА: убеждаемся, что значения правильные
-    if active_count != filtered_stats["active"] or expired_count != filtered_stats["expired"] or v2ray_count != filtered_stats["v2ray"]:
+    if active_count != filtered_stats["active"] or expired_count != filtered_stats["expired"]:
         logging.error(
             f"CRITICAL: Values mismatch after extraction! "
             f"filtered_stats={filtered_stats}, "
-            f"active_count={active_count}, expired_count={expired_count}, v2ray_count={v2ray_count}"
+            f"active_count={active_count}, expired_count={expired_count}"
         )
         # Исправляем значения
         active_count = int(filtered_stats["active"])
         expired_count = int(filtered_stats["expired"])
-        v2ray_count = int(filtered_stats["v2ray"])
     
     # Логируем для отладки, если есть расхождение
     if total != total_from_stats:
@@ -879,11 +865,9 @@ async def keys_page(
     # Убеждаемся, что значения не были изменены после извлечения
     assert active_count == filtered_stats["active"], f"active_count changed: {active_count} != {filtered_stats['active']}"
     assert expired_count == filtered_stats["expired"], f"expired_count changed: {expired_count} != {filtered_stats['expired']}"
-    assert v2ray_count == filtered_stats["v2ray"], f"v2ray_count changed: {v2ray_count} != {filtered_stats['v2ray']}"
     logging.info(
         f"Keys page FINAL values for template: total={total_from_stats}, "
-        f"active_count={active_count}, expired_count={expired_count}, "
-        f"v2ray_count={v2ray_count}"
+        f"active_count={active_count}, expired_count={expired_count}"
     )
     
     return templates.TemplateResponse("keys.html", {
@@ -895,7 +879,6 @@ async def keys_page(
         "total": total_from_stats,  # Используем total из статистики для согласованности
         "active_count": active_count,
         "expired_count": expired_count,
-        "v2ray_count": v2ray_count,
         "pages": pages,
         "next_cursor": next_cursor,
         "email": email or '',

@@ -244,3 +244,29 @@ def test_get_subscription_keys_for_deletion_returns_v2ray_keys(repo):
     assert len(keys) == 1
     assert keys[0][3] == "v2ray"
 
+
+def test_extend_subscription_by_duration_uses_max_now_expires_at_sync(repo):
+    conn = sqlite3.connect(repo.db_path)
+    now = int(time.time())
+    sub_id = _insert_subscription(conn, expires_at=now - 3600)
+    conn.commit()
+    conn.close()
+
+    before = int(time.time())
+    new_expires = repo.extend_subscription_by_duration(sub_id, duration_sec=86400)
+    # Должно считаться от max(now, expires_at), поэтому ожидаем примерно now+duration (не past+duration).
+    assert new_expires >= before + 86400 - 2
+
+
+@pytest.mark.asyncio
+async def test_extend_subscription_by_duration_uses_max_now_expires_at_async(repo):
+    conn = sqlite3.connect(repo.db_path)
+    now = int(time.time())
+    sub_id = _insert_subscription(conn, expires_at=now - 3600)
+    conn.commit()
+    conn.close()
+
+    before = int(time.time())
+    new_expires = await repo.extend_subscription_by_duration_async(sub_id, duration_sec=86400)
+    assert new_expires >= before + 86400 - 2
+

@@ -4,6 +4,8 @@ fastapi==0.111.0
 uvicorn==0.30.1
 python-dotenv==1.0.1
 passlib[bcrypt]==1.7.4
+# passlib 1.7.4 ожидает bcrypt.__about__; в bcrypt 4.1+ это убрано — держим 4.0.x
+bcrypt==4.0.1
 pydantic==2.7.3
 pydantic-settings==2.2.1
 slowapi==0.1.9

@@ -184,11 +184,28 @@ def _compute_subscription_stats(db_path: str, now_ts: int) -> Dict[str, int]:
               )
         """, (now_ts, VIP_EXPIRES_AT))
         paid_active_non_vip = int(c.fetchone()[0])
+
+        # Активные бесплатные: не VIP, тариф 0 ₽, подписка активна (как «Активных»)
+        c.execute(
+            """
+            SELECT COUNT(*)
+            FROM subscriptions s
+            LEFT JOIN tariffs t ON s.tariff_id = t.id
+            LEFT JOIN users u ON s.user_id = u.user_id
+            WHERE s.is_active = 1
+              AND s.expires_at > ?
+              AND (u.is_vip IS NULL OR u.is_vip = 0)
+              AND COALESCE(t.price_rub, 0) = 0
+            """,
+            (now_ts,),
+        )
+        free_count = int(c.fetchone()[0])
     
     return {
         "total": total,
         "active": active,
         "expired": paid_active_non_vip,  # Используем поле expired для хранения платных активных не VIP подписок
+        "free": free_count,
     }
 
 
@@ -245,7 +262,12 @@ async def subscriptions_page(
                     include_inactive=include_inactive,
                     now_ts=now_ts,
                 )
-                stats = {"total": total, "active": filter_stats["active"], "expired": filter_stats["expired"]}
+                stats = {
+                    "total": total,
+                    "active": filter_stats["active"],
+                    "expired": filter_stats["expired"],
+                    "free": filter_stats["free"],
+                }
             else:
                 stats = _compute_subscription_stats(DB_PATH, now_ts)
             sub_ids = [row[0] for row in rows]
@@ -405,6 +427,7 @@ async def subscriptions_page(
             "total": total,
             "active_count": stats["active"],
             "expired_count": stats["expired"],
+            "free_count": stats["free"],
             "active_servers": active_servers,
             "pages": pages,
             "csrf_token": get_csrf_token(request),
@@ -789,9 +812,9 @@ async def reset_subscription_traffic_api(request: Request, subscription_id: int)
     try:
         success = await reset_subscription_traffic(subscription_id)
         return JSONResponse({
-            "message": "Трафик обнулён" if success else "Сброс на сервере не выполнен (БД обновлена)",
+            "message": "Трафик обнулён" if success else "Не удалось обновить трафик в БД",
             "subscription_id": subscription_id,
-            "server_reset_ok": success,
+            "db_reset_ok": success,
         })
     except Exception as e:
         logger.error(f"Error resetting traffic for subscription {subscription_id}: {e}", exc_info=True)
@@ -1199,6 +1222,137 @@ def _calculate_subscription_discrepancies(db_path: str) -> list:
     return sorted(discrepancies, key=lambda x: abs(x['diff_days']), reverse=True)
 
 
+def _effective_subscription_traffic_limit_mb(
+    subscription_traffic_limit_mb: int | None,
+    fallback_tariff_traffic_limit_mb: int | None,
+) -> int:
+    """Как в SubscriptionRepository.get_subscription_traffic_limits_batch: NULL в подписке → тариф."""
+    if subscription_traffic_limit_mb is not None:
+        return int(subscription_traffic_limit_mb)
+    return int(fallback_tariff_traffic_limit_mb or 0)
+
+
+def _calculate_traffic_discrepancies(db_path: str) -> list:
+    """
+    Расхождения лимита трафика: эффективный лимит подписки vs лимит тарифа последнего completed-платежа.
+
+    Реферальные +100 ГБ (см. key_creation) не считаются расхождением, если разница кратна бонусу
+    и лимит не ниже ожидаемого по тарифу последнего платежа.
+    """
+    REFERRAL_TRAFFIC_BONUS_MB = 102400  # sync with bot.services.key_creation.REFERRAL_TRAFFIC_BONUS_MB
+    from app.repositories.tariff_repository import TariffRepository
+
+    VIP_EXPIRES_AT = 4102434000
+    discrepancies = []
+    tariff_repo = TariffRepository(db_path)
+
+    with open_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT s.user_id, s.id, s.created_at, s.expires_at, s.tariff_id,
+                   s.traffic_limit_mb, t.name AS tariff_name,
+                   t.traffic_limit_mb AS tariff_traffic_limit_mb
+            FROM subscriptions s
+            JOIN users u ON s.user_id = u.user_id
+            LEFT JOIN tariffs t ON s.tariff_id = t.id
+            WHERE u.is_vip = 0 AND s.is_active = 1 AND s.expires_at < ?
+            ORDER BY s.user_id, s.created_at
+            """,
+            (VIP_EXPIRES_AT,),
+        )
+        subscriptions = cursor.fetchall()
+
+        for (
+            user_id,
+            sub_id,
+            sub_created_at,
+            sub_expires_at,
+            tariff_id,
+            sub_traffic_limit_mb,
+            tariff_name,
+            tariff_traffic_limit_mb,
+        ) in subscriptions:
+            cursor.execute(
+                """
+                SELECT id, payment_id, created_at, status, amount, subscription_id, tariff_id
+                FROM payments
+                WHERE subscription_id = ?
+                  AND status = 'completed'
+                  AND protocol = 'v2ray'
+                  AND metadata LIKE '%subscription%'
+                ORDER BY created_at ASC
+                """,
+                (sub_id,),
+            )
+            payments = cursor.fetchall()
+
+            if not payments:
+                GRACE_WINDOW = 7 * 24 * 3600
+                window_start = sub_created_at - GRACE_WINDOW
+                window_end = sub_expires_at + GRACE_WINDOW
+                cursor.execute(
+                    """
+                    SELECT id, payment_id, created_at, status, amount, subscription_id, tariff_id
+                    FROM payments
+                    WHERE user_id = ?
+                      AND tariff_id = ?
+                      AND status = 'completed'
+                      AND protocol = 'v2ray'
+                      AND metadata LIKE '%subscription%'
+                      AND (subscription_id IS NULL OR subscription_id = 0)
+                      AND created_at >= ?
+                      AND created_at <= ?
+                    ORDER BY created_at ASC
+                    """,
+                    (user_id, tariff_id or 4, window_start, window_end),
+                )
+                payments = cursor.fetchall()
+
+            if not payments:
+                continue
+
+            last_payment = payments[-1]
+            payment_tariff_id = last_payment[6] if len(last_payment) > 6 else tariff_id
+            if not payment_tariff_id:
+                continue
+
+            pt = tariff_repo.get_tariff(payment_tariff_id)
+            if not pt:
+                continue
+            expected_mb = int(pt[4] or 0) if len(pt) > 4 else 0
+
+            eff_mb = _effective_subscription_traffic_limit_mb(
+                sub_traffic_limit_mb,
+                tariff_traffic_limit_mb,
+            )
+
+            if eff_mb == expected_mb:
+                continue
+
+            if eff_mb > expected_mb:
+                diff = eff_mb - expected_mb
+                if expected_mb > 0 and diff > 0 and diff % REFERRAL_TRAFFIC_BONUS_MB == 0:
+                    continue
+
+            discrepancies.append(
+                {
+                    "user_id": user_id,
+                    "subscription_id": sub_id,
+                    "tariff_name": tariff_name or "N/A",
+                    "tariff_id": tariff_id,
+                    "effective_mb": eff_mb,
+                    "expected_mb": expected_mb,
+                    "diff_mb": eff_mb - expected_mb,
+                    "last_payment_tariff_id": payment_tariff_id,
+                    "payments_count": len(payments),
+                    "can_fix": eff_mb < expected_mb,
+                }
+            )
+
+    return sorted(discrepancies, key=lambda x: abs(x["diff_mb"]), reverse=True)
+
+
 async def _send_admin_discrepancy_notifications(discrepancies: list) -> None:
     """
     Отправить уведомления администратору о новых расхождениях
@@ -1296,12 +1450,18 @@ async def subscription_discrepancies_page(request: Request):
     
     try:
         log_admin_action(request, "SUBSCRIPTION_DISCREPANCIES_PAGE_ACCESS")
-        # Тяжёлый расчёт в executor, чтобы не блокировать worker
-        discrepancies = await asyncio.to_thread(_calculate_subscription_discrepancies, DB_PATH)
-        
-        # Отправляем уведомления о новых расхождениях
+
+        def _load_discrepancies_sync():
+            return (
+                _calculate_subscription_discrepancies(DB_PATH),
+                _calculate_traffic_discrepancies(DB_PATH),
+            )
+
+        discrepancies, traffic_raw = await asyncio.to_thread(_load_discrepancies_sync)
+
+        # Отправляем уведомления о новых расхождениях (только по срокам)
         await _send_admin_discrepancy_notifications(discrepancies)
-        
+
         # Форматируем данные для шаблона
         formatted_discrepancies = []
         for disc in discrepancies:
@@ -1322,10 +1482,35 @@ async def subscription_discrepancies_page(request: Request):
                 'is_expired': disc['is_expired'],
                 'status': 'Истекла' if disc['is_expired'] else 'Активна'
             })
+
+        def _format_mb_cell(mb: int) -> str:
+            if mb == 0:
+                return "Безлимит"
+            return f"{mb} МБ ({_format_bytes(mb * 1024 * 1024)})"
+
+        formatted_traffic_discrepancies = []
+        for td in traffic_raw:
+            formatted_traffic_discrepancies.append({
+                'user_id': td['user_id'],
+                'subscription_id': td['subscription_id'],
+                'tariff_name': td['tariff_name'],
+                'tariff_id': td['tariff_id'],
+                'effective_mb': td['effective_mb'],
+                'expected_mb': td['expected_mb'],
+                'diff_mb': td['diff_mb'],
+                'diff_mb_formatted': f"{td['diff_mb']:+d}",
+                'effective_display': _format_mb_cell(td['effective_mb']),
+                'expected_display': _format_mb_cell(td['expected_mb']),
+                'last_payment_tariff_id': td['last_payment_tariff_id'],
+                'payments_count': td['payments_count'],
+                'can_fix': td['can_fix'],
+            })
         
         # Получаем сообщения из сессии
         success_message = request.session.pop("success_message", None)
         error_message = request.session.pop("error_message", None)
+        success_traffic_message = request.session.pop("success_traffic_message", None)
+        error_traffic_message = request.session.pop("error_traffic_message", None)
         
         # Также проверяем query параметры для обратной совместимости
         if not success_message and request.query_params.get("success"):
@@ -1337,13 +1522,30 @@ async def subscription_discrepancies_page(request: Request):
                 error_message = "Ошибка: расхождение не найдено"
             else:
                 error_message = "Произошла ошибка при исправлении расхождения"
+
+        if not success_traffic_message and request.query_params.get("success_traffic"):
+            success_traffic_message = "Лимит трафика успешно обновлён"
+        if not error_traffic_message and request.query_params.get("error_traffic"):
+            et = request.query_params.get("error_traffic")
+            if et == "invalid_csrf":
+                error_traffic_message = "Ошибка: неверный CSRF токен"
+            elif et == "not_found":
+                error_traffic_message = (
+                    "Исправление недоступно: расхождение по трафику не найдено или лимит не занижен"
+                )
+            else:
+                error_traffic_message = "Произошла ошибка при исправлении лимита трафика"
         
         return templates.TemplateResponse("subscription_discrepancies.html", {
             "request": request,
             "discrepancies": formatted_discrepancies,
             "total": len(formatted_discrepancies),
+            "traffic_discrepancies": formatted_traffic_discrepancies,
+            "traffic_total": len(formatted_traffic_discrepancies),
             "csrf_token": get_csrf_token(request),
             "success_message": success_message,
+            "success_traffic_message": success_traffic_message,
+            "error_traffic_message": error_traffic_message,
             "error_message": error_message,
         })
     except Exception as e:
@@ -1414,3 +1616,47 @@ async def fix_subscription_discrepancy(request: Request, subscription_id: int, c
         logger.error(f"Error fixing subscription {subscription_id} discrepancy: {e}", exc_info=True)
         request.session["error_message"] = f"Ошибка при исправлении расхождения: {str(e)}"
         return RedirectResponse(url="/subscriptions/discrepancies?error=1", status_code=303)
+
+
+@router.post("/subscriptions/discrepancies/fix-traffic/{subscription_id}")
+async def fix_subscription_traffic_discrepancy(request: Request, subscription_id: int, csrf_token: str = Form(...)):
+    """Выставить лимит трафика по тарифу последнего платежа (если фактический лимит занижен)."""
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/login", status_code=303)
+
+    session_csrf = request.session.get("csrf_token")
+    if not session_csrf or session_csrf != csrf_token:
+        return RedirectResponse(url="/subscriptions/discrepancies?error_traffic=invalid_csrf", status_code=303)
+
+    try:
+        log_admin_action(request, f"FIX_SUBSCRIPTION_TRAFFIC_DISCREPANCY_{subscription_id}")
+        traffic_discrepancies = await asyncio.to_thread(_calculate_traffic_discrepancies, DB_PATH)
+        target = None
+        for d in traffic_discrepancies:
+            if d["subscription_id"] == subscription_id:
+                target = d
+                break
+
+        if not target or not target.get("can_fix"):
+            return RedirectResponse(url="/subscriptions/discrepancies?error_traffic=not_found", status_code=303)
+
+        expected_mb = int(target["expected_mb"])
+        subscription_repo = SubscriptionRepository(DB_PATH)
+        subscription_repo.update_subscription_traffic_limit(subscription_id, expected_mb)
+        updated_keys = subscription_repo.update_subscription_keys_traffic_limit(subscription_id, expected_mb)
+
+        logger.info(
+            f"[ADMIN] Fixed subscription {subscription_id} traffic limit to {expected_mb} MB "
+            f"(was effective {target['effective_mb']}), keys_updated={updated_keys}"
+        )
+
+        request.session["success_traffic_message"] = (
+            f"Лимит трафика подписки #{subscription_id} установлен на {expected_mb} МБ "
+            f"(тариф последнего платежа). Обновлено ключей: {updated_keys}"
+        )
+        return RedirectResponse(url="/subscriptions/discrepancies?success_traffic=1", status_code=303)
+
+    except Exception as e:
+        logger.error(f"Error fixing traffic for subscription {subscription_id}: {e}", exc_info=True)
+        request.session["error_traffic_message"] = f"Ошибка при исправлении лимита трафика: {str(e)}"
+        return RedirectResponse(url="/subscriptions/discrepancies?error_traffic=1", status_code=303)

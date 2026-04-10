@@ -19,11 +19,29 @@
 </div>
 {% endif %}
 
+{% if success_traffic_message %}
+<div class="alert alert-success" style="margin-bottom: 24px; padding: 16px; background-color: #4caf50; color: white; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+    <span class="material-icons">check_circle</span>
+    <span>{{ success_traffic_message }}</span>
+</div>
+{% endif %}
+
+{% if error_traffic_message %}
+<div class="alert alert-error" style="margin-bottom: 24px; padding: 16px; background-color: #f44336; color: white; border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+    <span class="material-icons">error</span>
+    <span>{{ error_traffic_message }}</span>
+</div>
+{% endif %}
+
 <!-- Stats Card -->
 <div class="stats-grid">
     <div class="stat-card">
         <div class="stat-value" data-stat-value>{{ total }}</div>
-        <div class="stat-label">Подписок с расхождениями</div>
+        <div class="stat-label">Подписок с расхождениями по сроку</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" data-stat-value>{{ traffic_total }}</div>
+        <div class="stat-label">Подписок с расхождениями по трафику</div>
     </div>
 </div>
 
@@ -49,6 +67,7 @@
             <li>Показываются только расхождения более 3 дней</li>
             <li>Естественно истекшие подписки (если оба срока прошли) не показываются, кроме случаев с расхождением >30 дней</li>
         </ul>
+        <p><strong>Трафик (ниже на странице):</strong> сравнивается эффективный лимит подписки с лимитом тарифа <em>последнего</em> завершённого платежа по этой подписке. Начисления +100 ГБ за рефералов (кратные 102400 МБ сверх тарифа) не попадают в список. Кнопка «Исправить» доступна, если фактический лимит <strong>ниже</strong> ожидаемого по последнему платежу.</p>
     </div>
 </div>
 
@@ -57,7 +76,7 @@
     <div class="card-header">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
-                <h2 class="card-title">Список расхождений</h2>
+                <h2 class="card-title">Расхождения по сроку</h2>
                 <p class="card-subtitle">Подписки с некорректными сроками действия</p>
             </div>
             <button type="button" id="refresh-btn" class="btn btn-primary" title="Обновить данные" style="display: flex; align-items: center; gap: 8px;">
@@ -146,6 +165,90 @@
                             <div style="color: #666; font-size: 16px;">
                                 <span class="material-icons" style="font-size: 48px; display: block; margin-bottom: 16px; opacity: 0.5;">check_circle</span>
                                 ✅ Все подписки имеют корректные сроки!
+                            </div>
+                        </td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Traffic discrepancies -->
+<div class="card" style="margin-top: 24px;">
+    <div class="card-header">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h2 class="card-title">Расхождения по трафику</h2>
+                <p class="card-subtitle">Эффективный лимит не совпадает с лимитом тарифа последнего платежа</p>
+            </div>
+            <button type="button" id="refresh-btn-traffic" class="btn btn-primary" title="Обновить данные" style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons icon-small" id="refresh-icon-traffic">refresh</span>
+                <span id="refresh-text-traffic">Обновить</span>
+            </button>
+        </div>
+    </div>
+    <div class="table-scroll">
+        <table class="material-table" id="traffic-discrepancies-table">
+            <thead>
+                <tr>
+                    <th>User ID</th>
+                    <th>Sub ID</th>
+                    <th>Тариф (подписка)</th>
+                    <th>Фактически</th>
+                    <th>Ожидается (посл. платёж)</th>
+                    <th>Разница, МБ</th>
+                    <th>Тариф посл. платежа</th>
+                    <th>Платежей</th>
+                    <th style="width: 140px;">Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if traffic_discrepancies %}
+                    {% for t in traffic_discrepancies %}
+                    <tr>
+                        <td>
+                            <a href="/users/{{ t.user_id }}" class="link">{{ t.user_id }}</a>
+                        </td>
+                        <td>
+                            <a href="/subscriptions?q={{ t.subscription_id }}" class="link">#{{ t.subscription_id }}</a>
+                        </td>
+                        <td>
+                            <div class="cell-primary">{{ t.tariff_name }}</div>
+                            <div class="cell-secondary text-muted">ID: {{ t.tariff_id or 'N/A' }}</div>
+                        </td>
+                        <td>{{ t.effective_display }}</td>
+                        <td>{{ t.expected_display }}</td>
+                        <td>
+                            {% if t.diff_mb > 0 %}
+                                <span class="badge badge-warning">{{ t.diff_mb_formatted }}</span>
+                            {% else %}
+                                <span class="badge badge-error">{{ t.diff_mb_formatted }}</span>
+                            {% endif %}
+                        </td>
+                        <td>#{{ t.last_payment_tariff_id }}</td>
+                        <td>{{ t.payments_count }}</td>
+                        <td>
+                            {% if t.can_fix %}
+                            <form method="post" action="/subscriptions/discrepancies/fix-traffic/{{ t.subscription_id }}" class="d-inline" data-confirm="Выставить лимит трафика по тарифу последнего платежа для подписки #{{ t.subscription_id }}? ({{ t.expected_mb }} МБ)">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <button type="submit" class="btn btn-sm btn-primary" title="Исправить заниженный лимит">
+                                    <span class="material-icons icon-small">build</span>
+                                    Исправить
+                                </button>
+                            </form>
+                            {% else %}
+                            <span class="text-muted" title="Реферальный бонус или иное отличие — правка только вручную">—</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="9" class="text-center" style="padding: 48px;">
+                            <div style="color: #666; font-size: 16px;">
+                                <span class="material-icons" style="font-size: 48px; display: block; margin-bottom: 16px; opacity: 0.5;">check_circle</span>
+                                Расхождений по трафику не найдено
                             </div>
                         </td>
                     </tr>
@@ -256,13 +359,34 @@
         });
     }
     
+    function initRefreshButtonTraffic() {
+        const refreshBtn = document.getElementById('refresh-btn-traffic');
+        const refreshIcon = document.getElementById('refresh-icon-traffic');
+        const refreshText = document.getElementById('refresh-text-traffic');
+        if (!refreshBtn || !refreshIcon || !refreshText) {
+            return;
+        }
+        refreshBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            refreshBtn.disabled = true;
+            refreshIcon.classList.add('refreshing');
+            refreshText.textContent = 'Обновление...';
+            setTimeout(function() {
+                window.location.href = window.location.href.split('?')[0] + '?refresh=' + Date.now();
+            }, 100);
+        });
+    }
+
     // Инициализация при загрузке DOM
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function() {
             initRefreshButton();
+            initRefreshButtonTraffic();
         });
     } else {
         initRefreshButton();
+        initRefreshButtonTraffic();
     }
 })();
 </script>
