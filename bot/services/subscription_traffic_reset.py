@@ -192,11 +192,9 @@ async def reconcile_subscription_traffic_usage_from_api(subscription_id: int) ->
             config = {"api_url": api_url, "api_key": api_key}
             protocol = ProtocolFactory.create_protocol("v2ray", config)
             try:
-                key_info = await protocol.get_key_info(v2ray_uuid)
-                api_key_id = key_info.get("id") or key_info.get("uuid")
-                if not api_key_id:
+                _api_ident, stats = await protocol.get_v2ray_key_traffic_resolved(v2ray_uuid)
+                if not stats:
                     continue
-                stats = await protocol.get_key_traffic_stats(str(api_key_id))
                 total_bytes = stats.get("total_bytes") if isinstance(stats, dict) else None
                 if not isinstance(total_bytes, (int, float)) or total_bytes < 0:
                     continue
@@ -310,18 +308,16 @@ async def reset_subscription_traffic(
             config = {"api_url": api_url, "api_key": api_key}
             protocol = ProtocolFactory.create_protocol('v2ray', config)
             try:
-                key_info = await protocol.get_key_info(v2ray_uuid)
-                api_key_id = key_info.get('id') or key_info.get('uuid')
-                if not api_key_id:
+                api_key_id, stats_before = await protocol.get_v2ray_key_traffic_resolved(v2ray_uuid)
+                if not api_key_id or not stats_before:
                     logger.warning(
-                        f"[TRAFFIC RESET] Cannot resolve API key_id for UUID {v2ray_uuid}, skipping key {key_id}"
+                        f"[TRAFFIC RESET] Cannot resolve traffic/API id for UUID {v2ray_uuid}, skipping key {key_id}"
                     )
                     failed_count += 1
                     continue
                 # Пытаемся получить total_bytes и после reset, чтобы выставить baseline консистентно.
                 total_before = None
                 try:
-                    stats_before = await protocol.get_key_traffic_stats(str(api_key_id))
                     total_before = stats_before.get("total_bytes") if isinstance(stats_before, dict) else None
                 except Exception:
                     total_before = None

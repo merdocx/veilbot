@@ -3,11 +3,13 @@
 Вынесен из bot.py для улучшения поддерживаемости
 """
 import asyncio
+import os
 import time
 import logging
 import sqlite3
 from collections import defaultdict
 from typing import Optional, Callable, Awaitable, Dict, Any, List, Tuple, Set
+from datetime import datetime
 
 from app.infra.sqlite_utils import get_db_cursor, retry_db_operation
 from vpn_protocols import format_duration, ProtocolFactory
@@ -19,6 +21,7 @@ from app.infra.foreign_keys import safe_foreign_keys_off
 from memory_optimizer import optimize_memory, log_memory_usage
 from config import ADMIN_ID
 from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.tariff_repository import TariffRepository
 from bot.services.subscription_service import invalidate_subscription_cache
 from payments.utils.renewal_detector import DEFAULT_GRACE_PERIOD, grace_threshold_ts
 
@@ -686,8 +689,10 @@ async def auto_delete_expired_subscriptions() -> None:
                     try:
                         with safe_foreign_keys_off(cursor):
                             cursor.execute("DELETE FROM v2ray_keys WHERE subscription_id = ?", (subscription_id,))
+                            deleted_keys_count = cursor.rowcount
                     except Exception as exc:
                         logging.warning("Error deleting subscription keys: %s", exc)
+                        deleted_keys_count = 0
                     
                     # Удалить подписку из БД (аналогично удалению ключей)
                     # Используем safe_foreign_keys_off для обхода проблем с foreign keys
@@ -734,7 +739,7 @@ async def monitor_subscription_traffic_limits() -> None:
     """Контроль превышения трафиковых лимитов для подписок V2Ray.
     
     Каждые 10 минут:
-    1. Запрашивает трафик для всех активных ключей через GET /api/keys/{key_id}/traffic
+    1. Запрашивает трафик для всех активных ключей (сначала GET /keys/{uuid}/traffic, без лишнего GET /keys/{uuid})
     2. Перезаписывает traffic_usage_bytes абсолютным значением total_bytes
     3. Рассчитывает трафик подписок как сумму трафика всех ключей подписки
     4. Проверяет превышение лимитов только для подписок
@@ -745,36 +750,47 @@ async def monitor_subscription_traffic_limits() -> None:
     TRAFFIC_RESET_PROTECTION_WINDOW = 15 * 60  # 15 минут — подавлять только «старый» трафик с API
     TRAFFIC_RESET_STALE_THRESHOLD_BYTES = 5 * 1024 * 1024  # 5 MB: выше — считаем устаревшим после сброса, пишем 0; иначе — новый трафик, пишем как есть
     
-    async def _fetch_traffic_for_key(key_id: int, v2ray_uuid: str, server_id: int, api_url: str, api_key: str) -> Optional[int]:
-        """Получить трафик для одного ключа через GET /api/keys/{key_id}/traffic"""
-        try:
-            config = {"api_url": api_url, "api_key": api_key}
-            protocol = ProtocolFactory.create_protocol('v2ray', config)
-            
+    async def _fetch_traffic_for_key(
+        key_id: int,
+        v2ray_uuid: str,
+        server_id: int,
+        api_url: str,
+        api_key: str,
+        fetch_sem: asyncio.Semaphore,
+    ) -> Optional[int]:
+        """Получить total_bytes с панели (см. V2RayProtocol.get_v2ray_key_traffic_resolved)."""
+        async with fetch_sem:
             try:
-                # Получаем информацию о ключе для получения API key_id
-                key_info = await protocol.get_key_info(v2ray_uuid)
-                api_key_id = key_info.get('id') or key_info.get('uuid')
-                
-                if not api_key_id:
-                    logging.warning(f"[TRAFFIC] Cannot resolve API key_id for UUID {v2ray_uuid}")
+                config = {"api_url": api_url, "api_key": api_key}
+                protocol = ProtocolFactory.create_protocol("v2ray", config)
+
+                try:
+                    _api_ident, stats = await protocol.get_v2ray_key_traffic_resolved(v2ray_uuid)
+                    if not stats:
+                        logging.warning(
+                            "[TRAFFIC] Cannot resolve traffic for UUID %s (db key_id=%s, server_id=%s)",
+                            v2ray_uuid,
+                            key_id,
+                            server_id,
+                        )
+                        return None
+
+                    total_bytes = stats.get("total_bytes")
+                    if isinstance(total_bytes, (int, float)) and total_bytes >= 0:
+                        return int(total_bytes)
+
                     return None
-                
-                # Получаем трафик через новый эндпоинт GET /api/keys/{key_id}/traffic
-                stats = await protocol.get_key_traffic_stats(str(api_key_id))
-                if not stats:
-                    return None
-                
-                total_bytes = stats.get('total_bytes')
-                if isinstance(total_bytes, (int, float)) and total_bytes >= 0:
-                    return int(total_bytes)
-                
+                finally:
+                    await protocol.close()
+            except Exception as e:
+                logging.error(
+                    "[TRAFFIC] Error fetching traffic for key %s (UUID: %s): %s",
+                    key_id,
+                    v2ray_uuid,
+                    e,
+                    exc_info=True,
+                )
                 return None
-            finally:
-                await protocol.close()
-        except Exception as e:
-            logging.error(f"[TRAFFIC] Error fetching traffic for key {key_id} (UUID: {v2ray_uuid}): {e}", exc_info=True)
-            return None
     
     async def _disable_subscription_keys(subscription_id: int) -> bool:
         """Отключить все ключи подписки через V2Ray API"""
@@ -821,6 +837,7 @@ async def monitor_subscription_traffic_limits() -> None:
         # Шаг 1: Читаем все необходимые данные из БД (без долгих операций между чтениями)
         active_keys = []
         subscriptions = []
+        traffic_sums = {}
         
         # Получить все активные (не истекшие) ключи V2Ray (sync DB — в executor, чтобы не блокировать loop).
         # Здесь формируется единственный источник правды по usage: traffic_usage_bytes в v2ray_keys
@@ -865,15 +882,17 @@ async def monitor_subscription_traffic_limits() -> None:
         
         if subscriptions:
             subscription_ids = [sub[0] for sub in subscriptions]
-            await asyncio.to_thread(
+            traffic_sums = await asyncio.to_thread(
                 repo.get_all_subscriptions_traffic_sum, subscription_ids
             )
         
         # Шаг 2: Выполняем долгие операции с API (БД уже закрыта, блокировок нет)
-        # Запросить трафик для каждого ключа индивидуально через GET /api/keys/{key_id}/traffic
-        # Создаем список задач с привязкой к key_id
+        # Ограничение параллелизма снижает Connection timeout на перегруженных панелях (все ключи сразу).
+        fetch_sem = asyncio.Semaphore(max(1, int(os.getenv("VEILBOT_TRAFFIC_FETCH_CONCURRENCY", "15"))))
+
+        # Запросить трафик для каждого ключа (семафор + traffic-first в протоколе)
         tasks_with_keys: list[tuple[int, asyncio.Task]] = []
-        
+
         for key_row in active_keys:
             # В выборке 7 столбцов (включая traffic_baseline_bytes), поэтому распаковываем все,
             # даже если baseline напрямую здесь не используется.
@@ -885,7 +904,7 @@ async def monitor_subscription_traffic_limits() -> None:
                 )
                 continue
             
-            task = _fetch_traffic_for_key(key_id, v2ray_uuid, server_id, api_url, api_key)
+            task = _fetch_traffic_for_key(key_id, v2ray_uuid, server_id, api_url, api_key, fetch_sem)
             tasks_with_keys.append((key_id, task))
         
         # Выполняем все запросы параллельно
@@ -989,7 +1008,7 @@ async def monitor_subscription_traffic_limits() -> None:
         traffic_updates = []  # Для batch-обновления трафика
         
         for sub in subscriptions:
-            subscription_id, user_id, _stored_usage, over_limit_at, notified_flags, _expires_at, _tariff_id, limit_mb, tariff_name = sub[0], sub[1], sub[2], sub[3], sub[4], sub[5], sub[6], sub[7], sub[8]
+            subscription_id, user_id, stored_usage, over_limit_at, notified_flags, expires_at, tariff_id, limit_mb, tariff_name = sub[0], sub[1], sub[2], sub[3], sub[4], sub[5], sub[6], sub[7], sub[8]
             
             # Трафик из актуальных данных API (с учётом окна после сброса)
             total_usage = subscription_usage_from_api.get(subscription_id, 0)
@@ -1361,9 +1380,10 @@ async def fix_payments_without_subscription_id() -> None:
             from payments.repositories.payment_repository import PaymentRepository
             from app.repositories.subscription_repository import SubscriptionRepository
             from app.settings import settings as app_settings
+            from payments.models.payment import PaymentStatus
             
             payment_repo = PaymentRepository(app_settings.DATABASE_PATH)
-            SubscriptionRepository(app_settings.DATABASE_PATH)
+            subscription_repo = SubscriptionRepository(app_settings.DATABASE_PATH)
             
             # Получаем все completed платежи за подписки без subscription_id
             # Используем прямой SQL запрос для эффективности
@@ -1426,7 +1446,7 @@ async def fix_payments_without_subscription_id() -> None:
                     
                     if subscription_row:
                         subscription_id = subscription_row[0]
-                        subscription_row[1]
+                        sub_created_at = subscription_row[1]
                         sub_expires_at = subscription_row[2]
                         
                         # Проверяем, что подписка была активна на момент обработки платежа
@@ -1517,7 +1537,7 @@ async def create_keys_for_new_server(server_id: int) -> None:
             return
         
         # Получить все активные подписки
-        SubscriptionRepository()
+        subscription_repo = SubscriptionRepository()
         now = int(time.time())
         
         with get_db_cursor() as cursor:
@@ -2047,7 +2067,7 @@ async def _process_protocol_sync(
     """
     if protocol != "v2ray":
         return
-    {key[1] for key in existing_keys}
+    existing_server_ids = {key[1] for key in existing_keys}
 
     keys_to_recreate = []
     verified_existing_server_ids = set()

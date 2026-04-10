@@ -2,7 +2,7 @@ import asyncio
 import aiohttp
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
@@ -189,8 +189,8 @@ class V2RayProtocol(VPNProtocol):
         self.ssl_context.verify_mode = ssl.CERT_NONE
 
         # Общая сессия aiohttp с таймаутами
-        # Увеличиваем таймауты для медленных серверов: total=90, sock_read=80
-        self._timeout = aiohttp.ClientTimeout(total=90, connect=10, sock_connect=10, sock_read=80)
+        # Медленные/перегруженные панели: больше connect (TLS), total и sock_read для крупных ответов
+        self._timeout = aiohttp.ClientTimeout(total=120, connect=20, sock_connect=20, sock_read=100)
         self._connector = aiohttp.TCPConnector(ssl=self.ssl_context, force_close=False, enable_cleanup_closed=True)
         self._session = aiohttp.ClientSession(connector=self._connector, timeout=self._timeout)
     
@@ -1193,6 +1193,40 @@ class V2RayProtocol(VPNProtocol):
         except Exception as e:
             logger.error(f"Error getting V2Ray key info: {e}")
             return {}
+
+    async def get_v2ray_key_traffic_resolved(self, v2ray_uuid: str) -> Tuple[Optional[str], Dict]:
+        """
+        Получить статистику трафика ключа, минуя лишний GET /keys/{uuid} когда возможно.
+
+        Сначала вызывается GET /keys/{uuid}/traffic. Если панель отдаёт total_bytes — возвращаем тот же uuid
+        как идентификатор для остальных эндпоинтов. Иначе fallback: GET /keys/{uuid} → GET /keys/{id}/traffic.
+
+        На перегруженных API отдельный key info часто таймаутит, а /traffic по UUID успевает ответить.
+        """
+        try:
+            stats = await self.get_key_traffic_stats(v2ray_uuid)
+            if stats:
+                total_bytes = stats.get("total_bytes")
+                if isinstance(total_bytes, (int, float)) and total_bytes >= 0:
+                    return v2ray_uuid, stats
+
+            key_info = await self.get_key_info(v2ray_uuid)
+            api_key_id = key_info.get("id") or key_info.get("uuid")
+            if not api_key_id:
+                return None, {}
+
+            sid = str(api_key_id)
+            stats2 = await self.get_key_traffic_stats(sid)
+            if not stats2:
+                return None, {}
+
+            total_bytes2 = stats2.get("total_bytes")
+            if isinstance(total_bytes2, (int, float)) and total_bytes2 >= 0:
+                return sid, stats2
+            return None, {}
+        except Exception as e:
+            logger.error("Error in get_v2ray_key_traffic_resolved for %s: %s", v2ray_uuid, e)
+            return None, {}
 
     async def get_traffic_history(self) -> Dict:
         """Получить общий объем трафика для всех ключей с момента создания"""
