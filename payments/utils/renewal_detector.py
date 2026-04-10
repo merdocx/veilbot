@@ -10,6 +10,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_GRACE_PERIOD = 86400  # 24 часа в секундах
 
 
+def grace_threshold_ts(now_ts: int, grace_period: int = DEFAULT_GRACE_PERIOD) -> int:
+    """Порог «ещё в grace»: подписка активна, если expires_at > grace_threshold_ts(now).
+
+    Единая точка для расчёта вместо разрозненных `now - 86400`.
+    """
+    return int(now_ts) - int(grace_period)
+
+
 def is_renewal_payment(
     cursor,
     user_id: int,
@@ -30,7 +38,7 @@ def is_renewal_payment(
     """
     try:
         now = int(datetime.now(timezone.utc).timestamp())
-        grace_threshold = now - grace_period
+        grace_threshold = grace_threshold_ts(now, grace_period)
 
         cursor.execute(
             "SELECT 1 FROM v2ray_keys k "
@@ -73,7 +81,7 @@ async def is_renewal_payment_async(
     """
     try:
         now = int(datetime.now(timezone.utc).timestamp())
-        grace_threshold = now - grace_period
+        grace_threshold = grace_threshold_ts(now, grace_period)
 
         async with conn.execute(
             """

@@ -1,14 +1,33 @@
 """
 Функция для сброса трафика подписки при создании/продлении
 """
+from __future__ import annotations
+
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
+
 from app.repositories.subscription_repository import SubscriptionRepository
 from vpn_protocols import ProtocolFactory
 from app.infra.sqlite_utils import get_db_cursor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TrafficResetResult:
+    """Результат сброса трафика: DB — источник истины; API reset — best-effort."""
+
+    success: bool
+    keys_total: int
+    api_aligned_keys: int
+    fallback_keys: int
+    server_reset_ok: int
+    server_reset_failed: int
+
+    def __bool__(self) -> bool:
+        return self.success
 
 
 def _reset_subscription_traffic_sync_db(
@@ -111,21 +130,136 @@ def _reset_subscription_traffic_sync_db(
         raise
 
 
-async def reset_subscription_traffic(subscription_id: int, *, reset_ts: int | None = None) -> bool:
+def _sync_subscription_traffic_cache(subscription_id: int) -> int:
+    """Пересчитать subscriptions.traffic_usage_bytes как сумму по ключам."""
+    now_ts = int(time.time())
+    with get_db_cursor(commit=True) as cursor:
+        cursor.execute(
+            "SELECT COALESCE(SUM(traffic_usage_bytes), 0) FROM v2ray_keys WHERE subscription_id = ?",
+            (subscription_id,),
+        )
+        total = int((cursor.fetchone() or (0,))[0] or 0)
+        cursor.execute(
+            "UPDATE subscriptions SET traffic_usage_bytes = ?, last_updated_at = ? WHERE id = ?",
+            (total, now_ts, subscription_id),
+        )
+    return total
+
+
+async def reconcile_subscription_traffic_usage_from_api(subscription_id: int) -> bool:
+    """
+    Выровнять traffic_usage_bytes по API: effective = max(0, api_total_bytes - baseline).
+
+    Вызывать после fallback-сброса, когда baseline в БД мог не совпасть с панелью.
+    """
+    def _load_key_rows() -> list[tuple[int, str, str, str, int]]:
+        with get_db_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT k.id, k.v2ray_uuid, s.api_url, s.api_key,
+                       COALESCE(k.traffic_baseline_bytes, 0)
+                FROM v2ray_keys k
+                JOIN servers s ON s.id = k.server_id
+                WHERE k.subscription_id = ?
+                ORDER BY k.id
+                """,
+                (subscription_id,),
+            )
+            rows = cursor.fetchall()
+        out: list[tuple[int, str, str, str, int]] = []
+        for r in rows:
+            out.append(
+                (
+                    int(r[0]),
+                    str(r[1] or "").strip(),
+                    str(r[2] or "").strip(),
+                    str(r[3] or "").strip(),
+                    int(r[4] or 0),
+                )
+            )
+        return out
+
+    key_rows = await asyncio.to_thread(_load_key_rows)
+    if not key_rows:
+        logger.info("[TRAFFIC RECONCILE] No keys for subscription %s", subscription_id)
+        return True
+
+    updates: list[tuple[int, int]] = []
+    for key_id, v2ray_uuid, api_url, api_key, baseline_bytes in key_rows:
+        if not api_url or not api_key or not v2ray_uuid:
+            continue
+        try:
+            config = {"api_url": api_url, "api_key": api_key}
+            protocol = ProtocolFactory.create_protocol("v2ray", config)
+            try:
+                key_info = await protocol.get_key_info(v2ray_uuid)
+                api_key_id = key_info.get("id") or key_info.get("uuid")
+                if not api_key_id:
+                    continue
+                stats = await protocol.get_key_traffic_stats(str(api_key_id))
+                total_bytes = stats.get("total_bytes") if isinstance(stats, dict) else None
+                if not isinstance(total_bytes, (int, float)) or total_bytes < 0:
+                    continue
+                effective = max(0, int(total_bytes) - int(baseline_bytes))
+                updates.append((effective, key_id))
+            finally:
+                await protocol.close()
+        except Exception as e:
+            logger.warning(
+                "[TRAFFIC RECONCILE] key %s subscription %s: %s",
+                key_id,
+                subscription_id,
+                e,
+            )
+
+    if updates:
+        def _write() -> None:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.executemany(
+                    "UPDATE v2ray_keys SET traffic_usage_bytes = ? WHERE id = ? AND subscription_id = ?",
+                    [(u, kid, subscription_id) for u, kid in updates],
+                )
+
+        await asyncio.to_thread(_write)
+    total = await asyncio.to_thread(_sync_subscription_traffic_cache, subscription_id)
+    logger.info(
+        "[TRAFFIC RECONCILE] subscription %s: updated %s keys, subscription traffic_usage_bytes=%s",
+        subscription_id,
+        len(updates),
+        total,
+    )
+    return True
+
+
+def schedule_traffic_reconcile_after_reset(subscription_id: int) -> None:
+    """Фоновый дожим usage из API после reset с fallback-ключами."""
+
+    async def _run() -> None:
+        try:
+            await reconcile_subscription_traffic_usage_from_api(subscription_id)
+        except Exception:
+            logger.exception("[TRAFFIC RECONCILE] background task failed for subscription %s", subscription_id)
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:
+        asyncio.run(_run())
+
+
+async def reset_subscription_traffic(
+    subscription_id: int, *, reset_ts: int | None = None
+) -> TrafficResetResult:
     """
     Сбросить трафик всех ключей подписки при создании/продлении.
 
     Выполняет:
     1. Получает все ключи подписки с информацией о серверах
-    2. Для каждого ключа: GET ключа по UUID → POST /api/keys/{key_id}/traffic/reset по числовому key_id с панели
+    2. Для каждого ключа: GET ключа по UUID → POST reset traffic
     3. Обнуляет traffic_usage_bytes в БД для всех ключей подписки
     4. Обнуляет traffic_usage_bytes в таблице subscriptions
 
-    Args:
-        subscription_id: ID подписки
-
     Returns:
-        True, если сброс в БД выполнен успешно (серверный reset best-effort).
+        TrafficResetResult (в булевом контексте — success DB reset).
     """
     repo = SubscriptionRepository()
     keys = await asyncio.to_thread(repo.get_subscription_keys_with_server_info, subscription_id)
@@ -136,8 +270,22 @@ async def reset_subscription_traffic(subscription_id: int, *, reset_ts: int | No
             await asyncio.to_thread(_reset_subscription_traffic_sync_db, subscription_id, reset_ts=reset_ts)
         except Exception as e:
             logger.error("[TRAFFIC RESET] Error in sync DB update (no keys): %s", e, exc_info=True)
-            return False
-        return True
+            return TrafficResetResult(
+                success=False,
+                keys_total=0,
+                api_aligned_keys=0,
+                fallback_keys=0,
+                server_reset_ok=0,
+                server_reset_failed=0,
+            )
+        return TrafficResetResult(
+            success=True,
+            keys_total=0,
+            api_aligned_keys=0,
+            fallback_keys=0,
+            server_reset_ok=0,
+            server_reset_failed=0,
+        )
 
     logger.info(f"[TRAFFIC RESET] Resetting traffic for {len(keys)} keys in subscription {subscription_id}")
 
@@ -187,14 +335,17 @@ async def reset_subscription_traffic(subscription_id: int, *, reset_ts: int | No
                 except Exception:
                     total_after = None
 
+                # Важно: если POST /traffic/reset вернул ошибку, не доверяем total_after (часто 0 или
+                # устаревшее значение при баге панели) — иначе SET baseline=? затирает накопленный baseline.
                 chosen_total = None
-                if isinstance(total_after, int) and total_after >= 0:
-                    chosen_total = total_after
-                elif reset_success:
-                    # Если серверный reset сработал, предполагаем что счётчик обнулился.
-                    chosen_total = 0
-                elif isinstance(total_before, int) and total_before >= 0:
-                    chosen_total = total_before
+                if reset_success:
+                    if isinstance(total_after, int) and total_after >= 0:
+                        chosen_total = total_after
+                    else:
+                        chosen_total = 0
+                else:
+                    if isinstance(total_before, int) and total_before >= 0:
+                        chosen_total = total_before
 
                 if isinstance(chosen_total, int) and chosen_total >= 0:
                     api_totals_by_db_key_id[int(key_id)] = int(chosen_total)
@@ -212,9 +363,13 @@ async def reset_subscription_traffic(subscription_id: int, *, reset_ts: int | No
                 f"[TRAFFIC RESET] Error resetting traffic for key {key_id} (UUID: {v2ray_uuid}): {e}",
                 exc_info=True,
             )
-    
+
     # ВАЖНО: При продлении/создании обнуляем трафик в БД для ВСЕХ ключей подписки.
     # Для ключей, где удалось получить api_total, фиксируем baseline=api_total для консистентности.
+    keys_total = len(keys)
+    api_aligned = len(api_totals_by_db_key_id)
+    fallback_keys = max(0, keys_total - api_aligned)
+
     try:
         await asyncio.to_thread(
             _reset_subscription_traffic_sync_db,
@@ -224,13 +379,35 @@ async def reset_subscription_traffic(subscription_id: int, *, reset_ts: int | No
         )
     except Exception as e:
         logger.error("[TRAFFIC RESET] Error in sync DB update: %s", e, exc_info=True)
-        return False
-    
+        return TrafficResetResult(
+            success=False,
+            keys_total=keys_total,
+            api_aligned_keys=api_aligned,
+            fallback_keys=fallback_keys,
+            server_reset_ok=success_count,
+            server_reset_failed=failed_count,
+        )
+
     logger.info(
-        f"[TRAFFIC RESET] Completed for subscription {subscription_id}: "
-        f"{success_count} successful, {failed_count} failed"
+        "[TRAFFIC RESET] Completed for subscription %s: server_ok=%s server_failed=%s "
+        "api_aligned=%s fallback=%s keys_total=%s",
+        subscription_id,
+        success_count,
+        failed_count,
+        api_aligned,
+        fallback_keys,
+        keys_total,
     )
 
-    # Серверный reset best-effort, но DB reset — источник истины для биллинга/лимитов.
-    return True
+    if fallback_keys > 0:
+        schedule_traffic_reconcile_after_reset(subscription_id)
 
+    # Серверный reset best-effort, но DB reset — источник истины для биллинга/лимитов.
+    return TrafficResetResult(
+        success=True,
+        keys_total=keys_total,
+        api_aligned_keys=api_aligned,
+        fallback_keys=fallback_keys,
+        server_reset_ok=success_count,
+        server_reset_failed=failed_count,
+    )

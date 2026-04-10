@@ -335,11 +335,9 @@ class SubscriptionRepository:
                 SELECT k.id, k.v2ray_uuid, k.server_id, s.api_url, s.api_key
                 FROM v2ray_keys k
                 JOIN servers s ON k.server_id = s.id
-                JOIN subscriptions sub ON k.subscription_id = sub.id
                 WHERE k.subscription_id = ?
-                  AND sub.expires_at > ?
                 """,
-                (subscription_id, int(time.time())),
+                (subscription_id,),
             )
             return c.fetchall()
 

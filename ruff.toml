@@ -2,3 +2,5 @@ line-length = 120
 
 [lint]
 select = ["E9", "F63", "F7", "F82"]
+
+# CI: unused imports/vars are checked separately in .github/workflows/tests.yml (F401, F841, continue-on-error).

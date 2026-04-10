@@ -22,6 +22,7 @@ from config import ADMIN_ID
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.tariff_repository import TariffRepository
 from bot.services.subscription_service import invalidate_subscription_cache
+from payments.utils.renewal_detector import DEFAULT_GRACE_PERIOD, grace_threshold_ts
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ _task_last_error: Dict[str, float] = {}
 
 TRAFFIC_NOTIFY_WARNING = 1
 TRAFFIC_NOTIFY_DISABLED = 2
-TRAFFIC_DISABLE_GRACE = 86400  # 24 часа
+TRAFFIC_DISABLE_GRACE = DEFAULT_GRACE_PERIOD  # 24 часа (единая константа с подпиской)
 
 
 async def _notify_task_error(task_name: str, error: Exception) -> None:
@@ -96,12 +97,10 @@ async def _run_periodic(
 async def auto_delete_expired_keys() -> None:
     """Автоматическое удаление истекших ключей с grace period 24 часа."""
 
-    GRACE_PERIOD = 86400  # 24 часа в секундах
-
     async def job() -> None:
         with get_db_cursor(commit=True) as cursor:
             now = int(time.time())
-            grace_threshold = now - GRACE_PERIOD
+            grace_threshold = grace_threshold_ts(now, DEFAULT_GRACE_PERIOD)
 
             cursor.execute(
                 """
@@ -635,13 +634,11 @@ async def cleanup_expired_payments() -> None:
 async def auto_delete_expired_subscriptions() -> None:
     """Автоматическое удаление истекших подписок с grace period 24 часа."""
     
-    GRACE_PERIOD = 86400  # 24 часа в секундах
-    
     async def job() -> None:
         repo = SubscriptionRepository()
         with get_db_cursor(commit=True) as cursor:
             now = int(time.time())
-            grace_threshold = now - GRACE_PERIOD
+            grace_threshold = grace_threshold_ts(now, DEFAULT_GRACE_PERIOD)
             
             # Получить истекшие подписки
             expired_subscriptions = repo.get_expired_subscriptions(grace_threshold)
@@ -749,7 +746,6 @@ async def monitor_subscription_traffic_limits() -> None:
     
     TRAFFIC_NOTIFY_WARNING = 1
     TRAFFIC_NOTIFY_DISABLED = 2
-    TRAFFIC_DISABLE_GRACE = 86400  # 24 часа
     TRAFFIC_RESET_PROTECTION_WINDOW = 15 * 60  # 15 минут — подавлять только «старый» трафик с API
     TRAFFIC_RESET_STALE_THRESHOLD_BYTES = 5 * 1024 * 1024  # 5 MB: выше — считаем устаревшим после сброса, пишем 0; иначе — новый трафик, пишем как есть
     

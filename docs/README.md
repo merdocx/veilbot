@@ -118,6 +118,7 @@ veilbot/
 ├── backup_db.sh            # Скрипт резервного копирования БД
 ├── docs/                  # Документация (см. RUNBOOK.md)
 │   └── archive/           # Исторические материалы
+│       └── incidents/     # Архив разовых отчётов (серверы, IP, V2Ray API)
 ├── admin/                 # Веб-админка
 ├── payments/              # Платежные модули
 └── scripts/               # Служебные скрипты эксплуатации
@@ -220,3 +221,4 @@ pkill -f "python3 bot.py"
 - [Deployment Guide](DEPLOYMENT.md) - Руководство по развертыванию
 - [Security Policy](SECURITY.md) - Политика безопасности
 - [Changelog](CHANGELOG.md) - История изменений
+- [Архив инцидентов и диагностики](archive/incidents/README.md) — разовые отчёты по серверам и API

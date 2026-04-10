@@ -267,8 +267,9 @@ async def create_new_key_flow_with_protocol(
     now = int(time.time())
     # ВАЖНО: traffic_limit_mb больше не используется на уровне ключей
     # Вся информация о трафике берется из подписки
-    GRACE_PERIOD = 86400  # 24 часа в секундах
-    grace_threshold = now - GRACE_PERIOD
+    from payments.utils.renewal_detector import DEFAULT_GRACE_PERIOD, grace_threshold_ts
+
+    grace_threshold = grace_threshold_ts(now, DEFAULT_GRACE_PERIOD)
     
     # Проверяем наличие активного или недавно истекшего ключа (в пределах grace period)
     cursor.execute(

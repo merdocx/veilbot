@@ -10,33 +10,40 @@ import re
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
+def _keep_walk_dir(name: str, exclude_dirs: Set[str]) -> bool:
+    if name in exclude_dirs:
+        return False
+    if name.startswith("venv.backup") or name.startswith(".pytest"):
+        return False
+    return True
+
+
 def find_all_python_files() -> Set[Path]:
     """Найти все Python файлы в проекте"""
     python_files = set()
     exclude_dirs = {'__pycache__', 'node_modules', '.git', 'venv', 'env', 'db_backups', 'logs'}
-    
+
     for root, dirs, files in os.walk(PROJECT_ROOT):
-        # Фильтруем исключаемые директории
-        dirs[:] = [d for d in dirs if d not in exclude_dirs]
-        
+        dirs[:] = [d for d in dirs if _keep_walk_dir(d, exclude_dirs)]
+
         for file in files:
             if file.endswith('.py'):
                 python_files.add(Path(root) / file)
-    
+
     return python_files
 
 def find_all_md_files() -> Set[Path]:
     """Найти все MD файлы в проекте"""
     md_files = set()
     exclude_dirs = {'__pycache__', 'node_modules', '.git', 'venv', 'env', 'db_backups', 'logs'}
-    
+
     for root, dirs, files in os.walk(PROJECT_ROOT):
-        dirs[:] = [d for d in dirs if d not in exclude_dirs]
-        
+        dirs[:] = [d for d in dirs if _keep_walk_dir(d, exclude_dirs)]
+
         for file in files:
             if file.endswith('.md'):
                 md_files.add(Path(root) / file)
-    
+
     return md_files
 
 def extract_imports(content: str) -> Set[str]:
@@ -203,17 +210,6 @@ def main():
     print("\n" + "=" * 80)
     print("🔗 ПРОБЛЕМНЫЕ ЗАВИСИМОСТИ")
     print("-" * 80)
-    
-    # Проверка delete_orphaned_keys.py, который импортирует compare_keys из архива
-    delete_orphaned = scripts_dir / 'delete_orphaned_keys.py'
-    if delete_orphaned.exists():
-        content = delete_orphaned.read_text()
-        if 'from scripts.compare_keys' in content or 'import scripts.compare_keys' in content:
-            archive_compare = docs_dir / 'archive' / 'compare_keys.py'
-            if archive_compare.exists():
-                print("\n⚠️  scripts/delete_orphaned_keys.py импортирует scripts.compare_keys")
-                print("    Но compare_keys.py находится в docs/archive/")
-                print("    Нужно либо переместить compare_keys.py в scripts/, либо исправить импорт")
     
     print("\n" + "=" * 80)
     print("📊 ИТОГОВАЯ СТАТИСТИКА")

@@ -810,11 +810,17 @@ async def reset_subscription_traffic_api(request: Request, subscription_id: int)
     if not request.session.get("admin_logged_in"):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     try:
-        success = await reset_subscription_traffic(subscription_id)
+        result = await reset_subscription_traffic(subscription_id)
+        success = bool(result)
         return JSONResponse({
             "message": "Трафик обнулён" if success else "Не удалось обновить трафик в БД",
             "subscription_id": subscription_id,
             "db_reset_ok": success,
+            "keys_total": result.keys_total,
+            "api_aligned_keys": result.api_aligned_keys,
+            "fallback_keys": result.fallback_keys,
+            "server_reset_ok": result.server_reset_ok,
+            "server_reset_failed": result.server_reset_failed,
         })
     except Exception as e:
         logger.error(f"Error resetting traffic for subscription {subscription_id}: {e}", exc_info=True)

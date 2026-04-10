@@ -42,6 +42,11 @@ jobs:
       run: |
         ruff check --respect-gitignore .
 
+    - name: Ruff unused imports and variables (informational)
+      continue-on-error: true
+      run: |
+        ruff check --respect-gitignore . --select F401,F841
+
     - name: Run mypy
       run: |
         python -m mypy --config-file mypy.ini --follow-imports=skip \

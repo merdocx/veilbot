@@ -90,7 +90,12 @@ def _init_db(db_path: Path) -> None:
                 name TEXT,
                 duration_sec INTEGER,
                 price_rub INTEGER,
-                traffic_limit_mb INTEGER
+                traffic_limit_mb INTEGER,
+                price_crypto_usd REAL,
+                enable_yookassa INTEGER DEFAULT 1,
+                enable_platega INTEGER DEFAULT 1,
+                enable_cryptobot INTEGER DEFAULT 1,
+                is_archived INTEGER DEFAULT 0
             );
             """
         )
@@ -133,7 +138,14 @@ async def test_grace_renewal_extends_from_max_now_expires(service, tmp_path):
     conn = sqlite3.connect(db_path)
     try:
         c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO tariffs (id, name, duration_sec, price_rub, traffic_limit_mb) VALUES (1, 't', 86400, 100, 1024)")
+        c.execute(
+            """
+            INSERT OR REPLACE INTO tariffs (
+                id, name, duration_sec, price_rub, traffic_limit_mb,
+                price_crypto_usd, enable_yookassa, enable_platega, enable_cryptobot, is_archived
+            ) VALUES (1, 't', 86400, 100, 1024, NULL, 1, 1, 1, 0)
+            """
+        )
         # expires_at час назад, но в grace (24ч)
         c.execute(
             """
@@ -216,7 +228,14 @@ async def test_unlimited_tariff_does_not_reset_traffic_on_renewal(service):
     conn = sqlite3.connect(db_path)
     try:
         c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO tariffs (id, name, duration_sec, price_rub, traffic_limit_mb) VALUES (2, 'u', 86400, 100, 0)")
+        c.execute(
+            """
+            INSERT OR REPLACE INTO tariffs (
+                id, name, duration_sec, price_rub, traffic_limit_mb,
+                price_crypto_usd, enable_yookassa, enable_platega, enable_cryptobot, is_archived
+            ) VALUES (2, 'u', 86400, 100, 0, NULL, 1, 1, 1, 0)
+            """
+        )
         c.execute(
             """
             INSERT INTO subscriptions (id, user_id, subscription_token, created_at, expires_at, tariff_id, is_active, notified, traffic_limit_mb)

@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### Изменено
+- Очистка репозитория: удалён `copy_to_new_server.py` (секреты в коде); дубликат `docs/archive/compare_keys.py`; неиспользуемый `admin/services/compare_keys_service.py`; каталог `venv.backup*` из дерева; разовые скрипты перенесены в `scripts/archive/`; отчёты в корне — в `docs/archive/incidents/`; в CI добавлен шаг Ruff F401/F841 (informational); обновлён `scripts/analyze_unused_files.py` (обход venv.backup и `.pytest_cache`).
+
 ## [2.4.43] - 2026-04-10
 
 ### Добавлено
