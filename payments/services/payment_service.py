@@ -426,7 +426,6 @@ class PaymentService:
             
             # Обновляем статус в БД атомарно
             # Используем try_update_status для предотвращения race conditions
-            from ..models.payment import PaymentStatus
             if payment.status == PaymentStatus.PENDING:
                 atomic_success = await self.payment_repo.try_update_status(
                     payment_id,
