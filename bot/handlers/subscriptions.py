@@ -24,6 +24,7 @@ from bot.payment_messages import (
 )
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService
+from bot.utils.subscription_links import subscription_links_block_markdown
 from vpn_protocols import format_duration
 from validators import input_validator, ValidationError, is_valid_email
 
@@ -51,8 +52,6 @@ async def format_subscription_info(subscription_data: tuple, server_count: int =
     expiry_date = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y")
     remaining_str = format_duration(remaining_time)
     
-    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
-    
     # Получаем информацию о трафике через единый сервис
     traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_id)
     
@@ -64,16 +63,15 @@ async def format_subscription_info(subscription_data: tuple, server_count: int =
         traffic_info = "📊 Осталось трафика: без ограничений"
     
     msg = (
-        f"📋 Ваша подписка (коснитесь, чтобы скопировать):\n\n"
-        f"🔗 `{subscription_url}`\n\n"
+        "📋 Ваша подписка:\n\n"
         f"⏳ Осталось времени: {remaining_str} (до {expiry_date})\n\n"
         f"{traffic_info}\n\n"
         f"📱 App Store | Google Play\n\n"
         f"💡 Как использовать:\n"
-        f"1. Откройте приложение V2Ray\n"
+        "1. Откройте приложение\n"
         f"2. Нажмите \"+\" → \"Добавить из буфера\" или \"Импорт подписки\"\n"
-        f"3. Вставьте ссылку выше\n"
-        f"4. Все серверы будут добавлены автоматически"
+        "3. Откройте «Мои ключи» в боте и скопируйте ссылку подписки\n"
+        "4. Вставьте её в приложение для импорта подписки"
     )
     
     return msg
@@ -150,16 +148,6 @@ def _get_v2ray_server_count_sync():
         return (cursor.fetchone()[0] or 0)
 
 
-def _get_v2ray_countries_sync():
-    with get_db_cursor() as cursor:
-        cursor.execute("""
-            SELECT DISTINCT country FROM servers
-            WHERE protocol = 'v2ray' AND active = 1 AND country IS NOT NULL AND country != ''
-            ORDER BY country
-        """)
-        return [row[0] for row in cursor.fetchall()]
-
-
 async def handle_get_access(message: types.Message):
     """Обработчик кнопки 'Получить доступ'"""
     user_id = message.from_user.id
@@ -192,14 +180,8 @@ async def handle_get_access(message: types.Message):
             
             msg = (
                 f"📋 *Получить подписку*\n\n"
-                f"Подписка дает доступ ко всем серверам:\n"
+                "Подписка даёт доступ ко всем серверам.\n"
             )
-            countries = await asyncio.to_thread(_get_v2ray_countries_sync)
-            if countries:
-                for country in countries[:10]:  # Показываем первые 10 стран
-                    msg += f"• {country}\n"
-                if len(countries) > 10:
-                    msg += f"• и другие...\n"
             
             msg += (
                 f"\n🔄 Автоматическое обновление при добавлении новых серверов\n\n"
@@ -232,14 +214,9 @@ async def handle_get_access(message: types.Message):
 
 async def handle_copy_subscription(callback_query: types.CallbackQuery):
     """Обработчик callback для копирования ссылки подписки"""
-    token = callback_query.data.split(":")[1]
-    subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
-    
-    await callback_query.answer(f"Ссылка скопирована: {subscription_url}", show_alert=False)
-    await callback_query.message.answer(
-        f"📋 *Ссылка подписки:*\n\n`{subscription_url}`\n\n"
-        f"Скопируйте эту ссылку и вставьте в приложение V2Ray для импорта подписки.",
-        parse_mode="Markdown"
+    await callback_query.answer(
+        "Ссылка подписки доступна в «Мои ключи», а также отправляется при покупке и продлении.",
+        show_alert=True,
     )
 
 
@@ -409,14 +386,12 @@ async def handle_tariff_selection_for_subscription(message: types.Message):
             )
             
             if subscription_data:
-                subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_data['token']}"
                 msg = (
-                    f"✅ *Подписка V2Ray успешно создана!*\n\n"
-                    f"🔗 *Ссылка подписки:*\n"
-                    f"`{subscription_url}`\n\n"
+                    "✅ *Подписка успешно создана!*\n\n"
+                    f"{subscription_links_block_markdown(subscription_data['token'])}"
                     f"⏳ *Срок действия:* {format_duration(tariff['duration_sec'])}\n\n"
                     f"💡 *Как использовать:*\n"
-                    f"1. Откройте приложение V2Ray\n"
+                    "1. Откройте приложение\n"
                     f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
                     f"3. Вставьте ссылку выше\n"
                     f"4. Все серверы будут добавлены автоматически"
@@ -480,7 +455,7 @@ async def handle_tariff_selection_for_subscription(message: types.Message):
             price_display = f"{tariff['price_rub']}₽"
         
         await message.answer(
-            f"💳 *Оплата подписки V2Ray*\n\n"
+            "💳 *Оплата подписки*\n\n"
             f"Тариф: *{tariff['name']}*\n"
             f"Цена: *{price_display}*\n\n"
             f"📧 Введите ваш email адрес:",
@@ -593,7 +568,7 @@ async def handle_email_for_subscription(message: types.Message):
                 email=email or f"user_{user_id}@veilbot.com",
                 country=None,  # Для подписки страна не нужна
                 protocol='v2ray',
-                description=f"Подписка V2Ray: {tariff['name']}",
+                description=f"Подписка: {tariff['name']}",
                 metadata={'key_type': 'subscription'}  # Сохраняем информацию о подписке
             )
             
@@ -613,7 +588,7 @@ async def handle_email_for_subscription(message: types.Message):
             keyboard.add(InlineKeyboardButton("₿ Оплатить USDT", url=payment_url))
             
             await message.answer(
-                f"₿ *Оплата подписки V2Ray (USDT)*\n\n"
+                "₿ *Оплата подписки (USDT)*\n\n"
                 f"📦 Тариф: *{tariff['name']}*\n"
                 f"💰 Сумма: *${tariff['price_crypto_usd']:.2f} USDT*\n"
                 f"📧 Email: `{email}`\n\n"
@@ -661,7 +636,7 @@ async def handle_email_for_subscription(message: types.Message):
                     email=email,
                     country=None,  # Для подписки страна не нужна
                     protocol='v2ray',
-                    description=f"Подписка V2Ray: {tariff['name']}",
+                    description=f"Подписка: {tariff['name']}",
                     metadata=metadata,  # Сохраняем информацию о подписке и Platega-методе
                     provider=provider,
                     method=method,
@@ -713,7 +688,7 @@ async def handle_email_for_subscription(message: types.Message):
             keyboard.add(InlineKeyboardButton("💳 Оплатить", url=confirmation_url))
             
             await message.answer(
-                f"💳 *Оплата подписки V2Ray*\n\n"
+                "💳 *Оплата подписки*\n\n"
                 f"📦 Тариф: *{tariff['name']}*\n"
                 f"💰 Сумма: *{tariff['price_rub']}₽*\n"
                 f"📧 Email: `{email}`\n\n"
@@ -785,7 +760,7 @@ async def handle_payment_method_for_subscription(message: types.Message):
         _user_states[user_id] = state
         
         msg = f"💳 *Оплата картой / СБП*\n\n"
-        msg += f"📋 Подписка V2Ray\n\n"
+        msg += "📋 Подписка\n\n"
         msg += "📦 Выберите тариф:"
         
         from bot.keyboards import get_tariff_menu
@@ -816,7 +791,7 @@ async def handle_payment_method_for_subscription(message: types.Message):
         _user_states[user_id] = state
         
         msg = f"₿ *Оплата криптовалютой (USDT)*\n\n"
-        msg += f"📋 Подписка V2Ray\n\n"
+        msg += "📋 Подписка\n\n"
         msg += "📦 Выберите тариф:"
         
         from bot.keyboards import get_tariff_menu
@@ -871,8 +846,8 @@ def register_subscription_handlers(dp: Dispatcher, user_states: Dict[int, Dict[s
         _user_states[user_id] = state
         
         msg = (
-            f"📋 *Получить подписку V2Ray*\n\n"
-            f"Подписка дает доступ ко всем серверам V2Ray\n\n"
+            "📋 *Получить подписку*\n\n"
+            "Подписка даёт доступ ко всем серверам.\n\n"
             f"🔄 Автоматическое обновление при добавлении новых серверов\n\n"
             f"Выберите способ оплаты:"
         )

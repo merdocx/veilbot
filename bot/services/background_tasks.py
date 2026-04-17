@@ -93,6 +93,156 @@ async def _run_periodic(
         await asyncio.sleep(sleep_for)
 
 
+async def _delete_subscription_pipeline(
+    *,
+    cursor: sqlite3.Cursor,
+    repo: SubscriptionRepository,
+    subscription_id: int,
+    reason: str,
+    token: str | None = None,
+) -> bool:
+    """
+    Единый idempotent пайплайн удаления подписки:
+    - best-effort удалить ключи на серверах
+    - удалить v2ray_keys в БД
+    - удалить subscriptions строку
+    - инвалидировать кэш подписки
+    """
+    try:
+        if not token:
+            cursor.execute(
+                "SELECT user_id, subscription_token FROM subscriptions WHERE id = ?",
+                (subscription_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                logging.info(
+                    "[SUBSCRIPTION_EOF] Skip delete: subscription %s not found (reason=%s)",
+                    subscription_id,
+                    reason,
+                )
+                return False
+            user_id, token = row[0], row[1]
+        else:
+            cursor.execute(
+                "SELECT user_id FROM subscriptions WHERE id = ?",
+                (subscription_id,),
+            )
+            user_row = cursor.fetchone()
+            user_id = user_row[0] if user_row else None
+
+        subscription_keys = repo.get_subscription_keys_for_deletion(subscription_id)
+
+        api_deleted = 0
+        from vpn_protocols import ProtocolFactory
+
+        for key_data in subscription_keys:
+            if len(key_data) < 4:
+                continue
+            key_id, api_url, auth_data, protocol = (
+                key_data[0],
+                key_data[1],
+                key_data[2],
+                key_data[3],
+            )
+            if not key_id or not api_url or not auth_data:
+                continue
+            if protocol != "v2ray":
+                continue
+
+            protocol_client = None
+            try:
+                server_config = {"api_url": api_url, "api_key": auth_data}
+                protocol_client = ProtocolFactory.create_protocol("v2ray", server_config)
+                await protocol_client.delete_user(key_id)
+                api_deleted += 1
+            except Exception as exc:  # noqa: BLE001
+                logging.warning(
+                    "[SUBSCRIPTION_EOF] Failed to delete %s key %s for subscription %s (reason=%s): %s",
+                    protocol,
+                    key_id,
+                    subscription_id,
+                    reason,
+                    exc,
+                )
+            finally:
+                if protocol_client:
+                    try:
+                        await protocol_client.close()
+                    except Exception:
+                        pass
+
+        deleted_keys_db = 0
+        try:
+            with safe_foreign_keys_off(cursor):
+                cursor.execute(
+                    "DELETE FROM v2ray_keys WHERE subscription_id = ?",
+                    (subscription_id,),
+                )
+                deleted_keys_db = cursor.rowcount or 0
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(
+                "[SUBSCRIPTION_EOF] Error deleting subscription keys from DB for subscription %s (reason=%s): %s",
+                subscription_id,
+                reason,
+                exc,
+            )
+
+        deleted_subscription_db = 0
+        try:
+            with safe_foreign_keys_off(cursor):
+                cursor.execute(
+                    "DELETE FROM subscriptions WHERE id = ?",
+                    (subscription_id,),
+                )
+                deleted_subscription_db = cursor.rowcount or 0
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(
+                "[SUBSCRIPTION_EOF] Error deleting subscription from DB %s (reason=%s): %s",
+                subscription_id,
+                reason,
+                exc,
+            )
+            try:
+                cursor.execute(
+                    "UPDATE subscriptions SET is_active = 0 WHERE id = ?",
+                    (subscription_id,),
+                )
+            except Exception:
+                pass
+
+        if token:
+            try:
+                invalidate_subscription_cache(token)
+            except Exception as exc:  # noqa: BLE001
+                logging.warning(
+                    "[SUBSCRIPTION_EOF] Failed to invalidate cache for subscription %s (reason=%s): %s",
+                    subscription_id,
+                    reason,
+                    exc,
+                )
+
+        logging.info(
+            "[SUBSCRIPTION_EOF] Deleted subscription %s (reason=%s, user_id=%s, api_deleted=%s, keys_db_deleted=%s, subscription_db_deleted=%s)",
+            subscription_id,
+            reason,
+            user_id,
+            api_deleted,
+            deleted_keys_db,
+            deleted_subscription_db,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logging.error(
+            "[SUBSCRIPTION_EOF] Error in delete pipeline for subscription %s (reason=%s): %s",
+            subscription_id,
+            reason,
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
 async def auto_delete_expired_keys() -> None:
     """Автоматическое удаление истекших ключей с grace period 24 часа."""
 
@@ -646,68 +796,15 @@ async def auto_delete_expired_subscriptions() -> None:
             
             for subscription_id, user_id, token in expired_subscriptions:
                 try:
-                    # Получить все ключи подписки
-                    subscription_keys = repo.get_subscription_keys_for_deletion(subscription_id)
-                    
-                    # Удалить ключи через API (V2Ray)
-                    from vpn_protocols import ProtocolFactory
-                    for key_data in subscription_keys:
-                        if len(key_data) < 4:
-                            continue
-                        key_id, api_url, auth_data, protocol = key_data[0], key_data[1], key_data[2], key_data[3]
-                        
-                        if not key_id or not api_url or not auth_data:
-                            continue
-                        if protocol != "v2ray":
-                            continue
-                        
-                        protocol_client = None
-                        try:
-                            server_config = {'api_url': api_url, 'api_key': auth_data}
-                            protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                            await protocol_client.delete_user(key_id)
-                            logging.info(
-                                "Successfully deleted V2Ray key %s for subscription %s",
-                                key_id, subscription_id
-                            )
-                        except Exception as exc:
-                            logging.warning(
-                                "Failed to delete %s key %s for subscription %s: %s",
-                                protocol, key_id, subscription_id, exc
-                            )
-                        finally:
-                            if protocol_client:
-                                try:
-                                    await protocol_client.close()
-                                except Exception:
-                                    pass
-                    
-                    # Удалить ключи из БД напрямую через cursor (как для обычных ключей)
-                    # Используем safe_foreign_keys_off для обхода проблем с foreign keys
-                    try:
-                        with safe_foreign_keys_off(cursor):
-                            cursor.execute("DELETE FROM v2ray_keys WHERE subscription_id = ?", (subscription_id,))
-                    except Exception as exc:
-                        logging.warning("Error deleting subscription keys: %s", exc)
-                    
-                    # Удалить подписку из БД (аналогично удалению ключей)
-                    # Используем safe_foreign_keys_off для обхода проблем с foreign keys
-                    try:
-                        with safe_foreign_keys_off(cursor):
-                            cursor.execute("DELETE FROM subscriptions WHERE id = ?", (subscription_id,))
-                    except Exception as exc:
-                        logging.warning("Error deleting subscription from DB: %s", exc)
-                        # Если не удалось удалить, хотя бы деактивируем
-                        cursor.execute("UPDATE subscriptions SET is_active = 0 WHERE id = ?", (subscription_id,))
-                    
-                    # Инвалидировать кэш
-                    invalidate_subscription_cache(token)
-                    
-                    deleted_count += 1
-                    logging.info(
-                        "Deleted expired subscription %s (user_id=%s, keys_count=%s)",
-                        subscription_id, user_id, len(subscription_keys)
+                    ok = await _delete_subscription_pipeline(
+                        cursor=cursor,
+                        repo=repo,
+                        subscription_id=subscription_id,
+                        reason="time",
+                        token=token,
                     )
+                    if ok:
+                        deleted_count += 1
                 except Exception as exc:
                     logging.error(
                         "Error deleting expired subscription %s: %s",
@@ -788,42 +885,19 @@ async def monitor_subscription_traffic_limits() -> None:
                 )
                 return None
     
-    async def _disable_subscription_keys(subscription_id: int) -> bool:
-        """Отключить все ключи подписки через V2Ray API"""
-        repo = SubscriptionRepository()
-        keys = await asyncio.to_thread(repo.get_subscription_keys_for_deletion, subscription_id)
-        
-        success_count = 0
-        for key_identifier, api_url, api_key, protocol in keys:
-            # Обрабатываем только V2Ray ключи
-            if protocol != 'v2ray':
-                continue
-            v2ray_uuid = key_identifier
-            if v2ray_uuid and api_url and api_key:
-                protocol_client = None
-                try:
-                    from vpn_protocols import V2RayProtocol
-                    protocol_client = V2RayProtocol(api_url, api_key)
-                    result = await protocol_client.delete_user(v2ray_uuid)
-                    if result:
-                        success_count += 1
-                        logging.info(
-                            "[SUBSCRIPTION TRAFFIC] Successfully disabled V2Ray key %s for subscription %s",
-                            v2ray_uuid, subscription_id
-                        )
-                except Exception as exc:
-                    logging.warning(
-                        "[SUBSCRIPTION TRAFFIC] Failed to disable V2Ray key %s for subscription %s: %s",
-                        v2ray_uuid, subscription_id, exc
-                    )
-                finally:
-                    if protocol_client:
-                        try:
-                            await protocol_client.close()
-                        except Exception:
-                            pass
-        
-        return success_count > 0
+    async def _delete_subscription_due_to_traffic(
+        *,
+        cursor: sqlite3.Cursor,
+        repo: SubscriptionRepository,
+        subscription_id: int,
+    ) -> bool:
+        """Единый пайплайн окончания подписки по трафику (grace → удаление)."""
+        return await _delete_subscription_pipeline(
+            cursor=cursor,
+            repo=repo,
+            subscription_id=subscription_id,
+            reason="traffic",
+        )
     
     async def job() -> None:
         now = int(time.time())
@@ -1034,13 +1108,14 @@ async def monitor_subscription_traffic_limits() -> None:
                     usage_display = _format_bytes_short(total_usage)
                     deadline_ts = (new_over_limit_at or now) + TRAFFIC_DISABLE_GRACE
                     remaining = max(0, deadline_ts - now)
+                    tariff_line = f"Тариф: {tariff_name}\n" if tariff_name else ""
                     
                     message = (
-                        "⚠️ Превышен лимит трафика для вашей подписки.\n"
-                        f"Тариф: {tariff_name or 'V2Ray'}\n"
-                        f"Израсходовано: {usage_display} из {limit_display}.\n"
-                        f"Подписка будет отключена через {format_duration(remaining)}.\n"
-                        "Продлите доступ, чтобы сбросить лимит."
+                        "⚠️ *Превышен лимит трафика для вашей подписки.*\n"
+                        + tariff_line
+                        + f"Израсходовано: {usage_display} из {limit_display}.\n"
+                        + f"Доступ будет прекращён через {format_duration(remaining)}.\n"
+                        + "Продлите подписку, чтобы избежать отключения."
                     )
                     warn_notifications.append((user_id, message))
                     new_notified_flags |= TRAFFIC_NOTIFY_WARNING
@@ -1055,20 +1130,21 @@ async def monitor_subscription_traffic_limits() -> None:
                     )
                 
                 if should_disable:
-                    disable_success = await _disable_subscription_keys(subscription_id)
+                    with get_db_cursor(commit=True) as cursor:
+                        disable_success = await _delete_subscription_due_to_traffic(
+                            cursor=cursor,
+                            repo=repo,
+                            subscription_id=subscription_id,
+                        )
                     if disable_success:
-                        # Деактивировать подписку (sync DB — в executor)
-                        def deactivate_sub():
-                            repo.deactivate_subscription(subscription_id)
-                        await asyncio.to_thread(retry_db_operation, deactivate_sub, 3)
-                        
                         limit_display = _format_bytes_short(limit_bytes)
                         usage_display = _format_bytes_short(total_usage)
+                        tariff_line = f"Тариф: {tariff_name}\n" if tariff_name else ""
                         message = (
-                            "❌ Ваша подписка отключена из-за превышения лимита трафика.\n"
-                            f"Тариф: {tariff_name or 'V2Ray'}\n"
-                            f"Израсходовано: {usage_display} из {limit_display}.\n"
-                            "Продлите доступ, чтобы восстановить подписку."
+                            "❌ *Доступ прекращён из-за превышения лимита трафика.*\n"
+                            + tariff_line
+                            + f"Израсходовано: {usage_display} из {limit_display}.\n"
+                            + "Подписка удалена. Для продолжения оформите новую подписку."
                         )
                         disable_notifications.append((user_id, message))
                         new_notified_flags |= TRAFFIC_NOTIFY_DISABLED
@@ -1171,11 +1247,9 @@ async def notify_expiring_subscriptions() -> None:
                 and (notified & 4) == 0
             ):
                 time_str = format_duration(remaining_time)
-                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                 message = (
-                    f"⏳ Ваша подписка истечет через {time_str}\n\n"
-                    f"🔗 `{subscription_url}`\n\n"
-                    f"Продлите доступ:"
+                    f"⏳ *Ваша подписка истечет через:* {time_str}\n\n"
+                    "Продлите доступ:"
                 )
                 new_notified = notified | 4
             elif (
@@ -1184,29 +1258,23 @@ async def notify_expiring_subscriptions() -> None:
                 and (notified & 2) == 0
             ):
                 time_str = format_duration(remaining_time)
-                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                 message = (
-                    f"⏳ Ваша подписка истечет через {time_str}\n\n"
-                    f"🔗 `{subscription_url}`\n\n"
-                    f"Продлите доступ:"
+                    f"⏳ *Ваша подписка истечет через:* {time_str}\n\n"
+                    "Продлите доступ:"
                 )
                 new_notified = notified | 2
             elif remaining_time > 0 and remaining_time <= ten_minutes and (notified & 8) == 0:
                 time_str = format_duration(remaining_time)
-                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                 message = (
-                    f"⏳ Ваша подписка истечет через {time_str}\n\n"
-                    f"🔗 `{subscription_url}`\n\n"
-                    f"Продлите доступ:"
+                    f"⏳ *Ваша подписка истечет через:* {time_str}\n\n"
+                    "Продлите доступ:"
                 )
                 new_notified = notified | 8
             elif remaining_time > 0 and remaining_time <= ten_percent_threshold and (notified & 1) == 0:
                 time_str = format_duration(remaining_time)
-                subscription_url = f"https://veil-bot.ru/api/subscription/{token}"
                 message = (
-                    f"⏳ Ваша подписка истечет через {time_str}\n\n"
-                    f"🔗 `{subscription_url}`\n\n"
-                    f"Продлите доступ:"
+                    f"⏳ *Ваша подписка истечет через:* {time_str}\n\n"
+                    "Продлите доступ:"
                 )
                 new_notified = notified | 1
             
@@ -1569,16 +1637,18 @@ async def create_keys_for_new_server(server_id: int) -> None:
                     continue
                 
                 if server_access_level == 'paid':
-                    # Проверяем активную подписку для определения платного статуса
                     with get_db_cursor() as check_cursor:
-                        check_cursor.execute("""
-                            SELECT COUNT(*) FROM subscriptions 
-                            WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-                        """, (user_id, now))
-                        has_active_subscription = check_cursor.fetchone()[0] > 0
-                    
-                    if not (is_vip or has_active_subscription):
-                        logger.debug(f"Server {server_id} is paid-only, user {user_id} has no active subscription/VIP, skipping subscription {subscription_id}")
+                        check_cursor.execute(
+                            "SELECT COALESCE(t.price_rub, 0) FROM tariffs t WHERE t.id = ?",
+                            (tariff_id,),
+                        )
+                        trow = check_cursor.fetchone()
+                    tariff_paid = bool(trow and int(trow[0] or 0) > 0)
+                    if not (is_vip or tariff_paid):
+                        logger.debug(
+                            f"Server {server_id} is paid-only, user {user_id} has no paid tariff/VIP, "
+                            f"skipping subscription {subscription_id}"
+                        )
                         skipped_count += 1
                         continue
             try:
@@ -1969,14 +2039,21 @@ async def _delete_subscription_key_from_server(
             return False, str(e)
 
 
-def _user_has_access_to_server(access_level: str, user_id: int, user_repo, has_active_subscription: bool) -> bool:
-    """Проверить, разрешён ли пользователю доступ к серверу с данным access_level."""
+def _user_has_access_to_server(
+    access_level: str,
+    user_id: int,
+    user_repo,
+    subscription_tariff_is_paid: bool,
+) -> bool:
+    """Проверить доступ к серверу по access_level.
+    subscription_tariff_is_paid: тариф текущей подписки с price_rub > 0 (не бесплатный).
+    """
     if not access_level or access_level == 'all':
         return True
     if access_level == 'vip':
         return user_repo.is_user_vip(user_id)
     if access_level == 'paid':
-        return user_repo.is_user_vip(user_id) or has_active_subscription
+        return user_repo.is_user_vip(user_id) or subscription_tariff_is_paid
     return True
 
 
@@ -1995,8 +2072,14 @@ async def _process_subscription_sync(
         dict с результатами: created, deleted, failed_create, failed_delete, tokens_to_invalidate
     """
     subscription_id, user_id, token, expires_at, tariff_id = subscription
-    # У этой подписки пользователь уже имеет активную подписку
-    has_active_subscription = True
+    with get_db_cursor() as _c:
+        _c.execute(
+            "SELECT COALESCE(t.price_rub, 0) FROM subscriptions s "
+            "LEFT JOIN tariffs t ON s.tariff_id = t.id WHERE s.id = ?",
+            (subscription_id,),
+        )
+        _tr = _c.fetchone()
+    subscription_tariff_is_paid = bool(_tr and int(_tr[0] or 0) > 0)
 
     result = {
         'created': 0,
@@ -2015,7 +2098,7 @@ async def _process_subscription_sync(
     v2ray_allowed_dict: Dict[int, tuple] = {}
     for s in v2ray_servers:
         access_level = s[6] if len(s) > 6 else 'all'
-        if _user_has_access_to_server(access_level, user_id, user_repo, has_active_subscription):
+        if _user_has_access_to_server(access_level, user_id, user_repo, subscription_tariff_is_paid):
             v2ray_allowed_ids.add(s[0])
             v2ray_allowed_dict[s[0]] = s[:6]
 

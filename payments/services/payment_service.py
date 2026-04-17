@@ -391,6 +391,16 @@ class PaymentService:
             if not payment:
                 logger.error(f"Payment not found: {payment_id}")
                 return False
+
+            # Идемпотентность: если платеж уже завершен, ничего не меняем.
+            # ВАЖНО: нельзя "откатывать" COMPLETED -> PAID при дубликатных вебхуках/пуллинге,
+            # иначе повторно запустится выдача/продление и срок может увеличиться дважды.
+            if payment.status == PaymentStatus.COMPLETED:
+                logger.info(f"Payment {payment_id} already completed, skipping status update")
+                return True
+            if payment.status == PaymentStatus.PAID:
+                logger.info(f"Payment {payment_id} already marked as paid, skipping status update")
+                return True
             
             # Проверяем статус в зависимости от провайдера.
             # Для Platega webhook уже является источником истины (CONFIRMED),
@@ -429,13 +439,20 @@ class PaymentService:
                     if updated_payment and updated_payment.status == PaymentStatus.PAID:
                         logger.info(f"Payment {payment_id} already marked as paid")
                         payment = updated_payment
+                    elif updated_payment and updated_payment.status == PaymentStatus.COMPLETED:
+                        logger.info(f"Payment {payment_id} already completed while processing, skipping")
+                        return True
                     else:
                         logger.warning(f"Payment {payment_id} status changed unexpectedly")
                         return False
             else:
-                # Если статус уже не pending, просто обновляем (fallback)
-                payment.mark_as_paid()
-                await self.payment_repo.update(payment)
+                # Если статус уже не pending, не меняем его на paid.
+                # Допускаем только монотонное продвижение статусов.
+                logger.info(
+                    "Payment %s in status=%s; not overriding status in process_payment_success",
+                    payment_id,
+                    payment.status.value if hasattr(payment.status, "value") else payment.status,
+                )
             
             logger.info(f"Payment {payment_id} marked as paid successfully")
             return True

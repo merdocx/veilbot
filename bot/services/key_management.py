@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any, Tuple
 from aiogram import types
 
 from app.infra.sqlite_utils import get_db_cursor
+from bot.services.subscription_server_groups import user_has_active_paid_subscription
 from vpn_protocols import format_duration, ProtocolFactory, normalize_vless_host
 from bot.utils import format_key_message_unified
 from bot.keyboards import get_main_menu
@@ -574,12 +575,7 @@ async def switch_protocol_and_extend(
     is_vip = user_repo.is_user_vip(user_id)
     now_ts = int(time.time())
     
-    # Проверяем активную подписку для определения платного статуса
-    cursor.execute("""
-        SELECT COUNT(*) FROM subscriptions 
-        WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-    """, (user_id, now_ts))
-    has_active_subscription = cursor.fetchone()[0] > 0
+    has_active_paid_subscription = user_has_active_paid_subscription(cursor, user_id, now_ts)
     
     servers = []
     for server in servers_raw:
@@ -588,7 +584,7 @@ async def switch_protocol_and_extend(
             servers.append(server[:6])  # Без access_level
         elif server_access_level == 'vip' and is_vip:
             servers.append(server[:6])
-        elif server_access_level == 'paid' and (is_vip or has_active_subscription):
+        elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
             servers.append(server[:6])
     
     if not servers:
@@ -796,12 +792,7 @@ async def change_country_and_extend(
     is_vip = user_repo.is_user_vip(user_id)
     now_ts = int(time.time())
     
-    # Проверяем активную подписку для определения платного статуса
-    cursor.execute("""
-        SELECT COUNT(*) FROM subscriptions 
-        WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-    """, (user_id, now_ts))
-    has_active_subscription = cursor.fetchone()[0] > 0
+    has_active_paid_subscription = user_has_active_paid_subscription(cursor, user_id, now_ts)
     
     servers = []
     for server in servers_raw:
@@ -810,7 +801,7 @@ async def change_country_and_extend(
             servers.append(server[:6])  # Без access_level
         elif server_access_level == 'vip' and is_vip:
             servers.append(server[:6])
-        elif server_access_level == 'paid' and (is_vip or has_active_subscription):
+        elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
             servers.append(server[:6])
     
     if not servers:
@@ -1083,12 +1074,7 @@ async def change_country_for_key(
         is_vip = user_repo.is_user_vip(user_id)
         now_ts = int(time.time())
         
-        # Проверяем активную подписку для определения платного статуса
-        cursor.execute("""
-            SELECT COUNT(*) FROM subscriptions 
-            WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-        """, (user_id, now_ts))
-        has_active_subscription = cursor.fetchone()[0] > 0
+        has_active_paid_subscription = user_has_active_paid_subscription(cursor, user_id, now_ts)
         
         servers = []
         for server in servers_raw:
@@ -1097,7 +1083,7 @@ async def change_country_for_key(
                 servers.append(server[:6])  # Без access_level
             elif server_access_level == 'vip' and is_vip:
                 servers.append(server[:6])
-            elif server_access_level == 'paid' and (is_vip or has_active_subscription):
+            elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
                 servers.append(server[:6])
         
         if not servers:
@@ -1329,12 +1315,7 @@ async def reissue_specific_key(
         user_repo = UserRepository()
         is_vip = user_repo.is_user_vip(user_id)
         
-        # Проверяем активную подписку для определения платного статуса
-        cursor.execute("""
-            SELECT COUNT(*) FROM subscriptions 
-            WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-        """, (user_id, now))
-        has_active_subscription = cursor.fetchone()[0] > 0
+        has_active_paid_subscription = user_has_active_paid_subscription(cursor, user_id, now)
         
         for server in other_servers_raw:
             server_id, api_url, cert_sha256, domain, v2ray_path, api_key, max_keys, server_access_level = server
@@ -1345,8 +1326,8 @@ async def reissue_specific_key(
             elif server_access_level == 'vip' and not is_vip:
                 logging.debug(f"Server {server_id} is VIP-only, user {user_id} is not VIP, skipping")
                 continue
-            elif server_access_level == 'paid' and not (is_vip or has_active_subscription):
-                logging.debug(f"Server {server_id} is paid-only, user {user_id} has no active subscription, skipping")
+            elif server_access_level == 'paid' and not (is_vip or has_active_paid_subscription):
+                logging.debug(f"Server {server_id} is paid-only, user {user_id} has no paid subscription/VIP, skipping")
                 continue
             
             # Проверяем емкость сервера
@@ -1381,19 +1362,14 @@ async def reissue_specific_key(
             user_repo = UserRepository()
             is_vip = user_repo.is_user_vip(user_id)
             
-            # Проверяем активную подписку для определения платного статуса
-            cursor.execute("""
-                SELECT COUNT(*) FROM subscriptions 
-                WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-            """, (user_id, now))
-            has_active_subscription = cursor.fetchone()[0] > 0
+            has_active_paid_subscription = user_has_active_paid_subscription(cursor, user_id, now)
             
             server_accessible = False
             if server_access_level == 'all':
                 server_accessible = True
             elif server_access_level == 'vip' and is_vip:
                 server_accessible = True
-            elif server_access_level == 'paid' and (is_vip or has_active_subscription):
+            elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
                 server_accessible = True
             
             if not server_accessible:

@@ -9,7 +9,7 @@ from vpn_protocols import format_duration
 from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
 from bot.services.subscription_service import SubscriptionService
-from bot.utils.subscription_links import subscription_mirror_fallback_markdown
+from bot.utils.subscription_links import subscription_links_block_markdown
 
 def _format_bytes_short(num_bytes: Optional[float]) -> str:
     """Форматирование байт в читаемый вид."""
@@ -90,13 +90,12 @@ async def handle_my_keys_btn(message: types.Message):
     # Если есть подписка, показываем её первой
     if subscription_info:
         from datetime import datetime
-        subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_info['token']}"
         
         # Формируем информацию о сроке действия
         expiry_date = datetime.fromtimestamp(subscription_info['expires_at']).strftime("%d.%m.%Y")
         remaining_time = subscription_info['expires_at'] - now
         remaining_str = format_duration(remaining_time)
-        time_info = f"⏳ Осталось времени: {remaining_str} (до {expiry_date})"
+        time_info = f"⏳ *Осталось времени:* {remaining_str} (до {expiry_date})"
         
         # Получаем информацию о трафике
         traffic_state = SubscriptionService().get_subscription_traffic_state(subscription_info['id'])
@@ -104,18 +103,17 @@ async def handle_my_keys_btn(message: types.Message):
         # Форматируем информацию о трафике
         if not traffic_state.is_unlimited:
             remaining_traffic_formatted = _format_bytes_short(traffic_state.remaining_bytes)
-            traffic_info = f"📊 Осталось трафика: {remaining_traffic_formatted}"
+            traffic_info = f"📊 *Осталось трафика:* {remaining_traffic_formatted}"
         else:
-            traffic_info = "📊 Осталось трафика: без ограничений"
+            traffic_info = "📊 *Осталось трафика:* без ограничений"
         
         msg += (
-            f"📋 *Ваша подписка (коснитесь, чтобы скопировать):*\n\n"
-            f"🔗 `{subscription_url}`\n\n"
-            f"{subscription_mirror_fallback_markdown(subscription_info['token'])}"
+            "📋 *Ваша подписка:*\n\n"
+            f"{subscription_links_block_markdown(subscription_info['token'])}"
             f"{time_info}\n\n"
             f"{traffic_info}\n\n"
             f"📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n\n"
-            f"💡 Как использовать:\n"
+            f"💡 *Как использовать:*\n"
             f"1. Откройте приложение\n"
             f"2. Нажмите \"+\" → \"Добавить из буфера\" или \"Импорт подписки\"\n"
             f"3. Вставьте ссылку выше\n"

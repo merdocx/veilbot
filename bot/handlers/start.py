@@ -10,7 +10,7 @@ from bot.keyboards import get_main_menu
 from app.infra.foreign_keys import safe_foreign_keys_off
 from bot.services.free_tariff import issue_free_v2ray_key_on_start
 from bot.utils import format_key_message_unified
-from bot.utils.subscription_links import subscription_mirror_fallback_markdown
+from bot.utils.subscription_links import subscription_links_block_markdown
 from vpn_protocols import format_duration
 
 async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, Any]]) -> None:
@@ -61,7 +61,7 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
     placeholder_message = None
     try:
         placeholder_message = await message.answer(
-            "🔄 Готовим вашу бесплатную V2Ray подписку... Это займет несколько секунд."
+            "🔄 Готовим вашу бесплатную подписку... Это займет несколько секунд."
         )
         result = await issue_free_v2ray_key_on_start(message)
     except Exception as exc:  # noqa: BLE001
@@ -81,12 +81,9 @@ async def handle_start(message: types.Message, user_states: Dict[int, Dict[str, 
         tariff = result.get("tariff", {})
         
         if subscription_token:
-            subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
             msg = (
-                f"✅ *Подписка успешно создана!*\n\n"
-                f"🔗 *Ссылка подписки (коснитесь, чтобы скопировать):*\n"
-                f"`{subscription_url}`\n\n"
-                f"{subscription_mirror_fallback_markdown(subscription_token)}"
+                "✅ *Подписка успешно создана!*\n\n"
+                f"{subscription_links_block_markdown(subscription_token)}"
                 f"⏳ *Срок действия:* {format_duration(tariff.get('duration_sec', 0))}\n\n"
                 f"📱 [App Store](https://apps.apple.com/ru/app/v2raytun/id6476628951) | [Google Play](https://play.google.com/store/apps/details?id=com.v2raytun.android)\n\n"
                 f"💡 *Как использовать:*\n"

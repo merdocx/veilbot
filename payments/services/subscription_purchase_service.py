@@ -20,6 +20,7 @@ from vpn_protocols import ProtocolFactory, format_duration
 from bot.core import get_bot_instance
 from bot.utils import safe_send_message
 from bot.keyboards import get_main_menu
+from bot.utils.subscription_links import subscription_links_block_markdown, subscription_mirror_fallback_markdown
 from bot.services.admin_notifications import format_amount_rub_from_kopecks
 from bot.services.subscription_traffic_reset import reset_subscription_traffic
 from bot.services.subscription_server_groups import (
@@ -948,14 +949,12 @@ class SubscriptionPurchaseService:
             
             # Шаг 2: Отправляем уведомление о покупке
             # Флаг purchase_notification_sent уже установлен атомарно выше
-            subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
             msg = (
-                f"✅ *Подписка успешно создана!*\n\n"
-                f"🔗 *Ссылка (коснитесь, чтобы скопировать):*\n"
-                f"`{subscription_url}`\n\n"
+                "✅ *Подписка успешно создана!*\n\n"
+                f"{subscription_links_block_markdown(subscription_token)}"
                 f"⏳ *Срок действия:* {format_duration(tariff['duration_sec'])}\n\n"
                 f"💡 *Как использовать:*\n"
-                f"1. Откройте приложение V2Ray\n"
+                "1. Откройте приложение\n"
                 f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
                 f"3. Вставьте ссылку выше\n"
                 f"4. Все серверы будут добавлены автоматически"
@@ -1220,16 +1219,18 @@ class SubscriptionPurchaseService:
             is_vip = user_repo.is_user_vip(payment.user_id)
             now_ts = int(time.time())
             
-            # Проверяем активную подписку для определения платного статуса
+            # Платный статус: активная подписка с тарифом price_rub > 0 (не бесплатная)
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     """
-                    SELECT COUNT(*) FROM subscriptions 
-                    WHERE user_id = ? AND is_active = 1 AND expires_at > ?
+                    SELECT COUNT(*) FROM subscriptions s
+                    LEFT JOIN tariffs t ON s.tariff_id = t.id
+                    WHERE s.user_id = ? AND s.is_active = 1 AND s.expires_at > ?
+                      AND COALESCE(t.price_rub, 0) > 0
                     """,
-                    (payment.user_id, now_ts)
+                    (payment.user_id, now_ts),
                 ) as cursor:
-                    has_active_subscription = (await cursor.fetchone())[0] > 0
+                    has_active_paid_subscription = (await cursor.fetchone())[0] > 0
             
             for server in v2ray_servers_raw:
                 server_access_level = server[8] if len(server) > 8 else 'all'
@@ -1237,7 +1238,7 @@ class SubscriptionPurchaseService:
                     v2ray_servers.append(server[:8])  # Без access_level
                 elif server_access_level == 'vip' and is_vip:
                     v2ray_servers.append(server[:8])
-                elif server_access_level == 'paid' and (is_vip or has_active_subscription):
+                elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
                     v2ray_servers.append(server[:8])
             
             created_keys = 0
@@ -1415,14 +1416,12 @@ class SubscriptionPurchaseService:
             
             # Шаг 5: МОМЕНТАЛЬНО отправляем уведомление о покупке (как в ключах)
             # Флаг purchase_notification_sent уже установлен атомарно выше
-            subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
             msg = (
-                f"✅ *Подписка V2Ray успешно создана!*\n\n"
-                f"🔗 *Ссылка подписки:*\n"
-                f"`{subscription_url}`\n\n"
+                "✅ *Подписка успешно создана!*\n\n"
+                f"{subscription_links_block_markdown(subscription_token)}"
                 f"⏳ *Срок действия:* {format_duration(tariff['duration_sec'])}\n\n"
                 f"💡 *Как использовать:*\n"
-                f"1. Откройте приложение V2Ray\n"
+                "1. Откройте приложение\n"
                 f"2. Нажмите \"+\" → \"Импорт подписки\"\n"
                 f"3. Вставьте ссылку выше\n"
                 f"4. Все серверы будут добавлены автоматически"
@@ -2283,25 +2282,24 @@ class SubscriptionPurchaseService:
             is_vip = user_repo.is_user_vip(user_id)
             now_ts = now
             
-            # Проверяем активную подписку для определения платного статуса.
-            # Учитываем и подписку, для которой создаём ключи (subscription_id): у новой подписки
-            # expires_at = now, поэтому условие expires_at > now не выполняется — без этого
-            # для paid-серверов список серверов был бы пуст и ключи не создавались бы.
+            # Платный статус: подписка с тарифом price_rub > 0; для subscription_id учитываем
+            # граничный случай expires_at (OR id = subscription_id), как раньше.
             async with open_async_connection(self.db_path) as conn:
                 async with conn.execute(
                     """
-                    SELECT COUNT(*) FROM subscriptions
-                    WHERE (user_id = ? AND is_active = 1 AND expires_at > ?)
-                       OR (id = ? AND user_id = ? AND is_active = 1)
+                    SELECT COUNT(*) FROM subscriptions s
+                    LEFT JOIN tariffs t ON s.tariff_id = t.id
+                    WHERE s.user_id = ? AND s.is_active = 1 AND COALESCE(t.price_rub, 0) > 0
+                      AND (s.expires_at > ? OR s.id = ?)
                     """,
-                    (user_id, now_ts, subscription_id, user_id)
+                    (user_id, now_ts, subscription_id),
                 ) as cursor:
-                    has_active_subscription = (await cursor.fetchone())[0] > 0
+                    has_active_paid_subscription = (await cursor.fetchone())[0] > 0
             
             filtered_rows = filter_servers_by_access_sql_rows(
                 v2ray_servers_raw,
                 is_vip=is_vip,
-                has_active_subscription=has_active_subscription,
+                has_active_paid_subscription=has_active_paid_subscription,
             )
             
             async with open_async_connection(self.db_path) as conn:
@@ -2540,16 +2538,13 @@ class SubscriptionPurchaseService:
         """
         try:
             subscription_token = subscription_row[2]
-            subscription_url = f"https://veil-bot.ru/api/subscription/{subscription_token}"
-            
             # Форматируем дату истечения
             expiry_date_str = datetime.fromtimestamp(new_expires_at).strftime('%Y-%m-%d %H:%M:%S')
             
             # Универсальное уведомление
             msg = (
-                f"✅ *Подписка обновлена!*\n\n"
-                f"🔗 *Ссылка (коснитесь, чтобы скопировать):*\n"
-                f"`{subscription_url}`\n\n"
+                "✅ *Подписка обновлена!*\n\n"
+                f"{subscription_links_block_markdown(subscription_token)}"
                 f"⏳ *Срок действия:* до {expiry_date_str}\n\n"
                 f"💡 Подписка автоматически обновится в вашем приложении"
             )

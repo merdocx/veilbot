@@ -18,6 +18,7 @@ from vpn_protocols import (
     remove_fragment_from_vless,
 )
 from app.infra.sqlite_utils import get_db_cursor, retry_db_operation
+from bot.services.subscription_server_groups import user_has_active_paid_subscription
 from config import SUPPORT_USERNAME
 
 try:
@@ -233,12 +234,9 @@ def _fetch_servers_for_new_subscription(user_id: int, subscription_id: int) -> l
         """)
         servers_raw = cursor.fetchall()
         now_ts = int(time.time())
-        cursor.execute("""
-            SELECT COUNT(*) FROM subscriptions
-            WHERE (user_id = ? AND is_active = 1 AND expires_at > ?)
-               OR (id = ? AND user_id = ? AND is_active = 1)
-        """, (user_id, now_ts, subscription_id, user_id))
-        has_active_subscription = cursor.fetchone()[0] > 0
+        has_active_paid_subscription = user_has_active_paid_subscription(
+            cursor, user_id, now_ts, include_subscription_id=subscription_id
+        )
     is_vip = user_repo.is_user_vip(user_id)
     servers = []
     for server in servers_raw:
@@ -247,7 +245,7 @@ def _fetch_servers_for_new_subscription(user_id: int, subscription_id: int) -> l
             servers.append(server[:6])
         elif server_access_level == 'vip' and is_vip:
             servers.append(server[:6])
-        elif server_access_level == 'paid' and (is_vip or has_active_subscription):
+        elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
             servers.append(server[:6])
     return servers
 
@@ -834,12 +832,9 @@ class SubscriptionService:
                     is_vip = user_repo.is_user_vip(user_id)
                     now_ts = int(time.time())
                     
-                    # Проверяем активную подписку для определения платного статуса
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM subscriptions 
-                        WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-                    """, (user_id, now_ts))
-                    has_active_subscription = cursor.fetchone()[0] > 0
+                    has_active_paid_subscription = user_has_active_paid_subscription(
+                        cursor, user_id, now_ts, include_subscription_id=existing_id
+                    )
                     
                     for server in servers_raw:
                         server_access_level = server[8] if len(server) > 8 else 'all'
@@ -847,7 +842,7 @@ class SubscriptionService:
                             servers.append(server[:8])  # Без access_level
                         elif server_access_level == 'vip' and is_vip:
                             servers.append(server[:8])
-                        elif server_access_level == 'paid' and (is_vip or has_active_subscription):
+                        elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
                             servers.append(server[:8])
 
                 for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in servers:

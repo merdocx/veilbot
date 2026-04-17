@@ -106,32 +106,23 @@ def register_purchase_handlers(
                 )
                 return
             
-            # Если доступна только одна страна - автоматически выбираем её
-            if len(countries) == 1:
-                country = countries[0]
-                user_states[user_id] = {
-                    "state": "waiting_payment_method_after_country",
-                    "country": country,
-                    "protocol": protocol,
-                    "auto_protocol": True,
-                    "auto_country": True
-                }
-                
-                msg = f"💳 *Выберите способ оплаты*\n\n"
-                msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-                msg += f"🌍 Страна: *{country}*\n"
-                
-                await message.answer(
-                    msg,
-                    reply_markup=get_payment_method_keyboard(),
-                    parse_mode="Markdown"
-                )
-                return
+            # Страну не выбираем в UI: берём первую доступную автоматически.
+            country = countries[0]
+            user_states[user_id] = {
+                "state": "waiting_payment_method_after_country",
+                "country": country,
+                "protocol": protocol,
+                "auto_protocol": True,
+                "auto_country": True,
+            }
             
-            # Если несколько стран - показываем выбор
+            msg = f"💳 *Выберите способ оплаты*\n\n"
+            msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+            
             await message.answer(
-                "Доступные страны:",
-                reply_markup=get_country_menu(countries)
+                msg,
+                reply_markup=get_payment_method_keyboard(),
+                parse_mode="Markdown",
             )
             return
         
@@ -172,32 +163,25 @@ def register_purchase_handlers(
             return
         
         # Если доступна только одна страна - автоматически выбираем её
-        if len(countries) == 1:
-            country = countries[0]
-            user_states[user_id] = {
-                "state": "waiting_payment_method_after_country",
-                "country": country,
-                "protocol": protocol,
-                "auto_protocol": True,
-                "auto_country": True
-            }
-            
-            msg = f"💳 *Выберите способ оплаты*\n\n"
-            msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-            msg += f"🌍 Страна: *{country}*\n"
-            
-            await message.answer(
-                msg,
-                reply_markup=get_payment_method_keyboard(),
-                parse_mode="Markdown"
-            )
-            return
+        # Страну не выбираем в UI: берём первую доступную автоматически.
+        country = countries[0]
+        user_states[user_id] = {
+            "state": "waiting_payment_method_after_country",
+            "country": country,
+            "protocol": protocol,
+            "auto_protocol": True,
+            "auto_country": True,
+        }
         
-        # Если несколько стран - показываем выбор
+        msg = f"💳 *Выберите способ оплаты*\n\n"
+        msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
+        
         await message.answer(
-            "Доступные страны:",
-            reply_markup=get_country_menu(countries)
+            msg,
+            reply_markup=get_payment_method_keyboard(),
+            parse_mode="Markdown",
         )
+        return
     
     @dp.message_handler(lambda m: m.text == "🔙 Отмена")
     async def handle_cancel(message: types.Message):
@@ -214,27 +198,9 @@ def register_purchase_handlers(
         state = user_states.get(user_id, {})
         
         if text == "🔙 Назад":
-            # Возвращаемся к выбору страны
-            protocol = state.get("protocol", "v2ray")
-            auto_protocol = state.get("auto_protocol", False)
-            auto_country = state.get("auto_country", False)
-
-            if auto_country:
-                user_states.pop(user_id, None)
-                await message.answer("Главное меню:", reply_markup=main_menu(user_id))
-                return
-
-            countries = get_countries_by_protocol(protocol) if protocol else get_countries()
-            if protocol and not auto_protocol:
-                protocol_info = PROTOCOLS.get(protocol, {"name": protocol})
-                await message.answer(
-                    f"Выберите страну для {protocol_info['name']}:",
-                    reply_markup=get_country_menu(countries)
-                )
-                user_states[user_id] = {"state": "protocol_selected", "protocol": protocol, "auto_protocol": False}
-            else:
-                user_states.pop(user_id, None)
-                await message.answer("Главное меню:", reply_markup=main_menu(user_id))
+            # Выбор страны в UI больше не используется: возвращаемся в главное меню.
+            user_states.pop(user_id, None)
+            await message.answer("Главное меню:", reply_markup=main_menu(user_id))
             return
         
         if text in CARD_LABELS:
@@ -249,7 +215,6 @@ def register_purchase_handlers(
             msg = f"💳 *Оплата картой / СБП*\n\n"
             if protocol:
                 msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-            msg += f"🌍 Страна: *{country}*\n\n"
             msg += "📦 Выберите тариф:"
             
             # Для продления скрываем бесплатные тарифы
@@ -286,7 +251,6 @@ def register_purchase_handlers(
             msg = f"₿ *Оплата криптовалютой (USDT)*\n\n"
             if protocol:
                 msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-            msg += f"🌍 Страна: *{country}*\n\n"
             msg += "📦 Выберите тариф:"
             
             # Для продления скрываем бесплатные тарифы
@@ -454,7 +418,6 @@ def register_purchase_handlers(
             user_states[user_id] = {"state": "waiting_payment_method_after_country", "country": country, "auto_country": False}
             
             msg = f"💳 *Выберите способ оплаты*\n\n"
-            msg += f"🌍 Страна: *{country}*\n"
             
             await message.answer(
                 msg,
@@ -506,7 +469,6 @@ def register_purchase_handlers(
             
             msg = f"💳 *Выберите способ оплаты*\n\n"
             msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-            msg += f"🌍 Страна: *{country}*\n"
             
             await message.answer(
                 msg,
@@ -530,8 +492,6 @@ def register_purchase_handlers(
         msg = f"💳 *Выберите способ оплаты*\n\n"
         if protocol:
             msg += f"{PROTOCOLS[protocol]['icon']} {PROTOCOLS[protocol]['name']}\n"
-        if country:
-            msg += f"🌍 Страна: *{country}*\n"
 
         await message.answer(
             msg,

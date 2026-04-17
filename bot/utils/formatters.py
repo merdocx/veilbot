@@ -11,9 +11,10 @@ def format_key_message(access_url: str) -> str:
 
 def format_key_message_unified(config: str, protocol: str, tariff: dict = None, remaining_time: int = None) -> str:
     """Унифицированное форматирование сообщения с ключом для всех протоколов"""
-    protocol_info = PROTOCOLS.get(protocol, {})
-    protocol_name = protocol_info.get('name', protocol.upper())
-    protocol_icon = protocol_info.get('icon', '🔒')
+    # В продукте поддерживается один протокол, поэтому в пользовательских сообщениях
+    # не показываем его название (чтобы не перегружать UX).
+    protocol_name = "VPN"
+    protocol_icon = "🔒"
     
     # Форматируем оставшееся время
     if remaining_time:
@@ -49,10 +50,8 @@ def format_key_message_unified(config: str, protocol: str, tariff: dict = None, 
 
 def format_key_message_with_protocol(config: str, protocol: str, tariff: dict) -> str:
     """Форматирование сообщения с ключом с указанием протокола (для обратной совместимости)"""
-    protocol_info = PROTOCOLS.get(protocol, {})
-    
     return (
-        f"*Ваш ключ {protocol_info.get('icon', '🔒')} {protocol_info.get('name', protocol.upper())}* (коснитесь, чтобы скопировать):\n"
+        "*Ваш ключ* (коснитесь, чтобы скопировать):\n"
         f"`{config}`\n\n"
         f"📦 Тариф: *{tariff.get('name', 'Неизвестно')}*\n"
         f"⏱ Срок действия: *{format_duration(tariff.get('duration_sec', 0))}*\n\n"

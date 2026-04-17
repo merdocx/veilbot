@@ -24,7 +24,6 @@ from bot.handlers.subscriptions import register_subscription_handlers
 
 # Импортируем фоновые задачи
 from bot.services.background_tasks import (
-    auto_delete_expired_keys,
     check_key_availability,
     process_pending_paid_payments,
     monitor_subscription_traffic_limits,
@@ -169,7 +168,6 @@ def start_background_tasks(loop):
     
     background_tasks = [
         process_pending_paid_payments(),
-        auto_delete_expired_keys(),
         check_key_availability(),
         auto_delete_expired_subscriptions(),
         notify_expiring_subscriptions(),

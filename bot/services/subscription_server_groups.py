@@ -4,17 +4,56 @@
 """
 from __future__ import annotations
 
+import sqlite3
 from collections import defaultdict
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, TypeVar
 
 T = TypeVar("T")  # used by pick_best_server_by_free_slots
 
 
+def user_has_active_paid_subscription(
+    cursor: sqlite3.Cursor,
+    user_id: int,
+    now_ts: int,
+    *,
+    include_subscription_id: Optional[int] = None,
+) -> bool:
+    """
+    Есть ли у пользователя активная подписка с платным тарифом (price_rub > 0).
+
+    VIP здесь не учитывается — проверяйте is_user_vip отдельно.
+
+    include_subscription_id: учитывать подписку с этим id даже если expires_at ещё не > now_ts
+    (граничные случаи при создании подписки/ключей).
+    """
+    if include_subscription_id is not None:
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM subscriptions s
+            LEFT JOIN tariffs t ON s.tariff_id = t.id
+            WHERE s.user_id = ? AND s.is_active = 1 AND COALESCE(t.price_rub, 0) > 0
+              AND (s.expires_at > ? OR s.id = ?)
+            """,
+            (user_id, now_ts, include_subscription_id),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM subscriptions s
+            LEFT JOIN tariffs t ON s.tariff_id = t.id
+            WHERE s.user_id = ? AND s.is_active = 1 AND s.expires_at > ?
+              AND COALESCE(t.price_rub, 0) > 0
+            """,
+            (user_id, now_ts),
+        )
+    return cursor.fetchone()[0] > 0
+
+
 def passes_access_level(
     access_level: str,
     *,
     is_vip: bool,
-    has_active_subscription: bool,
+    has_active_paid_subscription: bool,
 ) -> bool:
     al = (access_level or "all").lower()
     if al == "all":
@@ -22,7 +61,8 @@ def passes_access_level(
     if al == "vip":
         return is_vip
     if al == "paid":
-        return is_vip or has_active_subscription
+        # «Платные и VIP»: платный тариф (не бесплатная подписка) или VIP
+        return is_vip or has_active_paid_subscription
     return True
 
 
@@ -112,7 +152,7 @@ def filter_servers_by_access_sql_rows(
     rows: Sequence[Tuple[Any, ...]],
     *,
     is_vip: bool,
-    has_active_subscription: bool,
+    has_active_paid_subscription: bool,
 ) -> List[Tuple[Any, ...]]:
     out: List[Tuple[Any, ...]] = []
     for row in rows:
@@ -120,7 +160,7 @@ def filter_servers_by_access_sql_rows(
         if passes_access_level(
             al,
             is_vip=is_vip,
-            has_active_subscription=has_active_subscription,
+            has_active_paid_subscription=has_active_paid_subscription,
         ):
             out.append(row)
     return out
@@ -144,7 +184,7 @@ def iter_sync_work_items(
         sub_id = int(sub["id"])
         uid = int(sub["user_id"])
         is_vip = bool(is_user_vip(uid))
-        has_active = True
+        has_active_paid = int(sub.get("price_rub") or 0) > 0
 
         cov_servers, cov_groups = sub_coverage.get(sub_id, (set(), set()))
 
@@ -154,7 +194,7 @@ def iter_sync_work_items(
             if passes_access_level(
                 al,
                 is_vip=is_vip,
-                has_active_subscription=has_active,
+                has_active_paid_subscription=has_active_paid,
             ):
                 filtered.append(s)
 

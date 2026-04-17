@@ -58,6 +58,12 @@ class WebhookService:
                 if not payment:
                     logger.error(f"Payment {payment_id} not found in database")
                     return False
+
+                # Идемпотентность: дубликатные вебхуки от провайдера возможны.
+                # Если платеж уже COMPLETED, ничего больше делать не надо (и уж точно нельзя запускать продление второй раз).
+                if payment.status == PaymentStatus.COMPLETED:
+                    logger.info(f"Payment {payment_id} already completed, skipping webhook processing")
+                    return True
                 
                 # Используем атомарное обновление для предотвращения параллельной обработки
                 # Обновляем статус только если он еще pending

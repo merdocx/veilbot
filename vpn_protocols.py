@@ -1196,20 +1196,13 @@ class V2RayProtocol(VPNProtocol):
 
     async def get_v2ray_key_traffic_resolved(self, v2ray_uuid: str) -> Tuple[Optional[str], Dict]:
         """
-        Получить статистику трафика ключа, минуя лишний GET /keys/{uuid} когда возможно.
+        Получить статистику трафика ключа, корректно резолвя идентификатор панели.
 
-        Сначала вызывается GET /keys/{uuid}/traffic. Если панель отдаёт total_bytes — возвращаем тот же uuid
-        как идентификатор для остальных эндпоинтов. Иначе fallback: GET /keys/{uuid} → GET /keys/{id}/traffic.
-
-        На перегруженных API отдельный key info часто таймаутит, а /traffic по UUID успевает ответить.
+        В некоторых версиях панели эндпоинт GET /keys/{key_id}/traffic принимает только числовой key_id,
+        а UUID в path приводит к 422 (int_parsing). Поэтому сначала получаем key_id через GET /keys/{uuid},
+        затем запрашиваем трафик по числовому id.
         """
         try:
-            stats = await self.get_key_traffic_stats(v2ray_uuid)
-            if stats:
-                total_bytes = stats.get("total_bytes")
-                if isinstance(total_bytes, (int, float)) and total_bytes >= 0:
-                    return v2ray_uuid, stats
-
             key_info = await self.get_key_info(v2ray_uuid)
             api_key_id = key_info.get("id") or key_info.get("uuid")
             if not api_key_id:

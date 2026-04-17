@@ -20,6 +20,7 @@ from bot.core import get_bot_instance
 from memory_optimizer import get_vpn_service, get_security_logger
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
+from bot.services.subscription_server_groups import user_has_active_paid_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -75,18 +76,12 @@ def _is_server_accessible_for_user(cursor: sqlite3.Cursor, server_access_level: 
         return user_repo.is_user_vip(user_id)
     
     if server_access_level == 'paid':
-        # Проверяем активную подписку или VIP
+        # «Платные и VIP»: только VIP или активная подписка с платным тарифом (не бесплатный)
         user_repo = UserRepository()
-        is_vip = user_repo.is_user_vip(user_id)
-        if is_vip:
+        if user_repo.is_user_vip(user_id):
             return True
-        # Проверяем активную подписку
         now = int(time.time())
-        cursor.execute("""
-            SELECT COUNT(*) FROM subscriptions 
-            WHERE user_id = ? AND is_active = 1 AND expires_at > ?
-        """, (user_id, now))
-        return cursor.fetchone()[0] > 0
+        return user_has_active_paid_subscription(cursor, user_id, now)
     
     return False
 
@@ -436,7 +431,7 @@ async def create_new_key_flow_with_protocol(
                     logging.warning(f"Failed to extend V2Ray key {existing_key[0]}, creating new key for user {user_id}")
                     # Продолжаем выполнение для создания нового ключа
     
-    # Если нет активного ключа — проверяем историю и спрашиваем про страну
+    # Если нет активного ключа — выбираем страну автоматически (без диалогов).
     if country is None:
         # Ищем последний сервер пользователя (даже если ключ уже удалён)
         last_country = None
@@ -452,63 +447,29 @@ async def create_new_key_flow_with_protocol(
         country_row = cursor.fetchone()
         if country_row:
             last_country = country_row[0]
-            
-        # Если у пользователя была история - спрашиваем про выбор страны
+
         if last_country:
-            # Сохраняем состояние для продолжения после выбора страны
-            user_states[user_id] = {
-                'state': 'reactivation_country_selection',
-                'tariff': tariff,
-                'email': email,
-                'protocol': protocol,
-                'last_country': last_country
-            }
-            
-            # Получаем доступные страны для протокола
+            country = last_country
+        else:
             countries = get_countries_by_protocol(protocol)
-            
-            # Создаем клавиатуру с выбором стран
-            keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-            
-            # Добавляем кнопку для выбора прежней страны
-            if last_country in countries:
-                keyboard.add(KeyboardButton(f"🔄 {last_country} (как раньше)"))
-            
-            # Добавляем остальные страны
-            for country_name in countries:
-                if country_name != last_country:
-                    keyboard.add(KeyboardButton(country_name))
-            
-            keyboard.add(KeyboardButton("🔙 Отмена"))
-            
-            if message:
-                await message.answer(
-                    f"⚠️ Ваш предыдущий ключ истёк более 24 часов назад и был удалён.\n\n"
-                    f"Последний сервер был в стране: **{last_country}**\n\n"
-                    f"Выберите страну для нового ключа {PROTOCOLS[protocol]['name']}:",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown"
-                )
-            else:
-                # Если message=None (например, из webhook), отправляем напрямую через bot
-                await safe_send_message(
-                    bot,
-                    user_id,
-                    f"⚠️ Ваш предыдущий ключ истёк более 24 часов назад и был удалён.\n\n"
-                    f"Последний сервер был в стране: **{last_country}**\n\n"
-                    f"Выберите страну для нового ключа {PROTOCOLS[protocol]['name']}:",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown"
-                )
-            return
+            if countries:
+                country = countries[0]
     
     # Если нет активного ключа — создаём новый
     server = select_available_server_by_protocol(cursor, country, protocol, for_renewal=for_renewal, user_id=user_id)
     if not server:
         if message:
-            await message.answer(f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
+            await message.answer(
+                f"Нет доступных серверов {PROTOCOLS[protocol]['name']} для выдачи доступа. Попробуйте позже.",
+                reply_markup=main_menu,
+            )
         else:
-            await safe_send_message(bot, user_id, f"Нет доступных серверов {PROTOCOLS[protocol]['name']} в выбранной стране.", reply_markup=main_menu)
+            await safe_send_message(
+                bot,
+                user_id,
+                f"Нет доступных серверов {PROTOCOLS[protocol]['name']} для выдачи доступа. Попробуйте позже.",
+                reply_markup=main_menu,
+            )
         return
     
     try:
@@ -857,13 +818,13 @@ async def process_referral_bonus(
                 await safe_send_message(
                     bot, 
                     referrer_id, 
-                    "🎉 Ваша подписка продлена на месяц и добавлено 100 ГБ трафика за приглашённого друга!"
+                    "🎉 Вам начислен бонус за приглашённого друга: +1 месяц и +100 ГБ трафика."
                 )
             else:
                 await safe_send_message(
                     bot, 
                     referrer_id, 
-                    "🎉 Ваша подписка продлена на месяц за приглашённого друга!"
+                    "🎉 Вам начислен бонус за приглашённого друга: +1 месяц."
                 )
             
             logger.info(
@@ -887,7 +848,7 @@ async def process_referral_bonus(
                 await safe_send_message(
                     bot, 
                     referrer_id, 
-                    "🎉 Ваш ключ продлён на месяц за приглашённого друга!"
+                    "🎉 Вам начислен бонус за приглашённого друга: +1 месяц."
                 )
                 return True
             except Exception as e:
@@ -952,7 +913,7 @@ async def process_referral_bonus(
                     await safe_send_message(
                         bot, 
                         referrer_id, 
-                        "🎉 Вам выдан бесплатный месяц и 100 ГБ трафика за приглашённого друга!"
+                        "🎉 Вам начислен бонус за приглашённого друга: +1 месяц и +100 ГБ трафика."
                     )
                     return True
         elif key:
@@ -1019,7 +980,7 @@ async def process_referral_bonus(
                 await safe_send_message(
                     bot, 
                     referrer_id, 
-                    "🎉 Вам выдан бесплатный месяц и 100 ГБ трафика за приглашённого друга!"
+                    "🎉 Вам начислен бонус за приглашённого друга: +1 месяц и +100 ГБ трафика."
                 )
                 return True
         

@@ -335,8 +335,14 @@ async def reset_subscription_traffic(
                 # устаревшее значение при баге панели) — иначе SET baseline=? затирает накопленный baseline.
                 chosen_total = None
                 if reset_success:
+                    # Консервативная стратегия:
+                    # - если после reset удалось прочитать total_after — используем его
+                    # - иначе используем total_before (чтобы DB baseline не стал 0 и не "разморозил" usage)
+                    # - если и before неизвестен — fallback в 0
                     if isinstance(total_after, int) and total_after >= 0:
                         chosen_total = total_after
+                    elif isinstance(total_before, int) and total_before >= 0:
+                        chosen_total = total_before
                     else:
                         chosen_total = 0
                 else:
