@@ -209,7 +209,6 @@ def register_purchase_handlers(
             state["state"] = "waiting_tariff"
             user_states[user_id] = state
             
-            country = state.get("country", "")
             protocol = state.get("protocol", "v2ray")
             
             msg = f"💳 *Оплата картой / СБП*\n\n"
@@ -245,7 +244,6 @@ def register_purchase_handlers(
             state["state"] = "waiting_tariff"
             user_states[user_id] = state
             
-            country = state.get("country", "")
             protocol = state.get("protocol", "v2ray")
             
             msg = f"₿ *Оплата криптовалютой (USDT)*\n\n"
@@ -483,7 +481,6 @@ def register_purchase_handlers(
         user_id = message.from_user.id
         state = user_states.get(user_id, {})
         protocol = state.get("protocol", "v2ray")
-        country = state.get("country", "")
 
         state["state"] = "waiting_payment_method_after_country"
         state["auto_country"] = False

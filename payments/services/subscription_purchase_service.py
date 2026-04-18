@@ -20,7 +20,7 @@ from vpn_protocols import ProtocolFactory, format_duration
 from bot.core import get_bot_instance
 from bot.utils import safe_send_message
 from bot.keyboards import get_main_menu
-from bot.utils.subscription_links import subscription_links_block_markdown, subscription_mirror_fallback_markdown
+from bot.utils.subscription_links import subscription_links_block_markdown
 from bot.services.admin_notifications import format_amount_rub_from_kopecks
 from bot.services.subscription_traffic_reset import reset_subscription_traffic
 from bot.services.subscription_server_groups import (

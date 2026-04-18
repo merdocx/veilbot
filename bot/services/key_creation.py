@@ -9,7 +9,6 @@ import sqlite3
 import secrets
 from typing import Optional, Tuple, Dict, Any, Callable
 from aiogram import types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 from config import PROTOCOLS
 from app.infra.sqlite_utils import get_db_cursor

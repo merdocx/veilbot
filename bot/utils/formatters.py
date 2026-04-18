@@ -1,7 +1,6 @@
 """
 Форматирование сообщений для бота
 """
-from config import PROTOCOLS
 from vpn_protocols import format_duration, get_protocol_instructions
 import logging
 
