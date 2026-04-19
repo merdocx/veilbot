@@ -13,7 +13,7 @@ from aiogram import types
 from config import PROTOCOLS
 from app.infra.sqlite_utils import get_db_cursor
 from vpn_protocols import format_duration, ProtocolFactory
-from bot.keyboards import get_main_menu, get_countries_by_protocol
+from bot.keyboards import get_main_menu, get_countries_by_protocol, get_country_menu
 from bot.utils import format_key_message_unified, safe_send_message
 from bot.core import get_bot_instance
 from memory_optimizer import get_vpn_service, get_security_logger
@@ -430,29 +430,50 @@ async def create_new_key_flow_with_protocol(
                     logging.warning(f"Failed to extend V2Ray key {existing_key[0]}, creating new key for user {user_id}")
                     # Продолжаем выполнение для создания нового ключа
     
-    # Если нет активного ключа — выбираем страну автоматически (без диалогов).
+    # Если страна не указана: при нескольких вариантах — запрос выбора; иначе подставляем из истории/списка.
     if country is None:
-        # Ищем последний сервер пользователя (даже если ключ уже удалён)
+        countries = get_countries_by_protocol(protocol)
         last_country = None
-        cursor.execute("""
-            SELECT s.country 
-            FROM v2ray_keys k 
-            JOIN servers s ON k.server_id = s.id 
-            WHERE k.user_id = ? 
-            ORDER BY k.created_at DESC 
+        cursor.execute(
+            """
+            SELECT s.country
+            FROM v2ray_keys k
+            JOIN servers s ON k.server_id = s.id
+            WHERE k.user_id = ?
+            ORDER BY k.created_at DESC
             LIMIT 1
-        """, (user_id,))
-        
+            """,
+            (user_id,),
+        )
         country_row = cursor.fetchone()
         if country_row:
             last_country = country_row[0]
 
+        if len(countries) > 1:
+            state_payload: Dict[str, Any] = {
+                "state": "reactivation_country_selection",
+                "tariff": tariff,
+                "email": email,
+                "protocol": protocol,
+            }
+            if last_country:
+                state_payload["last_country"] = last_country
+            user_states[user_id] = state_payload
+            prompt = (
+                f"🌍 Выберите страну для ключа {PROTOCOLS[protocol]['icon']} "
+                f"{PROTOCOLS[protocol]['name']}."
+            )
+            kb = get_country_menu(countries)
+            if message:
+                await message.answer(prompt, reply_markup=kb)
+            else:
+                await safe_send_message(bot, user_id, prompt, reply_markup=kb)
+            return
+
         if last_country:
             country = last_country
-        else:
-            countries = get_countries_by_protocol(protocol)
-            if countries:
-                country = countries[0]
+        elif countries:
+            country = countries[0]
     
     # Если нет активного ключа — создаём новый
     server = select_available_server_by_protocol(cursor, country, protocol, for_renewal=for_renewal, user_id=user_id)
