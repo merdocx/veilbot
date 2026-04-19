@@ -830,12 +830,14 @@ async def auto_delete_expired_subscriptions() -> None:
 
 async def monitor_subscription_traffic_limits() -> None:
     """Контроль превышения трафиковых лимитов для подписок V2Ray.
-    
+
     Каждые 10 минут:
-    1. Запрашивает трафик для всех активных ключей (сначала GET /keys/{uuid}/traffic, без лишнего GET /keys/{uuid})
-    2. Перезаписывает traffic_usage_bytes абсолютным значением total_bytes
-    3. Рассчитывает трафик подписок как сумму трафика всех ключей подписки
-    4. Проверяет превышение лимитов только для подписок
+    1. Запрашивает с панели total_bytes по ключам (где есть API).
+    2. Записывает в v2ray_keys.traffic_usage_bytes значение max(0, total_bytes - traffic_baseline_bytes)
+       (с учётом окна защиты после сброса трафика).
+    3. Суммарный трафик подписки для лимитов берётся из БД: SUM(traffic_usage_bytes) по всем ключам
+       подписки — как в SubscriptionRepository.get_subscription_traffic_sum / UI.
+    4. Проверяет превышение лимитов и шлёт уведомления.
     """
     
     TRAFFIC_NOTIFY_WARNING = 1
@@ -1042,28 +1044,18 @@ async def monitor_subscription_traffic_limits() -> None:
         if not subscriptions:
             logging.debug("[TRAFFIC] No active subscriptions with traffic limits found")
             return
-        
-        # Сумма трафика по подпискам из актуального usage_map (в окне после сброса — значения выше порога считаем устаревшими, иначе новый трафик)
-        subscription_usage_from_api: Dict[int, int] = {}
-        for key_row in active_keys:
-            key_id = key_row[0]
-            subscription_id = key_row[3]
-            baseline_bytes = key_row[6] if len(key_row) > 6 else 0
-            stored_usage_bytes = key_row[7] if len(key_row) > 7 else 0
-            api_val = usage_map.get(key_id) if key_id in usage_map else None
 
-            # ВАЖНО: Если по ключу не удалось получить трафик из API, не считаем его 0.
-            # Используем последнее известное значение из БД (v2ray_keys.traffic_usage_bytes),
-            # чтобы не "обнулять" суммарный трафик подписки из-за временных ошибок API.
-            if api_val is None:
-                effective = int(stored_usage_bytes or 0)
-            else:
-                effective = _compute_effective_usage(subscription_id, api_val, baseline_bytes)
+        # Итог по подписке должен совпадать с get_subscription_traffic_sum / админкой:
+        # сумма по ВСЕМ ключам (в т.ч. без API на сервере, только что обновлённым из БД).
+        subscription_ids_for_limits = [sub[0] for sub in subscriptions]
 
-            subscription_usage_from_api[subscription_id] = (
-                subscription_usage_from_api.get(subscription_id, 0) + effective
-            )
-        
+        def _load_subscription_usage_totals() -> Dict[int, int]:
+            return repo.get_all_subscriptions_traffic_sum(subscription_ids_for_limits)
+
+        subscription_usage_totals: Dict[int, int] = await asyncio.to_thread(
+            retry_db_operation, _load_subscription_usage_totals, 3
+        )
+
         # Проверить превышение лимитов только для подписок
         warn_notifications = []
         disable_notifications = []
@@ -1083,8 +1075,8 @@ async def monitor_subscription_traffic_limits() -> None:
                 sub[8],
             )
             
-            # Трафик из актуальных данных API (с учётом окна после сброса)
-            total_usage = subscription_usage_from_api.get(subscription_id, 0)
+            # Сумма по ключам в БД после обновления (единая логика с UI)
+            total_usage = subscription_usage_totals.get(subscription_id, 0)
             
             # Добавить в список для batch-обновления
             traffic_updates.append((subscription_id, total_usage))
