@@ -2667,17 +2667,6 @@ class SubscriptionPurchaseService:
                 f"🔄 Тип: {purchase_type}\n"
                 f"🧾 Платеж: `{payment.payment_id}`"
             )
-            message_plain = (
-                f"💳 Покупка подписки\n\n"
-                f"👤 Пользователь: {payment.user_id}\n"
-                f"📋 Подписка: #{subscription_id}\n"
-                f"📦 Тариф: {tariff.get('name', 'N/A')}\n"
-                f"💰 Сумма: {amount_rub}\n"
-                f"💳 Способ оплаты: {payment_method}\n"
-                f"📅 Действует до: {expires_date}\n"
-                f"🔄 Тип: {purchase_type}\n"
-                f"🧾 Платеж: {payment.payment_id}"
-            )
 
             bot = get_bot_instance()
             if bot:
@@ -2696,8 +2685,7 @@ class SubscriptionPurchaseService:
                 admin_id,
                 payment.payment_id,
             )
-            # Тот же Markdown, что и при отправке через aiogram — иначе при fallback
-            # без бота заголовок и код приходят без форматирования (message_plain).
+            # Тот же Markdown, что и при отправке через aiogram.
             ok = await _send_via_telegram_api(
                 token, admin_id, message, parse_mode="Markdown"
             )
