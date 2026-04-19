@@ -2696,8 +2696,10 @@ class SubscriptionPurchaseService:
                 admin_id,
                 payment.payment_id,
             )
+            # Тот же Markdown, что и при отправке через aiogram — иначе при fallback
+            # без бота заголовок и код приходят без форматирования (message_plain).
             ok = await _send_via_telegram_api(
-                token, admin_id, message_plain, parse_mode=""
+                token, admin_id, message, parse_mode="Markdown"
             )
             if ok:
                 logger.info(f"[SUBSCRIPTION] Admin notification sent for payment {payment.payment_id} (via Telegram API)")
