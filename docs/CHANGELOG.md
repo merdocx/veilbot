@@ -10,12 +10,27 @@
 ### Добавлено
 - `SubscriptionRepository.get_subscription_by_id_async` — асинхронная выборка подписки по id (в т.ч. `purchase_notification_sent`).
 - Повторный webhook: при `purchase_notification_sent = 0` догоняющее пользовательское уведомление (`_send_universal_notification`) и отметка флага.
+- **scripts/audit_traffic_reset_per_server.py**: readonly-friendly аудит работы `POST /api/keys/{id}/traffic/reset` по всем активным V2Ray-серверам. По умолчанию — dry-run (только GET), с `--apply` дёргает reset на одном существующем «безопасном» ключе и проверяет фактическое обнуление. Помечает сервера как `OK`/`BROKEN: panel returns 200 but does NOT reset counter`/`api unreachable`.
 
 ### Изменено
+- **monitor_subscription_traffic_limits**: интервал поднят с 10 минут до **30 минут** (снижение нагрузки на панели и БД). Соответственно `TRAFFIC_RESET_PROTECTION_WINDOW` увеличено с 15 до 35 минут — окно покрывает минимум один цикл монитора, чтобы лагающая панель не успела «откатить» наш reset в БД до следующего цикла.
+- **monitor_subscription_traffic_limits — политика regression-as-reset**: если `api_total` на ключе упал относительно `baseline + previous_usage` более чем на 5 MB и подписка не находится в окне после нашего собственного reset, такой случай трактуется как **сброс счётчика на стороне панели** (рестарт xray и т.п.). Поведение: `traffic_baseline_bytes := api_value`, `traffic_usage_bytes` остаётся прежним. Раньше эта же ситуация обнуляла накопленный usage у пользователя через `max(0, api_value - baseline)`.
+- **reset_subscription_traffic — верификация фактического обнуления**: после `POST /traffic/reset` сравниваются `total_before` и `total_after`. Если `total_before > 1 MB` и `total_after >= 0.9 * total_before`, reset считается «no-op» (панель отвечает 200, но реально не обнуляет): ключ переводится на fallback `baseline += old_usage` и логируется `WARNING` с `server_id`/`key_id`. Это предотвращает «зацементирование» счётчика при глючной панели.
 - Массовая зачистка неиспользуемых импортов и переменных (Ruff F401/F841); `bot.core` — явный `__all__` для реэкспортов.
 - Скрипты `fix_subscription_traffic_after_payment`, `fix_subscriptions_316_322`, `fix_subscriptions_478_479_480` перенесены в `scripts/archive/`; анализ `subscription_255_payment_325` — в `docs/archive/`.
 - Документация: раздел «Секреты в истории Git» в `SECURITY.md`; уточнён RUNBOOK 8.1a.
-- Очистка репозитория (первая волна): удалён `copy_to_new_server.py` (секреты в коде); дубликат `docs/archive/compare_keys.py`; неиспользуемый `admin/services/compare_keys_service.py`; каталог `venv.backup*` из дерева; разовые скрипты перенесены в `scripts/archive/`; отчёты в корне — в `docs/archive/incidents/`; в CI добавлен шаг Ruff F401/F841 (informational); обновлён `scripts/analyze_unused_files.py` (обход venv.backup и `.pytest_cache`).
+- Очистка репозитория (первая волна): удалён `copy_to_new_server.py` (секреты в коде); дубликат `docs/archive/compare_keys.py`; неиспользуемый `admin/services/compare_keys_service.py`; каталог `venv.backup*` из дерева; разовые скрипты перенесены в `scripts/archive/`; отчёты в корне — в `docs/archive/incidents/`; в CI добавлен шаг Ruff F401/F841 (informational); обновлён `scripts/archive/analyze_unused_files.py` (обход venv.backup и `.pytest_cache`).
+- Разовые аналитические и миграционные CLI-скрипты перенесены в **`scripts/archive/`**: `analyze_unused_files.py`, `analyze_vip_and_referral_bonus.py`, `analyze_subscription_purchase_flow.py`, `analyze_subscription_traffic_limit_issues.py`, `find_subscriptions_9gb_not_100gb.py`, `fix_subscriptions_9gb_to_100gb.py` (не входят в рантайм бота и CI).
+
+## [2.4.51] - 2026-05-18
+
+### Добавлено
+- **VIP и группы серверов**: пользователи с `users.is_vip = 1` не подпадают под дедупликацию `subscription_group_id` — до одного V2Ray-ключа на каждый доступный сервер; фоновый sync и `sync_all_keys_with_servers` не удаляют «лишние» ключи VIP в группе; guard при перевыпуске ключа для VIP отключён.
+- `tests/bot/services/test_subscription_server_groups.py` — unit-тесты логики групп и исключения VIP.
+
+### Изменено
+- `subscription_server_groups`: `subscription_group_dedup_applies`, `apply_group_dedup` в `compute_targets_purchase_sql_rows`, VIP-ветка в `iter_sync_work_items`.
+- `background_tasks._process_protocol_sync`, `subscription_purchase_service`, `subscription_service`, `sync_all_keys_with_servers`, `key_management`.
 
 ## [2.4.49] - 2026-04-19
 
@@ -186,11 +201,11 @@
 
 ### Добавлено
 - ✅ **Скрипты для анализа и исправления подписок**:
-  - `scripts/find_subscriptions_9gb_not_100gb.py` - поиск подписок с лимитом 9 ГБ вместо 100 ГБ
-  - `scripts/fix_subscriptions_9gb_to_100gb.py` - исправление подписок с неправильным лимитом
-  - `scripts/analyze_subscription_traffic_limit_issues.py` - анализ проблем с лимитом трафика
-  - `scripts/analyze_subscription_purchase_flow.py` - анализ процесса покупки и продления
-  - `scripts/analyze_vip_and_referral_bonus.py` - анализ учета VIP статуса и реферального бонуса
+  - `scripts/archive/find_subscriptions_9gb_not_100gb.py` - поиск подписок с лимитом 9 ГБ вместо 100 ГБ
+  - `scripts/archive/fix_subscriptions_9gb_to_100gb.py` - исправление подписок с неправильным лимитом
+  - `scripts/archive/analyze_subscription_traffic_limit_issues.py` - анализ проблем с лимитом трафика
+  - `scripts/archive/analyze_subscription_purchase_flow.py` - анализ процесса покупки и продления
+  - `scripts/archive/analyze_vip_and_referral_bonus.py` - анализ учета VIP статуса и реферального бонуса
 
 ### Документация
 - ✅ Добавлена документация по анализу и исправлению проблем с подписками:
@@ -678,7 +693,7 @@
   - Архивировано 10 устаревших документов в `docs/archive/`
   - Исправлена зависимость в `scripts/delete_orphaned_keys.py` (восстановлен `compare_keys.py` в `scripts/`)
   - Удалены пустые и поврежденные файлы БД (`veilbot.db`, `vpn.db.corrupted`)
-  - Созданы инструменты для анализа и очистки проекта (`analyze_unused_files.py`, `cleanup_project.py`)
+  - Созданы инструменты для анализа и очистки проекта (`scripts/archive/analyze_unused_files.py`, `cleanup_project.py`)
 
 ### Добавлено
 - ✅ **Новые диагностические скрипты**:

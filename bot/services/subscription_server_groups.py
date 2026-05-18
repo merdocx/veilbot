@@ -11,6 +11,11 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Typ
 T = TypeVar("T")  # used by pick_best_server_by_free_slots
 
 
+def subscription_group_dedup_applies(*, is_vip: bool) -> bool:
+    """Групповая дедупликация не действует для VIP (ключ на каждый сервер)."""
+    return not is_vip
+
+
 def user_has_active_paid_subscription(
     cursor: sqlite3.Cursor,
     user_id: int,
@@ -113,37 +118,45 @@ def compute_targets_purchase_sql_rows(
     *,
     existing_key_rows: Sequence[Tuple[int, str]],
     key_counts: Mapping[int, int],
+    apply_group_dedup: bool = True,
 ) -> List[Tuple[Any, ...]]:
     """
     filtered_full_rows: SELECT rows
     id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256,
     access_level, max_keys, subscription_group_id
     Возвращает список кортежей первых 8 полей для _create_single_v2ray_key.
+
+    apply_group_dedup=False (VIP): один ключ на сервер, группы игнорируются.
     """
     targets: List[Tuple[Any, ...]] = []
-    cov_s, cov_g = build_existing_key_coverage(existing_key_rows)
+    if apply_group_dedup:
+        cov_s, cov_g = build_existing_key_coverage(existing_key_rows)
+    else:
+        cov_s = {int(server_id) for server_id, _gid in existing_key_rows}
+        cov_g: Set[str] = set()
 
     by_group: Dict[str, List[Tuple[Any, ...]]] = defaultdict(list)
     for row in filtered_full_rows:
         gid = (row[10] or "").strip() if len(row) > 10 else ""
-        if gid:
+        if apply_group_dedup and gid:
             by_group[gid].append(row)
         else:
             sid = int(row[0])
             if sid not in cov_s:
                 targets.append(row[:8])
 
-    for gid, rows in by_group.items():
-        if gid in cov_g:
-            continue
-        best = pick_best_server_by_free_slots(
-            rows,
-            get_id=lambda r: r[0],
-            get_max_keys=lambda r: r[9] if len(r) > 9 else 0,
-            key_counts=key_counts,
-        )
-        if best is not None:
-            targets.append(best[:8])
+    if apply_group_dedup:
+        for gid, rows in by_group.items():
+            if gid in cov_g:
+                continue
+            best = pick_best_server_by_free_slots(
+                rows,
+                get_id=lambda r: r[0],
+                get_max_keys=lambda r: r[9] if len(r) > 9 else 0,
+                key_counts=key_counts,
+            )
+            if best is not None:
+                targets.append(best[:8])
 
     return targets
 
@@ -187,6 +200,9 @@ def iter_sync_work_items(
         has_active_paid = int(sub.get("price_rub") or 0) > 0
 
         cov_servers, cov_groups = sub_coverage.get(sub_id, (set(), set()))
+        apply_group_dedup = subscription_group_dedup_applies(is_vip=is_vip)
+        if not apply_group_dedup:
+            cov_groups = set()
 
         filtered: List[Mapping[str, Any]] = []
         for s in v2ray_servers:
@@ -201,23 +217,24 @@ def iter_sync_work_items(
         by_group: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
         for s in filtered:
             gid = (s.get("subscription_group_id") or "").strip()
-            if gid:
+            if apply_group_dedup and gid:
                 by_group[gid].append(s)
             else:
                 sid = int(s["id"])
                 if sid not in cov_servers:
                     work.append((s, sub))
 
-        for gid, srvs in by_group.items():
-            if gid in cov_groups:
-                continue
-            best = pick_best_server_by_free_slots(
-                srvs,
-                get_id=lambda x: x["id"],
-                get_max_keys=lambda x: x.get("max_keys") or 0,
-                key_counts=key_counts,
-            )
-            if best is not None:
-                work.append((best, sub))
+        if apply_group_dedup:
+            for gid, srvs in by_group.items():
+                if gid in cov_groups:
+                    continue
+                best = pick_best_server_by_free_slots(
+                    srvs,
+                    get_id=lambda x: x["id"],
+                    get_max_keys=lambda x: x.get("max_keys") or 0,
+                    key_counts=key_counts,
+                )
+                if best is not None:
+                    work.append((best, sub))
 
     return work

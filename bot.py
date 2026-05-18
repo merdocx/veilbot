@@ -89,8 +89,6 @@ async def handle_invite_friend(message: types.Message) -> None:
 # Обработчик handle_reactivation_country_selection перенесен в bot/handlers/renewal.py
 # Регистрируется через register_renewal_handlers()
 
-# Обработчик country_change_selection вынесен в bot/handlers/key_management.py
-
 # Обработчики purchase (waiting_country, protocol_selected, waiting_tariff) вынесены в bot/handlers/purchase.py
 
 # Функция get_tariff_by_name_and_price перенесена в bot/services/tariff_service.py
@@ -105,11 +103,7 @@ async def handle_invite_friend(message: types.Message) -> None:
 # - find_alternative_server() (~22 строки)
 # - extend_existing_key_with_fallback() (~190 строк)
 # - extend_existing_key() (~19 строк)
-# - switch_protocol_and_extend() (~209 строк)
-# - change_country_and_extend() (~173 строки)
 # - delete_old_key_after_success() (~51 строка)
-# - change_protocol_for_key() (~144 строки)
-# - change_country_for_key() (~164 строки)
 # - reissue_specific_key() (~257 строк)
 # Функции управления ключами перенесены в bot/services/key_management.py
 # Старые версии функций удалены
@@ -134,8 +128,6 @@ async def create_new_key_flow(
         for_renewal=False,
         user_states=user_states,
     )
-
-# Функции switch_protocol_and_extend и change_country_and_extend перенесены в bot/services/key_management.py
 
 # Функция create_new_key_flow_with_protocol перенесена в bot/services/key_creation.py
 # Старая реализация удалена (было ~527 строк)
@@ -458,10 +450,9 @@ async def create_payment_with_email_and_protocol(
 
 # Handlers управления ключами вынесены в bot/handlers/key_management.py
 
-# Функции show_key_selection_menu, show_protocol_change_menu, show_key_selection_for_country_change,
-# show_country_change_menu перенесены в bot/handlers/key_management.py
+# Функция show_key_selection_menu перенесена в bot/handlers/key_management.py
 
-# Функции delete_old_key_after_success, change_protocol_for_key, change_country_for_key и reissue_specific_key перенесены в bot/services/key_management.py
+# Функции delete_old_key_after_success и reissue_specific_key перенесены в bot/services/key_management.py
 # Старые версии функций удалены
 
 # Callback handlers управления ключами вынесены в bot/handlers/key_management.py
@@ -478,8 +469,6 @@ from bot.services.tariff_service import get_tariff_by_name_and_price  # noqa: F4
 from bot.services.free_tariff import handle_free_tariff_with_protocol  # noqa: F401
 from bot.services.key_management import (  # noqa: F401
     delete_old_key_after_success,
-    change_protocol_for_key,
-    change_country_for_key,
     reissue_specific_key,
 )
 

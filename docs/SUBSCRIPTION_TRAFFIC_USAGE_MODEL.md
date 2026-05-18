@@ -1,40 +1,44 @@
-## Модель учёта трафика подписок
+# Модель учёта трафика подписок
 
-- **Единственный источник правды по использованному трафику подписки** — это агрегированное значение по ключам в таблице `v2ray_keys`:
-  - поле `v2ray_keys.traffic_usage_bytes`,
-  - которое считается как разница `max(0, total_bytes - traffic_baseline_bytes)` в джобе `monitor_subscription_traffic_limits`.
-- Поле `subscriptions.traffic_usage_bytes` используется **только** как служебный кэш для:
-  - ускорения проверок лимитов,
-  - вычисления и хранения флагов `traffic_over_limit_at` и `traffic_over_limit_notified`,
-  - формирования рассылок и фоновых уведомлений.
-- Любые UI, боты и админка при отображении текущего трафика и остатка должны опираться на:
-  - `SubscriptionRepository.get_subscription_traffic_sum(subscription_id)` — сумма `traffic_usage_bytes` по всем ключам подписки,
-  - `SubscriptionRepository.get_subscription_traffic_limit(subscription_id)` — эффективный лимит подписки (в байтах).
+## Идея
 
-### Продление подписки и сброс трафика
+- **Лимит** считается только на уровне **подписки**, не по отдельным ключам.
+- На **ключе** хранится только монотонный снимок счётчика с панели: **`panel_total_bytes_observed`**.
+  - После успешного GET: `new = max(stored, api_total)` (если с панели не выросло — оставляем stored).
+  - При ошибке GET поле **не** меняется.
+- На **подписке** хранится **`traffic_baseline_bytes`** (`B`) — одна точка отсчёта периода для всей подписки.
 
-- При продлении подписки:
-  - срок действия (`expires_at`) продлевается в `SubscriptionPurchaseService` согласно тарифу и правилам для VIP/ручных подписок;
-  - лимит трафика обновляется через `_update_subscription_traffic_limit_safe`, сохраняя реферальные бонусы и безлимит.
-- Сброс трафика реализован через **сдвиг baseline**:
-  - в `subscription_traffic_reset.reset_subscription_traffic`:
-    - `traffic_baseline_bytes += traffic_usage_bytes`,
-    - `traffic_usage_bytes = 0` в `v2ray_keys`,
-    - `subscriptions.traffic_usage_bytes` и флаги превышения обнуляются.
-  - фактическое значение usage после продления считается как новая разница `max(0, total_bytes - traffic_baseline_bytes)` — это надёжно даже при недоступности или сбоях API Xray.
+## Формулы
 
-### Окно защиты после сброса
+Пусть **`S = SUM(panel_total_bytes_observed)`** по всем ключам подписки, **`B = subscriptions.traffic_baseline_bytes`**, **`L`** — лимит подписки в байтах (`get_subscription_traffic_limit`).
 
-- Джоб `monitor_subscription_traffic_limits` использует `TRAFFIC_RESET_PROTECTION_WINDOW`:
-  - в течение окна после `last_traffic_reset_at` большие значения `total_bytes` из API считаются устаревшими и не переносятся в usage;
-  - это защищает от ситуации, когда Xray не успел/не смог обнулить счётчики на своей стороне.
+- **Израсходовано за период:** `used = max(0, S - B)`.
+- **Остаток:** `remaining = max(0, L - used)`.
 
-### Рекомендации по использованию
+**Кэш** `subscriptions.traffic_usage_bytes` дублирует `used` для быстрых запросов (обновляется монитором).
 
-- Для показа пользователю:
-  - используйте только агрегированный usage по ключам (через `get_subscription_traffic_sum`);
-  - лимит и остаток считайте от `get_subscription_traffic_limit`.
-- Для фоновых задач и уведомлений:
-  - можно использовать `subscriptions.traffic_usage_bytes` как кэш/слепок актуального usage,
-  - но при расхождениях приоритет всегда за пересчитанным значением из `v2ray_keys`.
+## Мониторинг
 
+Фоновая задача `monitor_subscription_traffic_limits` (интервал ~30 минут):
+
+1. Для каждого активного V2Ray-ключа с API запрашивает `total_bytes` с панели.
+2. Обновляет `panel_total_bytes_observed` монотонно.
+3. Пересчитывает `used` по подписке и кэш, проверяет лимит, уведомления, grace.
+
+## Продление / сброс периода
+
+`reset_subscription_traffic` (без POST на панель) выставляет:
+
+- `subscriptions.traffic_baseline_bytes = S` (сумма текущих `panel_total_bytes_observed` по ключам),
+- сбрасывает кэш и флаги превышения на подписке.
+
+Тогда `used = max(0, S - S) = 0` до нового роста счётчиков.
+
+## Разовая калибровка
+
+Скрипт `scripts/snap_subscription_traffic_baselines.py` может выставить `B = S` для всех подписок (см. `--dry-run`).
+
+## UI / отчёты
+
+- Суммарный расход подписки: `SubscriptionRepository.get_subscription_traffic_sum` (формула выше).
+- По ключу в интерфейсах для «накопленного с панели» используется **`panel_total_bytes_observed`**.

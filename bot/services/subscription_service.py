@@ -18,7 +18,12 @@ from vpn_protocols import (
     remove_fragment_from_vless,
 )
 from app.infra.sqlite_utils import get_db_cursor, retry_db_operation
-from bot.services.subscription_server_groups import user_has_active_paid_subscription
+from bot.services.subscription_server_groups import (
+    compute_targets_purchase_sql_rows,
+    filter_servers_by_access_sql_rows,
+    subscription_group_dedup_applies,
+    user_has_active_paid_subscription,
+)
 from config import SUPPORT_USERNAME
 
 try:
@@ -222,32 +227,75 @@ def _normalize_support_username() -> Optional[str]:
 
 
 def _fetch_servers_for_new_subscription(user_id: int, subscription_id: int) -> list:
-    """Возвращает список 6-кортежей (server_id, name, api_url, api_key, domain, v2ray_path) для создания ключей. Используется с retry_db_operation."""
+    """
+    Возвращает список 6-кортежей (server_id, name, api_url, api_key, domain, v2ray_path)
+    для создания ключей подписки.
+
+    ВАЖНО: применяет единую логику групп серверов (`subscription_group_id`) — не больше
+    одного ключа на группу. Выбор внутри группы делается по максимуму свободных слотов
+    (max_keys − текущее число ключей на сервере).
+
+    Используется с retry_db_operation.
+    """
     from app.repositories.user_repository import UserRepository
     user_repo = UserRepository()
     with get_db_cursor() as cursor:
-        cursor.execute("""
-            SELECT id, name, api_url, api_key, domain, v2ray_path, COALESCE(access_level, 'all') as access_level
+        # Полный набор полей нужен для compute_targets_purchase_sql_rows.
+        # Порядок полей соответствует ожиданиям функции:
+        # id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256,
+        # access_level, max_keys, subscription_group_id
+        cursor.execute(
+            """
+            SELECT
+                id,
+                name,
+                api_url,
+                api_key,
+                domain,
+                v2ray_path,
+                protocol,
+                cert_sha256,
+                COALESCE(access_level, 'all') as access_level,
+                COALESCE(max_keys, 0) as max_keys,
+                COALESCE(subscription_group_id, '') as subscription_group_id
             FROM servers
-            WHERE protocol = 'v2ray' AND active = 1
+            WHERE protocol = 'v2ray' AND active = 1 AND COALESCE(available_for_purchase, 1) = 1
             ORDER BY id
-        """)
-        servers_raw = cursor.fetchall()
+            """
+        )
+        servers_full_rows = cursor.fetchall()
+
+        # Текущее количество ключей на сервере используется для выбора "лучшего" сервера в группе.
+        cursor.execute(
+            """
+            SELECT server_id, COUNT(*)
+            FROM v2ray_keys
+            GROUP BY server_id
+            """
+        )
+        key_counts = {int(sid): int(cnt) for sid, cnt in cursor.fetchall()}
+
         now_ts = int(time.time())
         has_active_paid_subscription = user_has_active_paid_subscription(
             cursor, user_id, now_ts, include_subscription_id=subscription_id
         )
     is_vip = user_repo.is_user_vip(user_id)
-    servers = []
-    for server in servers_raw:
-        server_access_level = server[6] if len(server) > 6 else 'all'
-        if server_access_level == 'all':
-            servers.append(server[:6])
-        elif server_access_level == 'vip' and is_vip:
-            servers.append(server[:6])
-        elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
-            servers.append(server[:6])
-    return servers
+
+    filtered_full_rows = filter_servers_by_access_sql_rows(
+        servers_full_rows,
+        is_vip=bool(is_vip),
+        has_active_paid_subscription=bool(has_active_paid_subscription),
+    )
+
+    target_rows = compute_targets_purchase_sql_rows(
+        filtered_full_rows,
+        existing_key_rows=[],
+        key_counts=key_counts,
+        apply_group_dedup=subscription_group_dedup_applies(is_vip=bool(is_vip)),
+    )
+
+    # Приводим к ожидаемому формату (server_id, name, api_url, api_key, domain, v2ray_path)
+    return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in target_rows]
 
 
 def _insert_v2ray_key_for_subscription(
@@ -278,8 +326,8 @@ class SubscriptionService:
         """
         Вернуть полное состояние трафика подписки.
 
-        Основано на агрегированном usage по ключам (v2ray_keys.traffic_usage_bytes),
-        который обновляется как max(0, total_bytes - traffic_baseline_bytes) в фоновой задаче.
+        Used = max(0, S - B): S — сумма panel_total_bytes_observed по ключам,
+        B — subscriptions.traffic_baseline_bytes (обновляет монитор и продление).
         """
         usage_bytes = self.repository.get_subscription_traffic_sum(subscription_id)
         limit_bytes = self.repository.get_subscription_traffic_limit(subscription_id)
@@ -814,38 +862,17 @@ class SubscriptionService:
             failed_servers = []
             if v2ray_keys_extended == 0:
                 logger.info(
-                    f"No V2Ray keys for subscription {existing_id}, creating keys on all active V2Ray servers"
+                    f"No V2Ray keys for subscription {existing_id}, creating keys using server-group selection"
                 )
-                with get_db_cursor() as cursor:
-                    cursor.execute(
-                        """
-                        SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256, COALESCE(access_level, 'all') as access_level
-                        FROM servers
-                        WHERE active = 1 AND protocol = 'v2ray'
-                        ORDER BY id
-                        """,
-                    )
-                    servers_raw = cursor.fetchall()
-                    
-                    # Фильтруем серверы по доступности для пользователя
-                    servers = []
-                    is_vip = user_repo.is_user_vip(user_id)
-                    now_ts = int(time.time())
-                    
-                    has_active_paid_subscription = user_has_active_paid_subscription(
-                        cursor, user_id, now_ts, include_subscription_id=existing_id
-                    )
-                    
-                    for server in servers_raw:
-                        server_access_level = server[8] if len(server) > 8 else 'all'
-                        if server_access_level == 'all':
-                            servers.append(server[:8])  # Без access_level
-                        elif server_access_level == 'vip' and is_vip:
-                            servers.append(server[:8])
-                        elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
-                            servers.append(server[:8])
+                # Переиспользуем общую функцию выбора серверов для подписок
+                servers = retry_db_operation(
+                    lambda: _fetch_servers_for_new_subscription(user_id, existing_id),
+                    max_attempts=5,
+                    initial_delay=0.15,
+                    operation_name="fetch_servers_for_subscription",
+                )
 
-                for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in servers:
+                for server_id, server_name, api_url, api_key, domain, v2ray_path in servers:
                     protocol_client = None
                     v2ray_uuid = None
                     try:

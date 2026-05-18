@@ -85,8 +85,6 @@ async def test_create_new_v2ray_key_inserts_record(temp_db, mock_message, monkey
         protocol="v2ray",
         user_states=user_states,
         extend_existing_key_with_fallback=_noop,
-        change_country_and_extend=_noop,
-        switch_protocol_and_extend=_noop,
         record_free_key_usage=_record,
     )
 
@@ -130,8 +128,6 @@ async def test_create_new_key_no_servers_notifies_user(temp_db, monkeypatch):
         protocol="v2ray",
         user_states=user_states,
         extend_existing_key_with_fallback=_noop,
-        change_country_and_extend=_noop,
-        switch_protocol_and_extend=_noop,
         record_free_key_usage=_noop,
     )
 
@@ -214,8 +210,6 @@ async def test_create_new_key_prompts_for_country(temp_db, mock_message, monkeyp
         protocol="v2ray",
         user_states=user_states,
         extend_existing_key_with_fallback=_noop,
-        change_country_and_extend=_noop,
-        switch_protocol_and_extend=_noop,
         record_free_key_usage=_noop,
     )
 

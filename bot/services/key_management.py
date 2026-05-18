@@ -1,5 +1,5 @@
 """
-Модуль для управления ключами (продление, перевыпуск, смена протокола/страны)
+Модуль для управления ключами (продление, перевыпуск)
 Вынесен из bot.py для улучшения поддерживаемости
 """
 import asyncio
@@ -26,6 +26,102 @@ _COLUMN_CACHE: Dict[str, set[str]] = {}
 # ============================================================================
 # Вспомогательные функции
 # ============================================================================
+
+async def _cleanup_subscription_group_duplicates_before_insert(
+    cursor: sqlite3.Cursor,
+    *,
+    subscription_id: Optional[int],
+    target_server_id: int,
+    keep_db_key_ids: set[int],
+) -> None:
+    """
+    Для подписок допускается максимум один ключ в одной subscription_group_id.
+    Если перед вставкой нового ключа в целевую группу у подписки уже есть другие ключи
+    в этой же группе — best-effort удаляем их с панели (API) и из БД.
+
+    keep_db_key_ids: id записей v2ray_keys, которые нельзя трогать (например, текущий ключ,
+    который будет удалён после успешной вставки нового).
+    """
+    if not subscription_id:
+        return
+
+    cursor.execute(
+        """
+        SELECT COALESCE(u.is_vip, 0)
+        FROM subscriptions s
+        JOIN users u ON s.user_id = u.user_id
+        WHERE s.id = ?
+        """,
+        (int(subscription_id),),
+    )
+    vip_row = cursor.fetchone()
+    if vip_row and int(vip_row[0] or 0):
+        return
+
+    cursor.execute(
+        "SELECT COALESCE(NULLIF(TRIM(subscription_group_id), ''), '') FROM servers WHERE id = ?",
+        (int(target_server_id),),
+    )
+    row = cursor.fetchone()
+    gid = (row[0] if row else "") or ""
+    gid = gid.strip()
+    if not gid:
+        return
+
+    cursor.execute(
+        """
+        SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key
+        FROM v2ray_keys k
+        JOIN servers s ON k.server_id = s.id
+        WHERE k.subscription_id = ?
+          AND COALESCE(NULLIF(TRIM(s.subscription_group_id), ''), '') = ?
+        """,
+        (int(subscription_id), gid),
+    )
+    existing = list(cursor.fetchall() or [])
+    to_remove = [r for r in existing if int(r[0]) not in keep_db_key_ids]
+    if not to_remove:
+        return
+
+    for db_key_id, srv_id, v2ray_uuid, api_url, api_key in to_remove:
+        # best-effort delete from server
+        if v2ray_uuid and api_url and api_key:
+            protocol_client = None
+            try:
+                protocol_client = ProtocolFactory.create_protocol(
+                    "v2ray",
+                    {"api_url": api_url, "api_key": api_key},
+                )
+                await protocol_client.delete_user(str(v2ray_uuid).strip())
+            except Exception as exc:  # noqa: BLE001
+                logging.warning(
+                    "[SUBSCRIPTION_GROUP_GUARD] Failed to delete duplicate key %s (db_id=%s, sub=%s, gid=%s, server_id=%s): %s",
+                    (str(v2ray_uuid)[:8] + "...") if v2ray_uuid else "N/A",
+                    db_key_id,
+                    subscription_id,
+                    gid,
+                    srv_id,
+                    exc,
+                )
+            finally:
+                if protocol_client:
+                    try:
+                        await protocol_client.close()
+                    except Exception:
+                        pass
+
+        # delete from DB
+        try:
+            with safe_foreign_keys_off(cursor):
+                cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (int(db_key_id),))
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(
+                "[SUBSCRIPTION_GROUP_GUARD] Failed to delete duplicate key from DB (db_id=%s, sub=%s, gid=%s): %s",
+                db_key_id,
+                subscription_id,
+                gid,
+                exc,
+            )
 
 def check_server_availability(api_url: str, cert_sha256: str, protocol: str = 'v2ray') -> bool:
     """
@@ -474,766 +570,6 @@ async def delete_old_key_after_success(
         logging.error(f"Ошибка при удалении старого ключа: {e}", exc_info=True)
 
 
-# ============================================================================
-# Функции смены протокола и страны
-# ============================================================================
-
-async def switch_protocol_and_extend(
-    cursor: sqlite3.Cursor, 
-    message: types.Message, 
-    user_id: int, 
-    old_key_data: Dict[str, Any], 
-    new_protocol: str, 
-    new_country: str, 
-    additional_duration: int, 
-    email: str, 
-    tariff: Dict[str, Any]
-) -> None:
-    """
-    Меняет протокол (и возможно страну) с продлением времени
-    
-    Создает новый ключ с новым протоколом и страной, сохраняя оставшееся время
-    старого ключа и добавляя новое купленное время. Старый ключ удаляется.
-    
-    Args:
-        cursor: Курсор базы данных
-        message: Telegram сообщение для отправки уведомлений пользователю
-        user_id: ID пользователя
-        old_key_data: Словарь с данными старого ключа
-        new_protocol: Новый протокол ('v2ray')
-        new_country: Новая страна сервера
-        additional_duration: Дополнительное время в секундах (продление)
-        email: Email пользователя
-        tariff: Словарь с данными тарифа
-    """
-    get_bot_instance()
-    main_menu = get_main_menu()
-    
-    now = int(time.time())
-    old_protocol = old_key_data['protocol']
-    old_country = old_key_data['country']
-    
-    # Если страна не указана, используем текущую страну старого ключа
-    target_country = new_country or old_country
-    
-    # Считаем оставшееся время старого ключа
-    remaining = max(0, old_key_data['expiry_at'] - now)
-    
-    # Общее время = оставшееся + новое купленное
-    total_duration = remaining + additional_duration
-    now + total_duration
-    
-    old_server_id = old_key_data['server_id']
-    old_email = old_key_data.get('email') or email
-    if old_key_data.get('type') == 'v2ray':
-        usage_resolved, over_limit_resolved, notified_resolved = _resolve_v2ray_usage_metadata(
-            cursor,
-            old_key_data.get('id') or old_key_data.get('db_id'),
-            old_key_data.get('traffic_usage_bytes'),
-            old_key_data.get('traffic_over_limit_at'),
-            old_key_data.get('traffic_over_limit_notified'),
-        )
-        # ВАЖНО: traffic_over_limit_at и traffic_over_limit_notified удалены из v2ray_keys
-        old_key_data['traffic_usage_bytes'] = usage_resolved
-        # over_limit_resolved и notified_resolved не используются, но сохраняем сигнатуру функции
-    traffic_limit_mb = 0
-    try:
-        traffic_limit_mb = int(old_key_data.get('traffic_limit_mb') or 0)
-    except (TypeError, ValueError):
-        traffic_limit_mb = 0
-    if isinstance(tariff, dict):
-        try:
-            tariff_limit = int(tariff.get('traffic_limit_mb') or 0)
-        except (TypeError, ValueError):
-            tariff_limit = 0
-        if traffic_limit_mb == 0 and tariff_limit:
-            traffic_limit_mb = tariff_limit
-        tariff['traffic_limit_mb'] = tariff_limit
-    if traffic_limit_mb == 0 and isinstance(tariff, dict) and tariff.get('id'):
-        try:
-            cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff['id'],))
-            row = cursor.fetchone()
-            if row and row[0]:
-                traffic_limit_mb = int(row[0])
-        except Exception as e:  # noqa: BLE001
-            logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff.get('id')}: {e}")
-    
-    old_key_data['traffic_limit_mb'] = traffic_limit_mb
-    
-    logging.info(f"User {user_id}: switching protocol {old_protocol}→{new_protocol}, country {old_country}→{target_country}, remaining={remaining}s, adding={additional_duration}s")
-    
-    # Ищем сервер в целевой стране с новым протоколом с учетом access_level
-    cursor.execute("""
-        SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key, COALESCE(access_level, 'all') as access_level FROM servers 
-        WHERE active = 1 AND country = ? AND protocol = ?
-    """, (target_country, new_protocol))
-    servers_raw = cursor.fetchall()
-    
-    # Фильтруем серверы по доступности для пользователя
-    from app.repositories.user_repository import UserRepository
-    user_repo = UserRepository()
-    is_vip = user_repo.is_user_vip(user_id)
-    now_ts = int(time.time())
-    
-    has_active_paid_subscription = user_has_active_paid_subscription(cursor, user_id, now_ts)
-    
-    servers = []
-    for server in servers_raw:
-        server_access_level = server[6] if len(server) > 6 else 'all'
-        if server_access_level == 'all':
-            servers.append(server[:6])  # Без access_level
-        elif server_access_level == 'vip' and is_vip:
-            servers.append(server[:6])
-        elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
-            servers.append(server[:6])
-    
-    if not servers:
-        logging.error(f"No servers found for protocol={new_protocol}, country={target_country}")
-        await message.answer(f"❌ Нет доступных серверов {PROTOCOLS[new_protocol]['name']} в стране {target_country}.", reply_markup=main_menu)
-        return False
-    
-    # Берём первый подходящий сервер
-    new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
-    
-    # Сохраняем данные старого ключа для удаления
-    old_key_for_deletion = {
-        'type': old_key_data['type'],
-        'server_id': old_server_id,
-        'key_id': old_key_data.get('key_id'),
-        'v2ray_uuid': old_key_data.get('v2ray_uuid'),
-        'db_id': old_key_data['id']
-    }
-    
-    try:
-        if new_protocol != "v2ray":
-            await message.answer(
-                "❌ Смена на этот протокол недоступна. Поддерживается только V2Ray (VLESS).",
-                reply_markup=main_menu,
-            )
-            return False
-        from vpn_protocols import V2RayProtocol
-        v2ray_client = V2RayProtocol(api_url, api_key)
-        user_data = await v2ray_client.create_user(old_email or f"user_{user_id}@veilbot.com")
-        
-        if not user_data or not user_data.get('uuid'):
-            logging.error(f"Failed to create V2Ray key on server {new_server_id}")
-            await message.answer("❌ Ошибка при создании V2Ray ключа на новом сервере.", reply_markup=main_menu)
-            return False
-        
-        config = None
-        if user_data.get('client_config'):
-            config = user_data['client_config']
-            if 'vless://' in config:
-                lines = config.split('\n')
-                for line in lines:
-                    if line.strip().startswith('vless://'):
-                        config = line.strip()
-                        break
-            access_url = config
-            logging.info(f"Using client_config from create_user response for protocol switch")
-        else:
-            try:
-                config = await v2ray_client.get_user_config(user_data['uuid'], {
-                    'domain': domain,
-                    'port': 443,
-                    'path': v2ray_path or '/v2ray',
-                    'email': old_email or f"user_{user_id}@veilbot.com"
-                })
-                if 'vless://' in config:
-                    lines = config.split('\n')
-                    for line in lines:
-                        if line.strip().startswith('vless://'):
-                            config = line.strip()
-                            break
-                access_url = config
-            except Exception as e:
-                logging.error(f"Failed to get user config for UUID {user_data['uuid'][:8]}...: {e}")
-                raise Exception(f"Failed to get V2Ray config for user {user_data['uuid'][:8]}...: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
-        
-        cursor.execute("SELECT subscription_id FROM v2ray_keys WHERE id = ?", (old_key_data.get('id') or old_key_data.get('db_id'),))
-        subscription_row = cursor.fetchone()
-        subscription_id = subscription_row[0] if subscription_row else None
-        
-        usage_bytes_new = old_key_data.get('traffic_usage_bytes', 0)
-        cursor.execute(
-            "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, created_at, email, tariff_id, client_config, "
-            "traffic_usage_bytes, subscription_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                new_server_id,
-                user_id,
-                user_data['uuid'],
-                now,
-                old_email,
-                tariff['id'],
-                config,
-                usage_bytes_new,
-                subscription_id,
-            ),
-        )
-        await delete_old_key_after_success(cursor, old_key_for_deletion)
-        
-        time_remaining_str = format_duration(remaining)
-        time_added_str = format_duration(additional_duration)
-        time_total_str = format_duration(total_duration)
-        
-        if old_country != target_country:
-            msg = (
-                f"🌍🔄 *Смена протокола и страны*\n\n"
-                f"Ваш ключ перенесён:\n"
-                f"• С *{PROTOCOLS[old_protocol]['name']}* на *{PROTOCOLS[new_protocol]['name']}*\n"
-                f"• Из *{old_country}* в *{target_country}*\n\n"
-                f"⏰ Оставшееся время: {time_remaining_str}\n"
-                f"➕ Добавлено: {time_added_str}\n"
-                f"📅 Итого: {time_total_str}\n\n"
-                f"{format_key_message_unified(access_url, new_protocol, tariff)}"
-            )
-        else:
-            msg = (
-                f"🔄 *Смена протокола и продление*\n\n"
-                f"Ваш ключ перенесён с *{PROTOCOLS[old_protocol]['name']}* на *{PROTOCOLS[new_protocol]['name']}*\n"
-                f"Страна: *{target_country}*\n\n"
-                f"⏰ Оставшееся время: {time_remaining_str}\n"
-                f"➕ Добавлено: {time_added_str}\n"
-                f"📅 Итого: {time_total_str}\n\n"
-                f"{format_key_message_unified(access_url, new_protocol, tariff)}"
-            )
-        await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-        
-        cursor.connection.commit()
-        
-        logging.info(f"Successfully switched protocol for user {user_id}: {old_protocol}→{new_protocol}, {old_country}→{target_country}, total={total_duration}s")
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error in switch_protocol_and_extend: {e}")
-        await message.answer("❌ Произошла ошибка при смене протокола. Попробуйте позже.", reply_markup=main_menu)
-        return False
-
-
-async def change_country_and_extend(
-    cursor: sqlite3.Cursor, 
-    message: types.Message, 
-    user_id: int, 
-    key_data: Dict[str, Any], 
-    new_country: str, 
-    additional_duration: int, 
-    email: str, 
-    tariff: Dict[str, Any],
-    reset_usage: bool = False,
-) -> None:
-    """
-    Меняет страну для ключа и добавляет новое время (при покупке нового тарифа)
-    
-    Создает новый ключ на сервере в новой стране, сохраняя оставшееся время
-    старого ключа и добавляя новое купленное время. Старый ключ удаляется.
-    
-    Args:
-        cursor: Курсор базы данных
-        message: Telegram сообщение для отправки уведомлений пользователю
-        user_id: ID пользователя
-        key_data: Словарь с данными текущего ключа
-        new_country: Новая страна сервера
-        additional_duration: Дополнительное время в секундах (продление)
-        email: Email пользователя
-        tariff: Словарь с данными тарифа
-        reset_usage: Сбрасывать ли учёт трафика после переноса (используется при продлении)
-    """
-    get_bot_instance()
-    main_menu = get_main_menu()
-    
-    now = int(time.time())
-    protocol = key_data['protocol']
-    traffic_limit_mb = 0
-    try:
-        traffic_limit_mb = int(key_data.get('traffic_limit_mb') or 0)
-    except (TypeError, ValueError):
-        traffic_limit_mb = 0
-    if isinstance(tariff, dict):
-        try:
-            tariff_limit = int(tariff.get('traffic_limit_mb') or 0)
-        except (TypeError, ValueError):
-            tariff_limit = 0
-        if traffic_limit_mb == 0 and tariff_limit:
-            traffic_limit_mb = tariff_limit
-        tariff['traffic_limit_mb'] = tariff_limit
-    if traffic_limit_mb == 0 and tariff and isinstance(tariff, dict) and tariff.get('id'):
-        try:
-            cursor.execute("SELECT traffic_limit_mb FROM tariffs WHERE id = ?", (tariff['id'],))
-            row = cursor.fetchone()
-            if row and row[0]:
-                traffic_limit_mb = int(row[0])
-        except Exception as e:  # noqa: BLE001
-            logging.warning(f"Failed to fetch traffic_limit_mb for tariff {tariff.get('id')}: {e}")
-    
-    key_data['traffic_limit_mb'] = traffic_limit_mb
-    
-    # Считаем оставшееся время старого ключа
-    remaining = max(0, key_data['expiry_at'] - now)
-    
-    # Общее время = оставшееся + новое купленное
-    total_duration = remaining + additional_duration
-    now + total_duration
-    
-    old_server_id = key_data['server_id']
-    old_country = key_data['country']
-    old_email = key_data['email'] or email
-    
-    # Ищем сервер в новой стране с тем же протоколом с учетом access_level
-    cursor.execute("""
-        SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key, COALESCE(access_level, 'all') as access_level FROM servers 
-        WHERE active = 1 AND country = ? AND protocol = ?
-    """, (new_country, protocol))
-    servers_raw = cursor.fetchall()
-    
-    # Фильтруем серверы по доступности для пользователя
-    from app.repositories.user_repository import UserRepository
-    user_repo = UserRepository()
-    is_vip = user_repo.is_user_vip(user_id)
-    now_ts = int(time.time())
-    
-    has_active_paid_subscription = user_has_active_paid_subscription(cursor, user_id, now_ts)
-    
-    servers = []
-    for server in servers_raw:
-        server_access_level = server[6] if len(server) > 6 else 'all'
-        if server_access_level == 'all':
-            servers.append(server[:6])  # Без access_level
-        elif server_access_level == 'vip' and is_vip:
-            servers.append(server[:6])
-        elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
-            servers.append(server[:6])
-    
-    if not servers:
-        logging.error(f"No servers found for country={new_country}, protocol={protocol}")
-        await message.answer(f"❌ Нет доступных серверов {PROTOCOLS[protocol]['name']} в стране {new_country}.", reply_markup=main_menu)
-        return False
-    
-    # Берём первый подходящий сервер
-    new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
-    
-    # Сохраняем данные старого ключа для удаления
-    # ВАЖНО: traffic_over_limit_at и traffic_over_limit_notified удалены из v2ray_keys
-    usage_default = key_data.get('traffic_usage_bytes')
-    if key_data['type'] == 'v2ray':
-        usage_default, _, _ = _resolve_v2ray_usage_metadata(
-            cursor,
-            key_data.get('id'),
-            usage_default,
-            None,  # fallback_over_limit_at (не используется)
-            0,     # fallback_over_limit_notified (не используется)
-        )
-    old_key_data = {
-        'type': key_data['type'],
-        'server_id': old_server_id,
-        'key_id': key_data.get('key_id'),
-        'v2ray_uuid': key_data.get('v2ray_uuid'),
-        'db_id': key_data['id'],
-        'traffic_usage_bytes': usage_default or 0,
-    }
-    
-    try:
-        if protocol != "v2ray":
-            await message.answer(
-                "❌ Смена страны для этого протокола недоступна. Поддерживается только V2Ray (VLESS).",
-                reply_markup=main_menu,
-            )
-            return False
-        from vpn_protocols import V2RayProtocol
-        v2ray_client = V2RayProtocol(api_url, api_key)
-        access_url = None
-        new_key_id: Optional[int] = None
-        try:
-            user_data = await v2ray_client.create_user(old_email or f"user_{user_id}@veilbot.com")
-            
-            if not user_data or not user_data.get('uuid'):
-                logging.error(f"Failed to create V2Ray key on server {new_server_id}")
-                await message.answer("❌ Ошибка при создании V2Ray ключа на новом сервере.", reply_markup=main_menu)
-                return False
-            
-            config = None
-            if user_data.get('client_config'):
-                config = user_data['client_config']
-                if 'vless://' in config:
-                    lines = config.split('\n')
-                    for line in lines:
-                        if line.strip().startswith('vless://'):
-                            config = line.strip()
-                            break
-                access_url = config
-                logging.info(f"Using client_config from create_user response for country change")
-            else:
-                try:
-                    config = await v2ray_client.get_user_config(user_data['uuid'], {
-                        'domain': domain,
-                        'port': 443,
-                        'path': v2ray_path or '/v2ray',
-                        'email': old_email or f"user_{user_id}@veilbot.com"
-                    })
-                    if 'vless://' in config:
-                        lines = config.split('\n')
-                        for line in lines:
-                            if line.strip().startswith('vless://'):
-                                config = line.strip()
-                                break
-                    access_url = config
-                except Exception as e:
-                    logging.error(f"Failed to get user config for UUID {user_data['uuid'][:8]}...: {e}")
-                    raise Exception(f"Failed to get V2Ray config for user {user_data['uuid'][:8]}...: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
-            
-            if reset_usage:
-                usage_bytes_new = 0
-            else:
-                usage_bytes_new = usage_default or 0
-
-            cursor.execute("SELECT subscription_id FROM v2ray_keys WHERE id = ?", (key_data['id'],))
-            subscription_row = cursor.fetchone()
-            subscription_id = subscription_row[0] if subscription_row else None
-            
-            cursor.execute(
-                "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, created_at, email, tariff_id, client_config, "
-                "traffic_usage_bytes, subscription_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    new_server_id,
-                    user_id,
-                    user_data['uuid'],
-                    now,
-                    old_email,
-                    tariff['id'],
-                    config,
-                    usage_bytes_new,
-                    subscription_id,
-                ),
-            )
-            new_key_id = cursor.lastrowid
-
-            if reset_usage and user_data.get('uuid'):
-                try:
-                    await v2ray_client.reset_key_usage(user_data['uuid'])
-                except Exception as reset_error:
-                    logging.error(f"Failed to reset V2Ray usage after renewal for UUID {user_data['uuid']}: {reset_error}")
-                if new_key_id:
-                    try:
-                        cursor.execute(
-                            """
-                            UPDATE v2ray_keys
-                            SET traffic_usage_bytes = 0
-                            WHERE id = ?
-                            """,
-                            (new_key_id,),
-                        )
-                    except Exception as reset_db_error:
-                        logging.error(f"Failed to reset V2Ray usage flags in DB for key {new_key_id}: {reset_db_error}")
-        finally:
-            try:
-                await v2ray_client.close()
-            except Exception as close_error:
-                logging.warning(f"Error closing V2Ray client after country change: {close_error}")
-
-        await delete_old_key_after_success(cursor, old_key_data)
-        
-        time_remaining_str = format_duration(remaining)
-        time_added_str = format_duration(additional_duration)
-        time_total_str = format_duration(total_duration)
-        
-        msg = (
-            f"🌍 *Смена страны и продление*\n\n"
-            f"Ваш ключ перенесён из *{old_country}* в *{new_country}*\n\n"
-            f"⏰ Оставшееся время: {time_remaining_str}\n"
-            f"➕ Добавлено: {time_added_str}\n"
-            f"📅 Итого: {time_total_str}\n\n"
-            f"{format_key_message_unified(access_url, protocol, tariff)}"
-        )
-        await message.answer(msg, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-        
-        # Админ-уведомления о действиях с ключами отключены:
-        # админ получает только платежные уведомления о подписке.
-        
-        # Commit транзакции
-        cursor.connection.commit()
-        
-        logging.info(f"Successfully changed country and extended for user {user_id}: {old_country} -> {new_country}, +{additional_duration}s")
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error in change_country_and_extend: {e}")
-        await message.answer("❌ Произошла ошибка при смене страны. Попробуйте позже.", reply_markup=main_menu)
-        return False
-
-
-# ============================================================================
-# Функции смены протокола и страны для конкретного ключа
-# ============================================================================
-
-async def change_protocol_for_key(
-    message: types.Message, 
-    user_id: int, 
-    key_data: Dict[str, Any]
-) -> None:
-    """
-    Меняет протокол для конкретного ключа
-    
-    Позволяет пользователю сменить протокол VPN (V2Ray) для существующего ключа,
-    сохраняя оставшееся время действия. Создает новый ключ с новым протоколом и удаляет старый.
-    
-    Args:
-        message: Telegram сообщение для отправки уведомлений пользователю
-        user_id: ID пользователя
-        key_data: Словарь с данными ключа, должен содержать:
-            - id: ID ключа в базе данных
-            - type: Тип ключа ('v2ray')
-            - protocol: Текущий протокол
-            - country: Страна сервера
-            - expiry_at: Время истечения ключа
-            - server_id: ID сервера
-    """
-    get_bot_instance()
-    main_menu = get_main_menu()
-    
-    await message.answer(
-        "Смена протокола недоступна: поддерживается только V2Ray (VLESS).",
-        reply_markup=main_menu,
-    )
-
-
-async def change_country_for_key(
-    message: types.Message, 
-    user_id: int, 
-    key_data: Dict[str, Any], 
-    new_country: str
-) -> None:
-    """
-    Меняет страну для конкретного ключа
-    
-    Позволяет пользователю сменить страну сервера для существующего ключа,
-    сохраняя оставшееся время действия и протокол. Создает новый ключ на сервере
-    в новой стране и удаляет старый.
-    
-    Args:
-        message: Telegram сообщение для отправки уведомлений пользователю
-        user_id: ID пользователя
-        key_data: Словарь с данными ключа, должен содержать:
-            - id: ID ключа в базе данных
-            - type: Тип ключа ('v2ray')
-            - protocol: Протокол VPN
-            - country: Текущая страна сервера
-            - expiry_at: Время истечения ключа
-            - server_id: ID сервера
-        new_country: Новая страна сервера
-    """
-    bot = get_bot_instance()
-    main_menu = get_main_menu()
-    
-    logging.info(f"[COUNTRY CHANGE] Starting country change for user {user_id}, key_data keys: {list(key_data.keys())}, new_country: {new_country}")
-    
-    now = int(time.time())
-    
-    with get_db_cursor(commit=False) as cursor:
-        # Получаем тариф
-        tariff_id = key_data.get('tariff_id')
-        if not tariff_id:
-            logging.error(f"[COUNTRY CHANGE] tariff_id not found in key_data: {key_data}")
-            await message.answer("Ошибка: тариф не найден в данных ключа.", reply_markup=main_menu)
-            return
-        
-        tariff_row = _fetch_tariff_row_with_limit(cursor, tariff_id)
-        if not tariff_row:
-            logging.error(f"[COUNTRY CHANGE] Tariff {tariff_id} not found in database")
-            await message.answer("Ошибка: тариф не найден в базе данных.", reply_markup=main_menu)
-            return
-        tariff = {
-            'id': tariff_id,
-            'name': tariff_row[0],
-            'duration_sec': tariff_row[1],
-            'price_rub': tariff_row[2],
-            'traffic_limit_mb': tariff_row[3],
-        }
-        
-        # Считаем оставшееся время
-        remaining = key_data['expiry_at'] - now
-        if remaining <= 0:
-            await message.answer("Срок действия ключа истёк.", reply_markup=main_menu)
-            return
-        
-        old_server_id = key_data['server_id']
-        old_country = key_data['country']
-        old_email = key_data.get('email')
-        protocol = key_data['protocol']
-        
-        # Ищем сервер той же страны с тем же протоколом с учетом access_level
-        cursor.execute("""
-            SELECT id, api_url, cert_sha256, domain, v2ray_path, api_key, COALESCE(access_level, 'all') as access_level FROM servers 
-            WHERE active = 1 AND country = ? AND protocol = ?
-        """, (new_country, protocol))
-        servers_raw = cursor.fetchall()
-        
-        # Фильтруем серверы по доступности для пользователя
-        from app.repositories.user_repository import UserRepository
-        user_repo = UserRepository()
-        is_vip = user_repo.is_user_vip(user_id)
-        now_ts = int(time.time())
-        
-        has_active_paid_subscription = user_has_active_paid_subscription(cursor, user_id, now_ts)
-        
-        servers = []
-        for server in servers_raw:
-            server_access_level = server[6] if len(server) > 6 else 'all'
-            if server_access_level == 'all':
-                servers.append(server[:6])  # Без access_level
-            elif server_access_level == 'vip' and is_vip:
-                servers.append(server[:6])
-            elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
-                servers.append(server[:6])
-        
-        if not servers:
-            await message.answer(f"Нет серверов {PROTOCOLS[protocol]['name']} в стране {new_country}.", reply_markup=main_menu)
-            return
-        
-        # Берём первый подходящий сервер
-        new_server_id, api_url, cert_sha256, domain, v2ray_path, api_key = servers[0]
-        
-        # ВАЖНО: traffic_over_limit_at и traffic_over_limit_notified удалены из v2ray_keys
-        usage_default = key_data.get('traffic_usage_bytes')
-        if (key_data.get('type') or protocol) == 'v2ray':
-            usage_default, _, _ = _resolve_v2ray_usage_metadata(
-                cursor,
-                key_data.get('id'),
-                usage_default,
-                None,  # fallback_over_limit_at (не используется)
-                0,     # fallback_over_limit_notified (не используется)
-            )
-
-        # Сохраняем данные старого ключа для удаления после успешного создания нового
-        old_key_data = {
-            'type': key_data.get('type') or protocol,  # Используем type из key_data или протокол
-            'server_id': old_server_id,
-            'key_id': key_data.get('key_id'),
-            'v2ray_uuid': key_data.get('v2ray_uuid'),
-            'db_id': key_data.get('id'),
-            'traffic_usage_bytes': usage_default or 0,
-        }
-        
-        if not old_key_data['db_id']:
-            logging.error(f"[COUNTRY CHANGE] Key ID not found in key_data: {key_data}")
-            await message.answer("Ошибка: ID ключа не найден.", reply_markup=main_menu)
-            return
-        
-        logging.info(f"[COUNTRY CHANGE] Old key data: type={old_key_data['type']}, protocol={protocol}, key_data_type={key_data.get('type')}, db_id={old_key_data['db_id']}, v2ray_uuid={old_key_data.get('v2ray_uuid')}, key_id={old_key_data.get('key_id')}")
-        
-        if protocol != "v2ray":
-            await message.answer(
-                "Смена страны для этого протокола недоступна. Поддерживается только V2Ray (VLESS).",
-                reply_markup=main_menu,
-            )
-            return
-        # Создаём новый V2Ray ключ
-        server_config = {'api_url': api_url, 'api_key': api_key}
-        protocol_client = ProtocolFactory.create_protocol(protocol, server_config)
-        
-        try:
-            user_data = await protocol_client.create_user(old_email or f"user_{user_id}@veilbot.com")
-            
-            if not user_data or not user_data.get('uuid'):
-                raise Exception(f"Failed to create V2Ray user - invalid response from server")
-            
-            config = None
-            old_email_val = old_email or f"user_{user_id}@veilbot.com"
-            logging.info(f"[COUNTRY CHANGE] Processing country change for email: {old_email_val}, new UUID: {user_data.get('uuid')}")
-            
-            if user_data.get('client_config'):
-                config = user_data['client_config']
-                logging.info(f"[COUNTRY CHANGE] Using client_config from create_user response for email {old_email_val}")
-            else:
-                logging.warning(f"[COUNTRY CHANGE] client_config not in create_user response for email {old_email_val}, fetching via get_user_config")
-                await asyncio.sleep(1.0)
-                config = await protocol_client.get_user_config(user_data['uuid'], {
-                    'domain': domain,
-                    'port': 443,
-                    'path': v2ray_path or '/v2ray',
-                    'email': old_email_val
-                }, max_retries=5, retry_delay=1.5)
-            
-            config = normalize_vless_host(config, domain, api_url)
-            
-            old_uuid = old_key_data.get('v2ray_uuid')
-            if old_uuid:
-                try:
-                    cursor.execute("SELECT api_url, api_key FROM servers WHERE id = ?", (old_server_id,))
-                    old_server_data = cursor.fetchone()
-                    if old_server_data:
-                        old_api_url, old_api_key = old_server_data
-                        old_server_config = {'api_url': old_api_url, 'api_key': old_api_key}
-                        old_protocol_client = ProtocolFactory.create_protocol(protocol, old_server_config)
-                        await old_protocol_client.delete_user(old_uuid)
-                        logging.info(f"Удален старый V2Ray ключ {old_uuid} с сервера {old_server_id}")
-                except Exception as e:
-                    logging.warning(f"Не удалось удалить старый V2Ray ключ (возможно уже удален): {e}")
-            
-            with safe_foreign_keys_off(cursor):
-                usage_bytes_new = usage_default or 0
-                cursor.execute("SELECT subscription_id FROM v2ray_keys WHERE id = ?", (key_data['id'],))
-                subscription_row = cursor.fetchone()
-                subscription_id = subscription_row[0] if subscription_row else None
-                
-                cursor.execute(
-                    "INSERT INTO v2ray_keys (server_id, user_id, v2ray_uuid, created_at, email, tariff_id, client_config, "
-                    "traffic_usage_bytes, subscription_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        new_server_id,
-                        user_id,
-                        user_data['uuid'],
-                        now,
-                        old_email,
-                        tariff_id,
-                        config,
-                        usage_bytes_new,
-                        subscription_id,
-                    ),
-                )
-            
-            with safe_foreign_keys_off(cursor):
-                cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (old_key_data['db_id'],))
-                logging.info(f"Удален старый V2Ray ключ {old_key_data['db_id']} из базы")
-            
-            country_text = (
-                "🌍 *Смена страны*\n\n"
-                f"Ваш ключ перенесён из *{old_country}* в *{new_country}*.\n\n"
-                f"⏰ Оставшееся время: {format_duration(remaining)}\n\n"
-            )
-            await message.answer(
-                country_text + format_key_message_unified(config, protocol, tariff, remaining),
-                reply_markup=main_menu,
-                disable_web_page_preview=True,
-                parse_mode="Markdown",
-            )
-            
-        except Exception as e:
-            logging.error(f"[COUNTRY CHANGE] Ошибка при создании нового V2Ray ключа: {e}", exc_info=True)
-            
-            try:
-                if 'user_data' in locals() and user_data and user_data.get('uuid'):
-                    await protocol_client.delete_user(user_data['uuid'])
-                    logging.info(f"[COUNTRY CHANGE] Deleted V2Ray user {user_data['uuid']} from server due to error")
-            except Exception as cleanup_error:
-                logging.error(f"[COUNTRY CHANGE] Error cleaning up V2Ray user after error: {cleanup_error}")
-            
-            error_msg = "Ошибка при создании нового ключа."
-            if "401" in str(e):
-                error_msg = "Ошибка авторизации на сервере V2Ray. Обратитесь к администратору."
-            elif "404" in str(e):
-                error_msg = "Сервер V2Ray недоступен. Попробуйте позже."
-            await message.answer(error_msg, reply_markup=main_menu)
-            return
-        
-        # Админ-уведомления о действиях с ключами отключены:
-        # админ получает только платежные уведомления о подписке.
-        
-        # Ручной commit транзакции
-        cursor.connection.commit()
-
-
 async def reissue_specific_key(
     message: types.Message, 
     user_id: int, 
@@ -1496,6 +832,19 @@ async def reissue_specific_key(
             cursor.execute("SELECT subscription_id FROM v2ray_keys WHERE id = ?", (key_data['id'],))
             subscription_row = cursor.fetchone()
             subscription_id = subscription_row[0] if subscription_row else None
+
+            # Guard: ensure only one key per subscription_group_id for this subscription.
+            keep_ids: set[int] = set()
+            try:
+                keep_ids.add(int(key_data["id"]))
+            except Exception:
+                pass
+            await _cleanup_subscription_group_duplicates_before_insert(
+                cursor,
+                subscription_id=subscription_id,
+                target_server_id=int(new_server_id),
+                keep_db_key_ids=keep_ids,
+            )
 
             with safe_foreign_keys_off(cursor):
                 cursor.execute(

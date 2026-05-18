@@ -21,6 +21,11 @@ from memory_optimizer import optimize_memory, log_memory_usage
 from config import ADMIN_ID
 from app.repositories.subscription_repository import SubscriptionRepository
 from bot.services.subscription_service import invalidate_subscription_cache
+from bot.services.subscription_server_groups import (
+    build_existing_key_coverage,
+    pick_best_server_by_free_slots,
+    subscription_group_dedup_applies,
+)
 from payments.utils.renewal_detector import DEFAULT_GRACE_PERIOD, grace_threshold_ts
 
 logger = logging.getLogger(__name__)
@@ -831,20 +836,16 @@ async def auto_delete_expired_subscriptions() -> None:
 async def monitor_subscription_traffic_limits() -> None:
     """Контроль превышения трафиковых лимитов для подписок V2Ray.
 
-    Каждые 10 минут:
+    Каждые 30 минут:
     1. Запрашивает с панели total_bytes по ключам (где есть API).
-    2. Записывает в v2ray_keys.traffic_usage_bytes значение max(0, total_bytes - traffic_baseline_bytes)
-       (с учётом окна защиты после сброса трафика).
-    3. Суммарный трафик подписки для лимитов берётся из БД: SUM(traffic_usage_bytes) по всем ключам
-       подписки — как в SubscriptionRepository.get_subscription_traffic_sum / UI.
+    2. Обновляет v2ray_keys.panel_total_bytes_observed монотонно (max(stored, api); при ошибке GET не трогаем).
+    3. Израсходовано по подписке: max(0, S - B), S = сумма observed по ключам, B = subscriptions.traffic_baseline_bytes.
     4. Проверяет превышение лимитов и шлёт уведомления.
     """
     
     TRAFFIC_NOTIFY_WARNING = 1
     TRAFFIC_NOTIFY_DISABLED = 2
-    TRAFFIC_RESET_PROTECTION_WINDOW = 15 * 60  # 15 минут — подавлять только «старый» трафик с API
-    TRAFFIC_RESET_STALE_THRESHOLD_BYTES = 5 * 1024 * 1024  # 5 MB: выше — считаем устаревшим после сброса, пишем 0; иначе — новый трафик, пишем как есть
-    
+
     async def _fetch_traffic_for_key(
         key_id: int,
         v2ray_uuid: str,
@@ -910,9 +911,7 @@ async def monitor_subscription_traffic_limits() -> None:
         active_keys = []
         subscriptions = []
         
-        # Получить все активные (не истекшие) ключи V2Ray (sync DB — в executor, чтобы не блокировать loop).
-        # Здесь формируется единственный источник правды по usage: traffic_usage_bytes в v2ray_keys
-        # всегда интерпретируется как max(0, total_bytes - traffic_baseline_bytes).
+        # Получить все активные (не истекшие) ключи V2Ray (sync DB — в executor).
         def read_active_keys():
             with get_db_cursor() as cursor:
                 cursor.execute(
@@ -924,8 +923,7 @@ async def monitor_subscription_traffic_limits() -> None:
                         k.subscription_id,
                         IFNULL(s.api_url, '') AS api_url,
                         IFNULL(s.api_key, '') AS api_key,
-                        IFNULL(k.traffic_baseline_bytes, 0) AS traffic_baseline_bytes,
-                        IFNULL(k.traffic_usage_bytes, 0) AS traffic_usage_bytes
+                        IFNULL(k.panel_total_bytes_observed, 0) AS panel_total_bytes_observed
                     FROM v2ray_keys k
                     JOIN servers s ON k.server_id = s.id
                     JOIN subscriptions sub ON k.subscription_id = sub.id
@@ -959,9 +957,7 @@ async def monitor_subscription_traffic_limits() -> None:
         tasks_with_keys: list[tuple[int, asyncio.Task]] = []
 
         for key_row in active_keys:
-            # В выборке 7 столбцов (включая traffic_baseline_bytes), поэтому распаковываем все,
-            # даже если baseline напрямую здесь не используется.
-            key_id, v2ray_uuid, server_id, subscription_id, api_url, api_key, _traffic_baseline_bytes, _traffic_usage_bytes = key_row
+            key_id, v2ray_uuid, server_id, subscription_id, api_url, api_key, _panel_observed = key_row
             if not api_url or not api_key:
                 logging.warning(
                     "[TRAFFIC] Missing API credentials for server %s, skipping key %s",
@@ -987,59 +983,30 @@ async def monitor_subscription_traffic_limits() -> None:
                 if result is not None:
                     usage_map[key_id] = result
         
-        # Подписки, недавно сброшенные: не перезатирать трафик из API (оставлять 0)
-        subscription_ids_in_reset_window = set()
-        if subscriptions:
-            for sub in subscriptions:
-                sub_id, last_reset = sub[0], sub[9] if len(sub) > 9 else None
-                if last_reset is not None and (now - last_reset) < TRAFFIC_RESET_PROTECTION_WINDOW:
-                    subscription_ids_in_reset_window.add(sub_id)
-            if subscription_ids_in_reset_window:
-                logging.info(
-                    "[TRAFFIC] Subscriptions in reset protection window (values above %s MB treated as stale): %s",
-                    TRAFFIC_RESET_STALE_THRESHOLD_BYTES // (1024 * 1024),
-                    subscription_ids_in_reset_window,
-                )
-        
-        # Хелпер для расчёта эффективного usage с учётом baseline и окна защиты.
-        def _compute_effective_usage(subscription_id: int, api_value: int, baseline_bytes: int) -> int:
-            """
-            Рассчитывает эффективный usage ключа:
-            - сначала дельта max(0, api_value - baseline_bytes),
-            - затем, если подписка в окне после сброса и дельта слишком большая, считает такое значение устаревшим и возвращает 0.
-            """
-            effective_raw = max(0, api_value - baseline_bytes)
-            if (
-                subscription_id in subscription_ids_in_reset_window
-                and effective_raw > TRAFFIC_RESET_STALE_THRESHOLD_BYTES
-            ):
-                return 0
-            return effective_raw
-
-        # Шаг 3: Выполняем все записи в БД (одна транзакция для всех обновлений ключей)
-        key_updates = []
+        # Шаг 3: монотонное обновление panel_total_bytes_observed по ключам
+        key_updates: list[tuple[int, int]] = []  # (new_observed, key_id)
         for key_row in active_keys:
             key_id = key_row[0]
-            subscription_id = key_row[3]
-            baseline_bytes = key_row[6] if len(key_row) > 6 else 0
+            old_observed = int(key_row[6] if len(key_row) > 6 else 0)
             api_value = usage_map.get(key_id) if key_id in usage_map else None
             if api_value is None:
                 continue
+            new_observed = max(old_observed, int(api_value))
+            if new_observed > old_observed:
+                key_updates.append((new_observed, key_id))
 
-            effective = _compute_effective_usage(subscription_id, api_value, baseline_bytes)
-            key_updates.append((effective, key_id))
-        
-        logging.info(f"[TRAFFIC] Updating traffic for {len(key_updates)} keys")
+        logging.info(f"[TRAFFIC] Updating panel_total_bytes_observed for {len(key_updates)} keys")
         if key_updates:
-            def update_keys_traffic():
+            def update_keys_observed():
                 with get_db_cursor(commit=True) as cursor:
                     cursor.executemany(
-                        "UPDATE v2ray_keys SET traffic_usage_bytes = ? WHERE id = ?",
-                        key_updates
+                        "UPDATE v2ray_keys SET panel_total_bytes_observed = ? WHERE id = ?",
+                        key_updates,
                     )
-            
-            await asyncio.to_thread(retry_db_operation, update_keys_traffic, 3)
-            logging.info(f"[TRAFFIC] Updated traffic_usage_bytes for {len(key_updates)} keys")
+
+            await asyncio.to_thread(retry_db_operation, update_keys_observed, 3)
+            logging.info(f"[TRAFFIC] Updated panel_total_bytes_observed for {len(key_updates)} keys")
+
         
         if not subscriptions:
             logging.debug("[TRAFFIC] No active subscriptions with traffic limits found")
@@ -1193,7 +1160,7 @@ async def monitor_subscription_traffic_limits() -> None:
     
     await _run_periodic(
         "monitor_subscription_traffic_limits",
-        interval_seconds=600,  # 10 минут
+        interval_seconds=1800,  # 30 минут
         job=job,
         max_backoff=3600,
     )
@@ -1876,7 +1843,7 @@ async def _create_subscription_key_on_server(
     """
     if protocol != "v2ray":
         return False, f"Unsupported protocol: {protocol}"
-    server_id_db, name, api_url, api_key, domain, v2ray_path = server_info
+    server_id_db, name, api_url, api_key, domain, v2ray_path = server_info[:6]
 
     async with api_semaphore:  # Ограничиваем параллелизм API-запросов
         try:
@@ -2055,6 +2022,7 @@ async def _process_subscription_sync(
     v2ray_servers: list,
     now: int,
     api_semaphore: asyncio.Semaphore,
+    key_counts_global: Dict[int, int],
 ) -> Dict[str, Any]:
     """
     Обработать синхронизацию одной подписки для V2Ray серверов.
@@ -2085,22 +2053,34 @@ async def _process_subscription_sync(
     user_repo = UserRepository()
 
     # Фильтруем серверы по access_level для этого пользователя
-    # V2Ray: кортеж (id, name, api_url, api_key, domain, v2ray_path, access_level)
+    # V2Ray: id, name, api_url, api_key, domain, v2ray_path, access_level, subscription_group_id, max_keys
     v2ray_allowed_ids = set()
     v2ray_allowed_dict: Dict[int, tuple] = {}
     for s in v2ray_servers:
         access_level = s[6] if len(s) > 6 else 'all'
         if _user_has_access_to_server(access_level, user_id, user_repo, subscription_tariff_is_paid):
             v2ray_allowed_ids.add(s[0])
-            v2ray_allowed_dict[s[0]] = s[:6]
+            v2ray_allowed_dict[s[0]] = s
+
+    is_vip = user_repo.is_user_vip(user_id)
 
     try:
         if v2ray_allowed_ids:
             await _process_protocol_sync(
-                subscription_id, user_id, token, expires_at, tariff_id,
+                subscription_id,
+                user_id,
+                token,
+                expires_at,
+                tariff_id,
                 v2ray_keys_by_subscription.get(subscription_id, []),
-                v2ray_allowed_ids, v2ray_allowed_dict,
-                "v2ray", now, api_semaphore, result
+                v2ray_allowed_ids,
+                v2ray_allowed_dict,
+                "v2ray",
+                now,
+                api_semaphore,
+                result,
+                key_counts_global,
+                is_vip=is_vip,
             )
         
         # Добавляем токен для инвалидации кэша, если были изменения
@@ -2130,23 +2110,30 @@ async def _process_protocol_sync(
     now: int,
     api_semaphore: asyncio.Semaphore,
     result: Dict[str, Any],
+    key_counts_global: Dict[int, int],
+    *,
+    is_vip: bool = False,
 ) -> None:
     """
     Обработать синхронизацию ключей для V2Ray.
+    Учитывает subscription_group_id: не более одного ключа на группу серверов.
+    VIP: группы не применяются (ключ на каждый сервер).
     """
     if protocol != "v2ray":
         return
 
+    apply_group_dedup = subscription_group_dedup_applies(is_vip=is_vip)
+
     keys_to_recreate = []
-    verified_existing_server_ids = set()
+    verified_existing_server_ids: Set[int] = set()
 
     for key in existing_keys:
-        key_id, server_id, v2ray_uuid, api_url, api_key = key
+        key_id, server_id, v2ray_uuid, api_url, api_key = key[:5]
 
         if server_id in active_server_ids:
             server_info = active_servers_dict.get(server_id)
             if server_info:
-                server_id_db, name, api_url_from_dict, api_key_from_dict, domain, v2ray_path = server_info
+                _sid, name, api_url_from_dict, api_key_from_dict, domain, v2ray_path = server_info[:6]
                 key_exists = await _check_key_exists_on_server(
                     v2ray_uuid,
                     api_url_from_dict or api_url,
@@ -2159,7 +2146,6 @@ async def _process_protocol_sync(
                 if key_exists:
                     verified_existing_server_ids.add(server_id)
                 else:
-                    # Ключ есть в БД, но его нет на сервере - нужно пересоздать
                     logger.info(
                         f"Sync: Key {key_id} for subscription {subscription_id} "
                         f"exists in DB but not on server {server_id}, will recreate"
@@ -2169,47 +2155,115 @@ async def _process_protocol_sync(
                 verified_existing_server_ids.add(server_id)
         else:
             verified_existing_server_ids.add(server_id)
-    
-    # Определяем серверы, где нужно создать ключи
-    servers_to_create = active_server_ids - verified_existing_server_ids
-    
-    # Определяем ключи на неактивных серверах, которые нужно удалить
+
     keys_to_delete = [
         key for key in existing_keys
         if key[1] not in active_server_ids
     ]
-    
-    # Находим дубликаты
+
     keys_by_server = defaultdict(list)
     for key in existing_keys:
         if key[1] in active_server_ids:
             keys_by_server[key[1]].append(key)
-    
-    # Для каждого сервера, если есть несколько ключей - оставляем самый новый, остальные удаляем
+
     duplicate_keys_to_delete = []
-    for server_id, server_keys in keys_by_server.items():
+    for srv_id, server_keys in keys_by_server.items():
         if len(server_keys) > 1:
             server_keys_sorted = sorted(server_keys, key=lambda k: k[0], reverse=True)
             for duplicate_key in server_keys_sorted[1:]:
                 duplicate_keys_to_delete.append(duplicate_key)
                 logger.info(
                     f"Sync: Found duplicate {protocol} key {duplicate_key[0]} for subscription {subscription_id} "
-                    f"on server {server_id}, will be deleted"
+                    f"on server {srv_id}, will be deleted"
                 )
-    
+
+    if apply_group_dedup:
+        group_buckets: Dict[str, List[Any]] = defaultdict(list)
+        for key in existing_keys:
+            sid = key[1]
+            if sid not in active_server_ids:
+                continue
+            row = active_servers_dict.get(sid)
+            if not row:
+                continue
+            gid = (row[7] or "").strip() if len(row) > 7 else ""
+            if not gid:
+                continue
+            group_buckets[gid].append(key)
+
+        for gid, gkeys in group_buckets.items():
+            if len(gkeys) <= 1:
+                continue
+            involved_sids = list({k[1] for k in gkeys})
+            candidates = [active_servers_dict[s] for s in involved_sids if s in active_servers_dict]
+            keeper_row = pick_best_server_by_free_slots(
+                candidates,
+                get_id=lambda r: r[0],
+                get_max_keys=lambda r: int(r[8] or 0) if len(r) > 8 else 0,
+                key_counts=key_counts_global,
+            )
+            if keeper_row is None:
+                continue
+            keeper_sid = int(keeper_row[0])
+            for dup_key in gkeys:
+                if dup_key[1] != keeper_sid:
+                    duplicate_keys_to_delete.append(dup_key)
+                    logger.info(
+                        f"Sync: subscription {subscription_id} group «{gid}»: remove extra key {dup_key[0]} "
+                        f"on server {dup_key[1]}, keeper server {keeper_sid}"
+                    )
+
     keys_to_delete.extend(duplicate_keys_to_delete)
-    
-    # Удаляем ключи, которые нужно пересоздать
+
     for key_to_recreate in keys_to_recreate:
         key_id = key_to_recreate[0]
         with get_db_cursor(commit=True) as cursor:
             cursor.execute("DELETE FROM v2ray_keys WHERE id = ?", (key_id,))
         logger.info(f"Sync: Deleted DB record for {protocol} key {key_id} before recreation")
-        server_id = key_to_recreate[1]
-        if server_id not in servers_to_create:
-            servers_to_create.add(server_id)
-    
-    # Параллельно создаем недостающие ключи
+
+    cov_pairs: List[Tuple[int, str]] = []
+    for key in existing_keys:
+        sid = key[1]
+        if sid not in verified_existing_server_ids:
+            continue
+        row = active_servers_dict.get(sid)
+        if not row:
+            continue
+        gid_str = (row[7] or "").strip() if len(row) > 7 else ""
+        cov_pairs.append((sid, gid_str))
+
+    if apply_group_dedup:
+        cov_s, cov_g = build_existing_key_coverage(cov_pairs)
+    else:
+        cov_s = {int(sid) for sid, _gid in cov_pairs}
+        cov_g: Set[str] = set()
+
+    servers_to_create: Set[int] = set()
+    by_group: Dict[str, List[tuple]] = defaultdict(list)
+
+    for sid in active_server_ids:
+        row = active_servers_dict.get(sid)
+        if not row:
+            continue
+        gid_str = (row[7] or "").strip() if len(row) > 7 else ""
+        if apply_group_dedup and gid_str:
+            by_group[gid_str].append(row)
+        elif sid not in cov_s:
+            servers_to_create.add(sid)
+
+    if apply_group_dedup:
+        for gid_str, rows in by_group.items():
+            if gid_str in cov_g:
+                continue
+            best = pick_best_server_by_free_slots(
+                rows,
+                get_id=lambda r: r[0],
+                get_max_keys=lambda r: int(r[8] or 0) if len(r) > 8 else 0,
+                key_counts=key_counts_global,
+            )
+            if best is not None:
+                servers_to_create.add(int(best[0]))
+
     create_tasks = []
     for server_id in servers_to_create:
         if server_id not in active_servers_dict:
@@ -2221,7 +2275,7 @@ async def _process_protocol_sync(
                 expires_at, tariff_id, now, api_semaphore, protocol=protocol
             )
         )
-    
+
     if create_tasks:
         create_results = await asyncio.gather(*create_tasks, return_exceptions=True)
         for task_result in create_results:
@@ -2237,7 +2291,6 @@ async def _process_protocol_sync(
                     if error and "already exists" not in error.lower():
                         logger.warning(f"Sync: Failed to create {protocol} key: {error}")
 
-    # Параллельно удаляем ключи
     delete_tasks = []
     for key in keys_to_delete:
         key_id = key[0]
@@ -2251,7 +2304,7 @@ async def _process_protocol_sync(
                 api_url, api_key, api_semaphore, protocol="v2ray"
             )
         )
-    
+
     if delete_tasks:
         delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
         for task_result in delete_results:
@@ -2443,10 +2496,13 @@ async def sync_subscription_keys_with_active_servers() -> None:
                 # Все равно проверяем orphaned ключи на всех серверах
                 active_subscriptions = []
             
-            # Получаем все активные V2Ray серверы (с access_level для фильтрации по пользователю)
+            # Получаем все активные V2Ray серверы (access_level, subscription_group_id, max_keys)
             with get_db_cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, name, api_url, api_key, domain, v2ray_path, COALESCE(access_level, 'all') as access_level
+                    SELECT id, name, api_url, api_key, domain, v2ray_path,
+                           COALESCE(access_level, 'all') AS access_level,
+                           COALESCE(NULLIF(TRIM(subscription_group_id), ''), '') AS subscription_group_id,
+                           COALESCE(max_keys, 0) AS max_keys
                     FROM servers
                     WHERE protocol = 'v2ray' AND active = 1
                     ORDER BY id
@@ -2485,16 +2541,22 @@ async def sync_subscription_keys_with_active_servers() -> None:
             tokens_to_invalidate = set()
             
             if active_subscriptions:
+                key_counts_global: Dict[int, int] = {}
+                with get_db_cursor() as cursor:
+                    cursor.execute("SELECT server_id, COUNT(*) FROM v2ray_keys GROUP BY server_id")
+                    key_counts_global = {int(r[0]): int(r[1]) for r in cursor.fetchall()}
+
                 # ОПТИМИЗАЦИЯ 1: Получаем все ключи подписок одним запросом для каждого протокола
                 subscription_ids = [sub[0] for sub in active_subscriptions]
                 placeholders = ','.join('?' * len(subscription_ids))
                 
-                # V2Ray ключи
+                # V2Ray ключи (+ subscription_group_id сервера для логики «один ключ на группу»)
                 v2ray_keys_by_subscription: Dict[int, list] = defaultdict(list)
                 if v2ray_servers:
                     with get_db_cursor() as cursor:
                         cursor.execute(f"""
-                            SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key, k.subscription_id
+                            SELECT k.id, k.server_id, k.v2ray_uuid, s.api_url, s.api_key, k.subscription_id,
+                                   COALESCE(NULLIF(TRIM(s.subscription_group_id), ''), '') AS gid
                             FROM v2ray_keys k
                             JOIN servers s ON k.server_id = s.id
                             WHERE k.subscription_id IN ({placeholders})
@@ -2503,8 +2565,10 @@ async def sync_subscription_keys_with_active_servers() -> None:
                     
                     # Группируем ключи по subscription_id
                     for key_row in all_v2ray_keys:
-                        key_id, server_id, v2ray_uuid, api_url, api_key, sub_id = key_row
-                        v2ray_keys_by_subscription[sub_id].append((key_id, server_id, v2ray_uuid, api_url, api_key))
+                        key_id, server_id, v2ray_uuid, api_url, api_key, sub_id, gid = key_row
+                        v2ray_keys_by_subscription[sub_id].append(
+                            (key_id, server_id, v2ray_uuid, api_url, api_key, gid)
+                        )
                 
             # ОПТИМИЗАЦИЯ 3: Параллельная обработка подписок батчами
             batch_size = 20  # Обрабатываем по 20 подписок параллельно
@@ -2518,7 +2582,9 @@ async def sync_subscription_keys_with_active_servers() -> None:
                         subscription,
                         v2ray_keys_by_subscription,
                         v2ray_servers,
-                        now, api_semaphore
+                        now,
+                        api_semaphore,
+                        key_counts_global,
                     )
                     for subscription in batch
                 ]

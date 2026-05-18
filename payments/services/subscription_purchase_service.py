@@ -26,6 +26,7 @@ from bot.services.subscription_traffic_reset import reset_subscription_traffic
 from bot.services.subscription_server_groups import (
     compute_targets_purchase_sql_rows,
     filter_servers_by_access_sql_rows,
+    subscription_group_dedup_applies,
 )
 from ..utils.renewal_detector import DEFAULT_GRACE_PERIOD, grace_threshold_ts
 
@@ -761,22 +762,11 @@ class SubscriptionPurchaseService:
                     )
                     if reset_result:
                         logger.info(
-                            "[SUBSCRIPTION] Successfully reset traffic for subscription %s after renewal "
-                            "(keys_total=%s api_aligned=%s fallback=%s server_ok=%s server_failed=%s)",
+                            "[SUBSCRIPTION] Successfully reset traffic (DB baseline shift) for subscription %s "
+                            "after renewal (keys_total=%s)",
                             subscription_id,
                             reset_result.keys_total,
-                            reset_result.api_aligned_keys,
-                            reset_result.fallback_keys,
-                            reset_result.server_reset_ok,
-                            reset_result.server_reset_failed,
                         )
-                        if reset_result.server_reset_failed > 0:
-                            logger.warning(
-                                "[SUBSCRIPTION] Some panel traffic resets failed for subscription %s "
-                                "(server_failed=%s); background reconcile scheduled from reset_subscription_traffic",
-                                subscription_id,
-                                reset_result.server_reset_failed,
-                            )
                     else:
                         logger.warning(
                             f"[SUBSCRIPTION] Failed to reset traffic for subscription {subscription_id} after renewal"
@@ -1199,159 +1189,22 @@ class SubscriptionPurchaseService:
                 logger.error(f"[SUBSCRIPTION] {error_msg}")
                 return False, error_msg
             
-            # Шаг 3: Создаем ключи на всех активных V2Ray серверах
-            
-            # Сначала получаем все V2Ray серверы с access_level
-            async with open_async_connection(self.db_path) as conn:
-                async with conn.execute(
-                    """
-                    SELECT id, name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256, COALESCE(access_level, 'all') as access_level
-                    FROM servers
-                    WHERE active = 1 AND protocol = 'v2ray'
-                    ORDER BY id
-                    """
-                ) as cursor:
-                    v2ray_servers_raw = await cursor.fetchall()
-            
-            # Фильтруем серверы по доступности для пользователя
-            v2ray_servers = []
-            user_repo = UserRepository(self.db_path)
-            is_vip = user_repo.is_user_vip(payment.user_id)
-            now_ts = int(time.time())
-            
-            # Платный статус: активная подписка с тарифом price_rub > 0 (не бесплатная)
-            async with open_async_connection(self.db_path) as conn:
-                async with conn.execute(
-                    """
-                    SELECT COUNT(*) FROM subscriptions s
-                    LEFT JOIN tariffs t ON s.tariff_id = t.id
-                    WHERE s.user_id = ? AND s.is_active = 1 AND s.expires_at > ?
-                      AND COALESCE(t.price_rub, 0) > 0
-                    """,
-                    (payment.user_id, now_ts),
-                ) as cursor:
-                    has_active_paid_subscription = (await cursor.fetchone())[0] > 0
-            
-            for server in v2ray_servers_raw:
-                server_access_level = server[8] if len(server) > 8 else 'all'
-                if server_access_level == 'all':
-                    v2ray_servers.append(server[:8])  # Без access_level
-                elif server_access_level == 'vip' and is_vip:
-                    v2ray_servers.append(server[:8])
-                elif server_access_level == 'paid' and (is_vip or has_active_paid_subscription):
-                    v2ray_servers.append(server[:8])
-            
-            created_keys = 0
-            failed_servers = []
-            
-            # Создаем ключи на всех V2Ray серверах
-            for server_id, server_name, api_url, api_key, domain, v2ray_path, protocol, cert_sha256 in v2ray_servers:
-                v2ray_uuid = None
-                protocol_client = None
-                try:
-                    # Генерация email для ключа
-                    key_email = f"{payment.user_id}_subscription_{subscription_id}@veilbot.com"
-                    
-                    # Создание ключа в зависимости от протокола
-                    if protocol == 'v2ray':
-                        server_config = {
-                            'api_url': api_url,
-                            'api_key': api_key,
-                            'domain': domain,
-                        }
-                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                        user_data = await protocol_client.create_user(key_email, name=server_name)
-                        
-                        if not user_data or not user_data.get('uuid'):
-                            raise Exception("Failed to create user on V2Ray server")
-                        
-                        v2ray_uuid = user_data['uuid']
-                        
-                        # Получение client_config
-                        client_config = await protocol_client.get_user_config(
-                            v2ray_uuid,
-                            {
-                                'domain': domain,
-                                'port': 443,
-                                'email': key_email,
-                            },
-                        )
-                        
-                        # Извлекаем VLESS URL из конфигурации
-                        if 'vless://' in client_config:
-                            lines = client_config.split('\n')
-                            for line in lines:
-                                if line.strip().startswith('vless://'):
-                                    client_config = line.strip()
-                                    break
-                        
-                        # Сохранение V2Ray ключа в БД
-                        traffic_limit_mb = tariff.get('traffic_limit_mb', 0) or 0
-                        async with open_async_connection(self.db_path) as conn:
-                            await conn.execute("PRAGMA foreign_keys = OFF")
-                            try:
-                                # ВАЖНО: expiry_at удалено из v2ray_keys - срок действия берется из subscriptions
-                                # ВАЖНО: traffic_limit_mb не устанавливается - лимит берется из подписки
-                                cursor = await conn.execute(
-                                    """
-                                    INSERT INTO v2ray_keys 
-                                    (server_id, user_id, v2ray_uuid, email, created_at, tariff_id, client_config, subscription_id)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    (
-                                        server_id,
-                                        payment.user_id,
-                                        v2ray_uuid,
-                                        key_email,
-                                        now,
-                                        tariff['id'],
-                                        client_config,
-                                        subscription_id,
-                                    ),
-                                )
-                                await conn.commit()
-                                
-                                # Проверяем, что ключ действительно сохранен
-                                async with conn.execute(
-                                    "SELECT id FROM v2ray_keys WHERE server_id = ? AND user_id = ? AND subscription_id = ? AND v2ray_uuid = ?",
-                                    (server_id, payment.user_id, subscription_id, v2ray_uuid)
-                                ) as check_cursor:
-                                    if not await check_cursor.fetchone():
-                                        raise Exception(f"Key was not saved to database for server {server_id}")
-                                
-                            finally:
-                                await conn.execute("PRAGMA foreign_keys = ON")
-                    
-                    created_keys += 1
-                    logger.info(
-                        f"[SUBSCRIPTION] Created v2ray key for subscription {subscription_id} on server {server_id} ({server_name})"
-                    )
-                    
-                except Exception as e:
-                    logger.error(
-                        f"[SUBSCRIPTION] Failed to create v2ray key for subscription {subscription_id} "
-                        f"on server {server_id} ({server_name}): {e}",
-                        exc_info=True,
-                    )
-                    # Если ключ был создан на сервере, но не сохранен в БД - пытаемся удалить его с сервера
-                    if protocol_client and v2ray_uuid:
-                        try:
-                            await protocol_client.delete_user(v2ray_uuid)
-                            logger.info(f"[SUBSCRIPTION] Cleaned up orphaned v2ray key on server {server_id}")
-                        except Exception as cleanup_error:
-                            logger.error(f"[SUBSCRIPTION] Failed to cleanup orphaned v2ray key: {cleanup_error}")
-                    failed_servers.append(server_id)
-            
+            # Шаг 3: Создаем ключи для подписки единым алгоритмом.
+            # ВАЖНО: 1 ключ на subscription_group_id (best by free slots), с учетом access_level.
+            # Это устраняет дубли по группе (например, серверы 24/25 в одной группе).
+            created_keys, failed_servers = await self._create_keys_for_subscription(
+                subscription_id=subscription_id,
+                user_id=payment.user_id,
+                payment=payment,
+                tariff=tariff,
+                now=now,
+            )
+
             if created_keys == 0:
                 error_msg = f"Failed to create any keys for subscription {subscription_id}"
                 logger.error(f"[SUBSCRIPTION] {error_msg}")
                 # Подписку не деактивируем — ключи можно доставить позже (повтор, скрипт или админ).
                 return False, error_msg
-            
-            logger.info(
-                f"[SUBSCRIPTION] Created subscription {subscription_id} for user {payment.user_id}: "
-                f"{created_keys} keys created, {len(failed_servers)} failed"
-            )
             
             # Шаг 3.5: Сбрасываем трафик всех ключей подписки при создании
             try:
@@ -1364,22 +1217,11 @@ class SubscriptionPurchaseService:
                 reset_result = await reset_subscription_traffic(subscription_id, reset_ts=paid_at_ts)
                 if reset_result:
                     logger.info(
-                        "[SUBSCRIPTION] Successfully reset traffic for new subscription %s "
-                        "(keys_total=%s api_aligned=%s fallback=%s server_ok=%s server_failed=%s)",
+                        "[SUBSCRIPTION] Successfully reset traffic (DB baseline shift) for new subscription %s "
+                        "(keys_total=%s)",
                         subscription_id,
                         reset_result.keys_total,
-                        reset_result.api_aligned_keys,
-                        reset_result.fallback_keys,
-                        reset_result.server_reset_ok,
-                        reset_result.server_reset_failed,
                     )
-                    if reset_result.server_reset_failed > 0:
-                        logger.warning(
-                            "[SUBSCRIPTION] Some panel traffic resets failed for new subscription %s "
-                            "(server_failed=%s); reconcile may run in background",
-                            subscription_id,
-                            reset_result.server_reset_failed,
-                        )
                 else:
                     logger.warning(f"[SUBSCRIPTION] Failed to reset traffic for new subscription {subscription_id}")
             except Exception as e:
@@ -2272,7 +2114,7 @@ class SubscriptionPurchaseService:
                            max_keys,
                            COALESCE(NULLIF(TRIM(subscription_group_id), ''), '') as subscription_group_id
                     FROM servers
-                    WHERE active = 1 AND protocol = 'v2ray'
+                    WHERE active = 1 AND protocol = 'v2ray' AND COALESCE(available_for_purchase, 1) = 1
                     ORDER BY id
                     """
                 ) as cursor:
@@ -2324,6 +2166,7 @@ class SubscriptionPurchaseService:
                 filtered_rows,
                 existing_key_rows=existing_key_rows,
                 key_counts=key_counts,
+                apply_group_dedup=subscription_group_dedup_applies(is_vip=is_vip),
             )
             
             created_keys = 0

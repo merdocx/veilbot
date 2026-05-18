@@ -151,8 +151,13 @@ async def platega_webhook(request: Request):
 
 
 @router.post("/cryptobot/webhook")
+@router.post("/api/cryptobot/webhook")
 async def cryptobot_webhook(request: Request):
-    """Webhook endpoint для CryptoBot"""
+    """Webhook endpoint для CryptoBot / Crypto Pay.
+
+    Доп. путь /api/... — часто указывают в настройках; без него запросы давали 404 и
+    CryptoBot отключал вебхуки после серии неудачных попыток.
+    """
     body = await request.body()
     client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
         request.client.host if request.client else ""

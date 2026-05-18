@@ -168,8 +168,11 @@ async def dedupe_duplicate_subscription_group_keys(
                    COUNT(*) as cnt
             FROM v2ray_keys k
             JOIN servers s ON k.server_id = s.id
+            JOIN subscriptions sub ON k.subscription_id = sub.id
+            JOIN users u ON sub.user_id = u.user_id
             WHERE k.subscription_id IS NOT NULL
               AND COALESCE(NULLIF(TRIM(s.subscription_group_id), ''), '') != ''
+              AND COALESCE(u.is_vip, 0) = 0
             GROUP BY k.subscription_id, gid
             HAVING COUNT(*) > 1
         """)

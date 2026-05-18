@@ -1032,6 +1032,65 @@ def migrate_add_traffic_baseline_to_v2ray_keys():
     finally:
         conn.close()
 
+
+def migrate_subscription_level_traffic_accounting():
+    """
+    Подписка: traffic_baseline_bytes. Ключ: panel_total_bytes_observed (монотонный total с панели).
+    Backfill из старых per-key baseline/usage.
+    """
+    import logging
+
+    logging.info("Миграция: subscription-level traffic baseline + panel_total_bytes_observed")
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("PRAGMA table_info(subscriptions)")
+        sub_cols = {row[1] for row in cursor.fetchall()}
+        if "traffic_baseline_bytes" not in sub_cols:
+            cursor.execute(
+                "ALTER TABLE subscriptions ADD COLUMN traffic_baseline_bytes INTEGER NOT NULL DEFAULT 0"
+            )
+            logging.info("Колонка traffic_baseline_bytes добавлена в subscriptions")
+
+        cursor.execute("PRAGMA table_info(v2ray_keys)")
+        key_cols = {row[1] for row in cursor.fetchall()}
+        if "panel_total_bytes_observed" not in key_cols:
+            cursor.execute(
+                "ALTER TABLE v2ray_keys ADD COLUMN panel_total_bytes_observed INTEGER NOT NULL DEFAULT 0"
+            )
+            logging.info("Колонка panel_total_bytes_observed добавлена в v2ray_keys")
+
+        # Оценка тотала панели на ключе: baseline + usage (как в старой модели)
+        cursor.execute(
+            """
+            UPDATE v2ray_keys
+            SET panel_total_bytes_observed = MAX(
+                COALESCE(panel_total_bytes_observed, 0),
+                COALESCE(traffic_baseline_bytes, 0) + COALESCE(traffic_usage_bytes, 0)
+            )
+            """
+        )
+        # Baseline подписки = сумма старых baseline по ключам
+        cursor.execute(
+            """
+            UPDATE subscriptions
+            SET traffic_baseline_bytes = (
+                SELECT COALESCE(SUM(COALESCE(vk.traffic_baseline_bytes, 0)), 0)
+                FROM v2ray_keys vk
+                WHERE vk.subscription_id = subscriptions.id
+            )
+            """
+        )
+        conn.commit()
+        logging.info("migrate_subscription_level_traffic_accounting: backfill completed")
+    except Exception as e:
+        logging.error("migrate_subscription_level_traffic_accounting: %s", e, exc_info=True)
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def migrate_add_subscription_traffic_limits():
     """Добавление полей для контроля трафика подписок"""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1602,6 +1661,61 @@ def migrate_fix_traffic_stats_foreign_keys():
             pass
         conn.close()
 
+def migrate_set_max_keys_v2ray_servers_24_25():
+    """
+    Единоразово выставить max_keys для серверов 24 и 25 (ёмкость панелей).
+    Используется pick_best_server_by_free_slots и синхронизация ключей.
+
+    Применяется только если строки servers с id 24/25 существуют; повторно не перезаписывает
+    после успешного применения (таблица app_meta).
+    """
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        cursor.execute(
+            "SELECT 1 FROM app_meta WHERE key = ?",
+            ("migrate_max_keys_servers_24_25",),
+        )
+        if cursor.fetchone():
+            return
+
+        cursor.execute("UPDATE servers SET max_keys = 58 WHERE id = 24")
+        n24 = cursor.rowcount
+        cursor.execute("UPDATE servers SET max_keys = 59 WHERE id = 25")
+        n25 = cursor.rowcount
+
+        if n24 or n25:
+            cursor.execute(
+                "INSERT INTO app_meta (key, value) VALUES (?, ?)",
+                ("migrate_max_keys_servers_24_25", "1"),
+            )
+            conn.commit()
+            logging.info(
+                "migrate_set_max_keys_v2ray_servers_24_25: обновлено max_keys "
+                "(id=24→58 строк=%s, id=25→59 строк=%s)",
+                n24,
+                n25,
+            )
+        else:
+            conn.commit()
+            logging.debug(
+                "migrate_set_max_keys_v2ray_servers_24_25: серверы 24/25 не найдены, пропуск"
+            )
+    except Exception as e:
+        logging.error("migrate_set_max_keys_v2ray_servers_24_25: %s", e, exc_info=True)
+        conn.rollback()
+    finally:
+        conn.close()
+
+
 def migrate_remove_outline_support():
     """Удаление legacy Outline: очистка данных и таблицы keys, нормализация protocol."""
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1681,6 +1795,8 @@ def _run_all_migrations():
     migrate_add_access_level_to_servers()
     migrate_add_subscription_group_id_to_servers()
     migrate_add_traffic_baseline_to_v2ray_keys()
+    migrate_subscription_level_traffic_accounting()
+    migrate_set_max_keys_v2ray_servers_24_25()
     migrate_remove_outline_support()
 
 # Выполняем миграции после определения всех функций

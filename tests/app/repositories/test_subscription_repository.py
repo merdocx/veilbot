@@ -42,7 +42,8 @@ def _init_db(tmp_path):
             traffic_over_limit_notified INTEGER DEFAULT 0,
             last_updated_at INTEGER,
             purchase_notification_sent INTEGER DEFAULT 0,
-            last_traffic_reset_at INTEGER
+            last_traffic_reset_at INTEGER,
+            traffic_baseline_bytes INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -81,6 +82,7 @@ def _init_db(tmp_path):
             subscription_id INTEGER,
             server_id INTEGER,
             v2ray_uuid TEXT,
+            panel_total_bytes_observed INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(subscription_id) REFERENCES subscriptions(id),
             FOREIGN KEY(server_id) REFERENCES servers(id)
         )
@@ -206,6 +208,51 @@ def test_get_subscriptions_with_traffic_limits_fallbacks_to_tariff(repo):
     rows = repo.get_subscriptions_with_traffic_limits(int(time.time()))
     assert rows, "Ожидали получить подписку с лимитом из тарифа"
     assert rows[0][7] == 512
+
+
+def test_get_subscription_traffic_sum_uses_subscription_baseline(repo):
+    conn = sqlite3.connect(repo.db_path)
+    sub_id = _insert_subscription(conn)
+    conn.execute(
+        "INSERT INTO servers (id, api_url, api_key, cert_sha256) VALUES (1, 'x', 'y', 'z')"
+    )
+    conn.execute(
+        "UPDATE subscriptions SET traffic_baseline_bytes = 1000 WHERE id = ?",
+        (sub_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO v2ray_keys (subscription_id, server_id, v2ray_uuid, panel_total_bytes_observed)
+        VALUES (?, 1, 'uuid-a', 700), (?, 1, 'uuid-b', 600)
+        """,
+        (sub_id, sub_id),
+    )
+    conn.commit()
+    conn.close()
+
+    # S = 1300, B = 1000 -> used = 300
+    assert repo.get_subscription_traffic_sum(sub_id) == 300
+
+
+def test_get_all_subscriptions_traffic_sum_matches(repo):
+    conn = sqlite3.connect(repo.db_path)
+    sub_id = _insert_subscription(conn)
+    conn.execute(
+        "INSERT INTO servers (id, api_url, api_key, cert_sha256) VALUES (1, 'x', 'y', 'z')"
+    )
+    conn.execute(
+        "UPDATE subscriptions SET traffic_baseline_bytes = 500 WHERE id = ?",
+        (sub_id,),
+    )
+    conn.execute(
+        "INSERT INTO v2ray_keys (subscription_id, server_id, v2ray_uuid, panel_total_bytes_observed) VALUES (?, 1, 'u1', 900)",
+        (sub_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    m = repo.get_all_subscriptions_traffic_sum([sub_id])
+    assert m[sub_id] == 400
 
 
 def test_update_subscription_traffic_updates_usage(repo):

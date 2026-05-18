@@ -90,7 +90,8 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             traffic_over_limit_notified INTEGER DEFAULT 0,
             purchase_notification_sent INTEGER DEFAULT 0,
             traffic_limit_mb INTEGER DEFAULT 0,
-            last_traffic_reset_at INTEGER
+            last_traffic_reset_at INTEGER,
+            traffic_baseline_bytes INTEGER NOT NULL DEFAULT 0
         )
     """)
     
@@ -133,6 +134,7 @@ def temp_db() -> Generator[sqlite3.Connection, None, None]:
             traffic_over_limit_at INTEGER,
             traffic_over_limit_notified INTEGER DEFAULT 0,
             subscription_id INTEGER,
+            panel_total_bytes_observed INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(user_id),
             FOREIGN KEY (tariff_id) REFERENCES tariffs(id),

@@ -139,11 +139,9 @@ def register_all_handlers(dp: Dispatcher, bot_instance, user_states: dict):
     
     # Регистрация handlers управления ключами
     register_key_management_handlers(
-        dp, bot_instance, user_states,
-        bot_module.change_country_for_key,
-        bot_module.change_protocol_for_key,
+        dp,
+        bot_instance,
         bot_module.reissue_specific_key,
-        bot_module.delete_old_key_after_success
     )
     
     # Дополнительные handlers из bot.py регистрируются автоматически через декораторы

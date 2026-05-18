@@ -46,7 +46,7 @@ class KeyRepository:
                        k.created_at, COALESCE(sub.expires_at, 0) as expiry_at,
                        IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol,
                        0, IFNULL(s.api_url,''), IFNULL(s.api_key,''),
-                       COALESCE(k.traffic_usage_bytes, 0), NULL AS traffic_over_limit_at,
+                       COALESCE(k.panel_total_bytes_observed, 0), NULL AS traffic_over_limit_at,
                        0 AS traffic_over_limit_notified, k.subscription_id
                 FROM v2ray_keys k
                 LEFT JOIN servers s ON k.server_id = s.id
@@ -264,7 +264,7 @@ class KeyRepository:
                     "k.created_at, COALESCE(sub.expires_at, 0) as expiry_at, "
                     "IFNULL(s.name,''), k.email, k.user_id, IFNULL(t.name,''), 'v2ray' as protocol, "
                     "0 AS traffic_limit_mb, IFNULL(s.api_url,''), IFNULL(s.api_key,''), "
-                    "COALESCE(k.traffic_usage_bytes, 0) AS traffic_usage_bytes, NULL AS traffic_over_limit_at, "
+                    "COALESCE(k.panel_total_bytes_observed, 0) AS traffic_usage_bytes, NULL AS traffic_over_limit_at, "
                     "0 AS traffic_over_limit_notified, k.subscription_id "
                     "FROM v2ray_keys k "
                     "LEFT JOIN servers s ON k.server_id=s.id "

@@ -1044,22 +1044,28 @@ class SubscriptionRepository:
 
     def get_subscription_traffic_sum(self, subscription_id: int) -> int:
         """
-        Получить суммарный трафик всех ключей подписки.
-
-        ВАЖНО: это единственный источник правды по использованному трафику подписки.
-        Значение основано на `v2ray_keys.traffic_usage_bytes`, которое обновляется
-        как `max(0, total_bytes - traffic_baseline_bytes)` в фоновой задаче
-        monitor_subscription_traffic_limits.
+        Израсходовано по подписке за текущий период: max(0, S - B), где
+        S = сумма panel_total_bytes_observed по ключам, B = subscriptions.traffic_baseline_bytes.
         """
         with open_connection(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("""
-                SELECT COALESCE(SUM(traffic_usage_bytes), 0)
-                FROM v2ray_keys
-                WHERE subscription_id = ?
-            """, (subscription_id,))
+            c.execute(
+                """
+                SELECT
+                    COALESCE(SUM(COALESCE(vk.panel_total_bytes_observed, 0)), 0),
+                    COALESCE(s.traffic_baseline_bytes, 0)
+                FROM subscriptions s
+                LEFT JOIN v2ray_keys vk ON vk.subscription_id = s.id
+                WHERE s.id = ?
+                GROUP BY s.id, s.traffic_baseline_bytes
+                """,
+                (subscription_id,),
+            )
             result = c.fetchone()
-            return int(result[0] or 0) if result else 0
+            if not result:
+                return 0
+            total_s, baseline_b = int(result[0] or 0), int(result[1] or 0)
+            return max(0, total_s - baseline_b)
     
     def get_all_subscriptions_traffic_sum(self, subscription_ids: list[int]) -> dict[int, int]:
         """Получить суммарный трафик всех ключей для списка подписок (batch-операция)
@@ -1074,14 +1080,22 @@ class SubscriptionRepository:
             c = conn.cursor()
             # Используем IN для получения всех сумм одним запросом
             placeholders = ','.join('?' * len(subscription_ids))
-            c.execute(f"""
-                SELECT 
-                    subscription_id,
-                    COALESCE(SUM(traffic_usage_bytes), 0) as total_usage
-                FROM v2ray_keys
-                WHERE subscription_id IN ({placeholders})
-                GROUP BY subscription_id
-            """, subscription_ids)
+            c.execute(
+                f"""
+                SELECT s.id AS subscription_id,
+                       CASE
+                         WHEN COALESCE(SUM(COALESCE(vk.panel_total_bytes_observed, 0)), 0)
+                              - COALESCE(s.traffic_baseline_bytes, 0) < 0 THEN 0
+                         ELSE COALESCE(SUM(COALESCE(vk.panel_total_bytes_observed, 0)), 0)
+                              - COALESCE(s.traffic_baseline_bytes, 0)
+                       END AS total_usage
+                FROM subscriptions s
+                LEFT JOIN v2ray_keys vk ON vk.subscription_id = s.id
+                WHERE s.id IN ({placeholders})
+                GROUP BY s.id, s.traffic_baseline_bytes
+                """,
+                subscription_ids,
+            )
             results = c.fetchall()
             # Создаем словарь, включая подписки с нулевым трафиком
             traffic_map = {sub_id: 0 for sub_id in subscription_ids}

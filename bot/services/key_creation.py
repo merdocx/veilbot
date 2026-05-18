@@ -190,8 +190,6 @@ async def create_new_key_flow_with_protocol(
     for_renewal: bool = False,
     user_states: Optional[Dict[int, Dict[str, Any]]] = None,
     extend_existing_key_with_fallback: Optional[Callable] = None,
-    change_country_and_extend: Optional[Callable] = None,
-    switch_protocol_and_extend: Optional[Callable] = None,
     record_free_key_usage: Optional[Callable] = None
 ) -> None:
     """
@@ -208,25 +206,19 @@ async def create_new_key_flow_with_protocol(
         for_renewal: Если True, при выборе сервера не проверяется available_for_purchase (только active)
         user_states: Словарь состояний пользователей (для очистки состояния)
         extend_existing_key_with_fallback: Функция продления ключа (импортируется из bot.py)
-        change_country_and_extend: Функция смены страны (импортируется из bot.py)
-        switch_protocol_and_extend: Функция смены протокола (импортируется из bot.py)
         record_free_key_usage: Функция записи использования бесплатного тарифа (импортируется из bot.py)
     """
     # Импортируем функции из соответствующих модулей для избежания циклических зависимостей (lazy import)
-    if extend_existing_key_with_fallback is None or change_country_and_extend is None or switch_protocol_and_extend is None or record_free_key_usage is None or user_states is None:
+    if extend_existing_key_with_fallback is None or record_free_key_usage is None or user_states is None:
         # Lazy import для избежания циклических зависимостей
         import importlib
         
         # Импортируем функции управления ключами из bot/services/key_management.py
-        if extend_existing_key_with_fallback is None or change_country_and_extend is None or switch_protocol_and_extend is None:
+        if extend_existing_key_with_fallback is None:
             try:
                 key_management_module = importlib.import_module('bot.services.key_management')
                 if extend_existing_key_with_fallback is None:
                     extend_existing_key_with_fallback = getattr(key_management_module, 'extend_existing_key_with_fallback', None)
-                if change_country_and_extend is None:
-                    change_country_and_extend = getattr(key_management_module, 'change_country_and_extend', None)
-                if switch_protocol_and_extend is None:
-                    switch_protocol_and_extend = getattr(key_management_module, 'switch_protocol_and_extend', None)
             except Exception as e:
                 logging.error(f"Error importing key_management functions: {e}", exc_info=True)
         
@@ -249,10 +241,6 @@ async def create_new_key_flow_with_protocol(
         # Проверяем, что все необходимые функции загружены
         if extend_existing_key_with_fallback is None:
             logging.error("extend_existing_key_with_fallback is None after import")
-        if change_country_and_extend is None:
-            logging.error("change_country_and_extend is None after import")
-        if switch_protocol_and_extend is None:
-            logging.error("switch_protocol_and_extend is None after import")
     
     bot = get_bot_instance()
     main_menu = get_main_menu()
@@ -267,7 +255,7 @@ async def create_new_key_flow_with_protocol(
     # Проверяем наличие активного или недавно истекшего ключа (в пределах grace period)
     cursor.execute(
         "SELECT k.id, COALESCE(sub.expires_at, 0) as expiry_at, k.v2ray_uuid, s.domain, s.v2ray_path, k.server_id, s.country, "
-        "k.tariff_id, k.email, COALESCE(k.traffic_usage_bytes, 0) "
+        "k.tariff_id, k.email, COALESCE(k.panel_total_bytes_observed, 0) "
         "FROM v2ray_keys k JOIN servers s ON k.server_id = s.id "
         "LEFT JOIN subscriptions sub ON k.subscription_id = sub.id "
         "WHERE k.user_id = ? AND sub.expires_at > ? ORDER BY sub.expires_at DESC LIMIT 1",
@@ -275,161 +263,137 @@ async def create_new_key_flow_with_protocol(
     )
     existing_key = cursor.fetchone()
     if existing_key:
-            # Проверяем, отличается ли запрошенная страна от текущей
-            current_country = existing_key[6]  # s.country
-            
-            if country and country != current_country:
-                # Запрошена другая страна - запускаем логику смены страны с продлением
-                logging.info(f"User {user_id} requested different country for V2Ray: current={current_country}, requested={country}. Running country change logic.")
-                
-                # Формируем key_data для функции смены страны
-                key_data = {
-                    'id': existing_key[0],
-                    'expiry_at': existing_key[1],
-                    'v2ray_uuid': existing_key[2],
-                    'domain': existing_key[3],
-                    'v2ray_path': existing_key[4],
-                    'country': current_country,
-                    'server_id': existing_key[5],
-                    'tariff_id': existing_key[7] or tariff['id'],
-                    'email': existing_key[8] or email,
-                    'protocol': protocol,
-                    'type': 'v2ray',
-                    'traffic_usage_bytes': existing_key[9] if len(existing_key) > 9 else 0,
-                }
-                
-                # Вызываем функцию смены страны с продлением
-                success = await change_country_and_extend(cursor, message, user_id, key_data, country, tariff['duration_sec'], email, tariff, reset_usage=for_renewal)
-                
-                if success:
-                    user_states.pop(user_id, None)
-                    return
-                else:
-                    # Если не удалось сменить страну, создаем новый ключ
-                    logging.warning(f"Failed to change country for V2Ray key {existing_key[0]}, creating new key for user {user_id}")
-                    # Продолжаем выполнение для создания нового ключа
+        current_country = existing_key[6]  # s.country
+        if country and country != current_country:
+            logging.info(
+                "User %s purchase requested country %s but active key is on %s; "
+                "country migration is disabled, extending on current server.",
+                user_id,
+                country,
+                current_country,
+            )
+
+        if extend_existing_key_with_fallback is None:
+            logging.error("extend_existing_key_with_fallback is None, cannot extend V2Ray key")
+            success = False
+        else:
+            success = await extend_existing_key_with_fallback(
+                cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol
+            )
+
+        if success:
+            # Получаем обновленную информацию о ключе
+            cursor.execute("SELECT k.v2ray_uuid, s.domain, s.v2ray_path, s.api_url, s.api_key, k.email FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.id = ?", (existing_key[0],))
+            updated_key = cursor.fetchone()
+
+            if updated_key:
+                v2ray_uuid, domain, path, api_url, api_key, key_email = updated_key
+                # Получаем реальную конфигурацию с сервера (как в "мои ключи")
+                config = None
+                protocol_client = None
+                try:
+                    if api_url and api_key:
+                        server_config = {'api_url': api_url, 'api_key': api_key}
+                        protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
+                        config = await protocol_client.get_user_config(v2ray_uuid, {
+                            'domain': domain,
+                            'port': 443,
+                            'path': path or '/v2ray',
+                            'email': key_email or email or f"user_{user_id}@veilbot.com"
+                        })
+                        if for_renewal:
+                            try:
+                                await protocol_client.reset_key_usage(v2ray_uuid)
+                            except Exception as reset_error:
+                                logging.error(f"Error resetting V2Ray usage for {v2ray_uuid}: {reset_error}")
+                    else:
+                        # Не используем fallback с хардкодом short id - серверы генерируют уникальные short id
+                        logging.error(f"No server data found for key {v2ray_uuid}, cannot generate config without real short ID from server")
+                        raise Exception(f"Cannot generate V2Ray config for key {v2ray_uuid}: server data not found. Server generates unique short IDs that must be retrieved from API.")
+                except Exception as e:
+                    logging.error(f"Error getting V2Ray config for {v2ray_uuid} during extension: {e}")
+                    # Не используем fallback с хардкодом short id - выбрасываем исключение
+                    raise Exception(f"Failed to get V2Ray config for key {v2ray_uuid}: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
+                finally:
+                    if protocol_client:
+                        try:
+                            await protocol_client.close()
+                        except Exception as close_error:
+                            logging.warning(f"Error closing V2Ray protocol client after renewal: {close_error}")
+                if for_renewal:
+                    try:
+                        cursor.execute(
+                            """
+                            UPDATE v2ray_keys
+                            SET traffic_usage_bytes = 0
+                            WHERE id = ?
+                            """,
+                            (existing_key[0],),
+                        )
+                    except Exception as reset_db_error:
+                        logging.error(f"Failed to reset traffic counters in DB for key {existing_key[0]}: {reset_db_error}")
             else:
-                # Та же страна или страна не указана - продлеваем как обычно
-                if extend_existing_key_with_fallback is None:
-                    logging.error("extend_existing_key_with_fallback is None, cannot extend V2Ray key")
-                    # Продолжаем создание нового ключа
-                    success = False
+                # Не используем fallback с хардкодом short id - используем сохраненную конфигурацию из БД
+                v2ray_uuid = existing_key[2]
+                domain = existing_key[3]
+                path = existing_key[4] or '/v2ray'
+                # Используем сохраненную конфигурацию из БД, если она есть
+                if len(existing_key) > 7 and existing_key[7]:  # client_config
+                    config = existing_key[7]
+                    logging.info(f"Using saved client_config from DB for key {v2ray_uuid[:8]}...")
                 else:
-                    success = await extend_existing_key_with_fallback(cursor, existing_key, tariff['duration_sec'], email, tariff['id'], protocol)
-            
-                if success:
-                    # Получаем обновленную информацию о ключе
-                    cursor.execute("SELECT k.v2ray_uuid, s.domain, s.v2ray_path, s.api_url, s.api_key, k.email FROM v2ray_keys k JOIN servers s ON k.server_id = s.id WHERE k.id = ?", (existing_key[0],))
-                    updated_key = cursor.fetchone()
-                    
-                    if updated_key:
-                        v2ray_uuid, domain, path, api_url, api_key, key_email = updated_key
-                        # Получаем реальную конфигурацию с сервера (как в "мои ключи")
-                        config = None
-                        protocol_client = None
-                        try:
-                            if api_url and api_key:
-                                server_config = {'api_url': api_url, 'api_key': api_key}
-                                protocol_client = ProtocolFactory.create_protocol('v2ray', server_config)
-                                config = await protocol_client.get_user_config(v2ray_uuid, {
-                                    'domain': domain,
-                                    'port': 443,
-                                    'path': path or '/v2ray',
-                                    'email': key_email or email or f"user_{user_id}@veilbot.com"
-                                })
-                                if for_renewal:
-                                    try:
-                                        await protocol_client.reset_key_usage(v2ray_uuid)
-                                    except Exception as reset_error:
-                                        logging.error(f"Error resetting V2Ray usage for {v2ray_uuid}: {reset_error}")
-                            else:
-                                # Не используем fallback с хардкодом short id - серверы генерируют уникальные short id
-                                logging.error(f"No server data found for key {v2ray_uuid}, cannot generate config without real short ID from server")
-                                raise Exception(f"Cannot generate V2Ray config for key {v2ray_uuid}: server data not found. Server generates unique short IDs that must be retrieved from API.")
-                        except Exception as e:
-                            logging.error(f"Error getting V2Ray config for {v2ray_uuid} during extension: {e}")
-                            # Не используем fallback с хардкодом short id - выбрасываем исключение
-                            raise Exception(f"Failed to get V2Ray config for key {v2ray_uuid}: {e}. Cannot use fallback with hardcoded short ID as servers generate unique short IDs.")
-                        finally:
-                            if protocol_client:
-                                try:
-                                    await protocol_client.close()
-                                except Exception as close_error:
-                                    logging.warning(f"Error closing V2Ray protocol client after renewal: {close_error}")
-                        if for_renewal:
-                            try:
-                                cursor.execute(
-                                    """
-                                    UPDATE v2ray_keys
-                                    SET traffic_usage_bytes = 0
-                                    WHERE id = ?
-                                    """,
-                                    (existing_key[0],),
-                                )
-                            except Exception as reset_db_error:
-                                logging.error(f"Failed to reset traffic counters in DB for key {existing_key[0]}: {reset_db_error}")
-                    else:
-                        # Не используем fallback с хардкодом short id - используем сохраненную конфигурацию из БД
-                        v2ray_uuid = existing_key[2]
-                        domain = existing_key[3]
-                        path = existing_key[4] or '/v2ray'
-                        # Используем сохраненную конфигурацию из БД, если она есть
-                        if len(existing_key) > 7 and existing_key[7]:  # client_config
-                            config = existing_key[7]
-                            logging.info(f"Using saved client_config from DB for key {v2ray_uuid[:8]}...")
-                        else:
-                            logging.error(f"No saved client_config found for key {v2ray_uuid[:8]}... and cannot use fallback with hardcoded short ID")
-                            raise Exception(f"Cannot extend key {v2ray_uuid[:8]}...: no saved config and server generates unique short IDs")
-                        if for_renewal:
-                            try:
-                                cursor.execute(
-                                    """
-                                    UPDATE v2ray_keys
-                                    SET traffic_usage_bytes = 0
-                                    WHERE id = ?
-                                    """,
-                                    (existing_key[0],),
-                                )
-                            except Exception as reset_db_error:
-                                logging.error(f"Failed to reset V2Ray usage flags in DB for key {existing_key[0]}: {reset_db_error}")
-                    
-                    # Очищаем состояние пользователя
-                    user_states.pop(user_id, None)
-                    
-                    # Проверяем, был ли ключ истекшим
-                    was_expired = existing_key[1] <= now
-                    if was_expired:
-                        msg_text = f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}"
-                    else:
-                        msg_text = f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}"
-                    
-                    # Отправляем сообщение пользователю
-                    notification_sent = False
-                    if message:
-                        try:
-                            await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-                            notification_sent = True
-                        except Exception as e:
-                            logging.error(f"Failed to send V2Ray renewal notification via message.answer to user {user_id}: {e}")
-                            # Пробуем через safe_send_message как fallback
-                            result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-                            notification_sent = result is not None
-                    else:
-                        # Если message=None (например, из webhook), отправляем напрямую через bot
-                        result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
-                        notification_sent = result is not None
-                    
-                    if notification_sent:
-                        logging.info(f"V2Ray renewal notification sent successfully to user {user_id}")
-                    else:
-                        logging.warning(f"Failed to send V2Ray renewal notification to user {user_id}")
-                    
-                    return
-                else:
-                    # Если не удалось продлить, создаем новый ключ
-                    logging.warning(f"Failed to extend V2Ray key {existing_key[0]}, creating new key for user {user_id}")
-                    # Продолжаем выполнение для создания нового ключа
-    
+                    logging.error(f"No saved client_config found for key {v2ray_uuid[:8]}... and cannot use fallback with hardcoded short ID")
+                    raise Exception(f"Cannot extend key {v2ray_uuid[:8]}...: no saved config and server generates unique short IDs")
+                if for_renewal:
+                    try:
+                        cursor.execute(
+                            """
+                            UPDATE v2ray_keys
+                            SET traffic_usage_bytes = 0
+                            WHERE id = ?
+                            """,
+                            (existing_key[0],),
+                        )
+                    except Exception as reset_db_error:
+                        logging.error(f"Failed to reset V2Ray usage flags in DB for key {existing_key[0]}: {reset_db_error}")
+
+            # Очищаем состояние пользователя
+            user_states.pop(user_id, None)
+
+            # Проверяем, был ли ключ истекшим
+            was_expired = existing_key[1] <= now
+            if was_expired:
+                msg_text = f"✅ Ваш истекший ключ восстановлен и продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}"
+            else:
+                msg_text = f"Ваш ключ продлён на {format_duration(tariff['duration_sec'])}!\n\n{format_key_message_unified(config, protocol, tariff)}"
+
+            # Отправляем сообщение пользователю
+            notification_sent = False
+            if message:
+                try:
+                    await message.answer(msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    notification_sent = True
+                except Exception as e:
+                    logging.error(f"Failed to send V2Ray renewal notification via message.answer to user {user_id}: {e}")
+                    # Пробуем через safe_send_message как fallback
+                    result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                    notification_sent = result is not None
+            else:
+                # Если message=None (например, из webhook), отправляем напрямую через bot
+                result = await safe_send_message(bot, user_id, msg_text, reply_markup=main_menu, disable_web_page_preview=True, parse_mode="Markdown")
+                notification_sent = result is not None
+
+            if notification_sent:
+                logging.info(f"V2Ray renewal notification sent successfully to user {user_id}")
+            else:
+                logging.warning(f"Failed to send V2Ray renewal notification to user {user_id}")
+
+            return
+        else:
+            # Если не удалось продлить, создаем новый ключ
+            logging.warning(f"Failed to extend V2Ray key {existing_key[0]}, creating new key for user {user_id}")
+            # Продолжаем выполнение для создания нового ключа
+
     # Если страна не указана: при нескольких вариантах — запрос выбора; иначе подставляем из истории/списка.
     if country is None:
         countries = get_countries_by_protocol(protocol)
