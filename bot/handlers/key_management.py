@@ -8,7 +8,7 @@ from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import PROTOCOLS
 from app.infra.sqlite_utils import get_db_cursor
-from bot.keyboards import get_main_menu, get_help_keyboard
+from bot.keyboards import get_main_menu
 from bot_rate_limiter import rate_limit
 
 

@@ -11,7 +11,7 @@ from aiogram import types
 
 from app.infra.sqlite_utils import get_db_cursor
 from bot.services.subscription_server_groups import user_has_active_paid_subscription
-from vpn_protocols import format_duration, ProtocolFactory, normalize_vless_host
+from vpn_protocols import ProtocolFactory
 from bot.utils import format_key_message_unified
 from bot.keyboards import get_main_menu
 from bot.core import get_bot_instance
